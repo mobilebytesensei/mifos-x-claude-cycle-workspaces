@@ -106,11 +106,70 @@
 
 ---
 
+## Keyword → Feature Mapping (O(1) Lookup)
+
+```yaml
+# Authentication & Security
+login: auth
+register: auth
+authentication: auth
+password: auth
+passcode: passcode
+pin: passcode
+biometric: passcode
+security settings: settings
+
+# Account Management
+accounts: accounts
+account list: accounts
+account overview: accounts
+savings: savings-account
+deposit: savings-account
+withdraw: savings-account
+loan: loan-account
+repayment: loan-account
+loan schedule: loan-account
+shares: share-account
+dividend: share-account
+
+# Transactions
+transfer: transfer
+send money: transfer
+fund transfer: transfer
+beneficiary: beneficiary
+add beneficiary: beneficiary
+third party: beneficiary
+transactions: recent-transaction
+transaction history: recent-transaction
+
+# Information & Utilities
+home: home
+dashboard: dashboard
+main screen: home
+notification: notification
+alerts: notification
+qr code: qr
+scan qr: qr
+generate qr: qr
+location: location
+branches: location
+atm finder: location
+charges: client-charge
+fees: client-charge
+
+# Supporting
+guarantor: guarantor
+loan guarantor: guarantor
+```
+
+---
+
 ## Auto-Update Rules
 
 | Scenario | Action |
 |----------|--------|
-| New feature added | Add row to Quick Lookup |
+| New feature added | Add row to Quick Lookup + Add keywords |
 | SPEC.md created | Update SPEC column to ✅ |
 | API.md created | Update API column to ✅ |
 | Mockups complete | Update Mockups column to ✅ |
+| New keyword needed | Add to Keyword → Feature Mapping |

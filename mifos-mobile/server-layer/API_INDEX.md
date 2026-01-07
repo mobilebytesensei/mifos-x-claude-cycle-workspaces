@@ -543,9 +543,84 @@ core/network/src/commonMain/kotlin/org/mifos/mobile/core/network/services/
 
 ---
 
+## Keyword → Endpoint Mapping (O(1) Lookup)
+
+```yaml
+# Authentication
+login: /authentication
+authenticate: /authentication
+register: /registration
+registration: /registration
+otp: /registration/user
+verify: /registration/user
+
+# Client
+client: /clients
+client details: /clients/{clientId}
+profile: /clients/{clientId}
+client image: /clients/{clientId}/images
+accounts: /clients/{clientId}/accounts
+
+# Savings
+savings: /savingsaccounts/{accountId}
+savings details: /savingsaccounts/{accountId}
+apply savings: /savingsaccounts
+withdraw savings: /savingsaccounts/{id}?command=withdrawnByApplicant
+savings transactions: /savingsaccounts/{id}/transactions
+savings products: /savingsproducts
+
+# Loan
+loan: /loans/{loanId}
+loan details: /loans/{loanId}
+apply loan: /loans
+withdraw loan: /loans/{loanId}?command=withdrawnByApplicant
+loan transaction: /loans/{loanId}/transactions/{transId}
+loan products: /loanproducts
+repayment: /loans/{loanId}/template?templateType=repayment
+
+# Share
+shares: /products/share
+share products: /products/share
+apply share: /shareaccounts
+share details: /shareaccounts/{accountId}
+
+# Beneficiary
+beneficiary: /beneficiaries/tpt
+beneficiary list: /beneficiaries/tpt
+add beneficiary: /beneficiaries/tpt
+update beneficiary: /beneficiaries/tpt/{id}
+delete beneficiary: /beneficiaries/tpt/{id}
+
+# Transfer
+transfer: /accounttransfers
+transfer template: /accounttransfers/template
+make transfer: /accounttransfers
+
+# Guarantor
+guarantor: /loans/{loanId}/guarantors
+guarantor list: /loans/{loanId}/guarantors
+add guarantor: /loans/{loanId}/guarantors
+
+# Notification
+notification: /device/registration
+register device: /device/registration
+
+# Charges
+charges: /clients/{clientId}/charges
+loan charges: /loans/{loanId}/charges
+savings charges: /savingsaccounts/{id}/charges
+
+# Settings
+password: /user/password
+change password: /user/password
+```
+
+---
+
 ## Changelog
 
 | Date | Change |
 |------|--------|
+| 2025-01-07 | Added Keyword → Endpoint Mapping for O(1) lookup |
 | 2025-01-05 | Restructured as part of modular server layer docs |
 | 2025-01-05 | Created with merged content from FINERACT_API.md + feature API.md files |

@@ -103,11 +103,71 @@ feature/[module]/src/commonMain/kotlin/org/mifos/mobile/feature/[package]/
 
 ---
 
+## Keyword → Module Mapping (O(1) Lookup)
+
+```yaml
+# Authentication & Security
+login: auth
+register: auth
+authentication: auth
+password: settings
+passcode: passcode
+biometric: passcode
+security: settings
+
+# Account Management
+accounts: accounts
+account list: accounts
+savings: savings-account
+savings account: savings-account
+savings application: savings-application
+loan: loan-account
+loan account: loan-account
+loan application: loan-application
+share: share-account
+share account: share-account
+share application: share-application
+
+# Transactions
+transfer: transfer-process
+make transfer: transfer-process
+third party: third-party-transfer
+tpt: third-party-transfer
+beneficiary: beneficiary
+add beneficiary: beneficiary
+transactions: recent-transaction
+transaction history: recent-transaction
+
+# Information
+home: home
+dashboard: home
+notification: notification
+alerts: notification
+qr: qr
+qr code: qr
+scan: qr
+location: location
+branches: location
+charges: client-charge
+fees: client-charge
+profile: user-profile
+
+# Supporting
+guarantor: guarantor
+settings: settings
+about: settings
+language: onboarding-language
+status: status
+```
+
+---
+
 ## Auto-Update Rules
 
 | Scenario | Action |
 |----------|--------|
-| New module added | Add row to Quick Lookup table |
+| New module added | Add row to Quick Lookup + Add keywords |
 | Screen added to module | Update Screens count |
 | ViewModel added | Update VMs count |
 | DI module added | Update DI column |
+| New keyword needed | Add to Keyword → Module Mapping |
