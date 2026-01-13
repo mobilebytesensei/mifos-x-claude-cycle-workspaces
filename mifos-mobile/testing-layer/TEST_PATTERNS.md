@@ -8,11 +8,11 @@
 
 | # | Pattern | Use Case | Location | Details |
 |:-:|---------|----------|----------|---------|
-| 1 | ViewModel Test | Test state, actions, events | `commonTest/` | [viewmodel-test.md](./patterns/viewmodel-test.md) |
-| 2 | Screen Test | Test UI composition | `androidInstrumentedTest/` | [screen-test.md](./patterns/screen-test.md) |
-| 3 | Fake Repository | Test isolation | `commonTest/fake/` | [fake-repository.md](./patterns/fake-repository.md) |
-| 4 | Integration Test | Test user flows | `cmp-android/androidTest/` | [integration-test.md](./patterns/integration-test.md) |
-| 5 | Screenshot Test | Visual regression | `test/` (Roborazzi) | [screenshot-test.md](./patterns/screenshot-test.md) |
+| 1 | ViewModel Test | Test state, actions, events | `commonTest/` | [VIEWMODEL_TEST.md](./patterns/VIEWMODEL_TEST.md) |
+| 2 | Screen Test | Test UI composition | `androidInstrumentedTest/` | [SCREEN_TEST.md](./patterns/SCREEN_TEST.md) |
+| 3 | Fake Repository | Test isolation | `commonTest/fake/` | [FAKE_REPOSITORY.md](./patterns/FAKE_REPOSITORY.md) |
+| 4 | Integration Test | Test user flows | `cmp-android/androidTest/` | [INTEGRATION_TEST.md](./patterns/INTEGRATION_TEST.md) |
+| 5 | Screenshot Test | Visual regression | `test/` (Roborazzi) | [SCREENSHOT_TEST.md](./patterns/SCREENSHOT_TEST.md) |
 
 ---
 
