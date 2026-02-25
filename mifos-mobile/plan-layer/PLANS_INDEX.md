@@ -22,7 +22,7 @@ See [`versions/VERSION_INDEX.md`](./versions/VERSION_INDEX.md) for version-based
 | Status | Count | Description |
 |:------:|:-----:|-------------|
 | 🔄 Active | 0 | Plans in progress |
-| ✅ Completed | 0 | Finished plans |
+| ✅ Completed | 1 | Finished plans |
 | ⏸️ Paused | 0 | Plans on hold |
 
 ---
@@ -39,7 +39,7 @@ See [`versions/VERSION_INDEX.md`](./versions/VERSION_INDEX.md) for version-based
 
 | # | Plan | Target | Steps | Completed |
 |:-:|------|--------|:-----:|-----------|
-| - | (none) | - | - | - |
+| 1 | [design-flow-authentication-260119-001](plans/PLAN-design-flow-authentication-260119-001.md) | User Flow | 3 | 2026-01-19 |
 
 ---
 
