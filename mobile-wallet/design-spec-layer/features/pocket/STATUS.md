@@ -99,7 +99,9 @@
 
 | Blocker | Status | Resolution |
 |---------|:------:|------------|
-| None | - | - |
+| Roadmap Idea not created | 🟡 Pending | Create MR-XXX when Jira available |
+
+**Note:** Jira tickets (Epic MW-378 + Stories MW-379-387) created successfully. Roadmap Idea in MR project pending due to Atlassian outage.
 
 ---
 
