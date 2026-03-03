@@ -14,7 +14,8 @@
 | Entry Points | Home Screen (Account Pager) |
 | Created | 2026-03-03 |
 | Updated | 2026-03-03 |
-| Status | Design |
+| Status | Design Complete |
+| Jira | MR-16, MW-378, MW-379-387 |
 
 ---
 
@@ -24,17 +25,19 @@ Pocket acts as **"Favorites"** for accounts. Users can link their Savings, Loan,
 
 ### Key Behavior
 
-| Pocket State | Home Screen Display |
-|--------------|---------------------|
-| **Empty (no linked accounts)** | Show ALL accounts in pager + "Add to Pocket" capability |
-| **Has linked accounts** | Show ONLY Pocket accounts in pager (with toggle to see all) |
+| Pocket State | Home Screen Display | Rationale |
+|--------------|---------------------|-----------|
+| **Empty (no linked accounts)** | Show ALL accounts in pager | First-time users see everything |
+| **Has linked accounts** | Show ONLY Pocket accounts (default) | Quick access to favorites |
+| **Toggle to All** | Show ALL accounts in pager | Full access when needed |
 
 ### Key Capabilities
 
 1. **View Pocket Accounts** - See linked accounts in Home pager with aggregated balance
-2. **Link Accounts** - Star/favorite accounts to add to pocket
+2. **Link Accounts** - Star/favorite accounts via long press context menu
 3. **Delink Accounts** - Remove accounts from pocket (long press or manage screen)
 4. **Toggle View** - Switch between Pocket view and All Accounts view
+5. **Manage Pocket** - Dedicated screen to manage all pocket accounts
 
 ---
 
@@ -52,7 +55,7 @@ Pocket acts as **"Favorites"** for accounts. Users can link their Savings, Loan,
 │  ├────────────────────────────────────────────────────────────────────────────┤ │
 │  │                                                                             │ │
 │  │   ┌─────────────────────────────────────────────────────────────────────┐  │ │
-│  │   │  [Pocket ▼] / [All Accounts ▼]           Total: ₹45,230           │  │ │
+│  │   │  [Pocket (3) ▼]                        Total: ₹45,230              │  │ │
 │  │   ├─────────────────────────────────────────────────────────────────────┤  │ │
 │  │   │                                                                     │  │ │
 │  │   │   ┌─────────┐    ┌─────────┐    ┌─────────┐                        │  │ │
@@ -85,14 +88,15 @@ Pocket acts as **"Favorites"** for accounts. Users can link their Savings, Loan,
 │                                             │ • Add to ⭐   │ (if not in pocket) │
 │                                             │ • Remove ⭐   │ (if in pocket)     │
 │                                             │ • Set Default │                    │
+│                                             │ • View Details│                    │
 │                                             └──────────────┘                     │
 │                                                                                  │
 │  ┌──────────────┐     ┌──────────────────────────────────────────────┐          │
-│  │ Tap Dropdown │────►│  View Switcher                               │          │
-│  │  [Pocket ▼]  │     │  ○ Pocket (3 accounts)                       │          │
+│  │ Tap Dropdown │────►│  View Switcher (DropdownMenu)                │          │
+│  │  [Pocket ▼]  │     │  ✓ Pocket (3 accounts)                       │          │
 │  └──────────────┘     │  ○ All Accounts (5 accounts)                 │          │
 │                       │  ─────────────────────────                   │          │
-│                       │  [Manage Pocket]                             │          │
+│                       │  ⚙️ Manage Pocket                             │          │
 │                       └──────────────────────────────────────────────┘          │
 │                                                                                  │
 └─────────────────────────────────────────────────────────────────────────────────┘
@@ -103,9 +107,10 @@ Pocket acts as **"Favorites"** for accounts. Users can link their Savings, Loan,
 ```mermaid
 flowchart TB
     subgraph HomeScreen["Home Screen"]
+        HEADER[View Header: Dropdown + Total Balance]
         PAGER[Account Cards Pager]
-        DROPDOWN[View Dropdown]
-        TOTAL[Total Balance]
+        ACTIONS[Request / Send Buttons]
+        TRANSACTIONS[Recent Transactions]
     end
 
     subgraph PocketStates["Display States"]
@@ -114,44 +119,51 @@ flowchart TB
         ALL_VIEW[All Accounts View]
     end
 
-    subgraph Actions["User Actions"]
-        TAP[Tap Account]
+    subgraph UserActions["User Actions"]
+        TAP[Tap Account Card]
         LONG_PRESS[Long Press Account]
-        TOGGLE[Toggle View]
-        MANAGE[Manage Pocket]
+        DROPDOWN[Tap View Dropdown]
     end
 
-    subgraph Screens["Destination Screens"]
+    subgraph Destinations["Destination Screens"]
         DETAILS[Account Details]
-        CONTEXT_MENU[Context Menu]
+        CONTEXT_MENU[Context Menu BottomSheet]
+        VIEW_MENU[View Dropdown Menu]
         MANAGE_SCREEN[Manage Pocket Screen]
     end
 
     %% State Logic
-    PAGER -->|"Pocket empty"| EMPTY_STATE
-    PAGER -->|"Pocket has accounts"| POCKET_VIEW
+    HEADER --> PAGER
+    PAGER -->|"pocket.isEmpty"| EMPTY_STATE
+    PAGER -->|"pocket.hasAccounts"| POCKET_VIEW
 
     EMPTY_STATE -->|"Shows all accounts"| ALL_VIEW
 
     %% User Interactions
     TAP --> DETAILS
     LONG_PRESS --> CONTEXT_MENU
-    TOGGLE --> POCKET_VIEW
-    TOGGLE --> ALL_VIEW
-    MANAGE --> MANAGE_SCREEN
+    DROPDOWN --> VIEW_MENU
 
     %% Context Menu Actions
-    CONTEXT_MENU -->|"Add to Pocket"| LINK_API[Link API]
-    CONTEXT_MENU -->|"Remove from Pocket"| DELINK_CONFIRM[Delink Confirmation]
+    CONTEXT_MENU -->|"Add to Pocket"| LINK_API[Link API Call]
+    CONTEXT_MENU -->|"Remove from Pocket"| DELINK_API[Delink API Call]
+    CONTEXT_MENU -->|"Set as Default"| DEFAULT_API[Set Default]
+    CONTEXT_MENU -->|"View Details"| DETAILS
 
+    %% View Menu Actions
+    VIEW_MENU -->|"Select Pocket"| POCKET_VIEW
+    VIEW_MENU -->|"Select All"| ALL_VIEW
+    VIEW_MENU -->|"Manage Pocket"| MANAGE_SCREEN
+
+    %% API Results
     LINK_API -->|"Success"| POCKET_VIEW
-    DELINK_CONFIRM -->|"Confirm"| DELINK_API[Delink API]
     DELINK_API -->|"Success"| POCKET_VIEW
 
     style EMPTY_STATE fill:#fff9c4
     style POCKET_VIEW fill:#c8e6c9
     style ALL_VIEW fill:#e3f2fd
     style CONTEXT_MENU fill:#f3e5f5
+    style MANAGE_SCREEN fill:#ffe0b2
 ```
 
 ---
@@ -162,21 +174,23 @@ flowchart TB
 
 **Purpose:** Display accounts with Pocket integration
 
-**States:**
+**File:** `feature/home/src/commonMain/kotlin/org/mifospay/feature/home/HomeScreen.kt`
 
 #### State A: Empty Pocket (First-time User)
 
 ```
 ┌─────────────────────────────────────────┐
-│  All Accounts                    [▼]    │  ← Dropdown (Pocket empty, shows all)
+│  All Accounts (5)                [▼]    │  ← Dropdown disabled (pocket empty)
 ├─────────────────────────────────────────┤
-│                                         │
+│         Total Balance                   │
+│            ₹ 55,730.50                  │  ← All accounts total
+├─────────────────────────────────────────┤
 │   ┌─────────┐  ┌─────────┐  ┌─────────┐ │
 │   │ Savings │  │ Savings │  │  Loan   │ │  ← All accounts shown
-│   │  #1     │  │  #2     │  │         │ │
+│   │  #1     │  │  #2     │  │         │ │    No stars (none in pocket)
 │   │ ₹25,000 │  │ ₹10,500 │  │ ₹-50K   │ │
 │   └─────────┘  └─────────┘  └─────────┘ │
-│       ●            ○            ○       │
+│       ●            ○            ○   ○   │
 ├─────────────────────────────────────────┤
 │                                         │
 │   💡 Tip: Long press an account to add  │
@@ -185,6 +199,15 @@ flowchart TB
 ├─────────────────────────────────────────┤
 │  [Request]        [Send Money]          │
 └─────────────────────────────────────────┘
+```
+
+**Logic:**
+```kotlin
+// In HomeViewModel
+if (pocket.isEmpty) {
+    displayedAccounts = accounts  // Show all
+    showPocketView = false        // Force all accounts view
+}
 ```
 
 #### State B: Pocket Has Accounts (Default View)
@@ -207,6 +230,15 @@ flowchart TB
 └─────────────────────────────────────────┘
 ```
 
+**Logic:**
+```kotlin
+// In HomeViewModel
+if (pocket.accounts.isNotEmpty()) {
+    displayedAccounts = pocket.accounts.map { it.toAccount() }
+    showPocketView = true  // Default to pocket view
+}
+```
+
 #### State C: All Accounts View (Toggled)
 
 ```
@@ -221,7 +253,7 @@ flowchart TB
 │   │   ⭐    │  │         │  │   ⭐    │ │  ← Star = in pocket
 │   │ ₹25,000 │  │ ₹10,500 │  │ ₹-50K   │ │     No star = not in pocket
 │   └─────────┘  └─────────┘  └─────────┘ │
-│       ●            ○            ○   ○   │  ← More accounts
+│       ●            ○            ○   ○   │  ← More accounts (5 total)
 ├─────────────────────────────────────────┤
 │  [Request]        [Send Money]          │
 └─────────────────────────────────────────┘
@@ -233,41 +265,56 @@ flowchart TB
 
 **Purpose:** Switch between Pocket and All Accounts views
 
-**Type:** Dropdown/BottomSheet Menu
+**File:** `feature/home/src/commonMain/kotlin/org/mifospay/feature/home/components/ViewDropdownMenu.kt`
+
+**Type:** DropdownMenu (Material3)
 
 **Layout:**
 ```
 ┌─────────────────────────────────────────┐
-│  Select View                            │
-├─────────────────────────────────────────┤
-│                                         │
-│  ● Pocket (3 accounts)                  │  ← Selected
+│  ✓ Pocket (3 accounts)                  │  ← Selected (checkmark)
 │    Your favorite accounts               │
-│                                         │
-│  ○ All Accounts (5 accounts)            │
-│    All savings, loans & shares          │
-│                                         │
 ├─────────────────────────────────────────┤
-│  ┌─────────────────────────────────────┐│
-│  │      ⚙️ Manage Pocket               ││  ← Opens Manage screen
-│  └─────────────────────────────────────┘│
+│  ○ All Accounts (5 accounts)            │  ← Not selected
+│    All savings, loans & shares          │
+├─────────────────────────────────────────┤
+│  ⚙️ Manage Pocket                        │  ← Opens ManagePocketScreen
 └─────────────────────────────────────────┘
+```
+
+**Implementation:**
+```kotlin
+@Composable
+fun ViewDropdownMenu(
+    isExpanded: Boolean,
+    showPocketView: Boolean,
+    pocketCount: Int,
+    allAccountsCount: Int,
+    onDismiss: () -> Unit,
+    onSelectPocket: () -> Unit,
+    onSelectAll: () -> Unit,
+    onManagePocket: () -> Unit,
+)
 ```
 
 **Actions:**
 | Action | Result |
 |--------|--------|
-| Select Pocket | Filter pager to pocket accounts only |
-| Select All Accounts | Show all accounts in pager |
-| Manage Pocket | Navigate to S3: Manage Pocket |
+| Select Pocket | `showPocketView = true`, filter pager to pocket |
+| Select All Accounts | `showPocketView = false`, show all accounts |
+| Manage Pocket | Navigate to ManagePocketScreen |
 
 ---
 
 ### S3: Account Card Context Menu
 
-**Purpose:** Quick link/delink from pocket
+**Purpose:** Quick link/delink from pocket via long press
 
-**Type:** Bottom Sheet (on long press)
+**File:** `feature/home/src/commonMain/kotlin/org/mifospay/feature/home/components/AccountContextMenu.kt`
+
+**Type:** ModalBottomSheet (Material3)
+
+**Trigger:** Long press on AccountCard
 
 **Layout - Account NOT in Pocket:**
 ```
@@ -285,16 +332,14 @@ flowchart TB
 │  📋 View Account Details                │
 │     Transactions, statements & more     │
 │                                         │
-├─────────────────────────────────────────┤
-│              Cancel                     │
 └─────────────────────────────────────────┘
 ```
 
 **Layout - Account IN Pocket:**
 ```
 ┌─────────────────────────────────────────┐
-│  Savings Account                        │
-│  ****1234 • ₹ 25,000.00      ⭐        │
+│  Savings Account                   ⭐   │
+│  ****1234 • ₹ 25,000.00                │
 ├─────────────────────────────────────────┤
 │                                         │
 │  ☆ Remove from Pocket                   │  ← Delink action
@@ -304,9 +349,21 @@ flowchart TB
 │                                         │
 │  📋 View Account Details                │
 │                                         │
-├─────────────────────────────────────────┤
-│              Cancel                     │
 └─────────────────────────────────────────┘
+```
+
+**Implementation:**
+```kotlin
+@Composable
+fun AccountContextMenu(
+    account: Account,
+    isInPocket: Boolean,
+    onDismiss: () -> Unit,
+    onAddToPocket: () -> Unit,
+    onRemoveFromPocket: () -> Unit,
+    onSetAsDefault: () -> Unit,
+    onViewDetails: () -> Unit,
+)
 ```
 
 ---
@@ -314,6 +371,8 @@ flowchart TB
 ### S4: Manage Pocket Screen
 
 **Purpose:** Full management of pocket accounts
+
+**File:** `feature/pocket/src/commonMain/kotlin/org/mifospay/feature/pocket/ManagePocketScreen.kt`
 
 **Entry:** View Dropdown > Manage Pocket
 
@@ -326,7 +385,7 @@ flowchart TB
 │  In Pocket (3)                          │
 │  ─────────────────────────────────────  │
 │  ┌─────────────────────────────────────┐│
-│  │ 💰 Savings Account              ⭐  ││
+│  │ 💰 Savings Account              ⭐  ││  ← Tap star to remove
 │  │    ****1234 • ₹ 25,000.00          ││
 │  ├─────────────────────────────────────┤│
 │  │ 🏦 Personal Loan                ⭐  ││
@@ -339,7 +398,7 @@ flowchart TB
 │  Not in Pocket (2)                      │
 │  ─────────────────────────────────────  │
 │  ┌─────────────────────────────────────┐│
-│  │ 💰 Savings Account #2           ☆  ││
+│  │ 💰 Savings Account #2           ☆  ││  ← Tap star to add
 │  │    ****3456 • ₹ 10,500.00          ││
 │  ├─────────────────────────────────────┤│
 │  │ 💳 Fixed Deposit                ☆  ││
@@ -350,89 +409,92 @@ flowchart TB
 ```
 
 **Interactions:**
-- Tap ⭐ (filled) → Delink confirmation
-- Tap ☆ (empty) → Link to pocket (immediate)
-- Swipe left on pocket account → Remove option
-
----
-
-### S5: Delink Confirmation
-
-**Purpose:** Confirm removing account from pocket
-
-**Type:** Bottom Sheet Dialog
-
-**Layout:**
-```
-┌─────────────────────────────────────────┐
-│                                         │
-│  Remove from Pocket?                    │
-│                                         │
-│  💰 Savings Account                     │
-│     ****1234 • ₹ 25,000.00             │
-│                                         │
-│  This account will still be accessible  │
-│  from "All Accounts" view.              │
-│                                         │
-│  ┌─────────────────────────────────────┐│
-│  │            Remove                   ││
-│  └─────────────────────────────────────┘│
-│  ┌─────────────────────────────────────┐│
-│  │            Cancel                   ││
-│  └─────────────────────────────────────┘│
-│                                         │
-└─────────────────────────────────────────┘
-```
+- Tap ⭐ (filled gold) → Show delink confirmation → Remove from pocket
+- Tap ☆ (outline) → Add to pocket immediately
+- Swipe left on pocket account → Remove option (optional gesture)
 
 ---
 
 ## State Management
 
-### HomeState (Updated)
+### HomeState (Extended for Pocket)
+
+**File:** `feature/home/src/commonMain/kotlin/org/mifospay/feature/home/HomeViewModel.kt`
 
 ```kotlin
+@Serializable
 data class HomeState(
     // Existing fields
     val client: Client,
+    val defaultAccountId: Long?,
     val accounts: List<Account> = emptyList(),
     val selectedAccount: Account? = null,
     val transactions: List<Transaction>? = null,
+    val isRefreshing: Boolean = false,
+    val viewState: ViewState = ViewState.Loading,
 
     // NEW: Pocket integration
-    val pocketAccounts: List<PocketAccount> = emptyList(),
-    val isPocketEmpty: Boolean = true,              // No pocket accounts linked
-    val showPocketView: Boolean = true,             // Default: show pocket if not empty
-    val pocketTotalBalance: Double = 0.0,
-
-    // Computed property
+    val pocket: Pocket = Pocket.EMPTY,
+    val showPocketView: Boolean = true,
+    val showViewDropdown: Boolean = false,
+    val showContextMenu: Boolean = false,
+    val contextMenuAccount: Account? = null,
+) {
+    // Computed: accounts to display based on view mode
     val displayedAccounts: List<Account>
         get() = when {
-            isPocketEmpty -> accounts              // Empty pocket = show all
-            showPocketView -> pocketAccounts.toAccounts()  // Pocket view
-            else -> accounts                       // All accounts view
+            pocket.isEmpty -> accounts                    // Empty = show all
+            showPocketView -> pocket.accounts.toAccounts() // Pocket view
+            else -> accounts                              // All accounts view
         }
 
+    // Computed: total balance to display
     val displayedTotalBalance: Double
-        get() = if (showPocketView && !isPocketEmpty)
-            pocketTotalBalance
-        else
+        get() = if (showPocketView && !pocket.isEmpty) {
+            pocket.totalBalance
+        } else {
             accounts.sumOf { it.balance }
-)
+        }
+
+    // Check if account is in pocket
+    fun isInPocket(accountId: Long): Boolean =
+        pocket.accounts.any { it.id == accountId }
+}
 ```
 
-### HomeAction (Updated)
+### HomeAction (Extended)
 
 ```kotlin
 sealed interface HomeAction {
-    // Existing actions...
+    // Existing actions
+    data object RequestClicked : HomeAction
+    data object SendClicked : HomeAction
+    data class AccountDetailsClicked(val accountId: Long) : HomeAction
+    data class MarkAsDefault(val accountId: Long, val accountNo: String) : HomeAction
 
     // NEW: Pocket actions
-    data object TogglePocketView : HomeAction           // Switch pocket/all
-    data class AddToPocket(val accountId: Long, val accountType: AccountType) : HomeAction
-    data class RemoveFromPocket(val accountId: Long, val accountType: AccountType) : HomeAction
-    data object ShowAccountContextMenu : HomeAction
-    data object DismissAccountContextMenu : HomeAction
+    data object TogglePocketView : HomeAction
+    data object ShowViewDropdown : HomeAction
+    data object DismissViewDropdown : HomeAction
+    data class ShowContextMenu(val account: Account) : HomeAction
+    data object DismissContextMenu : HomeAction
+    data class AddToPocket(val accountId: Long) : HomeAction
+    data class RemoveFromPocket(val accountId: Long) : HomeAction
     data object NavigateToManagePocket : HomeAction
+}
+```
+
+### HomeEvent (Extended)
+
+```kotlin
+sealed interface HomeEvent {
+    // Existing events
+    data object NavigateBack : HomeEvent
+    data class NavigateToAccountDetail(val accountId: Long) : HomeEvent
+
+    // NEW: Pocket events
+    data object NavigateToManagePocket : HomeEvent
+    data class ShowToast(val message: String) : HomeEvent
 }
 ```
 
@@ -440,7 +502,7 @@ sealed interface HomeAction {
 
 ## API Integration
 
-### Endpoints Required
+### Endpoints
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
@@ -448,31 +510,66 @@ sealed interface HomeAction {
 | `POST /self/pockets?command=linkAccounts` | POST | Link accounts to pocket |
 | `POST /self/pockets?command=delinkAccounts` | POST | Remove accounts from pocket |
 
-### Display Logic
+### PocketService (Ktorfit)
+
+**File:** `core/network/src/commonMain/kotlin/org/mifospay/core/network/services/PocketService.kt`
 
 ```kotlin
-// In HomeViewModel
-fun determineDisplayMode() {
-    val pocketAccounts = pocketRepository.getPocket()
+interface PocketService {
+    @GET(ApiEndPoints.POCKETS)
+    fun getPocketAccounts(): Flow<PocketAccountsEntity>
 
-    if (pocketAccounts.isEmpty()) {
-        // First-time user OR all accounts delinked
-        updateState {
-            it.copy(
-                isPocketEmpty = true,
-                showPocketView = false,  // Force all accounts view
-                displayedAccounts = allAccounts
-            )
-        }
-    } else {
-        // Has pocket accounts - show pocket by default
-        updateState {
-            it.copy(
-                isPocketEmpty = false,
-                showPocketView = true,  // Default to pocket view
-                pocketAccounts = pocketAccounts,
-                displayedAccounts = pocketAccounts
-            )
+    @POST(ApiEndPoints.POCKETS)
+    suspend fun linkAccounts(
+        @Query("command") command: String = "linkAccounts",
+        @Body request: PocketLinkRequest,
+    ): PocketCommandResponse
+
+    @POST(ApiEndPoints.POCKETS)
+    suspend fun delinkAccounts(
+        @Query("command") command: String = "delinkAccounts",
+        @Body request: PocketLinkRequest,
+    ): PocketCommandResponse
+}
+```
+
+### PocketRepository
+
+**File:** `core/data/src/commonMain/kotlin/org/mifospay/core/data/repository/PocketRepository.kt`
+
+```kotlin
+interface PocketRepository {
+    fun getPocket(): Flow<DataState<Pocket>>
+    suspend fun linkAccount(accountId: Long, accountType: PocketAccountType): DataState<Unit>
+    suspend fun delinkAccount(accountId: Long, accountType: PocketAccountType): DataState<Unit>
+    fun isAccountInPocket(accountId: Long): Boolean
+}
+```
+
+### Display Logic (HomeViewModel)
+
+```kotlin
+// Fetch pocket on init
+private fun getPocket() {
+    launchIO {
+        pocketRepository.getPocket().collect { result ->
+            when (result) {
+                is DataState.Success -> {
+                    mutableStateFlow.update {
+                        it.copy(
+                            pocket = result.data,
+                            showPocketView = result.data.accounts.isNotEmpty(),
+                        )
+                    }
+                }
+                is DataState.Error -> {
+                    // Silent fail - pocket is optional
+                    mutableStateFlow.update {
+                        it.copy(pocket = Pocket.EMPTY, showPocketView = false)
+                    }
+                }
+                else -> {}
+            }
         }
     }
 }
@@ -480,27 +577,40 @@ fun determineDisplayMode() {
 
 ---
 
-## Implementation Changes to Home Module
+## Implementation Phases
 
-### Files to Modify
+### Phase 1: Server Layer (~2 hours)
+- [ ] Add `POCKETS = "self/pockets"` to ApiEndPoints.kt
+- [ ] Create PocketService.kt (Ktorfit interface)
+- [ ] Create entity models (PocketAccountsEntity, PocketLinkRequest, etc.)
+- [ ] Register service in FineractApiManager
 
-| File | Changes |
-|------|---------|
-| `HomeScreen.kt` | Add view dropdown, star indicators, context menu |
-| `HomeViewModel.kt` | Add pocket state, fetch pocket on init, toggle logic |
-| `HomeState.kt` | Add `pocketAccounts`, `isPocketEmpty`, `showPocketView` |
-| `AccountCard.kt` | Add star indicator, long press handler |
-| `HomeNavigation.kt` | Add `navigateToManagePocket` callback |
-| `HomeModule.kt` | Inject `PocketRepository` |
+### Phase 2: Client Layer (~2 hours)
+- [ ] Create domain models (Pocket, PocketAccount, PocketAccountType)
+- [ ] Create PocketRepository interface
+- [ ] Create PocketRepositoryImpl with caching
+- [ ] Register in RepositoryModule (Koin DI)
 
-### New Files to Create
+### Phase 3: Feature Layer - Home Integration (~4 hours)
+- [ ] Extend HomeState with pocket fields
+- [ ] Extend HomeAction/HomeEvent
+- [ ] Inject PocketRepository into HomeViewModel
+- [ ] Add pocket fetch on init
+- [ ] Add star indicator (⭐) to AccountCard
+- [ ] Add long press handler with combinedClickable
+- [ ] Create ViewDropdownMenu component
+- [ ] Create AccountContextMenu component
+- [ ] Update HomeScreen layout
 
-| File | Purpose |
-|------|---------|
-| `ViewDropdownMenu.kt` | Pocket/All accounts switcher UI |
-| `AccountContextMenu.kt` | Long press actions bottom sheet |
-| `ManagePocketScreen.kt` | Full pocket management |
-| `ManagePocketViewModel.kt` | Manage pocket state |
+### Phase 4: Manage Pocket Screen (~2 hours)
+- [ ] Create ManagePocketScreen
+- [ ] Create ManagePocketViewModel
+- [ ] Add navigation from Home
+
+### Phase 5: Testing (~2 hours)
+- [ ] Unit tests for PocketRepository
+- [ ] Unit tests for HomeViewModel pocket logic
+- [ ] UI tests for pocket interactions
 
 ---
 
@@ -508,9 +618,10 @@ fun determineDisplayMode() {
 
 | Error | User Message | Recovery |
 |-------|--------------|----------|
-| Pocket API 404 | No pocket exists - shows all accounts | Graceful fallback |
-| Network error | "Unable to update pocket" | Retry option |
+| Pocket API 404 | (Silent - shows all accounts) | Graceful fallback |
+| Network error | "Unable to update pocket" | Retry option / Toast |
 | Already linked | "Account already in pocket" | Dismiss (no-op) |
+| Last account delinked | (Switch to All Accounts view) | Automatic |
 
 ---
 
@@ -520,24 +631,61 @@ fun determineDisplayMode() {
 |-------|------------|---------|
 | `pocket_view_selected` | `account_count` | User switches to pocket view |
 | `all_accounts_view_selected` | `account_count` | User switches to all accounts |
-| `account_added_to_pocket` | `account_type`, `account_id` | Account linked via context menu |
-| `account_removed_from_pocket` | `account_type`, `account_id` | Account delinked |
-| `manage_pocket_opened` | - | User opens manage pocket screen |
+| `account_added_to_pocket` | `account_type`, `account_id` | Long press > Add to Pocket |
+| `account_removed_from_pocket` | `account_type`, `account_id` | Long press > Remove |
+| `manage_pocket_opened` | - | Dropdown > Manage Pocket |
 
 ---
 
 ## Accessibility
 
-- View dropdown announces current selection and count
-- Star icon has content description: "In Pocket" / "Not in Pocket"
-- Long press triggers haptic feedback before showing menu
-- Context menu options are properly labeled
+- View dropdown announces: "Pocket, 3 accounts" or "All Accounts, 5 accounts"
+- Star icon content description: "In Pocket" / "Not in Pocket"
+- Long press triggers haptic feedback before showing context menu
+- Context menu options are ListItems with proper labels
 - Minimum touch targets: 48dp
 
 ---
 
-## Related
+## Jira Ticket Mapping
+
+| Ticket | Description | Phase |
+|--------|-------------|-------|
+| MR-16 | Roadmap: Pocket Flow | - |
+| MW-378 | Epic: Pocket Management | - |
+| MW-379 | [SCREEN] Pocket Dashboard (Home integration) | Phase 3 |
+| MW-380 | [SCREEN] Manage Pocket | Phase 4 |
+| MW-381 | [SCREEN] Link Accounts (via context menu) | Phase 3 |
+| MW-382 | [SCREEN] Delink Confirmation | Phase 3 |
+| MW-383 | [API] Implement Pocket Service | Phase 1 |
+| MW-384 | [REPO] Implement Pocket Repository | Phase 2 |
+| MW-385 | [VM] Implement Pocket ViewModels | Phase 3 |
+| MW-386 | [NAV] Add Pocket Navigation | Phase 3-4 |
+| MW-387 | [TEST] Pocket Feature Tests | Phase 5 |
+
+---
+
+## Related Documents
 
 - **Feature Spec:** `features/pocket/SPEC.md`
 - **API Spec:** `features/pocket/API.md`
-- **Jira Tickets:** MR-16 (Roadmap), MW-378 (Epic), MW-379-387 (Stories)
+- **Implementation Plan:** `features/pocket/IMPLEMENTATION_PLAN.md`
+- **Status:** `features/pocket/STATUS.md`
+
+---
+
+## Commands
+
+```bash
+# Implement server layer
+/server pocket
+
+# Implement client layer
+/client pocket
+
+# Implement feature layer (Home integration + Manage screen)
+/feature pocket
+
+# Run tests
+/test pocket
+```
