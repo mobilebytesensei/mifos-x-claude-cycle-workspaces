@@ -99,9 +99,16 @@
 
 | Blocker | Status | Resolution |
 |---------|:------:|------------|
-| Roadmap Idea not created | 🟡 Pending | Create MR-XXX when Jira available |
+| None | - | - |
 
-**Note:** Jira tickets (Epic MW-378 + Stories MW-379-387) created successfully. Roadmap Idea in MR project pending due to Atlassian outage.
+## Jira Tickets
+
+| Type | Key | Link | Status |
+|------|-----|------|--------|
+| Roadmap | MR-16 | [View](https://mifosforge.jira.com/browse/MR-16) | ✅ Created |
+| Epic | MW-378 | [View](https://mifosforge.jira.com/browse/MW-378) | ✅ Created |
+
+**Stories:** MW-379 to MW-387 (9 stories with dependencies)
 
 ---
 
