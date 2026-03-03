@@ -1,6 +1,6 @@
 # User Flow: Pocket Management
 
-> Manage linked accounts in a unified pocket view
+> Favorite accounts for quick access on Home screen
 
 ---
 
@@ -10,23 +10,31 @@
 |-----------|-------|
 | Flow ID | `pocket` |
 | Priority | P1 |
-| Screens | 5 |
-| Entry Points | Home Dashboard, Accounts Tab, Settings |
+| Screens | 4 (integrated into Home) |
+| Entry Points | Home Screen (Account Pager) |
 | Created | 2026-03-03 |
+| Updated | 2026-03-03 |
 | Status | Design |
 
 ---
 
 ## Flow Overview
 
-The Pocket feature allows users to organize their financial accounts (savings, loans, shares) into logical groups called "pockets" for consolidated view and management.
+Pocket acts as **"Favorites"** for accounts. Users can link their Savings, Loan, and Share accounts to Pocket for faster access on the Home screen.
+
+### Key Behavior
+
+| Pocket State | Home Screen Display |
+|--------------|---------------------|
+| **Empty (no linked accounts)** | Show ALL accounts in pager + "Add to Pocket" capability |
+| **Has linked accounts** | Show ONLY Pocket accounts in pager (with toggle to see all) |
 
 ### Key Capabilities
 
-1. **View Pocket** - See all linked accounts with aggregated balance
-2. **Link Accounts** - Add savings/loan/share accounts to pocket
-3. **Delink Accounts** - Remove accounts from pocket
-4. **Pocket Dashboard** - Quick access to linked accounts
+1. **View Pocket Accounts** - See linked accounts in Home pager with aggregated balance
+2. **Link Accounts** - Star/favorite accounts to add to pocket
+3. **Delink Accounts** - Remove accounts from pocket (long press or manage screen)
+4. **Toggle View** - Switch between Pocket view and All Accounts view
 
 ---
 
@@ -35,152 +43,279 @@ The Pocket feature allows users to organize their financial accounts (savings, l
 ### ASCII Flow
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           POCKET MANAGEMENT FLOW                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                               │
-│  ┌─────────────┐                                                             │
-│  │    HOME     │ ──────────────────────┐                                     │
-│  │  Dashboard  │                       │                                     │
-│  └──────┬──────┘                       │                                     │
-│         │                              │                                     │
-│         │ "Pocket" card                │ "View All Accounts"                 │
-│         ▼                              ▼                                     │
-│  ┌──────────────┐              ┌───────────────┐                             │
-│  │   POCKET     │              │   ACCOUNTS    │                             │
-│  │  DASHBOARD   │◄────────────►│     LIST      │                             │
-│  │              │   Switch     │               │                             │
-│  └──────┬───────┘              └───────┬───────┘                             │
-│         │                              │                                     │
-│         │ "Manage"                     │ "Link to Pocket"                    │
-│         ▼                              │                                     │
-│  ┌──────────────┐                      │                                     │
-│  │   MANAGE     │◄─────────────────────┘                                     │
-│  │   POCKET     │                                                            │
-│  │              │                                                            │
-│  └──────┬───────┘                                                            │
-│         │                                                                    │
-│         ├──────────────────┬──────────────────┐                              │
-│         │                  │                  │                              │
-│         ▼                  ▼                  ▼                              │
-│  ┌────────────┐     ┌────────────┐     ┌────────────┐                        │
-│  │   LINK     │     │  DELINK    │     │  ACCOUNT   │                        │
-│  │  ACCOUNTS  │     │  ACCOUNTS  │     │  DETAILS   │                        │
-│  │            │     │            │     │            │                        │
-│  └─────┬──────┘     └─────┬──────┘     └────────────┘                        │
-│        │                  │                                                  │
-│        │ Success          │ Success                                          │
-│        ▼                  ▼                                                  │
-│  ┌──────────────────────────────┐                                            │
-│  │   SUCCESS CONFIRMATION       │                                            │
-│  │   "Account linked/delinked"  │                                            │
-│  └──────────────────────────────┘                                            │
-│                                                                               │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    POCKET INTEGRATION WITH HOME SCREEN                           │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │                         HOME SCREEN                                         │ │
+│  ├────────────────────────────────────────────────────────────────────────────┤ │
+│  │                                                                             │ │
+│  │   ┌─────────────────────────────────────────────────────────────────────┐  │ │
+│  │   │  [Pocket ▼] / [All Accounts ▼]           Total: ₹45,230           │  │ │
+│  │   ├─────────────────────────────────────────────────────────────────────┤  │ │
+│  │   │                                                                     │  │ │
+│  │   │   ┌─────────┐    ┌─────────┐    ┌─────────┐                        │  │ │
+│  │   │   │ Savings │    │  Loan   │    │ Shares  │   ← Horizontal Pager   │  │ │
+│  │   │   │   ⭐    │    │   ⭐    │    │   ⭐    │     (swipe to browse)  │  │ │
+│  │   │   │ ₹25,000 │    │ ₹-50K   │    │ ₹5,230  │                        │  │ │
+│  │   │   └─────────┘    └─────────┘    └─────────┘                        │  │ │
+│  │   │        ●              ○              ○                              │  │ │
+│  │   └─────────────────────────────────────────────────────────────────────┘  │ │
+│  │                                                                             │ │
+│  │   [Request]                              [Send Money]                       │ │
+│  │                                                                             │ │
+│  │   Recent Transactions                                                       │ │
+│  │   ─────────────────────────────────────────────────                        │ │
+│  │   ...                                                                       │ │
+│  │                                                                             │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  INTERACTIONS:                                                                   │
+│  ─────────────────────────────────────────────────────────────────              │
+│                                                                                  │
+│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐                     │
+│  │  Tap Account │────►│   Account    │     │  Long Press  │                     │
+│  │     Card     │     │   Details    │     │   Account    │                     │
+│  └──────────────┘     └──────────────┘     └──────┬───────┘                     │
+│                                                    │                             │
+│                                                    ▼                             │
+│                                             ┌──────────────┐                     │
+│                                             │ Context Menu │                     │
+│                                             │ • Add to ⭐   │ (if not in pocket) │
+│                                             │ • Remove ⭐   │ (if in pocket)     │
+│                                             │ • Set Default │                    │
+│                                             └──────────────┘                     │
+│                                                                                  │
+│  ┌──────────────┐     ┌──────────────────────────────────────────────┐          │
+│  │ Tap Dropdown │────►│  View Switcher                               │          │
+│  │  [Pocket ▼]  │     │  ○ Pocket (3 accounts)                       │          │
+│  └──────────────┘     │  ○ All Accounts (5 accounts)                 │          │
+│                       │  ─────────────────────────                   │          │
+│                       │  [Manage Pocket]                             │          │
+│                       └──────────────────────────────────────────────┘          │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Mermaid Flow
 
 ```mermaid
 flowchart TB
-    subgraph Entry["Entry Points"]
-        HOME[Home Dashboard]
-        ACCOUNTS[Accounts Tab]
-        SETTINGS[Settings]
+    subgraph HomeScreen["Home Screen"]
+        PAGER[Account Cards Pager]
+        DROPDOWN[View Dropdown]
+        TOTAL[Total Balance]
     end
 
-    subgraph PocketFlow["Pocket Flow"]
-        POCKET_DASH[Pocket Dashboard]
+    subgraph PocketStates["Display States"]
+        EMPTY_STATE[Empty Pocket State]
+        POCKET_VIEW[Pocket View]
+        ALL_VIEW[All Accounts View]
+    end
+
+    subgraph Actions["User Actions"]
+        TAP[Tap Account]
+        LONG_PRESS[Long Press Account]
+        TOGGLE[Toggle View]
         MANAGE[Manage Pocket]
-        LINK[Link Accounts]
-        DELINK[Delink Accounts]
-        DETAILS[Account Details]
-        SUCCESS[Success Confirmation]
     end
 
-    HOME -->|"Pocket Card"| POCKET_DASH
-    ACCOUNTS -->|"Link to Pocket"| LINK
-    SETTINGS -->|"Manage Pocket"| MANAGE
+    subgraph Screens["Destination Screens"]
+        DETAILS[Account Details]
+        CONTEXT_MENU[Context Menu]
+        MANAGE_SCREEN[Manage Pocket Screen]
+    end
 
-    POCKET_DASH -->|"Manage"| MANAGE
-    POCKET_DASH -->|"Account Tap"| DETAILS
+    %% State Logic
+    PAGER -->|"Pocket empty"| EMPTY_STATE
+    PAGER -->|"Pocket has accounts"| POCKET_VIEW
 
-    MANAGE -->|"Link New"| LINK
-    MANAGE -->|"Remove"| DELINK
-    MANAGE -->|"View"| DETAILS
+    EMPTY_STATE -->|"Shows all accounts"| ALL_VIEW
 
-    LINK -->|"Success"| SUCCESS
-    DELINK -->|"Success"| SUCCESS
+    %% User Interactions
+    TAP --> DETAILS
+    LONG_PRESS --> CONTEXT_MENU
+    TOGGLE --> POCKET_VIEW
+    TOGGLE --> ALL_VIEW
+    MANAGE --> MANAGE_SCREEN
 
-    SUCCESS -->|"Done"| POCKET_DASH
+    %% Context Menu Actions
+    CONTEXT_MENU -->|"Add to Pocket"| LINK_API[Link API]
+    CONTEXT_MENU -->|"Remove from Pocket"| DELINK_CONFIRM[Delink Confirmation]
 
-    style HOME fill:#e3f2fd
-    style POCKET_DASH fill:#c8e6c9
-    style MANAGE fill:#fff9c4
-    style SUCCESS fill:#c8e6c9
+    LINK_API -->|"Success"| POCKET_VIEW
+    DELINK_CONFIRM -->|"Confirm"| DELINK_API[Delink API]
+    DELINK_API -->|"Success"| POCKET_VIEW
+
+    style EMPTY_STATE fill:#fff9c4
+    style POCKET_VIEW fill:#c8e6c9
+    style ALL_VIEW fill:#e3f2fd
+    style CONTEXT_MENU fill:#f3e5f5
 ```
 
 ---
 
 ## Screen Specifications
 
-### S1: Pocket Dashboard
+### S1: Home Screen - Account Pager (Enhanced)
 
-**Purpose:** Display linked accounts with aggregated balance
+**Purpose:** Display accounts with Pocket integration
 
-**Entry:** Home > Pocket card tap
+**States:**
+
+#### State A: Empty Pocket (First-time User)
+
+```
+┌─────────────────────────────────────────┐
+│  All Accounts                    [▼]    │  ← Dropdown (Pocket empty, shows all)
+├─────────────────────────────────────────┤
+│                                         │
+│   ┌─────────┐  ┌─────────┐  ┌─────────┐ │
+│   │ Savings │  │ Savings │  │  Loan   │ │  ← All accounts shown
+│   │  #1     │  │  #2     │  │         │ │
+│   │ ₹25,000 │  │ ₹10,500 │  │ ₹-50K   │ │
+│   └─────────┘  └─────────┘  └─────────┘ │
+│       ●            ○            ○       │
+├─────────────────────────────────────────┤
+│                                         │
+│   💡 Tip: Long press an account to add  │
+│      it to your Pocket for quick access │
+│                                         │
+├─────────────────────────────────────────┤
+│  [Request]        [Send Money]          │
+└─────────────────────────────────────────┘
+```
+
+#### State B: Pocket Has Accounts (Default View)
+
+```
+┌─────────────────────────────────────────┐
+│  Pocket (3)                      [▼]    │  ← Shows pocket by default
+├─────────────────────────────────────────┤
+│         Total Pocket Balance            │
+│            ₹ 45,230.50                  │  ← Aggregated from pocket accounts
+├─────────────────────────────────────────┤
+│   ┌─────────┐  ┌─────────┐  ┌─────────┐ │
+│   │ Savings │  │  Loan   │  │ Shares  │ │  ← Only pocket accounts
+│   │   ⭐    │  │   ⭐    │  │   ⭐    │ │  ← Star indicates "in pocket"
+│   │ ₹25,000 │  │ ₹-50K   │  │ ₹5,230  │ │
+│   └─────────┘  └─────────┘  └─────────┘ │
+│       ●            ○            ○       │
+├─────────────────────────────────────────┤
+│  [Request]        [Send Money]          │
+└─────────────────────────────────────────┘
+```
+
+#### State C: All Accounts View (Toggled)
+
+```
+┌─────────────────────────────────────────┐
+│  All Accounts (5)                [▼]    │  ← Toggled to all
+├─────────────────────────────────────────┤
+│         Total Balance                   │
+│            ₹ 55,730.50                  │  ← All accounts total
+├─────────────────────────────────────────┤
+│   ┌─────────┐  ┌─────────┐  ┌─────────┐ │
+│   │ Savings │  │ Savings │  │  Loan   │ │
+│   │   ⭐    │  │         │  │   ⭐    │ │  ← Star = in pocket
+│   │ ₹25,000 │  │ ₹10,500 │  │ ₹-50K   │ │     No star = not in pocket
+│   └─────────┘  └─────────┘  └─────────┘ │
+│       ●            ○            ○   ○   │  ← More accounts
+├─────────────────────────────────────────┤
+│  [Request]        [Send Money]          │
+└─────────────────────────────────────────┘
+```
+
+---
+
+### S2: View Dropdown Menu
+
+**Purpose:** Switch between Pocket and All Accounts views
+
+**Type:** Dropdown/BottomSheet Menu
 
 **Layout:**
 ```
 ┌─────────────────────────────────────────┐
-│  ←  Pocket                    ⚙️ Manage │
+│  Select View                            │
 ├─────────────────────────────────────────┤
 │                                         │
-│         Total Pocket Balance            │
-│            ₹ 45,230.50                  │
+│  ● Pocket (3 accounts)                  │  ← Selected
+│    Your favorite accounts               │
 │                                         │
+│  ○ All Accounts (5 accounts)            │
+│    All savings, loans & shares          │
+│                                         │
+├─────────────────────────────────────────┤
 │  ┌─────────────────────────────────────┐│
-│  │ Linked Accounts (3)                 ││
-│  ├─────────────────────────────────────┤│
-│  │ 💰 Savings Account                  ││
-│  │    ****1234 • ₹ 25,000.00          ││
-│  ├─────────────────────────────────────┤│
-│  │ 💳 Fixed Deposit                    ││
-│  │    ****5678 • ₹ 15,000.00          ││
-│  ├─────────────────────────────────────┤│
-│  │ 📈 Share Account                    ││
-│  │    ****9012 • ₹ 5,230.50           ││
+│  │      ⚙️ Manage Pocket               ││  ← Opens Manage screen
 │  └─────────────────────────────────────┘│
-│                                         │
-│  ┌─────────────────────────────────────┐│
-│  │      + Link More Accounts           ││
-│  └─────────────────────────────────────┘│
-│                                         │
 └─────────────────────────────────────────┘
 ```
 
-**Components:**
-- TopAppBar with back button and manage action
-- Aggregated balance card (sum of all linked accounts)
-- Linked accounts list (LazyColumn)
-- Account item cards with icon, name, masked number, balance
-- "Link More Accounts" CTA button
-
 **Actions:**
-| Action | Target |
+| Action | Result |
 |--------|--------|
-| Back | Navigate back |
-| Manage (gear icon) | S2: Manage Pocket |
-| Account tap | S5: Account Details |
-| Link More | S3: Link Accounts |
+| Select Pocket | Filter pager to pocket accounts only |
+| Select All Accounts | Show all accounts in pager |
+| Manage Pocket | Navigate to S3: Manage Pocket |
 
 ---
 
-### S2: Manage Pocket
+### S3: Account Card Context Menu
 
-**Purpose:** Add/remove accounts from pocket
+**Purpose:** Quick link/delink from pocket
 
-**Entry:** Pocket Dashboard > Manage
+**Type:** Bottom Sheet (on long press)
+
+**Layout - Account NOT in Pocket:**
+```
+┌─────────────────────────────────────────┐
+│  Savings Account #2                     │
+│  ****3456 • ₹ 10,500.00                │
+├─────────────────────────────────────────┤
+│                                         │
+│  ⭐ Add to Pocket                       │  ← Link action
+│     Quick access on home screen         │
+│                                         │
+│  🔄 Set as Default Account              │
+│     Use for payments & transfers        │
+│                                         │
+│  📋 View Account Details                │
+│     Transactions, statements & more     │
+│                                         │
+├─────────────────────────────────────────┤
+│              Cancel                     │
+└─────────────────────────────────────────┘
+```
+
+**Layout - Account IN Pocket:**
+```
+┌─────────────────────────────────────────┐
+│  Savings Account                        │
+│  ****1234 • ₹ 25,000.00      ⭐        │
+├─────────────────────────────────────────┤
+│                                         │
+│  ☆ Remove from Pocket                   │  ← Delink action
+│     Still accessible in All Accounts    │
+│                                         │
+│  🔄 Set as Default Account              │
+│                                         │
+│  📋 View Account Details                │
+│                                         │
+├─────────────────────────────────────────┤
+│              Cancel                     │
+└─────────────────────────────────────────┘
+```
+
+---
+
+### S4: Manage Pocket Screen
+
+**Purpose:** Full management of pocket accounts
+
+**Entry:** View Dropdown > Manage Pocket
 
 **Layout:**
 ```
@@ -188,120 +323,42 @@ flowchart TB
 │  ←  Manage Pocket                       │
 ├─────────────────────────────────────────┤
 │                                         │
-│  Linked Accounts (3)                    │
+│  In Pocket (3)                          │
 │  ─────────────────────────────────────  │
 │  ┌─────────────────────────────────────┐│
-│  │ 💰 Savings Account          ☒ Remove││
+│  │ 💰 Savings Account              ⭐  ││
 │  │    ****1234 • ₹ 25,000.00          ││
 │  ├─────────────────────────────────────┤│
-│  │ 💳 Fixed Deposit            ☒ Remove││
-│  │    ****5678 • ₹ 15,000.00          ││
+│  │ 🏦 Personal Loan                ⭐  ││
+│  │    ****7890 • ₹ -50,000.00         ││
 │  ├─────────────────────────────────────┤│
-│  │ 📈 Share Account            ☒ Remove││
+│  │ 📈 Share Account                ⭐  ││
 │  │    ****9012 • ₹ 5,230.50           ││
 │  └─────────────────────────────────────┘│
 │                                         │
-│  Available to Link                      │
+│  Not in Pocket (2)                      │
 │  ─────────────────────────────────────  │
 │  ┌─────────────────────────────────────┐│
-│  │ 💰 Secondary Savings         + Link ││
+│  │ 💰 Savings Account #2           ☆  ││
 │  │    ****3456 • ₹ 10,500.00          ││
 │  ├─────────────────────────────────────┤│
-│  │ 🏦 Loan Account              + Link ││
-│  │    ****7890 • ₹ -50,000.00         ││
+│  │ 💳 Fixed Deposit                ☆  ││
+│  │    ****5678 • ₹ 15,000.00          ││
 │  └─────────────────────────────────────┘│
 │                                         │
 └─────────────────────────────────────────┘
 ```
 
-**Components:**
-- TopAppBar with back button
-- Two sections: "Linked Accounts" and "Available to Link"
-- Each account item has remove/link action button
-- Swipe-to-remove gesture support (optional)
-
-**Actions:**
-| Action | Target |
-|--------|--------|
-| Back | Navigate back |
-| Remove | S4: Delink confirmation dialog |
-| + Link | S3: Link Account flow |
+**Interactions:**
+- Tap ⭐ (filled) → Delink confirmation
+- Tap ☆ (empty) → Link to pocket (immediate)
+- Swipe left on pocket account → Remove option
 
 ---
 
-### S3: Link Accounts
+### S5: Delink Confirmation
 
-**Purpose:** Select accounts to link to pocket
-
-**Entry:** Manage Pocket > + Link OR Pocket Dashboard > Link More
-
-**Layout:**
-```
-┌─────────────────────────────────────────┐
-│  ←  Link Accounts                       │
-├─────────────────────────────────────────┤
-│                                         │
-│  ┌─────────────────────────────────────┐│
-│  │ 🔍 Search accounts...               ││
-│  └─────────────────────────────────────┘│
-│                                         │
-│  Select accounts to link               │
-│  ─────────────────────────────────────  │
-│                                         │
-│  Savings Accounts                       │
-│  ┌─────────────────────────────────────┐│
-│  │ ☐ Secondary Savings                 ││
-│  │    ****3456 • ₹ 10,500.00          ││
-│  └─────────────────────────────────────┘│
-│                                         │
-│  Loan Accounts                          │
-│  ┌─────────────────────────────────────┐│
-│  │ ☐ Personal Loan                     ││
-│  │    ****7890 • Outstanding: ₹50,000 ││
-│  └─────────────────────────────────────┘│
-│                                         │
-│  Share Accounts                         │
-│  ┌─────────────────────────────────────┐│
-│  │ ☐ Investment Shares                 ││
-│  │    ****2345 • 100 shares           ││
-│  └─────────────────────────────────────┘│
-│                                         │
-│  ┌─────────────────────────────────────┐│
-│  │         Link Selected (2)           ││
-│  └─────────────────────────────────────┘│
-│                                         │
-└─────────────────────────────────────────┘
-```
-
-**Components:**
-- TopAppBar with back button
-- Search field for filtering accounts
-- Grouped list by account type (Savings, Loans, Shares)
-- Multi-select checkboxes
-- Sticky bottom "Link Selected" button with count
-
-**API Call:**
-```
-POST self/pockets?command=linkAccounts
-Body: {
-  "savingsAccounts": [123, 456],
-  "loanAccounts": [789],
-  "shareAccounts": []
-}
-```
-
-**Actions:**
-| Action | Target |
-|--------|--------|
-| Back | Navigate back (discard selection) |
-| Checkbox | Toggle account selection |
-| Link Selected | API call → Success screen |
-
----
-
-### S4: Delink Confirmation
-
-**Purpose:** Confirm account removal from pocket
+**Purpose:** Confirm removing account from pocket
 
 **Type:** Bottom Sheet Dialog
 
@@ -309,16 +366,13 @@ Body: {
 ```
 ┌─────────────────────────────────────────┐
 │                                         │
-│  ⚠️ Remove from Pocket?                 │
-│                                         │
-│  This will remove the following account │
-│  from your pocket:                      │
+│  Remove from Pocket?                    │
 │                                         │
 │  💰 Savings Account                     │
 │     ****1234 • ₹ 25,000.00             │
 │                                         │
-│  The account will still be accessible   │
-│  from your main accounts list.          │
+│  This account will still be accessible  │
+│  from "All Accounts" view.              │
 │                                         │
 │  ┌─────────────────────────────────────┐│
 │  │            Remove                   ││
@@ -330,31 +384,57 @@ Body: {
 └─────────────────────────────────────────┘
 ```
 
-**API Call:**
-```
-POST self/pockets?command=delinkAccounts
-Body: {
-  "savingsAccounts": [123],
-  "loanAccounts": [],
-  "shareAccounts": []
-}
-```
-
-**Actions:**
-| Action | Target |
-|--------|--------|
-| Remove | API call → Success → Refresh list |
-| Cancel | Dismiss sheet |
-
 ---
 
-### S5: Account Details (Existing)
+## State Management
 
-**Purpose:** View full account details
+### HomeState (Updated)
 
-**Entry:** Pocket Dashboard > Account tap
+```kotlin
+data class HomeState(
+    // Existing fields
+    val client: Client,
+    val accounts: List<Account> = emptyList(),
+    val selectedAccount: Account? = null,
+    val transactions: List<Transaction>? = null,
 
-**Note:** Uses existing Account Details screen from `feature:accounts` module. No new implementation needed.
+    // NEW: Pocket integration
+    val pocketAccounts: List<PocketAccount> = emptyList(),
+    val isPocketEmpty: Boolean = true,              // No pocket accounts linked
+    val showPocketView: Boolean = true,             // Default: show pocket if not empty
+    val pocketTotalBalance: Double = 0.0,
+
+    // Computed property
+    val displayedAccounts: List<Account>
+        get() = when {
+            isPocketEmpty -> accounts              // Empty pocket = show all
+            showPocketView -> pocketAccounts.toAccounts()  // Pocket view
+            else -> accounts                       // All accounts view
+        }
+
+    val displayedTotalBalance: Double
+        get() = if (showPocketView && !isPocketEmpty)
+            pocketTotalBalance
+        else
+            accounts.sumOf { it.balance }
+)
+```
+
+### HomeAction (Updated)
+
+```kotlin
+sealed interface HomeAction {
+    // Existing actions...
+
+    // NEW: Pocket actions
+    data object TogglePocketView : HomeAction           // Switch pocket/all
+    data class AddToPocket(val accountId: Long, val accountType: AccountType) : HomeAction
+    data class RemoveFromPocket(val accountId: Long, val accountType: AccountType) : HomeAction
+    data object ShowAccountContextMenu : HomeAction
+    data object DismissAccountContextMenu : HomeAction
+    data object NavigateToManagePocket : HomeAction
+}
+```
 
 ---
 
@@ -364,71 +444,63 @@ Body: {
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `GET self/pockets` | GET | Retrieve linked accounts |
-| `POST self/pockets?command=linkAccounts` | POST | Link accounts to pocket |
-| `POST self/pockets?command=delinkAccounts` | POST | Remove accounts from pocket |
+| `GET /self/pockets` | GET | Retrieve linked accounts |
+| `POST /self/pockets?command=linkAccounts` | POST | Link accounts to pocket |
+| `POST /self/pockets?command=delinkAccounts` | POST | Remove accounts from pocket |
 
-### Request/Response Models
+### Display Logic
 
-**GET self/pockets Response:**
 ```kotlin
-@Serializable
-data class PocketAccountsResponse(
-    val savingsAccounts: List<PocketAccount> = emptyList(),
-    val loanAccounts: List<PocketAccount> = emptyList(),
-    val shareAccounts: List<PocketAccount> = emptyList()
-)
+// In HomeViewModel
+fun determineDisplayMode() {
+    val pocketAccounts = pocketRepository.getPocket()
 
-@Serializable
-data class PocketAccount(
-    val id: Long,
-    val accountNo: String,
-    val productName: String,
-    val accountBalance: Double,
-    val currency: Currency
-)
-```
-
-**Link/Delink Request:**
-```kotlin
-@Serializable
-data class PocketLinkRequest(
-    val savingsAccounts: List<Long> = emptyList(),
-    val loanAccounts: List<Long> = emptyList(),
-    val shareAccounts: List<Long> = emptyList()
-)
+    if (pocketAccounts.isEmpty()) {
+        // First-time user OR all accounts delinked
+        updateState {
+            it.copy(
+                isPocketEmpty = true,
+                showPocketView = false,  // Force all accounts view
+                displayedAccounts = allAccounts
+            )
+        }
+    } else {
+        // Has pocket accounts - show pocket by default
+        updateState {
+            it.copy(
+                isPocketEmpty = false,
+                showPocketView = true,  // Default to pocket view
+                pocketAccounts = pocketAccounts,
+                displayedAccounts = pocketAccounts
+            )
+        }
+    }
+}
 ```
 
 ---
 
-## State Management
+## Implementation Changes to Home Module
 
-### PocketUiState
+### Files to Modify
 
-```kotlin
-sealed interface PocketUiState {
-    data object Loading : PocketUiState
-    data class Success(
-        val linkedAccounts: List<PocketAccount>,
-        val totalBalance: Double,
-        val currency: Currency
-    ) : PocketUiState
-    data class Error(val message: String) : PocketUiState
-    data object Empty : PocketUiState  // No accounts linked
-}
-```
+| File | Changes |
+|------|---------|
+| `HomeScreen.kt` | Add view dropdown, star indicators, context menu |
+| `HomeViewModel.kt` | Add pocket state, fetch pocket on init, toggle logic |
+| `HomeState.kt` | Add `pocketAccounts`, `isPocketEmpty`, `showPocketView` |
+| `AccountCard.kt` | Add star indicator, long press handler |
+| `HomeNavigation.kt` | Add `navigateToManagePocket` callback |
+| `HomeModule.kt` | Inject `PocketRepository` |
 
-### ManagePocketUiState
+### New Files to Create
 
-```kotlin
-data class ManagePocketUiState(
-    val linkedAccounts: List<PocketAccount> = emptyList(),
-    val availableAccounts: List<Account> = emptyList(),
-    val selectedToLink: Set<Long> = emptySet(),
-    val isLinking: Boolean = false,
-    val isDelinking: Boolean = false
-)
-```
+| File | Purpose |
+|------|---------|
+| `ViewDropdownMenu.kt` | Pocket/All accounts switcher UI |
+| `AccountContextMenu.kt` | Long press actions bottom sheet |
+| `ManagePocketScreen.kt` | Full pocket management |
+| `ManagePocketViewModel.kt` | Manage pocket state |
 
 ---
 
@@ -436,10 +508,9 @@ data class ManagePocketUiState(
 
 | Error | User Message | Recovery |
 |-------|--------------|----------|
-| Network error | "Unable to load pocket. Check your connection." | Retry button |
-| Account already linked | "This account is already in your pocket." | Dismiss |
-| Session expired | "Session expired. Please login again." | Navigate to login |
-| Server error | "Something went wrong. Please try again." | Retry button |
+| Pocket API 404 | No pocket exists - shows all accounts | Graceful fallback |
+| Network error | "Unable to update pocket" | Retry option |
+| Already linked | "Account already in pocket" | Dismiss (no-op) |
 
 ---
 
@@ -447,19 +518,21 @@ data class ManagePocketUiState(
 
 | Event | Parameters | Trigger |
 |-------|------------|---------|
-| `pocket_viewed` | `account_count`, `total_balance` | Dashboard opened |
-| `account_linked` | `account_type`, `account_id` | Account successfully linked |
-| `account_delinked` | `account_type`, `account_id` | Account successfully delinked |
-| `link_failed` | `error_code`, `account_id` | Link operation failed |
+| `pocket_view_selected` | `account_count` | User switches to pocket view |
+| `all_accounts_view_selected` | `account_count` | User switches to all accounts |
+| `account_added_to_pocket` | `account_type`, `account_id` | Account linked via context menu |
+| `account_removed_from_pocket` | `account_type`, `account_id` | Account delinked |
+| `manage_pocket_opened` | - | User opens manage pocket screen |
 
 ---
 
 ## Accessibility
 
-- All account balances have content descriptions
-- Proper focus order: balance → accounts list → actions
+- View dropdown announces current selection and count
+- Star icon has content description: "In Pocket" / "Not in Pocket"
+- Long press triggers haptic feedback before showing menu
+- Context menu options are properly labeled
 - Minimum touch targets: 48dp
-- Announce state changes (link/delink success)
 
 ---
 
@@ -467,4 +540,4 @@ data class ManagePocketUiState(
 
 - **Feature Spec:** `features/pocket/SPEC.md`
 - **API Spec:** `features/pocket/API.md`
-- **Existing:** Account Details screen (reused)
+- **Jira Tickets:** MR-16 (Roadmap), MW-378 (Epic), MW-379-387 (Stories)

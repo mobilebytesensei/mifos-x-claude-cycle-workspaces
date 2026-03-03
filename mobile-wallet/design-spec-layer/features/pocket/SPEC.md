@@ -1,6 +1,6 @@
 # Feature Spec: Pocket
 
-> Unified view and management of linked financial accounts
+> Favorite accounts for quick access on Home screen
 
 ---
 
@@ -9,116 +9,145 @@
 | Attribute | Value |
 |-----------|-------|
 | Feature ID | `pocket` |
-| Module | `feature:pocket` |
+| Module | `feature:home` (integrated) + `feature:pocket` (management) |
 | Priority | P1 |
 | Status | Design |
 | Created | 2026-03-03 |
+| Updated | 2026-03-03 |
 | Flow | `FLOW-pocket.md` |
 
 ---
 
 ## Overview
 
-The Pocket feature enables users to organize their financial accounts (savings, loans, shares) into a unified pocket view. Users can link multiple accounts to their pocket for consolidated balance tracking and quick access.
+Pocket acts as **"Favorites"** for accounts. Users can link their Savings, Loan, and Share accounts to Pocket for faster access directly on the Home screen's account pager.
 
 ### Problem Statement
 
-Users with multiple accounts (savings, loans, shares) currently need to navigate to each account separately to view balances and perform actions. There's no way to get a consolidated view of their financial position across account types.
+Users with multiple accounts see all accounts in the Home screen pager, making it slow to access their most-used accounts. There's no way to prioritize or favorite specific accounts.
 
 ### Solution
 
-Implement the Fineract Pocket API to allow users to:
-1. View all linked accounts in a single dashboard
-2. See aggregated balance across account types
-3. Link/delink accounts to their pocket
-4. Quick access to individual account details
+Integrate the Fineract Pocket API with the Home screen to:
+1. **Empty Pocket:** Show all accounts (first-time user experience)
+2. **Pocket has accounts:** Show only pocket (favorite) accounts by default
+3. **Toggle View:** Allow switching between Pocket and All Accounts views
+4. **Quick Actions:** Long press to add/remove from pocket
+
+### Key Behavior
+
+| Pocket State | Home Screen Display | Rationale |
+|--------------|---------------------|-----------|
+| **Empty** | All accounts shown | First-time users see everything |
+| **Has accounts** | Pocket accounts shown (default) | Quick access to favorites |
+| **Toggle to All** | All accounts shown | Full access when needed |
 
 ---
 
 ## User Stories
 
-### US-1: View Pocket Dashboard
+### US-1: View Accounts on Home (Smart Default)
 **As a** user
-**I want to** see all my linked accounts in one place
-**So that** I can quickly understand my total financial position
+**I want** the Home screen to show my favorite accounts by default
+**So that** I can quickly access the accounts I use most
 
 **Acceptance Criteria:**
-- [ ] Display total aggregated balance from all linked accounts
-- [ ] List all linked accounts grouped by type
-- [ ] Show account name, masked number, and balance for each
-- [ ] Support pull-to-refresh
-- [ ] Handle empty state when no accounts are linked
+- [ ] If pocket is empty → show all accounts in pager
+- [ ] If pocket has accounts → show pocket accounts by default
+- [ ] Show aggregated balance for displayed accounts
+- [ ] Display star indicator (⭐) for accounts in pocket
 
-### US-2: Link Accounts to Pocket
+### US-2: Toggle Between Pocket and All Accounts
 **As a** user
-**I want to** link my savings, loan, or share accounts to my pocket
-**So that** I can track them all in one place
+**I want** to switch between Pocket view and All Accounts view
+**So that** I can access any account when needed
 
 **Acceptance Criteria:**
-- [ ] Show list of available accounts not yet linked
-- [ ] Group available accounts by type (savings, loans, shares)
-- [ ] Allow multi-select for batch linking
-- [ ] Show confirmation on successful linking
-- [ ] Refresh pocket dashboard after linking
+- [ ] Dropdown at top shows current view (Pocket/All)
+- [ ] Tapping dropdown shows view options
+- [ ] Selection persists during session
+- [ ] Show account count in each view option
 
-### US-3: Delink Account from Pocket
+### US-3: Add Account to Pocket (Quick Action)
 **As a** user
-**I want to** remove an account from my pocket
-**So that** I can organize which accounts I want to track
+**I want to** long-press an account to add it to my pocket
+**So that** I can quickly favorite accounts
 
 **Acceptance Criteria:**
-- [ ] Show remove option for each linked account
-- [ ] Display confirmation dialog before removing
-- [ ] Account remains accessible from main accounts list
-- [ ] Refresh pocket dashboard after delinking
+- [ ] Long press account card shows context menu
+- [ ] "Add to Pocket" option for non-pocket accounts
+- [ ] API call to link account
+- [ ] Star indicator appears on success
+- [ ] Show toast confirmation
 
-### US-4: Access Account Details
+### US-4: Remove Account from Pocket (Quick Action)
 **As a** user
-**I want to** tap on a linked account to see its full details
-**So that** I can view transactions and perform actions
+**I want to** long-press an account to remove it from my pocket
+**So that** I can manage my favorites
 
 **Acceptance Criteria:**
-- [ ] Navigate to existing account details screen
-- [ ] Support all account types (savings, loan, share)
-- [ ] Maintain back navigation to pocket dashboard
+- [ ] "Remove from Pocket" option for pocket accounts
+- [ ] Confirmation dialog before removing
+- [ ] API call to delink account
+- [ ] Star indicator disappears on success
+- [ ] Account remains accessible in All Accounts view
+
+### US-5: Manage Pocket (Full Management)
+**As a** user
+**I want to** access a dedicated screen to manage all pocket accounts
+**So that** I can see and organize all favorites at once
+
+**Acceptance Criteria:**
+- [ ] "Manage Pocket" option in view dropdown
+- [ ] Shows two sections: In Pocket / Not in Pocket
+- [ ] Tap star to toggle pocket membership
+- [ ] Swipe-to-remove gesture support
 
 ---
 
 ## Functional Requirements
 
-### FR-1: Pocket Dashboard
+### FR-1: Home Screen Pocket Integration
 
 | ID | Requirement | Priority |
 |----|-------------|:--------:|
-| FR-1.1 | Fetch linked accounts on screen load | P0 |
-| FR-1.2 | Calculate total balance from all linked accounts | P0 |
-| FR-1.3 | Display accounts in a scrollable list | P0 |
-| FR-1.4 | Show loading state while fetching | P0 |
-| FR-1.5 | Show empty state with CTA to link accounts | P0 |
-| FR-1.6 | Support pull-to-refresh | P1 |
-| FR-1.7 | Cache pocket data locally | P2 |
+| FR-1.1 | Fetch pocket accounts on Home screen load | P0 |
+| FR-1.2 | Determine display mode based on pocket state | P0 |
+| FR-1.3 | Show all accounts if pocket is empty | P0 |
+| FR-1.4 | Show pocket accounts if pocket has linked accounts | P0 |
+| FR-1.5 | Calculate and display aggregated balance | P0 |
+| FR-1.6 | Show star indicator (⭐) for pocket accounts | P0 |
+| FR-1.7 | Persist view selection during session | P1 |
 
-### FR-2: Link Accounts
-
-| ID | Requirement | Priority |
-|----|-------------|:--------:|
-| FR-2.1 | Fetch all client accounts | P0 |
-| FR-2.2 | Filter out already-linked accounts | P0 |
-| FR-2.3 | Group accounts by type | P0 |
-| FR-2.4 | Support multi-select | P0 |
-| FR-2.5 | Call linkAccounts API with selected IDs | P0 |
-| FR-2.6 | Show success/error feedback | P0 |
-| FR-2.7 | Search/filter available accounts | P1 |
-
-### FR-3: Delink Accounts
+### FR-2: View Toggle
 
 | ID | Requirement | Priority |
 |----|-------------|:--------:|
-| FR-3.1 | Show remove button for each linked account | P0 |
-| FR-3.2 | Display confirmation dialog | P0 |
-| FR-3.3 | Call delinkAccounts API | P0 |
-| FR-3.4 | Update UI optimistically | P1 |
-| FR-3.5 | Rollback on API failure | P1 |
+| FR-2.1 | Dropdown shows current view with account count | P0 |
+| FR-2.2 | Options: Pocket (N), All Accounts (M) | P0 |
+| FR-2.3 | "Manage Pocket" link in dropdown | P0 |
+| FR-2.4 | Switching view updates pager immediately | P0 |
+
+### FR-3: Quick Link/Delink (Context Menu)
+
+| ID | Requirement | Priority |
+|----|-------------|:--------:|
+| FR-3.1 | Long press account shows context menu | P0 |
+| FR-3.2 | "Add to Pocket" for non-pocket accounts | P0 |
+| FR-3.3 | "Remove from Pocket" for pocket accounts | P0 |
+| FR-3.4 | "Set as Default" option | P0 |
+| FR-3.5 | "View Details" option | P0 |
+| FR-3.6 | Haptic feedback on long press | P1 |
+
+### FR-4: Manage Pocket Screen
+
+| ID | Requirement | Priority |
+|----|-------------|:--------:|
+| FR-4.1 | List pocket accounts with filled star | P0 |
+| FR-4.2 | List non-pocket accounts with empty star | P0 |
+| FR-4.3 | Tap star to toggle pocket membership | P0 |
+| FR-4.4 | Confirmation dialog for delink | P0 |
+| FR-4.5 | Swipe-to-remove gesture | P1 |
 
 ---
 
@@ -128,77 +157,131 @@ Implement the Fineract Pocket API to allow users to:
 
 | ID | Requirement | Target |
 |----|-------------|--------|
-| NFR-1 | Initial load time | < 2 seconds |
-| NFR-2 | Link/delink operation | < 3 seconds |
-| NFR-3 | Smooth scrolling | 60 FPS |
+| NFR-1 | Pocket API fetch | < 1 second |
+| NFR-2 | Link/delink operation | < 2 seconds |
+| NFR-3 | View toggle | < 100ms (local) |
+| NFR-4 | Context menu appearance | < 200ms |
 
 ### Accessibility
 
 | ID | Requirement |
 |----|-------------|
-| NFR-4 | All interactive elements have content descriptions |
-| NFR-5 | Minimum touch target 48dp |
-| NFR-6 | Announce balance changes to screen readers |
-| NFR-7 | Support high contrast mode |
-
-### Security
-
-| ID | Requirement |
-|----|-------------|
-| NFR-8 | Mask account numbers (show last 4 digits) |
-| NFR-9 | Require authentication for session |
-| NFR-10 | Clear pocket data on logout |
+| NFR-5 | Star icon: "In Pocket" / "Not in Pocket" content description |
+| NFR-6 | Long press announces "Actions available" |
+| NFR-7 | View dropdown announces current selection |
+| NFR-8 | Minimum touch target 48dp |
 
 ---
 
 ## UI Components
 
+### Modified Components (Home Module)
+
+| Component | Changes |
+|-----------|---------|
+| `HomeScreen.kt` | Add view dropdown, pocket state handling |
+| `HomeViewModel.kt` | Add pocket fetch, display mode logic |
+| `AccountCard.kt` | Add star indicator, long press handler |
+
 ### New Components
 
 | Component | Description |
 |-----------|-------------|
-| `PocketDashboardScreen` | Main pocket view with aggregated balance and accounts list |
-| `ManagePocketScreen` | Link/delink accounts management screen |
-| `LinkAccountsBottomSheet` | Multi-select account linking UI |
-| `PocketAccountCard` | Card displaying account info in pocket |
-| `EmptyPocketView` | Empty state when no accounts linked |
+| `ViewDropdownMenu.kt` | Pocket/All accounts switcher |
+| `AccountContextMenu.kt` | Long press actions bottom sheet |
+| `ManagePocketScreen.kt` | Full pocket management screen |
+| `ManagePocketViewModel.kt` | Manage pocket state |
+| `DelinkConfirmationDialog.kt` | Confirm removal from pocket |
 
-### Reused Components
+---
 
-| Component | From Module |
-|-----------|-------------|
-| `AccountDetailsScreen` | `feature:accounts` |
-| `LoadingIndicator` | `core:designsystem` |
-| `ErrorView` | `core:designsystem` |
-| `ConfirmationDialog` | `core:designsystem` |
+## State Management
+
+### HomeState (Extended)
+
+```kotlin
+data class HomeState(
+    // Existing
+    val accounts: List<Account> = emptyList(),
+    val selectedAccount: Account? = null,
+
+    // NEW: Pocket
+    val pocketAccounts: List<PocketAccount> = emptyList(),
+    val isPocketEmpty: Boolean = true,
+    val showPocketView: Boolean = true,
+    val pocketTotalBalance: Double = 0.0,
+
+    // Context menu
+    val showContextMenu: Boolean = false,
+    val contextMenuAccount: Account? = null,
+
+    // Computed
+    val displayedAccounts: List<Account>
+        get() = when {
+            isPocketEmpty -> accounts           // Empty pocket = all
+            showPocketView -> pocketAsAccounts  // Pocket view
+            else -> accounts                    // All view
+        }
+)
+```
+
+### HomeAction (Extended)
+
+```kotlin
+sealed interface HomeAction {
+    // Existing...
+
+    // Pocket Actions
+    data object TogglePocketView : HomeAction
+    data object ShowViewDropdown : HomeAction
+    data object DismissViewDropdown : HomeAction
+    data class ShowContextMenu(val account: Account) : HomeAction
+    data object DismissContextMenu : HomeAction
+    data class AddToPocket(val accountId: Long, val type: AccountType) : HomeAction
+    data class RemoveFromPocket(val accountId: Long, val type: AccountType) : HomeAction
+    data object NavigateToManagePocket : HomeAction
+}
+```
 
 ---
 
 ## Data Flow
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                          DATA FLOW                                    │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                       │
-│  ┌─────────────┐     ┌─────────────┐     ┌─────────────┐            │
-│  │  UI Layer   │     │ Domain Layer│     │ Data Layer  │            │
-│  │             │     │             │     │             │            │
-│  │ PocketScreen│────▶│PocketUseCase│────▶│PocketRepo   │            │
-│  │             │     │             │     │             │            │
-│  │ ViewModel   │◀────│  Models     │◀────│ ApiService  │            │
-│  └─────────────┘     └─────────────┘     └─────────────┘            │
-│         │                                       │                    │
-│         ▼                                       ▼                    │
-│  ┌─────────────┐                         ┌─────────────┐            │
-│  │  UiState    │                         │ Fineract API│            │
-│  │  Loading    │                         │ self/pockets│            │
-│  │  Success    │                         └─────────────┘            │
-│  │  Error      │                                                     │
-│  │  Empty      │                                                     │
-│  └─────────────┘                                                     │
-│                                                                       │
-└──────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                    HOME SCREEN WITH POCKET                              │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  INIT:                                                                  │
+│  ┌──────────┐     ┌──────────┐     ┌──────────┐                        │
+│  │  Home    │────▶│ Fetch    │────▶│ Pocket   │                        │
+│  │  Screen  │     │ Accounts │     │ API      │                        │
+│  └──────────┘     │ + Pocket │     └──────────┘                        │
+│                   └────┬─────┘                                          │
+│                        │                                                │
+│                        ▼                                                │
+│  DISPLAY LOGIC:                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  if (pocketAccounts.isEmpty())                                   │   │
+│  │      displayedAccounts = allAccounts    // Show all              │   │
+│  │      showPocketView = false                                      │   │
+│  │  else                                                            │   │
+│  │      displayedAccounts = pocketAccounts // Show pocket (default) │   │
+│  │      showPocketView = true                                       │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  USER ACTIONS:                                                          │
+│  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐            │
+│  │ Toggle View    │  │ Long Press     │  │ Manage Pocket  │            │
+│  │ (Dropdown)     │  │ (Context Menu) │  │ (Full Screen)  │            │
+│  └───────┬────────┘  └───────┬────────┘  └───────┬────────┘            │
+│          │                   │                   │                      │
+│          ▼                   ▼                   ▼                      │
+│  Update displayMode    Show Add/Remove    Navigate to                  │
+│  Refresh pager         API call           ManagePocketScreen           │
+│                        Refresh pager                                    │
+│                                                                         │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -206,38 +289,48 @@ Implement the Fineract Pocket API to allow users to:
 ## Module Structure
 
 ```
-feature/pocket/
-├── build.gradle.kts
+feature/home/ (MODIFIED)
+└── src/commonMain/kotlin/org/mifospay/feature/home/
+    ├── HomeScreen.kt              # Add dropdown, star indicators
+    ├── HomeViewModel.kt           # Add pocket state, display logic
+    ├── components/
+    │   ├── AccountCard.kt         # Add star, long press
+    │   ├── ViewDropdownMenu.kt    # NEW: View switcher
+    │   └── AccountContextMenu.kt  # NEW: Long press menu
+
+feature/pocket/ (NEW)
 └── src/commonMain/kotlin/org/mifospay/feature/pocket/
     ├── PocketNavigation.kt
-    ├── PocketRoute.kt
-    ├── PocketScreen.kt
-    ├── PocketViewModel.kt
     ├── ManagePocketScreen.kt
     ├── ManagePocketViewModel.kt
-    ├── LinkAccountsBottomSheet.kt
     └── components/
-        ├── PocketAccountCard.kt
-        └── EmptyPocketView.kt
+        └── DelinkConfirmationDialog.kt
 ```
 
 ---
 
 ## Dependencies
 
-### Required Modules
+### Home Module Changes
 
-| Module | Purpose |
-|--------|---------|
-| `core:network` | API client for pocket endpoints |
-| `core:data` | Repository implementation |
-| `core:model` | Pocket data models |
-| `core:designsystem` | UI components |
-| `core:common` | Shared utilities |
+```kotlin
+// feature/home/build.gradle.kts
+dependencies {
+    implementation(projects.core.data)  // Add PocketRepository
+}
+```
 
-### New Dependencies
+### New Pocket Module
 
-None required - uses existing Ktorfit/Ktor stack.
+```kotlin
+// feature/pocket/build.gradle.kts
+dependencies {
+    implementation(projects.core.network)
+    implementation(projects.core.data)
+    implementation(projects.core.model)
+    implementation(projects.core.designsystem)
+}
+```
 
 ---
 
@@ -247,44 +340,42 @@ None required - uses existing Ktorfit/Ktor stack.
 
 | Test | Description |
 |------|-------------|
-| `PocketViewModelTest` | State management and use case calls |
-| `PocketRepositoryTest` | API interaction and mapping |
-| `PocketUseCaseTest` | Business logic validation |
+| `HomeViewModelPocketTest` | Display mode logic, toggle behavior |
+| `ManagePocketViewModelTest` | Link/delink operations |
+| `PocketRepositoryTest` | API calls and mapping |
 
 ### UI Tests
 
 | Test | Description |
 |------|-------------|
-| `PocketScreenTest` | Screen rendering and interactions |
-| `LinkAccountsTest` | Multi-select and submission |
-| `DelinkAccountTest` | Confirmation and removal |
-
-### Integration Tests
-
-| Test | Description |
-|------|-------------|
-| `PocketApiIntegrationTest` | End-to-end API calls |
+| `HomeScreenPocketTest` | Star indicators, dropdown, context menu |
+| `ManagePocketScreenTest` | List interactions, star toggle |
 
 ---
 
-## Migration/Rollout
+## Implementation Phases
 
-### Phase 1: Core Implementation
-- [ ] Implement pocket API service
-- [ ] Create pocket repository
-- [ ] Build pocket dashboard screen
-- [ ] Add navigation to pocket
+### Phase 1: Core Integration (P0)
+- [ ] Add `PocketRepository` to HomeViewModel
+- [ ] Implement display mode logic (empty → all, has accounts → pocket)
+- [ ] Add star indicator to AccountCard
+- [ ] Fetch pocket on Home screen init
 
-### Phase 2: Management Features
-- [ ] Implement link accounts flow
-- [ ] Implement delink accounts flow
-- [ ] Add confirmation dialogs
+### Phase 2: View Toggle (P0)
+- [ ] Create ViewDropdownMenu component
+- [ ] Implement view switching
+- [ ] Update pager on toggle
 
-### Phase 3: Polish
-- [ ] Add analytics events
-- [ ] Implement caching
-- [ ] Add empty states and error handling
-- [ ] Accessibility testing
+### Phase 3: Quick Actions (P0)
+- [ ] Add long press handler to AccountCard
+- [ ] Create AccountContextMenu
+- [ ] Implement Add/Remove from Pocket actions
+- [ ] Add confirmation dialog for delink
+
+### Phase 4: Full Management (P1)
+- [ ] Create ManagePocketScreen
+- [ ] Implement ManagePocketViewModel
+- [ ] Add navigation from dropdown
 
 ---
 
@@ -293,16 +384,17 @@ None required - uses existing Ktorfit/Ktor stack.
 - **Flow:** `user-flows/flows/FLOW-pocket.md`
 - **API:** `features/pocket/API.md`
 - **Status:** `features/pocket/STATUS.md`
+- **Jira:** MR-16 (Roadmap), MW-378 (Epic), MW-379-387 (Stories)
 
 ---
 
 ## Open Questions
 
-1. **Q:** Should loan accounts show negative balance or outstanding amount?
-   **A:** TBD - Check API response format
+1. **Q:** Should we persist view preference across sessions?
+   **A:** P2 - Start with session-only, consider DataStore later
 
-2. **Q:** Can a user have multiple pockets?
-   **A:** No - Fineract API supports single pocket per user
+2. **Q:** What happens when last pocket account is delinked?
+   **A:** Switch to All Accounts view automatically
 
-3. **Q:** Should we show account health indicators (active/dormant)?
-   **A:** P2 - Consider for future enhancement
+3. **Q:** Should long press show different options based on account type?
+   **A:** No - keep consistent for now, consider P2 enhancement
