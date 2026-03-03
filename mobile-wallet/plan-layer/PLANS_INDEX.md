@@ -34,6 +34,7 @@ See [backlog/FEATURES.md](versions/backlog/FEATURES.md) for planned features.
 | qr-multi-account-260228-001 | ✅ Implemented | QR Code - Multi-Wallet Account Support | 2026-02-28 |
 | qr-beneficiary-office-260301-001 | ✅ Implemented | QR Scan - Office Name Lookup | 2026-03-01 |
 | qr-beneficiary-addtype-260301-001 | ✅ Implemented | QR Scan - Add Beneficiary Navigation Fix | 2026-03-01 |
+| beneficiary-ux-260301-001 | ✅ Implemented | Beneficiary UX Improvements | 2026-03-01 |
 
 ---
 
@@ -46,3 +47,4 @@ See [backlog/FEATURES.md](versions/backlog/FEATURES.md) for planned features.
 - [QR Multi-Account Plan](plans/PLAN-qr-multi-account-260228-001.md)
 - [QR Beneficiary Office Plan](plans/PLAN-qr-beneficiary-office-260301-001.md)
 - [QR Beneficiary Add Type Fix](plans/PLAN-qr-beneficiary-addtype-260301-001.md)
+- [Beneficiary UX Improvements](plans/PLAN-beneficiary-ux-260301-001.md)

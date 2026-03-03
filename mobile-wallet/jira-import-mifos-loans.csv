@@ -1,0 +1,299 @@
+Summary,Issue Type,Description,Priority,Epic Link,Labels,Story Points
+"[Library] mifos-loans - Modular Lending KMP Library",Epic,"## Overview
+Standalone KMP library module for loan functionality following mobile-wallet architecture patterns.
+
+## Location
+libs/mifos-loans/ (same pattern as libs/mifos-passcode)
+
+## Architecture
+- core/ - LoanProvider interface, models
+- providers/ - Fineract + third-party adapters
+- network/ - Ktorfit LoansService
+- repository/ - LoansRepository + Impl
+- di/ - Koin LoansModule
+
+## Tech Stack
+Ktorfit, Ktor, Koin, DataState, Compose Multiplatform
+
+## Fineract API
+GET /self/loanproducts, POST /self/loans, GET /self/loans/{id}
+
+## Roadmap: MR-15",Major,,mifos-loans kmp-library,
+"[CORE] LoanProvider Interface & Base Models",Story,"## Goal
+Create core abstractions for the mifos-loans library.
+
+## Deliverables
+1. LoanProvider interface with methods:
+   - getProducts(): Flow<DataState<List<LoanProduct>>>
+   - getLoanDetails(id): Flow<DataState<LoanDetails>>
+   - applyForLoan(application): Flow<DataState<LoanApplication>>
+   - makePayment(loanId, payment): Flow<DataState<Transaction>>
+
+2. Data models:
+   - Loan.kt - Active loan entity
+   - LoanProduct.kt - Available loan product
+   - LoanSchedule.kt - Repayment schedule
+   - LoanPayment.kt - Payment transaction
+
+## Pattern
+Follow core/model patterns with @Serializable and Parcelable",Major,mifos-loans,loan-core,5
+"[NETWORK] LoansService Ktorfit API Client",Story,"## Goal
+Implement Ktorfit service interface for Fineract loan APIs.
+
+## File
+libs/mifos-loans/src/commonMain/kotlin/org/mifospay/loans/network/LoansService.kt
+
+## Endpoints
+```kotlin
+interface LoansService {
+    @GET(""/self/loanproducts"")
+    fun getLoanProducts(): Flow<List<LoanProductEntity>>
+
+    @GET(""/self/loans/{loanId}"")
+    fun getLoanDetails(@Path loanId: Long): Flow<LoanDetailsEntity>
+
+    @GET(""/self/loans/{loanId}/repaymentSchedule"")
+    fun getRepaymentSchedule(@Path loanId: Long): Flow<LoanScheduleEntity>
+
+    @POST(""/self/loans"")
+    suspend fun applyForLoan(@Body application: LoanApplicationEntity): LoanApplicationResponse
+
+    @POST(""/self/loans/{loanId}/transactions"")
+    suspend fun makePayment(@Path loanId: Long, @Body payment: LoanPaymentEntity)
+}
+```
+
+## Pattern
+Follow core/network/services patterns",Major,mifos-loans,loan-network,5
+"[DATA] LoansRepository Implementation",Story,"## Goal
+Implement repository layer with DataState pattern.
+
+## Files
+1. LoansRepository.kt (interface)
+2. LoansRepositoryImpl.kt (implementation)
+
+## Pattern
+```kotlin
+class LoansRepositoryImpl(
+    private val loansService: LoansService,
+    private val ioDispatcher: CoroutineDispatcher
+) : LoansRepository {
+    override fun getLoanProducts(): Flow<DataState<List<LoanProduct>>> {
+        return loansService.getLoanProducts()
+            .map { entities -> entities.map { it.toModel() } }
+            .asDataStateFlow()
+            .flowOn(ioDispatcher)
+    }
+}
+```
+
+## Reference
+core/data/repositoryImpl/SavingsAccountRepositoryImpl.kt",Major,mifos-loans,loan-data,3
+"[INFRA] Koin LoansModule DI Setup",Story,"## Goal
+Create Koin dependency injection module.
+
+## File
+libs/mifos-loans/src/commonMain/kotlin/org/mifospay/loans/di/LoansModule.kt
+
+## Implementation
+```kotlin
+val LoansModule = module {
+    // API Service
+    single { get<KtorfitClient>().create(LoansService::class) }
+
+    // Repository
+    single<LoansRepository> {
+        LoansRepositoryImpl(get(), get(named(""ioDispatcher"")))
+    }
+
+    // ViewModels
+    viewModelOf(::LoanProductsViewModel)
+    viewModelOf(::LoanDetailsViewModel)
+    viewModelOf(::LoanApplicationViewModel)
+}
+```
+
+## Reference
+core/data/di/RepositoryModule.kt",Minor,mifos-loans,loan-infra,2
+"[FEATURE] Loan Products Browser Screen",Story,"## Goal
+Create screen to browse available loan products.
+
+## UI Components
+1. LoanProductCard - Shows product name, rate, term, max amount
+2. LoanProductsScreen - Grid/List of products with filters
+3. LoanProductDetailSheet - Bottom sheet with full details
+
+## ViewModel
+```kotlin
+class LoanProductsViewModel(
+    private val repository: LoansRepository
+) : BaseViewModel<State, Event, Action>() {
+    val products = repository.getLoanProducts()
+        .mapLatest { dataState -> ... }
+        .stateIn(viewModelScope)
+}
+```
+
+## Acceptance Criteria
+- Show all available loan products
+- Filter by amount range, term
+- Sort by interest rate
+- Tap to view details",Major,mifos-loans,loan-feature ui,5
+"[FEATURE] EMI Calculator",Story,"## Goal
+Calculate EMI before applying for a loan.
+
+## Formula
+EMI = P * r * (1+r)^n / ((1+r)^n - 1)
+- P = Principal
+- r = Monthly interest rate
+- n = Number of months
+
+## UI
+1. Input fields: Amount, Interest Rate, Term
+2. Calculate button
+3. Result display: EMI, Total Interest, Total Payment
+4. Comparison table for different terms
+
+## Location
+libs/mifos-loans/src/commonMain/kotlin/org/mifospay/loans/ui/calculator/",Minor,mifos-loans,loan-feature,3
+"[FEATURE] Loan Application Flow",Story,"## Goal
+Multi-step loan application with document upload.
+
+## Screens
+1. LoanApplicationScreen - Select product, enter amount
+2. DocumentUploadScreen - Upload required documents
+3. KYCVerificationScreen - Identity verification
+4. ApplicationReviewScreen - Review and submit
+5. ApplicationSuccessScreen - Confirmation
+
+## State Machine
+PRODUCT_SELECT -> AMOUNT_ENTRY -> DOCUMENT_UPLOAD -> KYC -> REVIEW -> SUBMIT -> SUCCESS
+
+## API
+POST /self/loans with LoanApplicationEntity
+
+## Acceptance Criteria
+- Product selection from browsed products
+- Amount validation (min/max)
+- Document upload (ID, income proof)
+- Review before submit
+- Success/failure handling",Major,mifos-loans,loan-feature,8
+"[FEATURE] Loans Dashboard",Story,"## Goal
+View all active loans with summary.
+
+## UI Components
+1. LoansDashboardScreen - List of active loans
+2. LoanSummaryCard - Shows loan amount, outstanding, next payment
+3. QuickPayButton - Pay from card
+
+## ViewModel
+Fetch active loans and aggregate totals:
+- Total outstanding
+- Next payment date
+- Number of active loans
+
+## API
+GET /self/loans
+
+## Acceptance Criteria
+- Show all active loans
+- Display outstanding balance per loan
+- Show next payment date and amount
+- Quick action to make payment",Major,mifos-loans,loan-feature ui,5
+"[FEATURE] Repayment Schedule View",Story,"## Goal
+Display full repayment schedule with paid/pending status.
+
+## UI
+1. RepaymentScheduleScreen - Timeline of payments
+2. PaymentItemRow - Date, amount, status (paid/pending/overdue)
+3. ScheduleSummary - Total paid, remaining, next due
+
+## Visual Indicators
+- Green: Paid
+- Yellow: Upcoming (within 7 days)
+- Red: Overdue
+
+## API
+GET /self/loans/{loanId}/repaymentSchedule",Minor,mifos-loans,loan-feature,3
+"[FEATURE] Make Loan Payment",Story,"## Goal
+Pay loan installment from savings account.
+
+## Flow
+1. Select loan (if multiple)
+2. Enter amount (pre-filled with due amount)
+3. Select source account
+4. Confirm payment
+5. Success/receipt screen
+
+## Payment Types
+- Regular payment (exact EMI)
+- Partial payment
+- Prepayment (extra amount)
+- Full prepayment (close loan)
+
+## API
+POST /self/loans/{loanId}/transactions
+
+## Acceptance Criteria
+- Select source savings account
+- Amount validation
+- Confirmation dialog
+- Success receipt
+- Update dashboard after payment",Major,mifos-loans,loan-feature,5
+"[PROVIDER] Third-Party Loan Provider Framework",Story,"## Goal
+Create adapter pattern for third-party loan providers.
+
+## Architecture
+```kotlin
+interface ThirdPartyLoanProvider : LoanProvider {
+    val webhookEndpoint: String
+    suspend fun handleWebhook(payload: JsonObject): WebhookResult
+}
+
+abstract class BaseThirdPartyProvider(
+    protected val config: ProviderConfig
+) : ThirdPartyLoanProvider {
+    // Common implementation
+}
+```
+
+## Use Cases
+- Payday loan providers
+- Microfinance institutions
+- BNPL services
+
+## Deliverables
+1. ThirdPartyLoanProvider interface
+2. BaseThirdPartyProvider abstract class
+3. ProviderConfig data class
+4. WebhookHandler utility",Minor,mifos-loans,loan-provider,5
+"[TEST] Unit & Integration Tests",Story,"## Goal
+Achieve 90%+ code coverage for mifos-loans library.
+
+## Test Categories
+1. Unit Tests
+   - LoansRepositoryImpl tests with mock service
+   - EMI Calculator tests
+   - Mapper tests
+
+2. Integration Tests
+   - API service tests with mock server
+   - Full flow tests
+
+3. UI Tests
+   - ViewModel state tests
+   - Screen snapshot tests
+
+## Mock Provider
+Create MockLoanProvider for testing:
+```kotlin
+class MockLoanProvider : LoanProvider {
+    val mockProducts = mutableListOf<LoanProduct>()
+    val mockLoans = mutableListOf<Loan>()
+    // Configurable responses
+}
+```
+
+## Coverage Target
+- 90% line coverage
+- 85% branch coverage",Minor,mifos-loans,loan-test,5
