@@ -1,6 +1,6 @@
 # Features Index - mobile-wallet
 
-> 31 features (23 implemented + 8 planned)
+> 32 features (23 implemented + 8 planned + 1 in progress)
 
 ---
 
@@ -8,7 +8,7 @@
 
 | Total | Implemented | Planned | In Progress |
 |:-----:|:-----------:|:-------:|:-----------:|
-| 31 | 23 | 8 | 0 |
+| 32 | 23 | 8 | 1 |
 
 ---
 
@@ -29,6 +29,7 @@
 |---------|:-------:|:---:|:----:|:---:|:------:|:------:|
 | [home](features/home/) | 1 | 1 | ⬜ | ⬜ | ⬜ | ⬜ |
 | [accounts](features/accounts/) | 5 | 5 | ⬜ | ⬜ | ⬜ | ⬜ |
+| [pocket](features/pocket/) | 3 | 2 | ✅ | ✅ | ✅ | ⬜ |
 | [profile](features/profile/) | 2 | 2 | ⬜ | ⬜ | ⬜ | ⬜ |
 | [settings](features/settings/) | 1 | 1 | ⬜ | ⬜ | ⬜ | ⬜ |
 
