@@ -8,7 +8,17 @@
 
 | Total | Documented | Pending |
 |:-----:|:----------:|:-------:|
-| 0 | 0 | TBD |
+| 1 | 1 | TBD |
+
+---
+
+## Documented Flows
+
+### Wallet Management
+
+| Flow | File | Screens | Priority | Status |
+|------|------|:-------:|:--------:|:------:|
+| [Pocket](flows/FLOW-pocket.md) | `FLOW-pocket.md` | 5 | P1 | ✅ |
 
 ---
 
