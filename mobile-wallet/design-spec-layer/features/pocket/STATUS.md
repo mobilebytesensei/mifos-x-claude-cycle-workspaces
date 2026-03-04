@@ -148,4 +148,4 @@
 - **Flow:** `../user-flows/flows/FLOW-pocket.md`
 - **Spec:** `SPEC.md`
 - **API:** `API.md`
-- **PR:** https://github.com/openMF/mobile-wallet/pull/1995
+- **PR:** https://github.com/openMF/mifos-pay/pull/1995
