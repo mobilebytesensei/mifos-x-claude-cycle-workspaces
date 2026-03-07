@@ -1,0 +1,244 @@
+# Project: mifos-x-field-officer-app
+
+**Created**: 2026-03-04
+**Project Type**: kmp (kmp-app)
+**Status**: Active - Onboarding Complete
+
+---
+
+## Overview
+
+Field officer mobile app for Mifos X - A KMP mobile application enabling field officers to manage clients, loans, collections, and centers in the field with offline support.
+
+---
+
+## Configuration
+
+```yaml
+# ═══════════════════════════════════════════════════════════════════════════════
+# Project Identity
+# ═══════════════════════════════════════════════════════════════════════════════
+project:
+  name: mifos-x-field-officer-app
+  workspace: mifos-x
+  version: 0.1.0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Project Type (What you're building)
+# ═══════════════════════════════════════════════════════════════════════════════
+project_type: kmp
+
+project_subtype: kmp-app
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Deployment Targets (Where code runs)
+# ═══════════════════════════════════════════════════════════════════════════════
+targets:
+  - android
+  - ios
+  - desktop
+  - web-wasm
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Project URLs & Links
+# ═══════════════════════════════════════════════════════════════════════════════
+urls:
+  # Repository
+  github: "https://github.com/openMF/mifos-x-field-officer-app"
+
+  # Backend
+  server_base: "https://demo.mifos.io"
+  api_docs: "https://demo.mifos.io/fineract-provider/api/docs"
+
+  # Documentation
+  documentation: "https://mifos.gitbook.io/docs/"
+  wiki: "https://github.com/openMF/mifos-x-field-officer-app/wiki"
+
+  # DevOps
+  ci_cd: "https://github.com/openMF/mifos-x-field-officer-app/actions"
+  dashboard: null
+
+  # Design
+  design: null
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Backend Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+backend:
+  provider: fineract
+  api_base: "https://demo.mifos.io/fineract-provider/api/v1"
+  features:
+    - authentication
+    - clients
+    - loans
+    - savings
+    - groups
+    - centers
+    - collections
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Technology Stack
+# ═══════════════════════════════════════════════════════════════════════════════
+stack:
+  language: kotlin
+  ui: compose
+  state: mvi
+  di: koin
+  http: ktor
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Layers (Enabled/Disabled)
+# ═══════════════════════════════════════════════════════════════════════════════
+layers:
+  design: enabled
+  plan: enabled
+  server: enabled
+  client: enabled
+  feature: enabled
+  testing: enabled
+  platform: enabled
+  infrastructure: enabled
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Agent Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+agents:
+  enabled: true
+  auto_review: true
+  auto_security: true
+  auto_tests: true
+  auto_fix_build: true
+  block_on_security: true
+  security_block_level: high
+  review_threshold: 70
+  coverage_threshold: 60
+  verbose: false
+  interactive: false
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Ticket Management Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+ticket_management:
+  default_platform: github
+  github:
+    repo: "openMF/mifos-x-field-officer-app"
+    labels:
+      - "flow-generated"
+      - "design"
+  mapping:
+    screen_to_story: true
+    decision_to_task: true
+    api_endpoint_to_task: true
+  auto_update_on_implement: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Feature Progress
+# ═══════════════════════════════════════════════════════════════════════════════
+features:
+  total: 20
+  done: 0
+  spec_ready: 0
+  planned: 20
+```
+
+---
+
+## Layers
+
+| Layer | Status | Index |
+|-------|--------|-------|
+| Design | Active | [FEATURES_INDEX](design-spec-layer/FEATURES_INDEX.md) |
+| Plan | Active | [PLANS_INDEX](plan-layer/PLANS_INDEX.md) |
+| Server | Active | [API_INDEX](server-layer/API_INDEX.md) |
+| Client | Active | [SERVICES_INDEX](client-layer/SERVICES_INDEX.md) |
+| Feature | Active | [MODULES_INDEX](feature-layer/MODULES_INDEX.md) |
+| Testing | Active | [LAYER_STATUS](testing-layer/LAYER_STATUS.md) |
+| Platform | Active | [LAYER_STATUS](platform-layer/LAYER_STATUS.md) |
+| Infrastructure | Active | [LAYER_STATUS](infrastructure-layer/LAYER_STATUS.md) |
+
+---
+
+## Source Discovery Summary
+
+| Category | Count |
+|----------|-------|
+| Feature Modules | 20 |
+| UI Screens | 97 |
+| ViewModels | 91 |
+| API Services | 27 |
+| Repositories | 64 |
+| Platforms | 4 (Android, iOS, Desktop, Web) |
+
+---
+
+## Features Discovered
+
+| # | Feature | Screens | VMs | Status |
+|:-:|---------|:-------:|:---:|--------|
+| 1 | about | 1 | 0 | Implemented |
+| 2 | activate | 1 | 1 | Implemented |
+| 3 | auth | 1 | 1 | Implemented |
+| 4 | center | 5 | 5 | Implemented |
+| 5 | checker-inbox-task | 2 | 2 | Implemented |
+| 6 | client | 38 | 31 | Implemented |
+| 7 | collectionSheet | 5 | 5 | Implemented |
+| 8 | data-table | 4 | 4 | Implemented |
+| 9 | document | 2 | 2 | Implemented |
+| 10 | groups | 4 | 4 | Implemented |
+| 11 | loan | 11 | 12 | Implemented |
+| 12 | note | 2 | 2 | Implemented |
+| 13 | offline | 5 | 6 | Implemented |
+| 14 | path-tracking | 1 | 1 | Implemented |
+| 15 | recurringDeposit | 1 | 1 | Implemented |
+| 16 | report | 3 | 2 | Implemented |
+| 17 | savings | 7 | 7 | Implemented |
+| 18 | search | 1 | 1 | Implemented |
+| 19 | search-record | 1 | 1 | Implemented |
+| 20 | settings | 2 | 3 | Implemented |
+
+---
+
+## Quick Links
+
+### Design
+- [Features Index](design-spec-layer/FEATURES_INDEX.md)
+- [User Flows](design-spec-layer/user-flows/USER_FLOWS_INDEX.md)
+
+### Implementation
+- [Services Index](client-layer/SERVICES_INDEX.md)
+- [Modules Index](feature-layer/MODULES_INDEX.md)
+
+### Server
+- [API Index](server-layer/API_INDEX.md)
+
+---
+
+## Next Priority
+
+1. **auth** - Authentication feature (login/logout)
+2. **client** - Client management (largest feature module)
+3. **loan** - Loan management
+4. **savings** - Savings account management
+
+---
+
+## Tech Stack Summary
+
+| Category | Technology |
+|----------|------------|
+| Project Type | kmp (kmp-app) |
+| Targets | Android, iOS, Desktop, Web |
+| Language | Kotlin |
+| UI | Compose Multiplatform |
+| State | MVI |
+| DI | Koin |
+| HTTP | Ktor Client |
+| Backend | Fineract REST API |
+
+---
+
+## Repository
+
+- **Source**: `source/mifos-x-field-officer-app/`
+- **Origin**: https://github.com/therajanmaurya/mifos-x-field-officer-app
+- **Upstream**: https://github.com/openMF/mifos-x-field-officer-app
