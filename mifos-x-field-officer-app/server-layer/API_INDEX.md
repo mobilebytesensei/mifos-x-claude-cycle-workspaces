@@ -2,6 +2,7 @@
 
 > **Purpose**: Instant lookup for all API endpoints documented in the server-layer.
 > **Backend**: Fineract REST API
+> **Auto-generated**: 2026-03-08 by /project-verify
 
 ---
 
@@ -9,23 +10,23 @@
 
 | # | Endpoint Category | Methods | Base Path | Status |
 |:-:|-------------------|:-------:|-----------|:------:|
-| 1 | Authentication | TBD | /authentication | ⚠️ |
-| 2 | Clients | TBD | /clients | ⚠️ |
-| 3 | Loans | TBD | /loans | ⚠️ |
-| 4 | Savings | TBD | /savingsaccounts | ⚠️ |
-| 5 | Groups | TBD | /groups | ⚠️ |
-| 6 | Centers | TBD | /centers | ⚠️ |
-| 7 | Offices | TBD | /offices | ⚠️ |
-| 8 | Staff | TBD | /staff | ⚠️ |
-| 9 | DataTables | TBD | /datatables | ⚠️ |
-| 10 | Documents | TBD | /documents | ⚠️ |
-| 11 | Notes | TBD | /notes | ⚠️ |
-| 12 | Reports | TBD | /runreports | ⚠️ |
-| 13 | Search | TBD | /search | ⚠️ |
-| 14 | CollectionSheet | TBD | /collectionsheet | ⚠️ |
-| 15 | CheckerInbox | TBD | /makercheckers | ⚠️ |
-| 16 | Charges | TBD | /charges | ⚠️ |
-| 17 | Surveys | TBD | /surveys | ⚠️ |
+| 1 | Authentication | POST | /authentication | ✅ |
+| 2 | Clients | GET, POST, PUT | /clients | ✅ |
+| 3 | Loans | GET, POST, PUT | /loans | ✅ |
+| 4 | Savings | GET, POST, PUT | /savingsaccounts | ✅ |
+| 5 | Groups | GET, POST, PUT | /groups | ✅ |
+| 6 | Centers | GET, POST, PUT | /centers | ✅ |
+| 7 | Offices | GET | /offices | ✅ |
+| 8 | Staff | GET | /staff | ✅ |
+| 9 | DataTables | GET, POST, PUT, DELETE | /datatables | ✅ |
+| 10 | Documents | GET, POST, DELETE | /documents | ✅ |
+| 11 | Notes | GET, POST, PUT, DELETE | /notes | ✅ |
+| 12 | Reports | GET | /runreports | ✅ |
+| 13 | Search | GET | /search | ✅ |
+| 14 | CollectionSheet | GET, POST | /collectionsheet | ✅ |
+| 15 | CheckerInbox | GET, POST | /makercheckers | ✅ |
+| 16 | Charges | GET | /charges | ✅ |
+| 17 | Surveys | GET, POST | /surveys | ✅ |
 
 **Status Legend:**
 - ✅ Documented
@@ -47,51 +48,46 @@ content_type: application/json
 
 ## Category Index
 
-### Client Management APIs
-| Endpoint | Methods | Path |
-|----------|:-------:|------|
-| Clients | GET, POST, PUT | /clients |
-| Client Accounts | GET | /clients/{id}/accounts |
-| Client Identifiers | GET, POST | /clients/{id}/identifiers |
+### Authentication & Security
+| Endpoint | Methods | Path | Doc |
+|----------|:-------:|------|-----|
+| Authentication | POST | /authentication | [endpoints/authentication.md](endpoints/authentication.md) |
+| Checker Inbox | GET, POST | /makercheckers | [endpoints/checkerinbox.md](endpoints/checkerinbox.md) |
 
-### Financial Product APIs
-| Endpoint | Methods | Path |
-|----------|:-------:|------|
-| Loans | GET, POST, PUT | /loans |
-| Loan Transactions | POST | /loans/{id}/transactions |
-| Savings Accounts | GET, POST, PUT | /savingsaccounts |
-| Savings Transactions | POST | /savingsaccounts/{id}/transactions |
-| Recurring Deposits | GET, POST | /recurringdepositaccounts |
-| Fixed Deposits | GET, POST | /fixeddepositaccounts |
-| Charges | GET, POST | /charges |
+### Client Management
+| Endpoint | Methods | Path | Doc |
+|----------|:-------:|------|-----|
+| Clients | GET, POST, PUT | /clients | [endpoints/clients.md](endpoints/clients.md) |
+| Documents | GET, POST | /documents | [endpoints/documents.md](endpoints/documents.md) |
+| Notes | GET, POST | /notes | [endpoints/notes.md](endpoints/notes.md) |
 
-### Group & Center APIs
-| Endpoint | Methods | Path |
-|----------|:-------:|------|
-| Groups | GET, POST, PUT | /groups |
-| Centers | GET, POST, PUT | /centers |
-| Collection Sheet | GET, POST | /collectionsheet |
+### Financial Products
+| Endpoint | Methods | Path | Doc |
+|----------|:-------:|------|-----|
+| Loans | GET, POST, PUT | /loans | [endpoints/loans.md](endpoints/loans.md) |
+| Savings Accounts | GET, POST, PUT | /savingsaccounts | [endpoints/savings.md](endpoints/savings.md) |
+| Charges | GET | /charges | [endpoints/charges.md](endpoints/charges.md) |
 
-### Organization APIs
-| Endpoint | Methods | Path |
-|----------|:-------:|------|
-| Offices | GET | /offices |
-| Staff | GET | /staff |
+### Group & Center Operations
+| Endpoint | Methods | Path | Doc |
+|----------|:-------:|------|-----|
+| Groups | GET, POST, PUT | /groups | [endpoints/groups.md](endpoints/groups.md) |
+| Centers | GET, POST, PUT | /centers | [endpoints/centers.md](endpoints/centers.md) |
+| Collection Sheet | GET, POST | /collectionsheet | [endpoints/collectionsheet.md](endpoints/collectionsheet.md) |
 
-### Data & Reporting APIs
-| Endpoint | Methods | Path |
-|----------|:-------:|------|
-| DataTables | GET, POST | /datatables |
-| Reports | GET | /runreports |
-| Search | GET | /search |
+### Organization
+| Endpoint | Methods | Path | Doc |
+|----------|:-------:|------|-----|
+| Offices | GET | /offices | [endpoints/offices.md](endpoints/offices.md) |
+| Staff | GET | /staff | [endpoints/staff.md](endpoints/staff.md) |
 
-### Utility APIs
-| Endpoint | Methods | Path |
-|----------|:-------:|------|
-| Documents | GET, POST | /documents |
-| Notes | GET, POST | /notes |
-| Surveys | GET, POST | /surveys |
-| Checker Inbox | GET, POST | /makercheckers |
+### Data & Reporting
+| Endpoint | Methods | Path | Doc |
+|----------|:-------:|------|-----|
+| DataTables | GET, POST, PUT, DELETE | /datatables | [endpoints/datatables.md](endpoints/datatables.md) |
+| Reports | GET | /runreports | [endpoints/reports.md](endpoints/reports.md) |
+| Search | GET | /search | [endpoints/search.md](endpoints/search.md) |
+| Surveys | GET, POST | /surveys | [endpoints/surveys.md](endpoints/surveys.md) |
 
 ---
 
@@ -111,3 +107,7 @@ content_type: application/json
 |------|---------|
 | `endpoints/*.md` | Individual endpoint documentation |
 | `LAYER_GUIDE.md` | Server layer implementation guide |
+
+---
+
+**Generated by:** /project-verify (FIX-CONTENT-010)

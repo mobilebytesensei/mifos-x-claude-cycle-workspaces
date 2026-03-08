@@ -132,6 +132,33 @@ ticket_management:
   auto_update_on_implement: true
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# User Flows (Penpot Integration)
+# ═══════════════════════════════════════════════════════════════════════════════
+flow:
+  type: penpot
+  fallback: headless
+  penpot:
+    project_id: "28716f1a-b249-8049-8007-aea28203c4a3"
+    project_name: "mifos-x-field-officer"
+    project_url: "https://design.penpot.app/view/28716f1a-b249-8049-8007-aea28203c4a3"
+    flows_file_id: "28716f1a-b249-8049-8007-aea28203c4a3"
+    created_at: "2026-03-08"
+    created_by: "/design flow generate --from-features"
+    pages:
+      - id: "28716f1a-b249-8049-8007-aea28203c4a4"
+        name: "Authentication Flow"
+      - id: "2c915ee0-8071-8051-8007-aec00e2cc0c7"
+        name: "Client Management Flow"
+      - id: "2c915ee0-8071-8051-8007-aec00e2e732b"
+        name: "Financial Operations Flow"
+      - id: "2c915ee0-8071-8051-8007-aec00e2e96cd"
+        name: "Field Operations Flow"
+      - id: "2c915ee0-8071-8051-8007-aec00e2ef3c3"
+        name: "Admin Utilities Flow"
+      - id: "2c915ee0-8071-8051-8007-aec00e2f4f9a"
+        name: "Data Table Flow"
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Feature Progress
 # ═══════════════════════════════════════════════════════════════════════════════
 features:
