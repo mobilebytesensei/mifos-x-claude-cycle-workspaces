@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/testing-layer/TEST_PATTERNS.md"
+# last_modified: "2026-03-20"
+
 # Test Patterns - O(1) Reference
 
 > Quick lookup for test patterns used in Mifos Mobile

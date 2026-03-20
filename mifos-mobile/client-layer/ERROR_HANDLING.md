@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/client-layer/ERROR_HANDLING.md"
+# last_modified: "2026-03-20"
+
 # Error Handling Reference
 
 > **Purpose**: Exception types, error extraction, and HTTP status code handling

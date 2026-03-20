@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-x-field-officer-app/server-layer/endpoints/savings.md"
+# last_modified: "2026-03-20"
+
 # Savings API
 
 > **Auto-generated from source code analysis**

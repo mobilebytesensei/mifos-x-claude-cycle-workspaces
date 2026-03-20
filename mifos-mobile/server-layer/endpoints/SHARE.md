@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/server-layer/endpoints/SHARE.md"
+# last_modified: "2026-03-20"
+
 # Share Account Endpoints
 
 > **Category**: Share Account

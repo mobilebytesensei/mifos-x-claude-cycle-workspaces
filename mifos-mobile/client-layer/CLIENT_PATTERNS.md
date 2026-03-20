@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/client-layer/CLIENT_PATTERNS.md"
+# last_modified: "2026-03-20"
+
 # Client Layer Implementation Patterns
 
 > **Purpose**: Service and Repository implementation patterns for client layer

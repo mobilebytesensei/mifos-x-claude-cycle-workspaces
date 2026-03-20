@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/TESTING_STATUS.md"
+# last_modified: "2026-03-20"
+
 # Design Layer - Testing Status
 
 > Testing specifications for design layer validation

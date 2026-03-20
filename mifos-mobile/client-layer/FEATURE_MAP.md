@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/client-layer/FEATURE_MAP.md"
+# last_modified: "2026-03-20"
+
 # Feature → Client Components Map
 
 > **13 services** | **17 repositories** | **2 DI modules**

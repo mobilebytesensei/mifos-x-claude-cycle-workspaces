@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/GENERATION_ORDER.md"
+# last_modified: "2026-03-20"
+
 # Design Layer Generation Order
 
 > Defines the intelligent generation sequence for design-spec-layer files.

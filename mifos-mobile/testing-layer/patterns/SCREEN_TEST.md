@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/testing-layer/patterns/SCREEN_TEST.md"
+# last_modified: "2026-03-20"
+
 # Screen Test Pattern
 
 > Detailed instructions for testing Compose screens in Mifos Mobile

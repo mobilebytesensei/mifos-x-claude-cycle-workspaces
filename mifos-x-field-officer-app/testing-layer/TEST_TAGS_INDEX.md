@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-x-field-officer-app/testing-layer/TEST_TAGS_INDEX.md"
+# last_modified: "2026-03-20"
+
 # Test Tags Index - O(1) Lookup
 
 > **Purpose**: Instant lookup for TestTags objects used in UI testing.

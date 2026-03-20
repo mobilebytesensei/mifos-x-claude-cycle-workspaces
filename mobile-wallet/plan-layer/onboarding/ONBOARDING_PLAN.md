@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/plan-layer/onboarding/ONBOARDING_PLAN.md"
+# last_modified: "2026-03-20"
+
 # Onboarding Plan - mobile-wallet
 
 > Generated: 2026-02-25 | Status: Approved & Executed

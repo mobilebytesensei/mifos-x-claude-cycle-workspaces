@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/testing-layer/LAYER_GUIDE.md"
+# last_modified: "2026-03-20"
+
 # Testing Layer Guide - mobile-wallet
 
 > Test patterns and documentation

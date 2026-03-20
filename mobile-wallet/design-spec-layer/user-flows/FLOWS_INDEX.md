@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/design-spec-layer/user-flows/FLOWS_INDEX.md"
+# last_modified: "2026-03-20"
+
 # User Flows Index - mobile-wallet
 
 > User journey documentation and flow diagrams

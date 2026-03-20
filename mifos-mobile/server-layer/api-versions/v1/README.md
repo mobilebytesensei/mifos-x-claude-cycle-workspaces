@@ -1,7 +1,7 @@
 # template_meta
-# template_version: "2.81.0"
+# template_version: "2.84.0"
 # template_path: "templates/blueprints/workspace-project/server-layer/api-versions/v1/README.md"
-# last_modified: "2026-03-19"
+# last_modified: "2026-03-20"
 
 # API v1 - ${PROJECT_NAME}
 

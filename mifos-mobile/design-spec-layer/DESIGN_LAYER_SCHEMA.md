@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/DESIGN_LAYER_SCHEMA.md"
+# last_modified: "2026-03-20"
+
 # Design Layer Schema
 
 > Defines the data model and extraction rules for intelligent auto-population between design files.

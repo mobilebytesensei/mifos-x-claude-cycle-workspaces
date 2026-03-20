@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/MOCKUP_VALIDATION_CHECKLIST.md"
+# last_modified: "2026-03-20"
+
 # Mockup Validation Checklist
 
 > Use this checklist to validate mockup completeness before marking design layer as done.

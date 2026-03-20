@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-x-field-officer-app/testing-layer/instructions/DOMAIN_LAYER_TESTS.md"
+# last_modified: "2026-03-20"
+
 # Domain Layer Tests
 
 > Comprehensive testing patterns for the domain layer (core/domain)

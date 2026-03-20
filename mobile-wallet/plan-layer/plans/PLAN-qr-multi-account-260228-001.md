@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/plan-layer/plans/PLAN-qr-multi-account-260228-001.md"
+# last_modified: "2026-03-20"
+
 # Plan: QR Code Generation - Multi-Wallet Account Support
 
 > **Plan ID**: qr-multi-account-260228-001

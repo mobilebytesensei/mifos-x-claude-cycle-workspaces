@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/design-spec-layer/FEATURES_INDEX.md"
+# last_modified: "2026-03-20"
+
 # Features Index - mobile-wallet
 
 > 32 features (23 implemented + 8 planned + 1 in progress)

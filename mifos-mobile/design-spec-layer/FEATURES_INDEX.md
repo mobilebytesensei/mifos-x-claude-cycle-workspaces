@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/FEATURES_INDEX.md"
+# last_modified: "2026-03-20"
+
 # Features Index - O(1) Lookup
 
 > **18 features** | All have SPEC + API + STATUS

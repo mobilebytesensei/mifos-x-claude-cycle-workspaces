@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-x-field-officer-app/server-layer/API_INDEX.md"
+# last_modified: "2026-03-20"
+
 # API Index - O(1) Lookup
 
 > **Purpose**: Instant lookup for all API endpoints documented in the server-layer.

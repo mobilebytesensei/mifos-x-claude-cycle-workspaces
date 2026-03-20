@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/PROJECT.md"
+# last_modified: "2026-03-20"
+
 # mobile-wallet - Project Configuration
 
 > Mobile Wallet - Digital wallet app for payments, transfers, and financial services

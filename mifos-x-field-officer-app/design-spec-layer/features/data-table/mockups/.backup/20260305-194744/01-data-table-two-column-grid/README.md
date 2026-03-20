@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-x-field-officer-app/design-spec-layer/features/data-table/mockups/.backup/20260305-194744/01-data-table-two-column-grid/README.md"
+# last_modified: "2026-03-20"
+
 # Personal Data Form Grid
 
 **Generated**: 2026-03-05
