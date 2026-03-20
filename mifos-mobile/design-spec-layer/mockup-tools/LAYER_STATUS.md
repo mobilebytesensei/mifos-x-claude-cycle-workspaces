@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/mockup-tools/LAYER_STATUS.md"
+# last_modified: "2026-03-20"
+
 # Mockup Layer - Status & Memory
 
 > **Layer**: Design Mockup Generation

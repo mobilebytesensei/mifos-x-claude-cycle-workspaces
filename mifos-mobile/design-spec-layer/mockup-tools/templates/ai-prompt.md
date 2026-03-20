@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/mockup-tools/templates/ai-prompt.md"
+# last_modified: "2026-03-20"
+
 # AI Mockup Prompt Template
 
 > Use this template to generate prompts for AI design tools

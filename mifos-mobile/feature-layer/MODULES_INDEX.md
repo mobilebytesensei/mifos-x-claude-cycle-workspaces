@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/feature-layer/MODULES_INDEX.md"
+# last_modified: "2026-03-20"
+
 # Feature Modules Index - O(1) Lookup
 
 > **23 modules** | **63 screens** | **49 ViewModels** | **21 DI modules**

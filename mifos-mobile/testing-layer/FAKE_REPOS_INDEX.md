@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/testing-layer/FAKE_REPOS_INDEX.md"
+# last_modified: "2026-03-20"
+
 # Fake Repositories Index - O(1) Lookup
 
 > **17 repositories** | Test doubles for isolation | **Last Updated**: 2026-01-05

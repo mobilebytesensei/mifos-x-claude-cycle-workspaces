@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/testing-layer/TEST_TAGS_INDEX.md"
+# last_modified: "2026-03-20"
+
 # Test Tags Index - mobile-wallet
 
 > Test tags for UI testing

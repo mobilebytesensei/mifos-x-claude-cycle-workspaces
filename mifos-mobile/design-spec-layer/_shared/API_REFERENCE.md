@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/_shared/API_REFERENCE.md"
+# last_modified: "2026-03-20"
+
 # Fineract Self-Service API Quick Reference
 
 > **Base URL**: `https://{server}/fineract-provider/api/v1/self/`

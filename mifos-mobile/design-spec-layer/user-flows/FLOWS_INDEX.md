@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/user-flows/FLOWS_INDEX.md"
+# last_modified: "2026-03-20"
+
 # Flows Index - O(1) Lookup
 
 > **Purpose**: Instant lookup for all user flows.

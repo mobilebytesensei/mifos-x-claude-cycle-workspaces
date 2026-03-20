@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/plan-layer/versions/v0.3.0/STATUS.md"
+# last_modified: "2026-03-20"
+
 # v0.3.0 Status - Mifos Mobile
 
 **Version**: v0.3.0

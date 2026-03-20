@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/plan-layer/plans/PLAN-design-flow-authentication-260119-001.md"
+# last_modified: "2026-03-20"
+
 # Plan: Design Flow - Authentication
 
 **Plan ID:** design-flow-authentication-260119-001

@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/testing-layer/TEST_FIXTURES_INDEX.md"
+# last_modified: "2026-03-20"
+
 # Test Fixtures Index - O(1) Lookup
 
 > **17 features** | Reusable test data | **Last Updated**: 2026-01-05

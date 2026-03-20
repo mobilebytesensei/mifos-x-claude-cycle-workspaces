@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/client-layer/SERVICES_INDEX.md"
+# last_modified: "2026-03-20"
+
 # Services Index - mobile-wallet
 
 > 23 repositories discovered from source analysis

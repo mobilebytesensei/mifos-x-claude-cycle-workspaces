@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/plan-layer/VERSION_INDEX.md"
+# last_modified: "2026-03-20"
+
 # Version Index
 
 **Current Version:** v{{LATEST}}
@@ -9,9 +14,9 @@
 
 | Version | Date | Status | Milestone |
 |:-------:|:----:|:------:|-----------|
-| v0.1.0 | {{DATE}} | ✅ Complete | Initial features |
-| v0.2.0 | {{DATE}} | 🔄 In Progress | Enhancements |
-| v1.0.0 | {{DATE}} | 📝 Planned | Production release |
+| v0.1.0 | 2026-03-20 | ✅ Complete | Initial features |
+| v0.2.0 | 2026-03-20 | 🔄 In Progress | Enhancements |
+| v1.0.0 | 2026-03-20 | 📝 Planned | Production release |
 
 ---
 

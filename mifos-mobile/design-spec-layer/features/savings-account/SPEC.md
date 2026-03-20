@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/features/savings-account/SPEC.md"
+# last_modified: "2026-03-20"
+
 # Savings Account - Feature Specification
 
 > **Purpose**: Display, manage, update, and withdraw savings accounts

@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-x-field-officer-app/testing-layer/instructions/VIEWMODEL_TEST.md"
+# last_modified: "2026-03-20"
+
 # ViewModel Test Pattern
 
 > Detailed instructions for testing ViewModels in KMP projects using BaseViewModel

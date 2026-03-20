@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/plan-layer/plans/PLAN-beneficiary-ux-260301-001.md"
+# last_modified: "2026-03-20"
+
 # Plan: Beneficiary UX Improvements
 
 > **Plan ID**: beneficiary-ux-260301-001

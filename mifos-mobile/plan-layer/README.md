@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/plan-layer/README.md"
+# last_modified: "2026-03-20"
+
 # Plan Layer
 
 **Purpose:** Versioned planning for features, enhancements, and bug fixes
@@ -118,9 +123,9 @@ When all features implemented:
 Located at: `versions/PLAN_TEMPLATE.md`
 
 **Placeholders:**
-- `{{VERSION}}`: Plan version (e.g., 0.2.0)
+- `2.84.0`: Plan version (e.g., 0.2.0)
 - `{{FEATURE_SET_NAME}}`: Plan name (e.g., "Social features")
-- `{{DATE}}`: Creation date
+- `2026-03-20`: Creation date
 - `{{GOAL}}`: What this version achieves
 - `{{MOTIVATION}}`: Why these features
 - `{{TARGET_USERS}}`: Who benefits

@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/_shared/COMPONENTS.md"
+# last_modified: "2026-03-20"
+
 # Mifos Mobile - Design System & Component Library
 
 > **Version**: 2.0 (Revolut-Style Vibrant Design)

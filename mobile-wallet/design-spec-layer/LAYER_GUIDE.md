@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/design-spec-layer/LAYER_GUIDE.md"
+# last_modified: "2026-03-20"
+
 # Design-Spec Layer Guide - mobile-wallet
 
 > Feature specifications, mockups, and design documentation

@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/client-layer/TESTING_STATUS.md"
+# last_modified: "2026-03-20"
+
 # Client Layer - Testing Status
 
 > Repository and service testing documentation

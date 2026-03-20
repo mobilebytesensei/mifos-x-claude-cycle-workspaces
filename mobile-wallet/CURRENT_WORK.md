@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/CURRENT_WORK.md"
+# last_modified: "2026-03-20"
+
 # CURRENT_WORK.md - mobile-wallet
 
 > Session tracking and current work progress

@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/testing-layer/LAYER_STATUS.md"
+# last_modified: "2026-03-20"
+
 # Testing Layer - Status Dashboard
 
 > **17 features** | **49 ViewModels** | **63 Screens** | **Last Updated**: 2026-01-05

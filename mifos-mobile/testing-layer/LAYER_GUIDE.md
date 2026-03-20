@@ -1,4 +1,9 @@
-# Testing Layer Guide - {{PROJECT_NAME}}
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/testing-layer/LAYER_GUIDE.md"
+# last_modified: "2026-03-20"
+
+# Testing Layer Guide - mifos-mobile
 
 > Conventions for testing infrastructure and patterns.
 

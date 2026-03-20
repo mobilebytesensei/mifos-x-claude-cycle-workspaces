@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/feature-layer/MODULES_INDEX.md"
+# last_modified: "2026-03-20"
+
 # Modules Index - mobile-wallet
 
 > 23 feature modules discovered from source analysis

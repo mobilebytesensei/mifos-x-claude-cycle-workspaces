@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-x-field-officer-app/plan-layer/GAP_PLAN_DATA_TABLE_FORM.md"
+# last_modified: "2026-03-20"
+
 # Gap Planning: Data-Driven Dynamic Data Table Form Building Block
 
 **Plan ID**: `gap-plan-datatable-form-260305-001`

@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/plan-layer/PLANS_INDEX.md"
+# last_modified: "2026-03-20"
+
 # Plans Index - Mifos Mobile
 
 > **Purpose**: O(1) lookup for implementation plans and version roadmap

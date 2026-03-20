@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/features/qr/mockups/MOCKUP.md"
+# last_modified: "2026-03-20"
+
 # QR Code - UI Mockups v2.0
 
 > **Design Pattern**: Smart Pay Hub

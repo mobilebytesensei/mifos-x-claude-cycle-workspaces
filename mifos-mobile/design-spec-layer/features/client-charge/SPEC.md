@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/features/client-charge/SPEC.md"
+# last_modified: "2026-03-20"
+
 # Client Charges - Feature Specification
 
 > **Purpose**: Display and manage charges for clients, loans, savings, and share accounts

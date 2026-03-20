@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/testing-layer/FAKE_REPOS_INDEX.md"
+# last_modified: "2026-03-20"
+
 # Fake Repositories Index - O(1) Lookup
 
 > **${FAKE_COUNT} repositories** | Test doubles for isolation | **Last Updated**: ${DATE}

@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-x-field-officer-app/design-spec-layer/user-flows/USER_FLOWS_INDEX.md"
+# last_modified: "2026-03-20"
+
 # User Flows Index
 
 > **Project**: mifos-x-field-officer-app

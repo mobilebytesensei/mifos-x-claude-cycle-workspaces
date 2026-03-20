@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/MOCKUPS_INDEX.md"
+# last_modified: "2026-03-20"
+
 # Mockups Index - O(1) Lookup
 
 > **Figma**: 7/18 | **Stitch**: 11/18 | **Tokens**: 8/18

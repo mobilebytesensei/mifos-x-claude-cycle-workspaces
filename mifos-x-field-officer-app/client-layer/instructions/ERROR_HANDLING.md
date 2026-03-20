@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-x-field-officer-app/client-layer/instructions/ERROR_HANDLING.md"
+# last_modified: "2026-03-20"
+
 # Error Handling Reference
 
 > **Purpose**: Type-safe error pipeline from HTTP response to UI display

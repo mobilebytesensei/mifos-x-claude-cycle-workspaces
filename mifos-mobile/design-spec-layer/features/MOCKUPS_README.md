@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/features/MOCKUPS_README.md"
+# last_modified: "2026-03-20"
+
 # Mockups Directory Structure
 
 > **Purpose**: Store and organize UI mockup images for each feature

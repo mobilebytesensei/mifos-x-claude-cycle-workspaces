@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-x-field-officer-app/design-spec-layer/features/client/STATUS.md"
+# last_modified: "2026-03-20"
+
 # Client Implementation Status
 
 > **Auto-generated:** 2026-03-07

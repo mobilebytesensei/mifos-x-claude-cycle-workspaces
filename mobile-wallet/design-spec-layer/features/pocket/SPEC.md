@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/design-spec-layer/features/pocket/SPEC.md"
+# last_modified: "2026-03-20"
+
 # Feature Spec: Pocket
 
 > Favorite accounts for quick access on Home screen

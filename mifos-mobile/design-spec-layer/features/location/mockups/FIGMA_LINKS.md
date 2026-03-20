@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/features/location/mockups/FIGMA_LINKS.md"
+# last_modified: "2026-03-20"
+
 # Location Feature - Figma Links
 
 > **Feature**: Location (Location Intelligence Hub)

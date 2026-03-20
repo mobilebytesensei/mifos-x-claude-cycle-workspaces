@@ -1,4 +1,9 @@
-# Design Layer Status - {{PROJECT_NAME}}
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mifos-mobile/design-spec-layer/LAYER_STATUS.md"
+# last_modified: "2026-03-20"
+
+# Design Layer Status - mifos-mobile
 
 > Implementation status for design specifications.
 

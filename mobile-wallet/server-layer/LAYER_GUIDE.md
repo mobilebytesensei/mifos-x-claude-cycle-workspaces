@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/server-layer/LAYER_GUIDE.md"
+# last_modified: "2026-03-20"
+
 # Server Layer Guide - mobile-wallet
 
 > API documentation for Fineract Self-Service backend

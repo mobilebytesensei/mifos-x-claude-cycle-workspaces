@@ -1,3 +1,8 @@
+# template_meta
+# template_version: "2.84.0"
+# template_path: "workspaces/mifos-x/mobile-wallet/design-spec-layer/_shared/COMPONENTS.md"
+# last_modified: "2026-03-20"
+
 # Shared Components - mobile-wallet
 
 > Common UI components used across features
