@@ -1,5 +1,5 @@
 # template_meta
-# template_version: "2.84.0"
+# template_version: "2.86.5"
 # template_path: "workspaces/mifos-x/mifos-x-field-officer-app/design-spec-layer/features/data-table/mockups/prod/stitch/04-data-table-embedded-usage/README.md"
 # last_modified: "2026-03-20"
 

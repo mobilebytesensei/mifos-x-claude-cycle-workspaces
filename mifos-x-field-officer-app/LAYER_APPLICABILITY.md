@@ -1,5 +1,5 @@
 # template_meta
-# template_version: "2.84.0"
+# template_version: "2.86.5"
 # template_path: "templates/blueprints/workspace-project/LAYER_APPLICABILITY.md"
 # last_modified: "2026-03-20"
 
