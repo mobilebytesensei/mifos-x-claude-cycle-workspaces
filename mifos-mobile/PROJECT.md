@@ -90,6 +90,35 @@ Self-service banking application for end-users to view and transact on their acc
 | Enabled | Yes - Full testing infrastructure |
 | Frameworks | JUnit, kotlin-test, Turbine, Compose UI Test, Roborazzi |
 
+### Release Configuration
+
+```yaml
+# ═══════════════════════════════════════════════════════════════════════════════
+# Release Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+release:
+  strategy: kmp-fastlane
+  predefined_template: kmp-fastlane
+  release_type: beta
+  shared_keys: secrets/shared_keys.env  # TODO: add your credentials here
+  platforms:
+    android:
+      enabled: true
+      track: production
+      secrets: secrets/playStorePublishServiceCredentialsFile.json  # TODO: add your credentials here
+      fastlane_lane: deployToPlayStore
+    ios_testflight:
+      enabled: true
+      secrets: secrets/AuthKey.p8  # TODO: add your credentials here
+      fastlane_lane: beta
+      distribute: testflight
+    ios_appstore:
+      enabled: false
+      secrets: secrets/AuthKey.p8  # TODO: add your credentials here
+      fastlane_lane: release
+      distribute: appstore
+```
+
 ---
 
 ## Features (17)
