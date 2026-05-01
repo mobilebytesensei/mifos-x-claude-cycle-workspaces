@@ -1,0 +1,344 @@
+# TOOL_GENERATION_TEMPLATES.yaml — Code Generation Patterns for /mifos-bridge
+# Used by TIER 1 (wrap existing API) and TIER 2 (datatable extension) tool generation.
+# Templates are filled by /mifos-bridge during gap resolution.
+# Last updated: 2026-05-01
+
+_meta:
+  purpose: "Code generation templates for MCP tool creation"
+  consumed_by: "/mifos-bridge (Step 4 + Step 5)"
+  output_targets:
+    - "tools/domains/{domain}.py (domain function)"
+    - "mcp_server.py (MCP registration)"
+
+# ──────────────────────────────────────────────────
+# TIER 1 — Wrap Existing Fineract REST API
+# ──────────────────────────────────────────────────
+
+tier1:
+  description: "Fineract API exists but no MCP tool wraps it"
+
+  # Domain function template (tools/domains/{domain}.py)
+  domain_function:
+    template: |
+      @tool
+      def {function_name}({params_signature}):
+          """{docstring}"""
+          print(f"[Tool] {log_message}...")
+          {payload_block}
+          return fineract_client.execute_{http_method}({api_path}{payload_arg})
+
+    # Substitution patterns per HTTP method
+    patterns:
+      GET:
+        payload_block: ""
+        payload_arg: ""
+        example: |
+          @tool
+          def get_group_members(group_id: int):
+              """Answers: 'Who are the members of group 5?'
+              Returns all client members of a lending group."""
+              print(f"[Tool] Fetching members for group #{group_id}...")
+              return fineract_client.execute_get(f"groups/{group_id}?associations=clientMembers")
+
+      POST_action:
+        payload_block: ""
+        payload_arg: ""
+        example: |
+          @tool
+          def activate_center(center_id: int):
+              """Activate a pending center so it can begin operations."""
+              print(f"[Tool] Activating center #{center_id}...")
+              payload = {
+                  "activationDate": datetime.now().strftime("%d %B %Y"),
+                  "dateFormat": "dd MMMM yyyy",
+                  "locale": "en"
+              }
+              return fineract_client.execute_post(f"centers/{center_id}?command=activate", payload)
+
+      POST_create:
+        payload_block: |
+          payload = {
+              {payload_fields}
+          }
+        payload_arg: ", payload"
+        example: |
+          @tool
+          def update_group(group_id: int, name: str = None, external_id: str = None, staff_id: int = None):
+              """Update a lending group's details."""
+              print(f"[Tool] Updating group #{group_id}...")
+              payload = {}
+              if name: payload["name"] = name
+              if external_id: payload["externalId"] = external_id
+              if staff_id: payload["staffId"] = staff_id
+              return fineract_client.execute_put(f"groups/{group_id}", payload)
+
+      PUT:
+        payload_block: |
+          payload = {}
+          {conditional_fields}
+        payload_arg: ", payload"
+
+      DELETE:
+        payload_block: ""
+        payload_arg: ""
+        example: |
+          @tool
+          def delete_charge(charge_id: int):
+              """Delete a charge definition. Only works if no loans/clients have this charge applied."""
+              print(f"[Tool] Deleting charge #{charge_id}...")
+              return fineract_client.execute_delete(f"charges/{charge_id}")
+
+  # MCP server registration template (mcp_server.py)
+  mcp_registration:
+    template: |
+      @mcp.tool()
+      def {mcp_tool_name}({mcp_params_signature}) -> dict:
+          """{mcp_docstring}"""
+          {validation_block}
+          return {domain_function}_domain.func({call_args})
+
+    # Validation patterns
+    validation_patterns:
+      id_exists: |
+        check = {get_function}.func({id_param})
+        if not isinstance(check, dict) or check.get("httpStatusCode") == 404:
+            return {"error": f"{entity} ID {{{id_param}}} not found."}
+
+      status_check: |
+        status = check.get("status", {}).get("value", "")
+        if "{required_status}" not in status.lower():
+            return {"error": f"{entity} {{{id_param}}} is in status '{{status}}'. Only {required_status} {entities} can be {action_verb}."}
+
+      enum_validate: |
+        valid_{param} = {valid_values}
+        if {param} not in valid_{param}:
+            return {"error": f"Invalid {param} '{{ {param} }}'. Must be one of: {{valid_{param}}}"}
+
+      list_wrap: |
+        result = {function}_domain.func({args})
+        if isinstance(result, list):
+            return {"{key}": result, "count": len(result)}
+        return result
+
+    # Import template
+    import_template: |
+      from tools.domains.{domain} import {function} as {function}_domain
+
+# ──────────────────────────────────────────────────
+# TIER 2 — Datatable Extension (API doesn't exist)
+# ──────────────────────────────────────────────────
+
+tier2:
+  description: "Fineract API doesn't exist — extend via datatables"
+
+  # Step 1: Datatable schema design
+  datatable_schema:
+    naming: "dt_{parent_entity}_{purpose}"
+    valid_apptables:
+      - m_client
+      - m_group
+      - m_loan
+      - m_savings_account
+      - m_office
+      - m_center
+    column_types:
+      - {name: string, fineract_type: String, default_length: 100}
+      - {name: int, fineract_type: Integer, default_length: null}
+      - {name: decimal, fineract_type: Decimal, default_length: null}
+      - {name: boolean, fineract_type: Boolean, default_length: null}
+      - {name: date, fineract_type: Date, default_length: null}
+      - {name: datetime, fineract_type: DateTime, default_length: null}
+      - {name: text, fineract_type: Text, default_length: null}
+      - {name: dropdown, fineract_type: Dropdown, default_length: null}
+
+    example: |
+      datatable:
+        name: dt_group_meetings
+        apptable: m_group
+        columns:
+          - {name: meeting_date, type: date, mandatory: true}
+          - {name: meeting_type, type: string, length: 50}
+          - {name: location, type: string, length: 200}
+          - {name: notes, type: text}
+          - {name: status, type: string, length: 20}
+
+  # Step 2: Create datatable via MCP
+  datatable_creation:
+    mcp_call: |
+      mcp__mifos__create_datatable(
+        datatable_name="{dt_name}",
+        apptable_name="{apptable}",
+        columns=[
+          {columns_json}
+        ]
+      )
+
+  # Step 3: Domain function wrapping datatable CRUD
+  domain_function:
+    crud_operations:
+      create:
+        template: |
+          @tool
+          def {create_function}({entity_id_param}: int, {field_params}):
+              """{create_docstring}"""
+              print(f"[Tool] {create_log}...")
+              data = {
+                  {field_assignments}
+                  "dateFormat": "yyyy-MM-dd",
+                  "locale": "en"
+              }
+              return fineract_client.execute_post(f"datatables/{dt_name}/{{{entity_id_param}}}", data)
+
+        example: |
+          @tool
+          def schedule_meeting(group_id: int, meeting_date: str, meeting_type: str = "regular",
+                               location: str = "", notes: str = ""):
+              """Schedule a group meeting.
+              meeting_type: regular, special, emergency
+              meeting_date format: yyyy-MM-dd"""
+              print(f"[Tool] Scheduling meeting for group #{group_id}...")
+              data = {
+                  "meeting_date": meeting_date,
+                  "meeting_type": meeting_type,
+                  "location": location,
+                  "notes": notes,
+                  "status": "scheduled",
+                  "dateFormat": "yyyy-MM-dd",
+                  "locale": "en"
+              }
+              return fineract_client.execute_post(f"datatables/dt_group_meetings/{group_id}", data)
+
+      read:
+        template: |
+          @tool
+          def {list_function}({entity_id_param}: int):
+              """{list_docstring}"""
+              print(f"[Tool] {list_log}...")
+              return fineract_client.execute_get(f"datatables/{dt_name}/{{{entity_id_param}}}")
+
+        example: |
+          @tool
+          def list_meetings(group_id: int):
+              """List all meetings for a group."""
+              print(f"[Tool] Fetching meetings for group #{group_id}...")
+              return fineract_client.execute_get(f"datatables/dt_group_meetings/{group_id}")
+
+      update:
+        template: |
+          @tool
+          def {update_function}({entity_id_param}: int, {update_field_params}):
+              """{update_docstring}"""
+              print(f"[Tool] {update_log}...")
+              data = {}
+              {conditional_field_updates}
+              data["dateFormat"] = "yyyy-MM-dd"
+              data["locale"] = "en"
+              return fineract_client.execute_put(f"datatables/{dt_name}/{{{entity_id_param}}}", data)
+
+      delete:
+        template: |
+          @tool
+          def {delete_function}({entity_id_param}: int):
+              """{delete_docstring}"""
+              print(f"[Tool] {delete_log}...")
+              return fineract_client.execute_delete(f"datatables/{dt_name}/{{{entity_id_param}}}")
+
+  # Step 4: MCP registration for datatable tools
+  mcp_registration:
+    template: |
+      # --- {DOMAIN_LABEL} (Datatable: {dt_name}) ---
+
+      @mcp.tool()
+      def {mcp_create_name}({mcp_params}) -> dict:
+          """{mcp_create_docstring}"""
+          {validation}
+          return {create_function}_domain.func({call_args})
+
+      @mcp.tool()
+      def {mcp_list_name}({entity_id_param}: int) -> dict:
+          """{mcp_list_docstring}"""
+          result = {list_function}_domain.func({entity_id_param})
+          if isinstance(result, list):
+              return {"entries": result, "count": len(result)}
+          return result
+
+      @mcp.tool()
+      def {mcp_update_name}({mcp_update_params}) -> dict:
+          """{mcp_update_docstring}"""
+          return {update_function}_domain.func({update_call_args})
+
+      @mcp.tool()
+      def {mcp_delete_name}({entity_id_param}: int) -> dict:
+          """{mcp_delete_docstring}"""
+          return {delete_function}_domain.func({entity_id_param})
+
+# ──────────────────────────────────────────────────
+# COMPOSITE — Combined TIER 1 + TIER 2 for a feature
+# ──────────────────────────────────────────────────
+
+composite:
+  description: "When a feature needs both native APIs and datatable extensions"
+  example:
+    feature: "Group Savings with Meetings"
+    tier1_tools:
+      - create_lending_group  # already exists
+      - get_group             # already exists
+      - update_group          # TIER 1 — wrap PUT /groups/{groupId}
+    tier2_tools:
+      - schedule_meeting      # TIER 2 — dt_group_meetings
+      - list_meetings         # TIER 2 — dt_group_meetings
+      - update_meeting        # TIER 2 — dt_group_meetings
+      - cancel_meeting        # TIER 2 — dt_group_meetings
+
+# ──────────────────────────────────────────────────
+# API_CONTRACT.yaml Template
+# ──────────────────────────────────────────────────
+
+api_contract:
+  template: |
+    # {project}/server-layer/API_CONTRACT.yaml
+    _generated_by: /mifos-bridge
+    _generated_at: {timestamp}
+    _mcp_server: mifos
+
+    endpoints:
+      - name: {tool_name}
+        source: {native|tier1_mcp_added|tier2_datatable}
+        mcp_tool: mcp__mifos__{tool_name}
+        method: {HTTP_METHOD}
+        path: {fineract_path}
+        path_params:
+          - {name: param_name, type: Type, required: true}
+        body:                    # POST/PUT only
+          - {name: field, type: Type, required: true}
+        response:
+          type: {ResponseType}
+          fields:
+            - {name: field, type: Type}
+        kotlin_mapping:
+          service: {ServiceName}
+          method: "{methodSignature}"
+          dto: "{DtoName} -> {ModelName}"
+
+    datatables_created:          # TIER 2 only
+      - name: {dt_name}
+        apptable: {parent_table}
+        columns: [{column_names}]
+
+# ──────────────────────────────────────────────────
+# MCP_CAPABILITIES.yaml Update Template
+# ──────────────────────────────────────────────────
+
+capabilities_update:
+  template: |
+    # Append to domains.{domain}.tools:
+    - name: {tool_name}
+      mcp_name: mcp__mifos__{tool_name}
+      operation: {create|read|update|delete|list|action|search}
+      params: [{param_defs}]
+      returns: "{return_shape}"
+      fineract_api: {method} {path}
+      added_by: /mifos-bridge
+      added_at: {timestamp}
+      tier: {1|2}
+      datatable: {dt_name}  # tier 2 only
