@@ -79,7 +79,8 @@ release:
 
 | Field | Value |
 |-------|-------|
-| URL | https://github.com/openMF/mobile-wallet |
+| Upstream | [openMF/mifos-pay](https://github.com/openMF/mifos-pay) |
+| Origin (Fork) | [therajanmaurya/mifos-pay](https://github.com/therajanmaurya/mifos-pay) |
 | Path | source/mobile-wallet |
 | Type | Git Submodule |
 

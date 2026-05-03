@@ -23,7 +23,8 @@ Self-service banking application for end-users to view and transact on their acc
 
 | Setting | Value |
 |---------|-------|
-| GitHub | [openMF/mifos-mobile](https://github.com/openMF/mifos-mobile) |
+| Upstream | [openMF/mifos-mobile](https://github.com/openMF/mifos-mobile) |
+| Origin (Fork) | [therajanmaurya/mifos-mobile](https://github.com/therajanmaurya/mifos-mobile) |
 | Reference Template | [openMF/kmp-project-template](https://github.com/openMF/kmp-project-template) |
 
 ---
