@@ -1,0 +1,988 @@
+schema_version: "3.1"
+id: field-officer-dashboard
+name: Field Officer Dashboard
+description: >
+  Read-only cross-group monitoring screen for field officers (and program managers). Shows
+  aggregated KPIs across all groups managed by the logged-in staff member: 4 KPI summary cards
+  (total groups, total active members, total savings this month, total loans outstanding) —
+  each using MD3 container tokens (primaryContainer, secondaryContainer, tertiaryContainer,
+  errorContainer). Provides a filterable groups list with health indicators per group based on
+  overdueRate. Supports 3 filter chips: region, group status (active/inactive/pending), and
+  overdue rate threshold (none / <10% / >10%). Export Report button navigates to
+  /runreports/FieldOfficerGroupReport. Role-gated: canExport only for FIELD_OFFICER and
+  PROGRAM_MANAGER. All data aggregated client-side from Fineract API responses. Read-only
+  — no mutation actions.
+feature: field-officer-view
+flow: field-officer-flow
+version: "1.1.0"
+tags:
+  - field-officer-view
+  - admin
+  - dashboard
+  - read-only
+  - FR-009
+
+status: enriched
+quality_score: 92
+status_history:
+  - status: draft
+    date: "2026-05-05"
+    author: system
+  - status: enriched
+    date: "2026-05-05"
+    author: system
+  - from: enriched
+    to: enriched
+    at: "2026-05-05"
+    by: "/idea enrich --flow all (re-enrich pass)"
+
+entry_point: false
+bottom_nav:
+  visible: true
+  selected_tab: dashboard
+navigates_to:
+  - target: group-dashboard
+    condition: user_taps_group_health_card
+    params: { groupId: Long }
+route: /field-officer/dashboard
+entry_points:
+  - source: app_launch
+    condition: "userRole == FIELD_OFFICER"
+  - source: app_launch
+    condition: "userRole == PROGRAM_MANAGER"
+  - source: bottom_nav
+    condition: "userRole == FIELD_OFFICER || userRole == PROGRAM_MANAGER"
+nav_params:
+  staffId: { type: Long, required: false, source: session }
+
+screens:
+  - id: field_officer_dashboard_screen
+    name: FieldOfficerDashboardScreen
+    composable: FieldOfficerDashboardScreen
+    description: >
+      Scrollable LazyColumn with sticky top bar, pull-to-refresh. Top section:
+      4-card KPI row (horizontal scroll). Second section: filter chip row (3 chips + clear).
+      Body: group count header + group health card list. Empty state when no groups.
+      Error state with retry on load failure. All interactions read-only.
+    layout: >
+      Scaffold (TopAppBar + LazyColumn(
+        item: KPICardsRow,
+        item: FilterChipRow,
+        item: GroupsListHeader,
+        items: GroupHealthCard per filteredGroups,
+        item: EmptyState or ErrorState conditional
+      ))
+
+state_model:
+  FieldOfficerDashboardViewModel:
+    state:
+      name: FieldOfficerDashboardState
+      fields:
+        isLoading: { type: Boolean, default: "true" }
+        isRefreshing: { type: Boolean, default: "false" }
+        staffId: { type: Long, default: "0L" }
+        userRole: { type: String, default: '""' }
+        canExport: { type: Boolean, default: "false", note: "true when userRole == FIELD_OFFICER || userRole == PROGRAM_MANAGER" }
+        totalGroupsCount: { type: Int, default: "0" }
+        totalActiveMembers: { type: Int, default: "0" }
+        totalSavingsThisMonth: { type: Double, default: "0.0" }
+        totalLoansOutstanding: { type: Double, default: "0.0" }
+        groups: { type: "List<GroupHealthSummary>", default: "emptyList()" }
+        filteredGroups: { type: "List<GroupHealthSummary>", default: "emptyList()" }
+        availableRegions: { type: "List<String>", default: "emptyList()" }
+        selectedRegionFilter: { type: "String?", default: "null" }
+        selectedStatusFilter: { type: "GroupStatusFilter?", default: "null" }
+        selectedOverdueFilter: { type: "OverdueRateFilter?", default: "null" }
+        isExporting: { type: Boolean, default: "false" }
+        error: { type: "FieldOfficerDashboardError?", default: "null" }
+    screen_state:
+      name: FieldOfficerDashboardScreenState
+      members:
+        - Loading: fetching and aggregating groups KPIs
+        - Content: data loaded; KPI cards and group list shown
+        - Empty: no groups assigned to this field officer
+        - Error: API failure during load; retry available
+    errors:
+      name: FieldOfficerDashboardError
+      types:
+        - { type: Network, retry: true, message_key: error_network }
+        - { type: Server, retry: true, message_key: error_server }
+        - { type: Auth, retry: false, message_key: error_auth, redirect: login }
+        - { type: NoGroupsAssigned, retry: false, message_key: error_no_groups }
+    events:
+      name: FieldOfficerDashboardEvent
+      members:
+        - { name: NavigateToGroupDashboard, params: "groupId: Long" }
+        - { name: NavigateToExportReport, params: "staffId: Long" }
+        - { name: ShowSnackbar, params: "message: String" }
+        - { name: ShowRegionPickerDialog }
+        - { name: ShowStatusPickerDialog }
+        - { name: ShowOverduePickerDialog }
+    actions:
+      name: FieldOfficerDashboardAction
+      members:
+        - { name: LoadDashboard, trigger: "Screen enters composition" }
+        - { name: OnGroupTapped, params: "groupId: Long", trigger: "Tap group health card" }
+        - { name: OnRegionFilterSelected, params: "region: String?", trigger: "Select region in picker dialog" }
+        - { name: OnStatusFilterSelected, params: "status: GroupStatusFilter?", trigger: "Select status in picker dialog" }
+        - { name: OnOverdueFilterSelected, params: "filter: OverdueRateFilter?", trigger: "Select overdue threshold in picker dialog" }
+        - { name: OnClearFilters, trigger: "Tap Clear Filters chip" }
+        - { name: OnExportReport, trigger: "Tap Export Report in top bar; canExport must be true" }
+        - { name: OnRefresh, trigger: "Pull to refresh" }
+        - { name: OnRetry, trigger: "Tap retry button on error state" }
+    di:
+      - GroupRepository
+      - StaffRepository
+      - ReportRepository
+      - NetworkMonitor
+      - SessionManager
+
+flow_logic:
+  - decision: on_load
+    branches:
+      - condition: always
+        action: >
+          Get staffId and userRole from SessionManager.
+          Set canExport = userRole == FIELD_OFFICER || userRole == PROGRAM_MANAGER.
+          Parallel API calls:
+            GET /fineract-provider/api/v1/centers?staffId={staffId} (centers)
+            GET /fineract-provider/api/v1/groups?staffId={staffId} (groups)
+          On success:
+            Aggregate KPIs client-side:
+              totalGroupsCount = groups.pageItems.size
+              totalActiveMembers = sum(group.activeClientCount)
+              totalSavingsThisMonth = sum from savings accounts for current month
+              totalLoansOutstanding = sum(group.totalLoansOutstanding)
+              availableRegions = distinct(group.officeName).sorted()
+            Set filteredGroups = groups (unfiltered)
+            ScreenState → Content (or Empty if totalGroupsCount == 0)
+            Emit analytics: field_officer_dashboard_loaded(group_count, total_members)
+          On failure: ScreenState → Error
+
+  - decision: on_filter_applied
+    branches:
+      - condition: any filter changed (region, status, overdue)
+        action: >
+          Filter groups locally (no API call):
+            If selectedRegionFilter != null: groups.filter { it.officeName == selectedRegionFilter }
+            If selectedStatusFilter != null: groups.filter { it.status == selectedStatusFilter.name }
+            If selectedOverdueFilter != null:
+              NONE: groups.filter { it.overdueRate == 0.0 }
+              LESS_THAN_10: groups.filter { it.overdueRate < 0.10 }
+              GREATER_THAN_10: groups.filter { it.overdueRate >= 0.10 }
+          Set filteredGroups = result.
+          Emit analytics: field_officer_filter_applied(filter_type, filter_value)
+
+  - decision: on_clear_filters
+    branches:
+      - condition: always
+        action: >
+          Reset selectedRegionFilter, selectedStatusFilter, selectedOverdueFilter to null.
+          Set filteredGroups = groups (full list).
+
+  - decision: on_group_tapped
+    branches:
+      - condition: always
+        action: >
+          Navigate to group-dashboard with groupId.
+          Note: field officer cannot perform mutations from group-dashboard.
+          Emit analytics: field_officer_group_tapped(group_id, health_indicator, overdue_rate)
+
+  - decision: on_export_report
+    branches:
+      - condition: "canExport == true"
+        action: >
+          Set isExporting = true.
+          GET /fineract-provider/api/v1/runreports/FieldOfficerGroupReport?R_staffId={staffId}&output-type=CSV
+          On success: launch system share sheet with CSV file.
+          On failure: ShowSnackbar(i18n.export_error).
+          Set isExporting = false.
+          Emit analytics: field_officer_export_requested(group_count, staff_id)
+      - condition: "canExport == false"
+        action: >
+          Do not expose button. Role-gate enforced in UI (button hidden for other roles).
+
+  - decision: on_refresh
+    branches:
+      - condition: always
+        action: >
+          Set isRefreshing = true.
+          Re-run parallel API calls (invalidate cache).
+          Re-aggregate KPIs.
+          Set isRefreshing = false.
+          Emit analytics: field_officer_dashboard_refreshed(group_count)
+
+dependencies:
+  tier: feature
+  features: [group-dashboard]
+  repositories:
+    - name: GroupRepository
+      methods:
+        - "getGroupsForStaff(staffId: Long): Flow<PagedResponse<GroupHealthSummary>>"
+        - "getCentersForStaff(staffId: Long): Flow<PagedResponse<Center>>"
+    - name: StaffRepository
+      methods:
+        - "getCurrentStaff(): Flow<Staff>"
+    - name: ReportRepository
+      methods:
+        - "runFieldOfficerGroupReport(staffId: Long): Flow<ByteArray>"
+  services:
+    - NetworkMonitor
+    - SessionManager
+  local_db:
+    - table: groups (SQLDelight, cache TTL 300s)
+    - table: centers (SQLDelight, cache TTL 300s)
+
+api:
+  - id: get_centers_for_staff
+    method: GET
+    path: /fineract-provider/api/v1/centers
+    description: Fetch all centers (top-level group containers) assigned to this staff member
+    auth: BasicAuth
+    query_params:
+      staffId: { type: Long, required: true, source: session }
+      paged: { type: Boolean, default: true }
+      limit: { type: Int, default: 100 }
+      offset: { type: Int, default: 0 }
+    response_ref: PagedCentersResponse
+    error_handling:
+      401: Redirect to login
+      500: ScreenState → Error with retry
+    cache:
+      ttl: 300
+      strategy: stale-while-revalidate
+      offline: show_cached_with_banner
+
+  - id: get_groups_for_staff
+    method: GET
+    path: /fineract-provider/api/v1/groups
+    description: Fetch all groups assigned to this field officer staff member
+    auth: BasicAuth
+    query_params:
+      staffId: { type: Long, required: true, source: session }
+      paged: { type: Boolean, default: true }
+      limit: { type: Int, default: 100 }
+      offset: { type: Int, default: 0 }
+    response_ref: PagedGroupsResponse
+    error_handling:
+      401: Redirect to login
+      500: ScreenState → Error with retry
+    cache:
+      ttl: 300
+      strategy: stale-while-revalidate
+      offline: show_cached_with_banner
+
+  - id: run_report
+    method: GET
+    path: /fineract-provider/api/v1/runreports/FieldOfficerGroupReport
+    description: Generate a CSV report of all groups and KPIs for the field officer
+    auth: BasicAuth
+    query_params:
+      R_staffId: { type: Long, required: true }
+      output-type: { type: String, default: "CSV" }
+    response_ref: FileResponse
+    error_handling:
+      403: Report not accessible — show snackbar
+      500: Report generation failed — show snackbar
+
+dtos:
+  PagedCentersResponse:
+    fields:
+      - { name: totalFilteredRecords, type: Int }
+      - { name: pageItems, type: "List<CenterItem>" }
+  CenterItem:
+    fields:
+      - { name: id, type: Long }
+      - { name: name, type: String }
+      - { name: status, type: "StatusInfo" }
+      - { name: staffId, type: Long }
+      - { name: officeId, type: Long }
+      - { name: officeName, type: String }
+  PagedGroupsResponse:
+    fields:
+      - { name: totalFilteredRecords, type: Int }
+      - { name: pageItems, type: "List<GroupItem>" }
+  GroupItem:
+    fields:
+      - { name: id, type: Long }
+      - { name: name, type: String }
+      - { name: status, type: "StatusInfo" }
+      - { name: officeName, type: String }
+      - { name: staffName, type: String }
+      - { name: activeClientCount, type: Int }
+  StatusInfo:
+    fields:
+      - { name: id, type: Int }
+      - { name: value, type: String }
+  FileResponse:
+    fields:
+      - { name: content, type: ByteArray }
+      - { name: mimeType, type: String }
+  GroupHealthSummary:
+    fields:
+      - { name: id, type: Long }
+      - { name: fineractGroupId, type: Long }
+      - { name: name, type: String }
+      - { name: officeName, type: String }
+      - { name: status, type: String }
+      - { name: activeClientCount, type: Int }
+      - { name: totalSavingsBalance, type: Double, currency: KES }
+      - { name: totalLoansOutstanding, type: Double, currency: KES }
+      - { name: overdueRate, type: Double, note: "0.0 to 1.0" }
+      - { name: healthIndicator, type: HealthIndicator }
+      - { name: cycleNumber, type: Int }
+  HealthIndicator:
+    values: [GREEN, AMBER, RED]
+    rules:
+      GREEN: "overdueRate < 0.05"
+      AMBER: "overdueRate >= 0.05 && overdueRate < 0.20"
+      RED: "overdueRate >= 0.20"
+  GroupStatusFilter:
+    values: [ACTIVE, PENDING, CLOSED]
+  OverdueRateFilter:
+    values: [NONE, LESS_THAN_10, GREATER_THAN_10]
+    labels:
+      NONE: "No Overdue"
+      LESS_THAN_10: "Overdue < 10%"
+      GREATER_THAN_10: "Overdue > 10%"
+  Staff:
+    fields:
+      - { name: id, type: Long }
+      - { name: displayName, type: String }
+      - { name: officeId, type: Long }
+      - { name: officeName, type: String }
+
+components:
+  - id: top_bar
+    type: top-app-bar
+    name: FieldOfficerTopBar
+    description: >
+      Top bar showing "Field Officer Dashboard" title. Export Report action in the overflow menu
+      or toolbar (visible and enabled only when canExport == true). Export shows loading spinner
+      while isExporting == true.
+    style:
+      title_text: "Field Officer Dashboard"
+      background: primary
+      text_color: onPrimary
+    actions:
+      - id: export_action
+        icon: FluentIcons.arrow_download_24_regular
+        content_description: "Export Field Officer Group Report as CSV"
+        visible_when: "canExport == true"
+        loading_when: "isExporting"
+        on_click:
+          action: OnExportReport
+    a11y:
+      content_description: "Field Officer Dashboard — monitoring {{totalGroupsCount}} groups"
+      role: toolbar
+    test_context:
+      purpose: >
+        Export button visible for FIELD_OFFICER and PROGRAM_MANAGER; hidden for other roles;
+        shows loading spinner during report generation
+      interaction_type: tap
+      data_driven: true
+      required_fields: [canExport, isExporting, totalGroupsCount]
+    on_click: {}
+
+  - id: kpi_cards_row
+    type: row
+    name: KPICardsRow
+    description: >
+      Horizontally scrollable row of 4 KPI summary cards. Each card uses a distinct
+      MD3 container color token: primaryContainer, secondaryContainer, tertiaryContainer,
+      errorContainer. Cards are non-interactive.
+    style:
+      scroll: horizontal
+      padding: "16dp"
+      gap: 12dp
+    a11y:
+      content_description: "KPI summary cards — {{totalGroupsCount}} groups, {{totalActiveMembers}} members, KES {{totalSavingsThisMonth}} savings, KES {{totalLoansOutstanding}} loans"
+    test_context:
+      purpose: Four KPI cards visible; each uses correct MD3 container token; values update on load
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [totalGroupsCount, totalActiveMembers, totalSavingsThisMonth, totalLoansOutstanding]
+    on_click: {}
+    children:
+      - id: kpi_total_groups
+        type: kpi_card
+        name: KPITotalGroups
+        style:
+          background: primaryContainer
+          corner_radius: 12dp
+          padding: 16dp
+          min_width: 140dp
+          min_height: 88dp
+        content:
+          - id: kpi_groups_value
+            type: text
+            text: "{{totalGroupsCount}}"
+            text_style: headlineMedium
+            color: onPrimaryContainer
+            font_weight: bold
+          - id: kpi_groups_label
+            type: text
+            text: "Groups Managed"
+            text_style: bodySmall
+            color: onPrimaryContainer
+            margin_top: 4dp
+          - id: kpi_groups_icon
+            type: icon
+            icon: FluentIcons.people_24_regular
+            color: onPrimaryContainer
+            size: 20dp
+        a11y:
+          content_description: "{{totalGroupsCount}} groups managed"
+        test_context:
+          purpose: Demo — 8 groups; primaryContainer background; headlineMedium value text
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [totalGroupsCount]
+        on_click: {}
+
+      - id: kpi_total_members
+        type: kpi_card
+        name: KPITotalMembers
+        style:
+          background: secondaryContainer
+          corner_radius: 12dp
+          padding: 16dp
+          min_width: 140dp
+          min_height: 88dp
+        content:
+          - id: kpi_members_value
+            type: text
+            text: "{{totalActiveMembers}}"
+            text_style: headlineMedium
+            color: onSecondaryContainer
+            font_weight: bold
+          - id: kpi_members_label
+            type: text
+            text: "Active Members"
+            text_style: bodySmall
+            color: onSecondaryContainer
+            margin_top: 4dp
+          - id: kpi_members_icon
+            type: icon
+            icon: FluentIcons.person_24_regular
+            color: onSecondaryContainer
+            size: 20dp
+        a11y:
+          content_description: "{{totalActiveMembers}} active members across all groups"
+        test_context:
+          purpose: Demo — 94 members; secondaryContainer background
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [totalActiveMembers]
+        on_click: {}
+
+      - id: kpi_total_savings
+        type: kpi_card
+        name: KPITotalSavings
+        style:
+          background: tertiaryContainer
+          corner_radius: 12dp
+          padding: 16dp
+          min_width: 156dp
+          min_height: 88dp
+        content:
+          - id: kpi_savings_value
+            type: text
+            text: "KES {{totalSavingsThisMonth | compact}}"
+            text_style: headlineMedium
+            color: onTertiaryContainer
+            font_weight: bold
+          - id: kpi_savings_label
+            type: text
+            text: "Savings This Month"
+            text_style: bodySmall
+            color: onTertiaryContainer
+            margin_top: 4dp
+          - id: kpi_savings_icon
+            type: icon
+            icon: FluentIcons.piggy_bank_24_regular
+            color: onTertiaryContainer
+            size: 20dp
+        a11y:
+          content_description: "KES {{totalSavingsThisMonth}} total savings collected this month"
+        test_context:
+          purpose: Demo — KES 142K (compact); tertiaryContainer (tertiary=#1565C0) background
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [totalSavingsThisMonth]
+        on_click: {}
+
+      - id: kpi_loans_outstanding
+        type: kpi_card
+        name: KPILoansOutstanding
+        style:
+          background: errorContainer
+          corner_radius: 12dp
+          padding: 16dp
+          min_width: 156dp
+          min_height: 88dp
+        content:
+          - id: kpi_loans_value
+            type: text
+            text: "KES {{totalLoansOutstanding | compact}}"
+            text_style: headlineMedium
+            color: onErrorContainer
+            font_weight: bold
+          - id: kpi_loans_label
+            type: text
+            text: "Loans Outstanding"
+            text_style: bodySmall
+            color: onErrorContainer
+            margin_top: 4dp
+          - id: kpi_loans_icon
+            type: icon
+            icon: FluentIcons.money_24_regular
+            color: onErrorContainer
+            size: 20dp
+        a11y:
+          content_description: "KES {{totalLoansOutstanding}} total loans outstanding across all groups"
+        test_context:
+          purpose: Demo — KES 87.5K (compact); errorContainer background
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [totalLoansOutstanding]
+        on_click: {}
+
+  - id: filter_row
+    type: row
+    name: FilterChipRow
+    description: >
+      Horizontally scrollable row of 3 filter chips plus a conditional Clear Filters chip.
+      Filter chips: Region (shows available regions picker), Group Status (ACTIVE/PENDING/CLOSED),
+      Overdue Rate (None / <10% / >10%). Clear Filters visible when any filter active.
+    style:
+      scroll: horizontal
+      padding: "0dp 16dp 8dp"
+      gap: 8dp
+    a11y:
+      content_description: "Filter chips: {{selectedRegionFilter != null || selectedStatusFilter != null || selectedOverdueFilter != null ? 'filters active' : 'no filters active'}}"
+    test_context:
+      purpose: Filter row visible below KPI cards; all 3 chips shown; clear chip appears when any filter active
+      interaction_type: tap
+      data_driven: true
+      required_fields: [selectedRegionFilter, selectedStatusFilter, selectedOverdueFilter]
+    on_click: {}
+    children:
+      - id: region_filter_chip
+        type: filter_chip
+        name: RegionFilterChip
+        label: "{{selectedRegionFilter != null ? selectedRegionFilter : 'All Regions'}}"
+        icon: FluentIcons.location_24_regular
+        style:
+          min_touch_target: 40dp
+          selected_background: secondaryContainer
+          selected_text_color: onSecondaryContainer
+        selected_when: "selectedRegionFilter != null"
+        a11y:
+          content_description: "Region filter: {{selectedRegionFilter != null ? selectedRegionFilter : 'All regions'}}"
+          role: button
+          min_touch_target: 40dp
+        test_context:
+          purpose: Tapping opens region picker dialog with availableRegions list; selecting filters group list
+          interaction_type: tap
+          data_driven: true
+          required_fields: [availableRegions, selectedRegionFilter]
+        on_click:
+          action: ShowRegionPickerDialog
+
+      - id: status_filter_chip
+        type: filter_chip
+        name: StatusFilterChip
+        label: "{{selectedStatusFilter != null ? selectedStatusFilter.name : 'All Statuses'}}"
+        icon: FluentIcons.filter_24_regular
+        style:
+          min_touch_target: 40dp
+          selected_background: secondaryContainer
+          selected_text_color: onSecondaryContainer
+        selected_when: "selectedStatusFilter != null"
+        a11y:
+          content_description: "Status filter: {{selectedStatusFilter != null ? selectedStatusFilter.name : 'All statuses'}}"
+          role: button
+          min_touch_target: 40dp
+        test_context:
+          purpose: Tapping opens status picker with ACTIVE/PENDING/CLOSED options; selecting filters list
+          interaction_type: tap
+          data_driven: true
+          required_fields: [selectedStatusFilter]
+        on_click:
+          action: ShowStatusPickerDialog
+
+      - id: overdue_filter_chip
+        type: filter_chip
+        name: OverdueRateFilterChip
+        label: "{{selectedOverdueFilter != null ? i18n.overdue_labels[selectedOverdueFilter] : 'Any Overdue Rate'}}"
+        icon: FluentIcons.warning_24_regular
+        style:
+          min_touch_target: 40dp
+          selected_background: warningContainer
+          selected_text_color: onWarningContainer
+        selected_when: "selectedOverdueFilter != null"
+        a11y:
+          content_description: "Overdue rate filter: {{selectedOverdueFilter != null ? i18n.overdue_labels[selectedOverdueFilter] : 'Any overdue rate'}}"
+          role: button
+          min_touch_target: 40dp
+        test_context:
+          purpose: Tapping opens overdue rate picker (None / <10% / >10%); selecting filters group list
+          interaction_type: tap
+          data_driven: true
+          required_fields: [selectedOverdueFilter]
+        on_click:
+          action: ShowOverduePickerDialog
+
+      - id: clear_filters_chip
+        type: chip
+        name: ClearFiltersChip
+        label: "Clear Filters"
+        icon: FluentIcons.dismiss_16_regular
+        visible_when: "selectedRegionFilter != null || selectedStatusFilter != null || selectedOverdueFilter != null"
+        style:
+          background: errorContainer
+          text_color: onErrorContainer
+          min_touch_target: 40dp
+        a11y:
+          content_description: "Clear all active filters and show all groups"
+          role: button
+          min_touch_target: 40dp
+        test_context:
+          purpose: Clear chip visible only when at least one filter active; tapping resets all filters
+          interaction_type: tap
+          data_driven: true
+          required_fields: [selectedRegionFilter, selectedStatusFilter, selectedOverdueFilter]
+        on_click:
+          action: OnClearFilters
+
+  - id: groups_list_header
+    type: row
+    name: GroupsListHeader
+    description: Section header showing filtered vs total group counts
+    style:
+      padding: "0dp 16dp 4dp"
+    content:
+      - id: group_count_text
+        type: text
+        text: "{{filteredGroups.size}} of {{groups.size}} groups"
+        text_style: titleSmall
+        color: onSurfaceVariant
+    a11y:
+      content_description: "Showing {{filteredGroups.size}} of {{groups.size}} groups"
+    test_context:
+      purpose: Count label updates as filters applied; "8 of 8 groups" when no filter, "3 of 8 groups" when filtered
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [filteredGroups, groups]
+    on_click: {}
+
+  - id: group_health_card
+    type: card
+    name: GroupHealthCard
+    description: >
+      Card per group in filteredGroups. Shows group name, office/region, health badge
+      (GREEN/AMBER/RED based on overdueRate rules), and metric chips (member count,
+      savings balance, overdue rate). Tapping navigates to read-only group-dashboard.
+    repeats_for: filteredGroups
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 12dp
+      padding: 16dp
+      min_touch_target: 72dp
+      margin: "0dp 16dp 8dp"
+    content:
+      - id: group_name_text
+        type: text
+        text: "{{group.name}}"
+        text_style: titleMedium
+        color: onSurface
+      - id: group_office_text
+        type: text
+        text: "{{group.officeName}} · Cycle {{group.cycleNumber}}"
+        text_style: bodySmall
+        color: onSurfaceVariant
+        margin_top: 2dp
+      - id: group_health_badge
+        type: badge
+        value: "{{group.healthIndicator}}"
+        style:
+          GREEN: { background: primaryContainer, text_color: onPrimaryContainer, text: "Healthy" }
+          AMBER: { background: warningContainer, text_color: onWarningContainer, text: "At Risk" }
+          RED: { background: errorContainer, text_color: onErrorContainer, text: "Critical" }
+        margin_top: 8dp
+      - id: group_metrics_row
+        type: row
+        style:
+          gap: 8dp
+          margin_top: 8dp
+          wrap: true
+        content:
+          - id: member_count_chip
+            type: info_chip
+            label: "{{group.activeClientCount}} members"
+            icon: FluentIcons.people_24_regular
+            style:
+              background: surfaceVariant
+              text_color: onSurfaceVariant
+          - id: savings_balance_chip
+            type: info_chip
+            label: "KES {{group.totalSavingsBalance | compact}}"
+            icon: FluentIcons.piggy_bank_24_regular
+            style:
+              background: surfaceVariant
+              text_color: onSurfaceVariant
+          - id: overdue_rate_chip
+            type: info_chip
+            label: "{{(group.overdueRate * 100).toInt()}}% overdue"
+            icon: FluentIcons.warning_24_regular
+            style:
+              background: "{{group.overdueRate < 0.05 ? surfaceVariant : group.overdueRate < 0.20 ? warningContainer : errorContainer}}"
+              text_color: "{{group.overdueRate < 0.05 ? onSurfaceVariant : group.overdueRate < 0.20 ? onWarningContainer : onErrorContainer}}"
+    a11y:
+      content_description: "{{group.name}} — {{group.officeName}}, {{group.healthIndicator}} health, {{group.activeClientCount}} members, {{(group.overdueRate * 100).toInt()}}% overdue. Tap to view details."
+      role: button
+      min_touch_target: 72dp
+    test_context:
+      purpose: >
+        Demo — 3 groups: Mwangaza Women's Group (GREEN, 0%), Tumaini Savings Circle (AMBER, 12%),
+        Umoja Welfare Group (RED, 25%). Tapping navigates to group-dashboard.
+        Health badge color reflects overdueRate thresholds.
+      interaction_type: tap
+      data_driven: true
+      required_fields: [group.name, group.officeName, group.healthIndicator, group.activeClientCount, group.overdueRate]
+    on_click:
+      action: OnGroupTapped
+      params: { groupId: "{{group.id}}" }
+      target: group-dashboard
+
+  - id: shimmer_dashboard
+    type: shimmer
+    name: DashboardShimmer
+    description: Loading skeleton shown during initial data fetch
+    visible_when: isLoading
+    style:
+      count: 6
+      height: 100dp
+      corner_radius: 12dp
+      background: surfaceVariant
+      margin: "0dp 16dp 8dp"
+    a11y:
+      content_description: "Loading dashboard data"
+    test_context:
+      purpose: Shimmer placeholders shown during ScreenState.Loading; disappear when content ready
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+  - id: empty_state
+    type: empty_state
+    name: NoGroupsEmptyState
+    description: Shown when field officer has no groups assigned (groups.isEmpty())
+    visible_when: "!isLoading && groups.isEmpty() && error == null"
+    style:
+      icon: FluentIcons.people_24_regular
+      icon_tint: onSurfaceVariant
+      icon_size: 56dp
+      title_text: "No Groups Assigned"
+      body_text: "You don't have any groups assigned yet. Contact your office administrator."
+      padding: 32dp
+    a11y:
+      content_description: "No groups assigned. Contact your office administrator to be assigned groups."
+    test_context:
+      purpose: Empty state shown when groups list is empty after successful load; not shown during loading or error
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+  - id: empty_filter_state
+    type: empty_state
+    name: NoFilterResultsState
+    description: Shown when all active filters result in zero groups
+    visible_when: "!isLoading && groups.isNotEmpty() && filteredGroups.isEmpty()"
+    style:
+      icon: FluentIcons.filter_dismiss_24_regular
+      icon_tint: onSurfaceVariant
+      icon_size: 48dp
+      title_text: "No Groups Match Filters"
+      body_text: "Try adjusting or clearing your filters."
+      cta_text: "Clear Filters"
+      padding: 24dp
+    a11y:
+      content_description: "No groups match current filters. Tap Clear Filters to show all groups."
+      role: button
+    test_context:
+      purpose: Filter empty state shown when filteredGroups.isEmpty but groups.isNotEmpty; CTA clears filters
+      interaction_type: tap
+      data_driven: true
+      required_fields: [filteredGroups, groups]
+    on_click:
+      action: OnClearFilters
+
+  - id: error_state
+    type: error_state
+    name: DashboardErrorState
+    description: Shown when API load fails — offers retry
+    visible_when: "error != null && !isLoading"
+    style:
+      icon: FluentIcons.wifi_off_24_regular
+      icon_tint: onSurfaceVariant
+      icon_size: 48dp
+      title_text: "Could not load dashboard"
+      body_text: "{{error.message}}"
+      cta_text: "Retry"
+      padding: 24dp
+    a11y:
+      content_description: "Error loading dashboard: {{error.message}}. Tap Retry to try again."
+      role: button
+    test_context:
+      purpose: Error state with retry CTA; tapping calls OnRetry which re-runs both API calls
+      interaction_type: tap
+      data_driven: true
+      required_fields: [error]
+    on_click:
+      action: OnRetry
+
+states:
+  initial_state: loading
+  loading:
+    description: >
+      Fetching groups and centers from Fineract API in parallel.
+      Aggregating KPIs client-side. Shimmer skeleton shown.
+    components_visible: [top_bar, shimmer_dashboard]
+
+  content:
+    description: >
+      Dashboard loaded. 4 KPI cards, 3 filter chips, and group health card list visible.
+      Pull-to-refresh enabled. Export button visible if canExport. Read-only throughout.
+    components_visible:
+      - top_bar
+      - kpi_cards_row
+      - filter_row
+      - groups_list_header
+      - group_health_card
+    demo_data:
+      staffId: 12
+      userRole: FIELD_OFFICER
+      canExport: true
+      totalGroupsCount: 8
+      totalActiveMembers: 94
+      totalSavingsThisMonth: 142000.0
+      totalLoansOutstanding: 87500.0
+      selectedRegionFilter: null
+      selectedStatusFilter: null
+      selectedOverdueFilter: null
+      groups:
+        - { id: 1, name: "Mwangaza Women's Group", officeName: "Nairobi East", status: "ACTIVE", activeClientCount: 12, totalSavingsBalance: 24000.0, totalLoansOutstanding: 9000.0, overdueRate: 0.00, healthIndicator: GREEN, cycleNumber: 1 }
+        - { id: 2, name: "Tumaini Savings Circle", officeName: "Nairobi West", status: "ACTIVE", activeClientCount: 10, totalSavingsBalance: 18500.0, totalLoansOutstanding: 12000.0, overdueRate: 0.12, healthIndicator: AMBER, cycleNumber: 3 }
+        - { id: 3, name: "Umoja Welfare Group", officeName: "Nairobi East", status: "ACTIVE", activeClientCount: 8, totalSavingsBalance: 11200.0, totalLoansOutstanding: 9800.0, overdueRate: 0.25, healthIndicator: RED, cycleNumber: 2 }
+        - { id: 4, name: "Pamoja Savings Group", officeName: "Nairobi North", status: "ACTIVE", activeClientCount: 11, totalSavingsBalance: 19800.0, totalLoansOutstanding: 14500.0, overdueRate: 0.03, healthIndicator: GREEN, cycleNumber: 4 }
+        - { id: 5, name: "Maisha Bora Circle", officeName: "Nairobi West", status: "ACTIVE", activeClientCount: 9, totalSavingsBalance: 15600.0, totalLoansOutstanding: 8200.0, overdueRate: 0.08, healthIndicator: AMBER, cycleNumber: 2 }
+
+  empty:
+    description: No groups assigned to this field officer. Empty state shown with admin contact instructions.
+    components_visible: [top_bar, empty_state]
+
+  error:
+    description: API failed during load. Error state shown with retry CTA.
+    components_visible: [top_bar, error_state]
+
+i18n:
+  en:
+    screen_title: "Field Officer Dashboard"
+    kpi_groups: "Groups Managed"
+    kpi_members: "Active Members"
+    kpi_savings: "Savings This Month"
+    kpi_loans: "Loans Outstanding"
+    filter_all_regions: "All Regions"
+    filter_all_statuses: "All Statuses"
+    filter_overdue_any: "Any Overdue Rate"
+    filter_overdue_none: "No Overdue"
+    filter_overdue_lt10: "Overdue < 10%"
+    filter_overdue_gt10: "Overdue > 10%"
+    filter_clear: "Clear Filters"
+    overdue_labels:
+      NONE: "No Overdue"
+      LESS_THAN_10: "Overdue < 10%"
+      GREATER_THAN_10: "Overdue > 10%"
+    groups_count_label: "{{filtered}} of {{total}} groups"
+    health_green: "Healthy"
+    health_amber: "At Risk"
+    health_red: "Critical"
+    export_button: "Export Report"
+    export_error: "Failed to generate report. Please try again."
+    empty_title: "No Groups Assigned"
+    empty_body: "You don't have any groups assigned yet. Contact your office admin."
+    empty_filter_title: "No Groups Match Filters"
+    empty_filter_body: "Try adjusting or clearing your filters."
+    clear_filters: "Clear Filters"
+    error_network: "No internet connection. Showing cached data."
+    error_server: "Server error. Please try again."
+    error_auth: "Session expired. Please log in again."
+    error_no_groups: "No groups assigned to your account."
+  sw:
+    screen_title: "Dashibodi ya Afisa Shamba"
+    kpi_groups: "Vikundi Vinavyosimamiwa"
+    kpi_members: "Wanachama Wanaofanya Kazi"
+    kpi_savings: "Akiba Za Mwezi Huu"
+    kpi_loans: "Mikopo Inayosubiri"
+    export_button: "Toa Ripoti"
+    empty_title: "Hakuna vikundi vilivyopewa"
+    empty_body: "Huna vikundi vilivyopewa. Wasiliana na msimamizi wako wa ofisi."
+  fr:
+    screen_title: "Tableau de Bord Agent de Terrain"
+    kpi_groups: "Groupes Gérés"
+    kpi_members: "Membres Actifs"
+    kpi_savings: "Épargne Ce Mois"
+    kpi_loans: "Prêts En Cours"
+    export_button: "Exporter le Rapport"
+    empty_title: "Aucun groupe assigné"
+  hi:
+    screen_title: "फील्ड ऑफिसर डैशबोर्ड"
+    kpi_groups: "प्रबंधित समूह"
+    kpi_members: "सक्रिय सदस्य"
+    kpi_savings: "इस महीने की बचत"
+    kpi_loans: "बकाया ऋण"
+    export_button: "रिपोर्ट निर्यात करें"
+    empty_title: "कोई समूह नहीं सौंपा गया"
+
+analytics:
+  screen_viewed:
+    event: field_officer_dashboard_viewed
+    params:
+      staff_id: Long
+      user_role: String
+  events:
+    - name: field_officer_dashboard_loaded
+      trigger: LoadDashboard action completes successfully (ScreenState → Content)
+      params:
+        group_count: Int
+        total_members: Int
+        total_savings: Double
+        staff_id: Long
+    - name: field_officer_filter_applied
+      trigger: Any filter chip selection changes filteredGroups
+      params:
+        filter_type: "{ region | status | overdue_rate }"
+        filter_value: String
+        result_count: Int
+    - name: field_officer_group_tapped
+      trigger: User taps a group health card
+      params:
+        group_id: Long
+        health_indicator: "{ GREEN | AMBER | RED }"
+        overdue_rate: Double
+        office_name: String
+    - name: field_officer_export_requested
+      trigger: User taps Export Report (canExport == true)
+      params:
+        group_count: Int
+        staff_id: Long
+    - name: field_officer_dashboard_refreshed
+      trigger: Pull-to-refresh gesture completes
+      params:
+        group_count: Int
+        staff_id: Long

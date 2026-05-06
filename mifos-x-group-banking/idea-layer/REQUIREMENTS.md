@@ -1,0 +1,89 @@
+# Requirements — CommonPurse (mifos-x-group-banking)
+
+> 20 functional requirements · 8 data entities · 2 third-party services
+> Generated from `idea-plan.yaml` §requirements (quality 95%, approved 2026-05-03).
+> Source of truth: `idea-layer/idea-plan.yaml` — do not hand-edit acceptance criteria here; edit the plan.
+
+| Field | Value |
+|-------|-------|
+| Project | mifos-x-group-banking |
+| Display name | CommonPurse |
+| Workspace | mifos-x |
+| Type | kmp |
+| Backend | Mifos Fineract (REST + MCP) |
+| Generated | 2026-05-05 (bridge promote) |
+
+---
+
+## Functional Requirements
+
+### Must (12)
+
+| ID | Description |
+|----|-------------|
+| FR-001 | Create and configure a new savings group with name, cycle length, meeting schedule, contribution rules, and loan policies |
+| FR-002 | Onboard members with name, photo, phone, and role assignment (chairperson, treasurer, secretary, member) |
+| FR-003 | Conduct meetings with attendance tracking, savings collection, loan review, and decision recording |
+| FR-004 | Collect regular savings contributions with amount validation against group rules |
+| FR-005 | Process loan applications with eligibility check based on savings multiplier rule |
+| FR-006 | Track loan repayments with schedule, overdue detection, and fine calculation |
+| FR-007 | Calculate and execute share-out at end of cycle based on savings ratio + profit distribution |
+| FR-008 | Work fully offline with local SQLDelight database and queue-based sync to Fineract |
+| FR-013 | Authenticate users via Fineract credentials with local PIN and optional biometric for offline access |
+| FR-014 | Two client types — Admin (staff) and End User (self-service) — each with a distinct UI surface |
+| FR-015 | Admin role-based permissions: treasurer, chairperson, field officer, program manager |
+| FR-017 | Dual savings: mandatory group savings (meeting-collected) and voluntary individual savings (anytime) — CR-003 |
+| FR-018 | Real-time fund balance (corpus) for the group; blocks loan disbursement when insufficient — CR-003 |
+| FR-019 | Enhanced meeting flow: review previous, separate cash inflows/outflows, fund balance throughout, opening/closing reconciliation — CR-003 |
+
+### Should (5)
+
+| ID | Description |
+|----|-------------|
+| FR-009 | Field officer can view and supervise multiple groups with read-only access |
+| FR-010 | Support multiple languages (English, Swahili, French, Hindi) with runtime switching |
+| FR-012 | Fine collection for late attendance, missed meetings, or late loan repayment |
+| FR-016 | End user can submit loan request from personal dashboard; appears as pending in next admin meeting |
+| FR-020 | Penalty for member not meeting minimum group savings contribution at a meeting — CR-003 |
+
+### Could (1)
+
+| ID | Description |
+|----|-------------|
+| FR-011 | Social fund collection and emergency disbursement tracking |
+
+> **Acceptance criteria** for each FR live in `idea-plan.yaml` §requirements.functional_requirements[].acceptance_criteria — read those before implementing the feature.
+
+---
+
+## Data Entities
+
+| Entity | Key Fields | Relationships | Fineract Mapping |
+|--------|-----------|--------------|------------------|
+| Group | id, name, cycle_number, cycle_length_months, meeting_frequency, contribution_min/max, loan_multiplier, interest_rate, currency, fineract_center_id, status | has_many Members · has_many Meetings · has_one SavingsPool | m_center (+ dt_group_config datatable) |
+| Member | id, name, phone, photo_uri, role, joined_date, fineract_client_id, status | belongs_to Group · has_many SavingsTransactions · has_many Loans | m_client (+ dt_member_role datatable) |
+| Meeting | id, meeting_number, scheduled_date, actual_date, status, attendance_count, total_collected, notes | belongs_to Group · has_many AttendanceRecords · has_many SavingsTransactions | dt_meeting datatable on m_center |
+| SavingsTransaction | id, member_id, meeting_id, amount, type (contribution/withdrawal/fine/social_fund), fineract_transaction_id, sync_status | belongs_to Member · belongs_to Meeting | m_savings_account_transaction |
+| Loan | id, member_id, amount, interest_rate, duration_weeks, status (requested/approved/disbursed/repaying/closed/defaulted), approved_by, disbursed_date, fineract_loan_id, sync_status | belongs_to Member · has_many LoanRepayments | m_loan |
+| LoanRepayment | id, loan_id, amount, meeting_id, paid_date, fineract_transaction_id, sync_status | belongs_to Loan | m_loan_transaction |
+| AttendanceRecord | id, meeting_id, member_id, present, late, fine_amount | belongs_to Meeting · belongs_to Member | dt_attendance datatable on m_center |
+| SyncQueue | id, entity_type, entity_id, operation (create/update/delete), payload_json, created_at, retry_count, last_error, status (pending/in_progress/synced/failed) | polymorphic to any entity | local-only (offline-first) |
+
+---
+
+## Third-Party Services
+
+| Service | Purpose | Integration |
+|---------|---------|-------------|
+| Mifos Fineract | Core banking backend — groups (Centers), members (Clients), savings accounts, loan products, transactions | REST API + MCP server |
+| SQLDelight | Local offline database for all entities | SDK (compile-time SQL → Kotlin) |
+
+---
+
+## Cross-References
+
+- **Features**: see `idea-layer/FEATURES.md` (20 features → these FRs)
+- **API Contract**: see `server-layer/API_CONTRACT.yaml` (Fineract endpoints + 36 MCP tools generated by /mifos-bridge)
+- **Bridge Audit**: see `server-layer/BRIDGE_AUDIT_LOG.yaml` (21-item Tier-1/Tier-2 resolution record)
+- **Data Tables (custom)**: 15 datatable schemas in `server-layer/API_CONTRACT.yaml` under `custom_tables[]`
+- **Plan**: `idea-layer/idea-plan.yaml` §requirements (line 541)

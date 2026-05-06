@@ -1,0 +1,421 @@
+schema_version: "3.1"
+id: loan-list
+name: Loan List
+description: >
+  Paginated list of all loans in the selected savings group. Each card shows member name,
+  loan amount, outstanding balance, status badge, next repayment date, and a red overdue
+  indicator when applicable. Chairperson and treasurer may apply for a new loan via the FAB.
+  Loads from local SQLDelight cache first; background-syncs from Fineract.
+feature: loan-management
+flow: loan-management-flow
+version: "1.0.0"
+tags:
+  - loan-management
+  - admin
+  - list
+  - offline-first
+
+status: enriched
+quality_score: 88
+status_history:
+  - status: draft
+    date: "2026-05-05"
+    author: system
+  - status: enriched
+    date: "2026-05-05"
+    author: system
+
+entry_point: false
+bottom_nav:
+  visible: true
+  selected_tab: loans
+navigates_to:
+  - loan-apply
+  - loan-detail
+route: /groups/{groupId}/loans
+entry_points:
+  - source: group-dashboard
+    label: Loans
+  - source: bottom_nav
+    condition: group_selected
+nav_params:
+  groupId: { type: Long, required: true }
+
+screens:
+  - id: loan-list-screen
+    title: Group Loans
+    type: list
+    description: Filterable, paginated list of loans with FAB for new application
+
+state_model:
+  LoanListViewModel:
+    state:
+      name: LoanListState
+      fields:
+        isLoading: { type: Boolean, default: "true" }
+        loans: { type: "List<LoanSummary>", default: "emptyList()" }
+        selectedFilter: { type: LoanStatusFilter, default: "LoanStatusFilter.ALL" }
+        filteredLoans: { type: "List<LoanSummary>", default: "emptyList()" }
+        isRefreshing: { type: Boolean, default: "false" }
+        error: { type: "LoanListError?", default: "null" }
+        groupId: { type: Long, default: "0L" }
+        canApplyLoan: { type: Boolean, default: "false" }
+    screen_state:
+      name: LoanListScreenState
+      members: [Loading, Content, Error, Empty]
+    errors:
+      name: LoanListError
+      types:
+        - { type: Network, retry: true, message_key: error_network }
+        - { type: Server, retry: true, message_key: error_server }
+        - { type: Auth, retry: false, message_key: error_auth, redirect: login }
+    events:
+      name: LoanListEvent
+      members:
+        - { name: NavigateToLoanDetail, params: { loanId: Long } }
+        - { name: NavigateToLoanApply, params: { groupId: Long } }
+        - { name: ShowSnackbar, params: { message: String } }
+    actions:
+      name: LoanListAction
+      members:
+        - { name: OnLoanClick, params: { loanId: Long }, trigger: "Tap loan card" }
+        - { name: OnFilterChange, params: { filter: LoanStatusFilter }, trigger: "Tap filter chip" }
+        - { name: OnApplyLoan, trigger: "Tap FAB" }
+        - { name: OnRefresh, trigger: "Pull to refresh" }
+        - { name: Retry, trigger: "Tap retry button on error state" }
+        - { name: OnLoadNextPage, trigger: "Scroll to list end" }
+    di:
+      - LoanRepository
+      - NetworkMonitor
+      - SessionManager
+
+flow_logic:
+  on_load:
+    - action: fetch_loans
+      api: get_group_loans
+      on_success: show_content
+      on_empty: show_empty
+      on_error: show_error
+      offline: show_cached_data
+  on_filter_change:
+    - action: filter_loans_locally
+      description: Client-side filter by status; no extra API call
+  on_refresh:
+    - action: fetch_loans
+      api: get_group_loans
+      invalidate_cache: true
+  on_loan_click:
+    - navigate: loan-detail
+      params: { loanId: "{loan.id}" }
+  on_apply_loan:
+    - navigate: loan-apply
+      params: { groupId: "{groupId}" }
+  on_load_next_page:
+    - action: fetch_loans
+      api: get_group_loans
+      pagination: increment_offset
+
+dependencies:
+  repositories:
+    - name: LoanRepository
+      methods:
+        - "getGroupLoans(groupId: Long, limit: Int, offset: Int): Flow<List<LoanSummary>>"
+        - "getLoansByStatus(groupId: Long, status: LoanStatusFilter): Flow<List<LoanSummary>>"
+  services:
+    - NetworkMonitor
+    - SessionManager
+  local_db:
+    - table: loans
+      schema: SQLDelight Loan entity
+
+api:
+  - id: get_group_loans
+    function: get_group_loans
+    method: get
+    endpoint: "/groups/{groupId}/loans"
+    description: Fetch paginated loan list for the selected group
+    params:
+      groupId: { type: Long, required: true, source: nav_params }
+      limit: { type: Int, default: 20 }
+      offset: { type: Int, default: 0 }
+      loanStatus: { type: String, required: false, description: "active|overdue|closed|all" }
+    response:
+      type: object
+      fields:
+        totalFilteredRecords: Int
+        pageItems:
+          type: array
+          items:
+            id: Long
+            clientId: Long
+            clientName: String
+            loanProductName: String
+            principal: { type: Double, currency: KES }
+            summary:
+              principalOutstanding: Double
+              totalOverdue: Double
+            status: { id: Int, value: String }
+            timeline:
+              expectedDisbursementDate: List<Int>
+              actualDisbursementDate: List<Int>
+            nextRepaymentDate: List<Int>
+    errors:
+      401: Unauthorized — redirect to login
+      403: Forbidden — insufficient permissions
+      404: Group not found
+      500: Server error — show retry
+    cache:
+      ttl: 180
+      strategy: stale-while-revalidate
+      offline: show_cached
+    pagination:
+      type: offset
+      page_size: 20
+
+dtos:
+  LoanSummary:
+    id: Long
+    memberId: Long
+    memberName: String
+    memberPhotoUrl: "String?"
+    loanProductName: String
+    principalAmount: { type: Double, currency: KES }
+    outstandingBalance: { type: Double, currency: KES }
+    overdueAmount: { type: Double, currency: KES }
+    status: LoanStatus
+    nextRepaymentDate: "String?"
+    isOverdue: Boolean
+    fineractLoanId: Long
+
+  LoanStatus:
+    values: [ACTIVE, OVERDUE, CLOSED, PENDING, REJECTED]
+
+  LoanStatusFilter:
+    values: [ALL, ACTIVE, OVERDUE, CLOSED]
+
+components:
+  - id: top_bar
+    type: top-bar
+    title: "Group Loans"
+    style:
+      background: primary
+      text_color: onPrimary
+    navigation_icon: arrow_back
+    on_nav_click: { action: OnBack }
+    test_context:
+      purpose: "Shows screen title and back navigation"
+      interaction_type: static
+      data_driven: false
+      required_fields: []
+
+  - id: filter_chips_row
+    type: chip-group
+    style:
+      scroll: horizontal
+      padding: "8dp 16dp"
+    chips:
+      - id: chip_all
+        label: "All"
+        selected_color: primaryContainer
+        on_click: { action: OnFilterChange, params: { filter: ALL } }
+      - id: chip_active
+        label: "Active"
+        selected_color: primaryContainer
+        on_click: { action: OnFilterChange, params: { filter: ACTIVE } }
+      - id: chip_overdue
+        label: "Overdue"
+        selected_color: errorContainer
+        on_click: { action: OnFilterChange, params: { filter: OVERDUE } }
+      - id: chip_closed
+        label: "Closed"
+        selected_color: surfaceVariant
+        on_click: { action: OnFilterChange, params: { filter: CLOSED } }
+    test_context:
+      purpose: "Filter loan list by status without API call"
+      interaction_type: tap
+      data_driven: false
+      required_fields: [selectedFilter]
+
+  - id: loan_card
+    type: card
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 12dp
+      padding: 16dp
+      min_touch_target: 72dp
+    content:
+      - id: member_avatar
+        type: avatar
+        size: 40dp
+        src: "{{loan.memberPhotoUrl}}"
+        fallback_icon: person
+      - id: member_name_text
+        type: text
+        style: { text_style: titleMedium, color: onSurface }
+        value: "{{loan.memberName}}"
+      - id: loan_amount_text
+        type: text
+        style: { text_style: bodyMedium, color: onSurfaceVariant }
+        value: "KES {{loan.principalAmount | number}}"
+      - id: outstanding_text
+        type: text
+        style: { text_style: bodySmall, color: onSurfaceVariant }
+        value: "Outstanding: KES {{loan.outstandingBalance | number}}"
+      - id: status_badge
+        type: badge
+        style:
+          ACTIVE: { background: "#C8E6C9", text_color: "#1B5E20" }
+          OVERDUE: { background: "#FFCDD2", text_color: "#B71C1C" }
+          CLOSED: { background: "#F5F5F5", text_color: "#757575" }
+          PENDING: { background: "#FFF9C4", text_color: "#E65100" }
+        value: "{{loan.status}}"
+      - id: next_repayment_text
+        type: text
+        style: { text_style: bodySmall, color: onSurfaceVariant }
+        value: "Next: {{loan.nextRepaymentDate}}"
+        visible_when: "loan.status == ACTIVE"
+      - id: overdue_indicator
+        type: text
+        style: { text_style: labelSmall, color: error, font_weight: bold }
+        value: "OVERDUE — KES {{loan.overdueAmount | number}}"
+        visible_when: "loan.isOverdue"
+    on_click: { action: OnLoanClick, params: { loanId: "{{loan.id}}" } }
+    test_context:
+      purpose: "Shows loan summary; red overdue indicator when isOverdue=true"
+      interaction_type: tap
+      data_driven: true
+      required_fields: [loan.memberName, loan.principalAmount, loan.outstandingBalance, loan.status]
+
+  - id: apply_loan_fab
+    type: fab
+    icon: add
+    label: "Apply for Loan"
+    style:
+      background: primary
+      icon_color: onPrimary
+      min_touch_target: 56dp
+      position: bottom_end
+    visible_when: "canApplyLoan"
+    on_click: { action: OnApplyLoan }
+    test_context:
+      purpose: "Navigate to loan application; visible only to chairperson/treasurer"
+      interaction_type: tap
+      data_driven: false
+      required_fields: [canApplyLoan]
+
+  - id: shimmer_list
+    type: shimmer
+    count: 5
+    style: { height: 96dp, corner_radius: 12dp, background: surfaceVariant }
+    test_context:
+      purpose: "Loading skeleton while fetching loans"
+      interaction_type: static
+      data_driven: false
+      required_fields: []
+
+  - id: empty_state
+    type: empty-state
+    icon: account_balance_wallet
+    title: "No loans yet"
+    body: "No loans match the selected filter."
+    test_context:
+      purpose: "Shown when filter returns zero results"
+      interaction_type: static
+      data_driven: false
+      required_fields: []
+
+  - id: error_state
+    type: error-state
+    icon: cloud_off
+    title: "Could not load loans"
+    body: "{{error.message}}"
+    cta_label: "Retry"
+    on_click: { action: Retry }
+    test_context:
+      purpose: "Show error with retry when API fails"
+      interaction_type: tap
+      data_driven: true
+      required_fields: [error.message]
+
+states:
+  initial_state: loading
+  loading:
+    components: [top_bar, filter_chips_row, shimmer_list]
+    description: "Fetching loans from local cache then Fineract API"
+  content:
+    components: [top_bar, filter_chips_row, loan_card, apply_loan_fab]
+    description: "Loans loaded; FAB visible only for chairperson/treasurer"
+    demo_data:
+      loans:
+        - memberName: "Peter Otieno"
+          memberPhotoUrl: null
+          principalAmount: 1500
+          outstandingBalance: 1125
+          overdueAmount: 0
+          status: ACTIVE
+          nextRepaymentDate: "2026-05-12"
+          isOverdue: false
+        - memberName: "Grace Wanjiku"
+          principalAmount: 3000
+          outstandingBalance: 2625
+          overdueAmount: 375
+          status: OVERDUE
+          isOverdue: true
+  empty:
+    components: [top_bar, filter_chips_row, empty_state, apply_loan_fab]
+    description: "No loans for selected filter"
+  error:
+    components: [top_bar, error_state]
+    description: "API failed; error message with retry"
+
+i18n:
+  en:
+    screen_title: "Group Loans"
+    filter_all: "All"
+    filter_active: "Active"
+    filter_overdue: "Overdue"
+    filter_closed: "Closed"
+    loan_amount_label: "KES {{amount}}"
+    outstanding_label: "Outstanding: KES {{amount}}"
+    next_repayment_label: "Next: {{date}}"
+    overdue_label: "OVERDUE — KES {{amount}}"
+    fab_label: "Apply for Loan"
+    empty_title: "No loans yet"
+    empty_body: "No loans match the selected filter."
+    error_network: "No internet connection. Showing cached data."
+    error_server: "Server error. Please try again."
+    error_auth: "Session expired. Please log in again."
+  sw:
+    screen_title: "Mikopo ya Kikundi"
+    filter_all: "Yote"
+    filter_active: "Inayoendelea"
+    filter_overdue: "Iliyochelewa"
+    filter_closed: "Iliyofungwa"
+    fab_label: "Omba Mkopo"
+    empty_title: "Hakuna mikopo bado"
+  fr:
+    screen_title: "Prêts du Groupe"
+    fab_label: "Demander un Prêt"
+    empty_title: "Aucun prêt"
+  hi:
+    screen_title: "समूह ऋण"
+    fab_label: "ऋण के लिए आवेदन करें"
+    empty_title: "कोई ऋण नहीं"
+
+analytics:
+  screen_view: loan_list_viewed
+  events:
+    - trigger: loan card tap
+      name: loan_selected
+      params: { loan_id: Long, status: String }
+    - trigger: filter chip tap
+      name: loan_filter_applied
+      params: { filter: String }
+    - trigger: FAB tap
+      name: loan_apply_initiated
+    - trigger: pull to refresh
+      name: loan_list_refreshed
+    - trigger: scroll to end
+      name: loan_list_next_page_loaded
+      params: { page: Int }

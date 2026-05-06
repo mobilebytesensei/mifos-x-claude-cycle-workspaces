@@ -1,0 +1,605 @@
+schema_version: "3.1"
+id: group-dashboard
+name: Group Dashboard
+description: >
+  Central hub for a single savings group. Displays group identity, corpus fund balance (FR-018),
+  savings summary, member/loan stats, and quick-action buttons. Corpus card blocks loan
+  disbursement when the fund balance is insufficient. Includes a recent activity feed and
+  navigation to meeting calendar, member list, loan list, and share-out preview.
+feature: group-management
+flow: group-management-flow
+version: "1.0.0"
+tags:
+  - group-management
+  - corpus-tracking
+  - admin
+  - dashboard
+  - offline-first
+  - FR-018
+
+# Lifecycle
+status: enriched
+quality_score: 90
+status_history:
+  - status: draft
+    date: "2026-05-05"
+    author: system
+  - status: enriched
+    date: "2026-05-05"
+    author: system
+
+# Navigation
+entry_point: false
+bottom_nav:
+  visible: true
+  selected_tab: groups
+navigates_to:
+  - meeting-calendar
+  - member-list
+  - loan-list
+  - share-out-preview
+route: /groups/{groupId}
+entry_points:
+  - source: group-list
+    params: { groupId: String }
+nav_params:
+  groupId: { type: String, required: true }
+
+screens:
+  - id: group-dashboard-screen
+    title: "{{group.name}}"
+    type: dashboard
+    description: Scrollable single-group dashboard with header, corpus card, stats, quick actions, and activity feed
+
+state_model:
+  GroupDashboardViewModel:
+    state:
+      name: GroupDashboardState
+      fields:
+        isLoading: { type: Boolean, default: "true" }
+        group: { type: "Group?", default: "null" }
+        corpus: { type: "GroupCorpus?", default: "null" }
+        config: { type: "GroupConfig?", default: "null" }
+        accounts: { type: "GroupAccounts?", default: "null" }
+        recentActivity: { type: "List<ActivityItem>", default: "emptyList()" }
+        isCorpusInsufficient: { type: Boolean, default: "false" }
+        isCycleEnd: { type: Boolean, default: "false" }
+        error: { type: "GroupDashboardError?", default: "null" }
+    screen_state:
+      name: GroupDashboardScreenState
+      members: [Loading, Content, Error]
+    errors:
+      name: GroupDashboardError
+      types:
+        - { type: Network, retry: true, message_key: error_network }
+        - { type: Server, retry: true, message_key: error_server }
+        - { type: NotFound, retry: false, message_key: error_not_found }
+        - { type: Auth, retry: false, message_key: error_auth, redirect: login }
+    events:
+      name: GroupDashboardEvent
+      members:
+        - { name: NavigateToMeetingCalendar, params: { groupId: String } }
+        - { name: NavigateToMemberList, params: { groupId: String } }
+        - { name: NavigateToLoanList, params: { groupId: String } }
+        - { name: NavigateToShareOut, params: { groupId: String } }
+        - { name: ShowCorpusBlockedDialog }
+        - { name: ShowSnackbar, params: { message: String } }
+    actions:
+      name: GroupDashboardAction
+      members:
+        - { name: OnStartMeeting, trigger: "Tap Start Meeting button" }
+        - { name: OnViewMembers, trigger: "Tap View Members button" }
+        - { name: OnViewLoans, trigger: "Tap View Loans button" }
+        - { name: OnShareOut, trigger: "Tap Share-Out button" }
+        - { name: OnRefresh, trigger: "Pull to refresh" }
+        - { name: Retry, trigger: "Tap retry on error" }
+        - { name: OnBack, trigger: "Tap back arrow" }
+    di:
+      - GroupRepository
+      - CorpusRepository
+      - NetworkMonitor
+      - SessionManager
+
+flow_logic:
+  on_load:
+    - action: fetch_all_parallel
+      calls:
+        - api: get_center
+        - api: get_center_accounts
+        - api: get_group_corpus
+        - api: get_group_config
+      on_all_success: compute_derived_state
+      on_error: show_error
+  compute_derived_state:
+    - isCorpusInsufficient: "corpus.currentBalance < config.minimumDisbursementThreshold"
+    - isCycleEnd: "group.cycleWeek == group.cycleLengthWeeks"
+  on_start_meeting:
+    - check: corpus_sufficient
+      if_insufficient: emit NavigateToMeetingCalendar (corpus warning shown inline)
+      if_sufficient: navigate meeting-calendar
+  on_view_members:
+    - navigate: member-list
+      params: { groupId: "{groupId}" }
+  on_view_loans:
+    - navigate: loan-list
+      params: { groupId: "{groupId}" }
+  on_share_out:
+    - condition: isCycleEnd
+      true: navigate share-out-preview
+      false: show_snackbar message_key=share_out_not_available
+  on_refresh:
+    - action: fetch_all_parallel
+      invalidate_cache: true
+
+dependencies:
+  repositories:
+    - name: GroupRepository
+      methods:
+        - getGroup(groupId: String): Flow<Group>
+        - getGroupAccounts(groupId: String): Flow<GroupAccounts>
+    - name: CorpusRepository
+      methods:
+        - getCorpus(groupId: String): Flow<GroupCorpus>
+        - getGroupConfig(groupId: String): Flow<GroupConfig>
+  services:
+    - NetworkMonitor
+    - SessionManager
+  local_db:
+    - table: groups
+    - table: group_corpus
+    - table: group_config
+
+api:
+  - id: get_center
+    function: get_center
+    method: get
+    endpoint: "/centers/{centerId}"
+    description: Fetch a single Fineract Center (group) by ID
+    params:
+      centerId: { type: Long, required: true, source: nav_params }
+    response:
+      type: object
+      fields:
+        id: Long
+        name: String
+        status: { id: Int, value: String }
+        activationDate: List<Int>
+        staffId: Long
+        officeId: Long
+        meetingSchedule: String
+    errors:
+      401: Unauthorized
+      403: Forbidden
+      404: Group not found
+      500: Server error
+    cache:
+      ttl: 300
+      strategy: stale-while-revalidate
+      offline: show_cached
+
+  - id: get_center_accounts
+    function: get_center_accounts
+    method: get
+    endpoint: "/centers/{centerId}/accounts"
+    description: Fetch savings and loan accounts linked to the group
+    params:
+      centerId: { type: Long, required: true, source: nav_params }
+    response:
+      type: object
+      fields:
+        savingsAccounts:
+          type: array
+          items:
+            id: Long
+            productName: String
+            accountBalance: Double
+            status: { id: Int, value: String }
+        loanAccounts:
+          type: array
+          items:
+            id: Long
+            productName: String
+            loanBalance: Double
+            status: { id: Int, value: String }
+    errors:
+      401: Unauthorized
+      404: Group not found
+      500: Server error
+    cache:
+      ttl: 180
+      strategy: stale-while-revalidate
+      offline: show_cached
+
+  - id: get_group_corpus
+    function: get_group_corpus
+    method: get
+    endpoint: "/datatables/dt_group_corpus/{centerId}"
+    description: Fetch real-time corpus (fund balance) for the group from custom datatable
+    params:
+      centerId: { type: Long, required: true, source: nav_params }
+    response:
+      type: object
+      fields:
+        currentBalance: Double
+        openingBalance: Double
+        totalContributionsThisCycle: Double
+        totalLoansOutstanding: Double
+        lastUpdated: String
+    errors:
+      401: Unauthorized
+      404: Corpus record not found — show zero balance
+      500: Server error
+    cache:
+      ttl: 60
+      strategy: network-first
+      offline: show_cached
+
+  - id: get_group_config
+    function: get_group_config
+    method: get
+    endpoint: "/datatables/dt_group_config/{centerId}"
+    description: Fetch group configuration rules (contribution rates, loan multiplier, etc.)
+    params:
+      centerId: { type: Long, required: true, source: nav_params }
+    response:
+      type: object
+      fields:
+        contributionMin: Double
+        contributionMax: Double
+        loanMultiplier: Double
+        interestRate: Double
+        cycleLengthMonths: Int
+        fineAmount: Double
+        minimumDisbursementThreshold: Double
+    errors:
+      401: Unauthorized
+      404: Config not found
+      500: Server error
+    cache:
+      ttl: 600
+      strategy: stale-while-revalidate
+      offline: show_cached
+
+dtos:
+  Group:
+    id: String
+    fineractCenterId: Long
+    name: String
+    cycleNumber: Int
+    cycleLengthMonths: Int
+    meetingFrequency: String
+    memberCount: Int
+    overdueLoansCount: Int
+    status: String
+
+  GroupCorpus:
+    currentBalance: Double
+    openingBalance: Double
+    totalContributionsThisCycle: Double
+    totalLoansOutstanding: Double
+    lastUpdated: String
+
+  GroupConfig:
+    contributionMin: Double
+    contributionMax: Double
+    loanMultiplier: Double
+    interestRate: Double
+    cycleLengthMonths: Int
+    fineAmount: Double
+    minimumDisbursementThreshold: Double
+
+  GroupAccounts:
+    savingsBalance: Double
+    loansOutstanding: Double
+    activeLoanCount: Int
+
+  ActivityItem:
+    id: String
+    type: String        # MEETING | DEPOSIT | LOAN | PENALTY | SHARE_OUT
+    description: String
+    amount: Double?
+    date: String
+    memberName: String?
+
+components:
+  - id: top_bar
+    type: top-bar
+    title: "{{group.name}}"
+    style:
+      background: primary
+      text_color: onPrimary
+    navigation_icon: arrow_back
+    on_navigation_click: { action: OnBack }
+    actions:
+      - icon: more_vert
+        content_description: "More options"
+        on_click: { action: OnMoreOptions }
+    test_context:
+      purpose: "Display group name; back navigation to group list"
+      interaction_type: tap
+      data_driven: true
+      required_fields: [group.name]
+
+  - id: group_header_card
+    type: card
+    style:
+      background: primaryContainer
+      elevation: 0dp
+      corner_radius: 0dp
+      padding: 16dp
+    content:
+      - id: group_name_large
+        type: text
+        style: { text_style: headlineSmall, color: onPrimaryContainer }
+        value: "{{group.name}}"
+      - id: cycle_info_text
+        type: text
+        style: { text_style: bodyMedium, color: onPrimaryContainer }
+        value: "Cycle {{group.cycleNumber}} of {{group.cycleLengthMonths}} months • {{group.meetingFrequency}} meetings"
+      - id: member_stats_row
+        type: row
+        children:
+          - id: member_count_chip
+            type: chip
+            label: "{{group.memberCount}} members"
+            style: { background: secondaryContainer, text_color: onSecondaryContainer }
+          - id: overdue_loans_chip
+            type: chip
+            label: "{{group.overdueLoansCount}} overdue"
+            style:
+              default: { background: surfaceVariant, text_color: onSurfaceVariant }
+              nonzero: { background: errorContainer, text_color: onErrorContainer }
+    test_context:
+      purpose: "Group identity and high-level cycle stats in the dashboard header"
+      interaction_type: static
+      data_driven: true
+      required_fields: [group.name, group.cycleNumber, group.cycleLengthMonths, group.meetingFrequency]
+
+  - id: corpus_card
+    type: card
+    style:
+      background: surface
+      elevation: 4dp
+      corner_radius: 16dp
+      padding: 20dp
+      border:
+        insufficient: { color: error, width: 2dp }
+        sufficient: { color: transparent, width: 0dp }
+    content:
+      - id: corpus_label
+        type: text
+        style: { text_style: titleMedium, color: onSurface }
+        value: "Corpus Fund"
+      - id: corpus_balance_large
+        type: text
+        style: { text_style: displaySmall, color: primary }
+        value: "KES {{corpus.currentBalance | number}}"
+      - id: corpus_blocked_banner
+        type: banner
+        visible: "{{isCorpusInsufficient}}"
+        icon: warning
+        message: "Loan disbursement is blocked — corpus balance is below minimum threshold."
+        style: { background: errorContainer, text_color: onErrorContainer }
+      - id: corpus_details_row
+        type: row
+        children:
+          - id: opening_balance_stat
+            type: stat
+            label: "Opening Balance"
+            value: "KES {{corpus.openingBalance | number}}"
+          - id: contributions_stat
+            type: stat
+            label: "Contributions"
+            value: "KES {{corpus.totalContributionsThisCycle | number}}"
+          - id: loans_outstanding_stat
+            type: stat
+            label: "Loans Out"
+            value: "KES {{corpus.totalLoansOutstanding | number}}"
+    test_context:
+      purpose: "Real-time corpus balance display; FR-018 block banner shown when insufficient"
+      interaction_type: static
+      data_driven: true
+      required_fields: [corpus.currentBalance, corpus.openingBalance, corpus.totalContributionsThisCycle, corpus.totalLoansOutstanding, isCorpusInsufficient]
+
+  - id: quick_actions_section
+    type: card
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 16dp
+      padding: 16dp
+    content:
+      - id: quick_actions_label
+        type: text
+        style: { text_style: titleSmall, color: onSurfaceVariant }
+        value: "Quick Actions"
+      - id: quick_actions_grid
+        type: grid
+        columns: 2
+        children:
+          - id: start_meeting_button
+            type: button
+            variant: filled
+            label: "Start Meeting"
+            icon: meeting_room
+            style: { background: primary, text_color: onPrimary, min_touch_target: 56dp }
+            on_click: { action: OnStartMeeting }
+          - id: view_members_button
+            type: button
+            variant: outlined
+            label: "Members"
+            icon: group
+            style: { border_color: primary, text_color: primary, min_touch_target: 56dp }
+            on_click: { action: OnViewMembers }
+          - id: view_loans_button
+            type: button
+            variant: outlined
+            label: "Loans"
+            icon: account_balance
+            style: { border_color: primary, text_color: primary, min_touch_target: 56dp }
+            on_click: { action: OnViewLoans }
+          - id: share_out_button
+            type: button
+            variant: outlined
+            label: "Share-Out"
+            icon: share
+            enabled: "{{isCycleEnd}}"
+            style:
+              enabled: { border_color: secondary, text_color: secondary, min_touch_target: 56dp }
+              disabled: { border_color: outline, text_color: onSurfaceVariant, min_touch_target: 56dp }
+            on_click: { action: OnShareOut }
+    test_context:
+      purpose: "Primary navigation buttons; Share-Out only enabled at cycle end"
+      interaction_type: tap
+      data_driven: true
+      required_fields: [isCycleEnd, isCorpusInsufficient]
+
+  - id: savings_summary_card
+    type: card
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 16dp
+      padding: 16dp
+    content:
+      - id: savings_label
+        type: text
+        style: { text_style: titleMedium, color: onSurface }
+        value: "Savings Summary"
+      - id: contribution_rate_text
+        type: text
+        style: { text_style: bodyMedium, color: onSurfaceVariant }
+        value: "Mandatory contribution: KES {{config.contributionMin}} – KES {{config.contributionMax}} per meeting"
+      - id: total_savings_text
+        type: text
+        style: { text_style: titleLarge, color: tertiary }
+        value: "KES {{accounts.savingsBalance | number}} total"
+    test_context:
+      purpose: "Show contribution rules and total group savings balance"
+      interaction_type: static
+      data_driven: true
+      required_fields: [config.contributionMin, config.contributionMax, accounts.savingsBalance]
+
+  - id: activity_feed_section
+    type: card
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 16dp
+      padding: 16dp
+    content:
+      - id: activity_label
+        type: text
+        style: { text_style: titleMedium, color: onSurface }
+        value: "Recent Activity"
+      - id: activity_list_item
+        type: list-item
+        leading: activity_type_icon
+        headline: "{{activity.description}}"
+        supporting: "{{activity.date}} • {{activity.memberName}}"
+        trailing: "{{activity.amount | currency: KES}}"
+        style: { min_touch_target: 56dp }
+        test_context:
+          purpose: "Show recent group transactions and events"
+          interaction_type: static
+          data_driven: true
+          required_fields: [activity.description, activity.date]
+
+  - id: shimmer_dashboard
+    type: shimmer
+    count: 4
+    style: { height: 120dp, corner_radius: 16dp, background: surfaceVariant }
+    test_context:
+      purpose: "Loading skeleton for parallel API calls"
+      interaction_type: static
+      data_driven: false
+      required_fields: []
+
+  - id: error_state
+    type: error-state
+    icon: cloud_off
+    title: "Could not load group"
+    body: "{{error.message}}"
+    cta_label: "Retry"
+    on_click: { action: Retry }
+    test_context:
+      purpose: "Show error and retry when one or more APIs fail"
+      interaction_type: tap
+      data_driven: true
+      required_fields: [error.message]
+
+states:
+  initial_state: loading
+  loading:
+    components: [top_bar, shimmer_dashboard]
+    description: "Parallel API calls in-flight; shimmer shown"
+  content:
+    components: [top_bar, group_header_card, corpus_card, quick_actions_section, savings_summary_card, activity_feed_section]
+    description: "All data loaded; corpus block banner conditionally visible"
+    demo_data:
+      group:
+        name: "Mwangaza Women's Group"
+        cycleNumber: 1
+        cycleLengthMonths: 12
+        meetingFrequency: "Weekly"
+        memberCount: 5
+        overdueLoansCount: 0
+      corpus:
+        currentBalance: 47500.00
+        openingBalance: 0.00
+        totalContributionsThisCycle: 52500.00
+        totalLoansOutstanding: 5000.00
+      config:
+        contributionMin: 100.00
+        contributionMax: 500.00
+        loanMultiplier: 3.0
+        interestRate: 10.0
+        cycleLengthMonths: 12
+        fineAmount: 50.00
+        minimumDisbursementThreshold: 5000.00
+      accounts:
+        savingsBalance: 52500.00
+        loansOutstanding: 5000.00
+        activeLoanCount: 1
+      isCorpusInsufficient: false
+      isCycleEnd: false
+  error:
+    components: [top_bar, error_state]
+    description: "API error; retry option shown"
+
+i18n:
+  en:
+    corpus_label: "Corpus Fund"
+    corpus_blocked: "Loan disbursement is blocked — corpus balance is below minimum threshold."
+    quick_actions_label: "Quick Actions"
+    start_meeting: "Start Meeting"
+    view_members: "Members"
+    view_loans: "Loans"
+    share_out: "Share-Out"
+    savings_label: "Savings Summary"
+    contribution_range: "Mandatory contribution: KES {{min}} – KES {{max}} per meeting"
+    activity_label: "Recent Activity"
+    error_network: "No internet. Showing cached data."
+    error_server: "Server error. Please retry."
+    error_not_found: "Group not found."
+    error_auth: "Session expired."
+    share_out_not_available: "Share-Out is only available at the end of the cycle."
+
+analytics:
+  screen_view: group_dashboard_viewed
+  events:
+    - trigger: start meeting tap
+      name: meeting_started
+      params: { group_id: String }
+    - trigger: view members tap
+      name: member_list_opened
+      params: { group_id: String }
+    - trigger: view loans tap
+      name: loan_list_opened
+      params: { group_id: String }
+    - trigger: share-out tap
+      name: share_out_initiated
+      params: { group_id: String, cycle_end: Boolean }
+    - trigger: corpus block banner shown
+      name: corpus_block_triggered
+      params: { group_id: String, balance: Double }

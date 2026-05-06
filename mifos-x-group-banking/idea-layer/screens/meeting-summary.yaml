@@ -1,0 +1,479 @@
+schema_version: "3.1"
+
+id: meeting-summary
+name: Meeting Summary
+description: >
+  Read-only post-meeting summary screen shown immediately after a meeting is
+  successfully submitted. Displays date, attendance rate, total savings collected
+  (group + individual breakdown), loans disbursed, repayments received, fines
+  collected, and closing corpus balance. Includes share/export button. Admin only.
+  FR-003 / FR-019.
+feature: meeting-lifecycle
+flow: meeting-lifecycle-flow
+version: "1.0.0"
+tags: [meetings, summary, read-only, admin, share, meeting-lifecycle, post-meeting]
+
+status: enriched
+quality_score: 88
+status_history:
+  - status: draft
+    date: "2026-05-05"
+    author: system
+  - status: enriched
+    date: "2026-05-05"
+    author: claude-product-cycle
+
+entry_point: false
+bottom_nav: false
+navigates_to:
+  - target: meeting-calendar
+    condition: user_taps_done_or_back
+    params: {}
+route: /meetings/{meetingId}/summary
+entry_points:
+  - source: meeting-conduct
+    condition: wizard_submitted_successfully
+  - source: meeting-calendar
+    condition: user_taps_completed_meeting_summary_deep_link
+nav_params:
+  meeting_id: String
+  meeting_number: Int
+  center_id: Int
+
+screens:
+  - id: meeting_summary_screen
+    name: MeetingSummaryScreen
+    composable: MeetingSummaryScreen
+    description: >
+      Full-screen read-only summary. Top AppBar with share icon. Scrollable body
+      with hero KES-collected card, metric grid, savings breakdown, loans section,
+      attendance strip, and Done CTA at bottom.
+    layout: Column (TopAppBar + LazyColumn[HeroCard + MetricGrid + SavingsBreakdown + LoanSection + AttendanceStrip + DoneBtn])
+
+state_model:
+  MeetingSummaryViewModel:
+    state:
+      name: MeetingSummaryState
+      fields:
+        meetingSummary: { type: "MeetingSummaryData?", default: "null" }
+        isLoading: { type: Boolean, default: "true" }
+        error: { type: "String?", default: "null" }
+        isSharing: { type: Boolean, default: "false" }
+        meetingId: { type: String, default: '""' }
+        meetingNumber: { type: Int, default: "0" }
+        centerId: { type: Int, default: "0" }
+    screen_state:
+      name: MeetingSummaryScreenState
+      members: [Loading, Content, Error]
+    errors:
+      LoadFailed: "Could not load meeting summary. Showing cached data."
+    events:
+      name: MeetingSummaryEvent
+      members:
+        - { name: NavigateToCalendar }
+        - { name: ShareSummary }
+    actions:
+      name: MeetingSummaryAction
+      members:
+        - { name: LoadSummary, trigger: "Screen enters composition" }
+        - { name: ShareMeetingReport, trigger: "Tap share icon" }
+        - { name: NavigateDone, trigger: "Tap Done button" }
+    di:
+      - MeetingRepository
+      - ShareManager
+      - NavigationManager
+
+flow_logic:
+  - decision: screen_init
+    branches:
+      - condition: data_passed_from_conduct_wizard
+        action: Render from in-memory state immediately, then verify with API
+      - condition: deep_link_entry
+        action: Show loading, fetch from dt_meeting_record API
+  - decision: share_tapped
+    branches:
+      - condition: always
+        action: Generate text/PDF report with all fields; open Android share sheet
+
+dependencies:
+  tier: feature
+  features: [meeting-conduct, meeting-calendar]
+  services:
+    - MeetingRepository
+    - ShareManager
+    - NavigationManager
+    - LocalMeetingDao (SQLDelight)
+  shared_entities:
+    - MeetingSummaryData
+    - SavingsBreakdownItem (memberId, name, groupSavings, individualSavings)
+    - LoanSummaryItem (memberId, name, disbursed, repaid, outstanding)
+
+api:
+  - id: get_meeting_record
+    method: GET
+    path: /fineract-provider/api/v1/datatables/dt_meeting_record/{centerId}
+    description: Fetch completed meeting record by meeting number
+    auth: BasicAuth
+    path_params:
+      centerId: Int
+    query_params:
+      meetingNumber: Int
+    response_ref: MeetingRecordDetail
+    error_handling:
+      404: Show cached data or error state
+      5xx: Show error banner
+
+dtos:
+  MeetingRecordDetail:
+    fields:
+      - { name: meetingId, type: String }
+      - { name: meetingNumber, type: Int }
+      - { name: actualDate, type: String, format: "dd MMMM yyyy" }
+      - { name: attendanceCount, type: Int }
+      - { name: totalMemberCount, type: Int }
+      - { name: groupSavingsCollected, type: Long }
+      - { name: individualSavingsCollected, type: Long }
+      - { name: totalSavingsCollected, type: Long }
+      - { name: loansDisbursed, type: Long }
+      - { name: loansRepaid, type: Long }
+      - { name: finesCollected, type: Long }
+      - { name: openingCorpus, type: Long }
+      - { name: closingCorpus, type: Long }
+      - { name: savingsBreakdown, type: "List<SavingsBreakdownItem>" }
+      - { name: loanItems, type: "List<LoanSummaryItem>" }
+  SavingsBreakdownItem:
+    fields:
+      - { name: memberId, type: String }
+      - { name: memberName, type: String }
+      - { name: groupSavings, type: Long }
+      - { name: individualSavings, type: Long }
+  LoanSummaryItem:
+    fields:
+      - { name: memberId, type: String }
+      - { name: memberName, type: String }
+      - { name: amountDisbursed, type: Long }
+      - { name: amountRepaid, type: Long }
+      - { name: outstandingAfter, type: Long }
+
+components:
+  - id: top_app_bar
+    type: top-app-bar
+    name: MeetingSummaryTopBar
+    description: App bar with meeting title, back navigation, and share action
+    style:
+      title_text: "Meeting #{{meetingNumber}} Summary"
+      subtitle_text: "{{meetingSummary.actualDate}}"
+      background: surface
+    navigation_icon:
+      icon: FluentIcons.arrow_left_24_regular
+      content_description: "Back to meetings"
+      on_click:
+        action: NavigateDone
+        target: meeting-calendar
+    actions:
+      - id: share_btn
+        icon: FluentIcons.share_24_regular
+        content_description: "Share meeting report"
+        loading_when: isSharing
+        on_click:
+          action: ShareMeetingReport
+    a11y:
+      content_description: "Meeting #{{meetingNumber}} Summary — {{meetingSummary.actualDate}}"
+    test_context:
+      purpose: Title shows correct meeting number; share button visible; back navigates to calendar
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [meetingNumber, meetingSummary]
+    on_click: {}
+
+  - id: hero_card
+    type: card
+    name: TotalCollectedHeroCard
+    description: Large hero card showing total KES collected — the primary metric
+    style:
+      background: primary
+      corner_radius: xl
+      padding: 24dp
+      margin: 16dp
+      elevation: 4dp
+    content:
+      - { type: text, text: "Total Collected", text_style: labelLarge, color: onPrimary }
+      - { type: text, text: "KES {{meetingSummary.totalSavingsCollected}}", text_style: displaySmall, color: onPrimary, font: "Noto Sans bold" }
+      - { type: text, text: "Meeting #{{meetingNumber}} · {{meetingSummary.actualDate}}", text_style: bodyMedium, color: onPrimary, opacity: 0.8 }
+      - id: corpus_hero_chip
+        type: chip
+        text: "Corpus: KES {{meetingSummary.closingCorpus}}"
+        background: primaryContainer
+        text_color: onPrimaryContainer
+        margin_top: 12dp
+    a11y:
+      content_description: "Total KES {{meetingSummary.totalSavingsCollected}} collected at Meeting #{{meetingNumber}}"
+    test_context:
+      purpose: Hero card shows correct total (e.g. KES 1,850 from demo); corpus closing balance shown
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [meetingSummary.totalSavingsCollected, meetingSummary.closingCorpus]
+    on_click: {}
+
+  - id: metric_grid
+    type: grid
+    name: MetricGrid
+    description: 2x3 grid of metric chips — attendance, group savings, individual savings, repayments, fines, loans disbursed
+    style:
+      columns: 2
+      gap: 12dp
+      margin_horizontal: 16dp
+      margin_bottom: 16dp
+    children:
+      - id: attendance_metric
+        type: metric_card
+        label: "Attendance"
+        value: "{{meetingSummary.attendanceCount}}/{{meetingSummary.totalMemberCount}}"
+        icon: FluentIcons.people_checkmark_24_regular
+        icon_tint: primary
+        background: primaryContainer
+        a11y: { content_description: "Attendance {{meetingSummary.attendanceCount}} of {{meetingSummary.totalMemberCount}}" }
+        test_context:
+          purpose: Attendance fraction shown (e.g. 5/5)
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [meetingSummary.attendanceCount, meetingSummary.totalMemberCount]
+        on_click: {}
+      - id: group_savings_metric
+        type: metric_card
+        label: "Group Savings"
+        value: "KES {{meetingSummary.groupSavingsCollected}}"
+        icon: FluentIcons.people_money_24_regular
+        icon_tint: primary
+        background: primaryContainer
+        a11y: { content_description: "Group savings KES {{meetingSummary.groupSavingsCollected}}" }
+        test_context:
+          purpose: Group savings metric shows correct KES value
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [meetingSummary.groupSavingsCollected]
+        on_click: {}
+      - id: individual_savings_metric
+        type: metric_card
+        label: "Individual Savings"
+        value: "KES {{meetingSummary.individualSavingsCollected}}"
+        icon: FluentIcons.person_money_24_regular
+        icon_tint: secondary
+        background: secondaryContainer
+        a11y: { content_description: "Individual savings KES {{meetingSummary.individualSavingsCollected}}" }
+        test_context:
+          purpose: Individual savings metric shown separately from group
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [meetingSummary.individualSavingsCollected]
+        on_click: {}
+      - id: repayments_metric
+        type: metric_card
+        label: "Loan Repayments"
+        value: "KES {{meetingSummary.loansRepaid}}"
+        icon: FluentIcons.arrow_circle_down_24_regular
+        icon_tint: tertiary
+        background: tertiaryContainer
+        a11y: { content_description: "Loan repayments KES {{meetingSummary.loansRepaid}}" }
+        test_context:
+          purpose: Loan repayments metric visible
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [meetingSummary.loansRepaid]
+        on_click: {}
+      - id: fines_metric
+        type: metric_card
+        label: "Fines Collected"
+        value: "KES {{meetingSummary.finesCollected}}"
+        icon: FluentIcons.warning_24_regular
+        icon_tint: warning
+        background: warningContainer
+        a11y: { content_description: "Fines collected KES {{meetingSummary.finesCollected}}" }
+        test_context:
+          purpose: Fines metric shown; 0 if no fines
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [meetingSummary.finesCollected]
+        on_click: {}
+      - id: loans_disbursed_metric
+        type: metric_card
+        label: "Loans Disbursed"
+        value: "KES {{meetingSummary.loansDisbursed}}"
+        icon: FluentIcons.arrow_circle_up_24_regular
+        icon_tint: error
+        background: errorContainer
+        a11y: { content_description: "Loans disbursed KES {{meetingSummary.loansDisbursed}}" }
+        test_context:
+          purpose: Loans disbursed metric shown; 0 if no loans this meeting
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [meetingSummary.loansDisbursed]
+        on_click: {}
+
+  - id: savings_breakdown_section
+    type: section
+    name: SavingsBreakdownSection
+    description: Per-member savings breakdown table
+    style:
+      margin_horizontal: 16dp
+      margin_bottom: 16dp
+    children:
+      - id: savings_breakdown_header
+        type: text
+        name: SavingsBreakdownHeader
+        style:
+          text: "Savings Breakdown"
+          text_style: titleSmall
+          color: onSurfaceVariant
+          margin_bottom: 8dp
+        a11y: { content_description: "Savings breakdown by member" }
+        test_context:
+          purpose: Section header visible
+          interaction_type: non_interactive
+          data_driven: false
+          required_fields: []
+        on_click: {}
+      - id: savings_breakdown_row
+        type: list-item
+        name: SavingsBreakdownRow
+        repeats_for: meetingSummary.savingsBreakdown
+        style:
+          min_height: 56dp
+          padding_horizontal: 0dp
+          divider: true
+        leading:
+          type: avatar
+          initials: "{{item.memberName | initials}}"
+          size: 36dp
+          background: secondaryContainer
+        content:
+          - { type: text, text: "{{item.memberName}}", text_style: bodyLarge, color: onSurface }
+          - { type: text, text: "Group: KES {{item.groupSavings}} · Individual: KES {{item.individualSavings}}", text_style: bodySmall, color: onSurfaceVariant }
+        trailing:
+          type: text
+          text: "KES {{item.groupSavings + item.individualSavings}}"
+          text_style: labelLarge
+          color: primary
+        a11y:
+          content_description: "{{item.memberName}} saved KES {{item.groupSavings + item.individualSavings}}"
+        test_context:
+          purpose: All 5 member rows with group + individual savings; trailing shows total per member
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [meetingSummary.savingsBreakdown]
+        on_click: {}
+
+  - id: corpus_reconciliation_section
+    type: card
+    name: CorpusReconciliationSection
+    description: Opening vs closing corpus reconciliation strip
+    style:
+      background: tertiaryContainer
+      corner_radius: md
+      padding: 16dp
+      margin_horizontal: 16dp
+      margin_bottom: 16dp
+    content:
+      - { type: text, text: "Corpus Reconciliation", text_style: titleSmall, color: onTertiaryContainer }
+      - { type: info_row, label: "Opening", value: "KES {{meetingSummary.openingCorpus}}", value_color: onTertiaryContainer }
+      - { type: info_row, label: "Closing", value: "KES {{meetingSummary.closingCorpus}}", value_color: onTertiaryContainer, value_style: titleMedium }
+      - { type: info_row, label: "Net Change", value: "KES {{meetingSummary.closingCorpus - meetingSummary.openingCorpus}}", value_color: primary }
+    a11y:
+      content_description: "Corpus went from KES {{meetingSummary.openingCorpus}} to KES {{meetingSummary.closingCorpus}}"
+    test_context:
+      purpose: Opening and closing corpus shown; net change positive (savings > disbursements)
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [meetingSummary.openingCorpus, meetingSummary.closingCorpus]
+    on_click: {}
+
+  - id: done_button
+    type: button
+    name: DoneButton
+    description: Full-width Done button at bottom navigating back to calendar
+    style:
+      type: FilledButton
+      text: "Done"
+      background: primary
+      text_color: onPrimary
+      min_height: 56dp
+      full_width: true
+      margin_horizontal: 16dp
+      margin_bottom: 24dp
+    a11y:
+      content_description: "Done — return to meeting calendar"
+      role: button
+      min_touch_target: 48dp
+    test_context:
+      purpose: Done button navigates to meeting-calendar
+      interaction_type: tap
+      data_driven: false
+      required_fields: []
+    on_click:
+      action: NavigateDone
+      target: meeting-calendar
+
+  - id: loading_skeleton
+    type: skeleton
+    name: SummarySkeleton
+    description: Shimmer placeholder while meeting data loads
+    style:
+      count: 5
+      item_height: 80dp
+      corner_radius: lg
+      margin: 16dp
+    a11y:
+      content_description: "Loading meeting summary"
+    test_context:
+      purpose: Skeleton shown during API fetch
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+states:
+  initial_state: loading
+  loading:
+    description: Fetching meeting record from API or reading from in-memory wizard state
+    components_visible: [top_app_bar, loading_skeleton]
+  content:
+    description: Full summary rendered with all metrics
+    components_visible: [top_app_bar, hero_card, metric_grid, savings_breakdown_section, corpus_reconciliation_section, done_button]
+  error:
+    description: API failed and no cached data available
+    components_visible: [top_app_bar, error_banner]
+
+i18n:
+  screen_title: "Meeting Summary"
+  total_collected_label: "Total Collected"
+  attendance_label: "Attendance"
+  group_savings_label: "Group Savings"
+  individual_savings_label: "Individual Savings"
+  repayments_label: "Loan Repayments"
+  fines_label: "Fines Collected"
+  loans_disbursed_label: "Loans Disbursed"
+  savings_breakdown_header: "Savings Breakdown"
+  corpus_reconciliation_header: "Corpus Reconciliation"
+  opening_corpus_label: "Opening"
+  closing_corpus_label: "Closing"
+  net_change_label: "Net Change"
+  done_btn: "Done"
+  share_btn_description: "Share meeting report"
+  load_error: "Could not load meeting summary"
+
+analytics:
+  screen_viewed:
+    event: screen_viewed
+    params:
+      screen_id: meeting-summary
+      flow: meeting-lifecycle-flow
+  events:
+    - name: meeting_summary_shared
+      trigger: user taps share icon
+      params:
+        meeting_number: Int
+        total_collected: Long
+    - name: meeting_summary_done
+      trigger: user taps Done
+      params:
+        meeting_number: Int
