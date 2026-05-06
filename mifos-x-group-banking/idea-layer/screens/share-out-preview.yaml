@@ -1,0 +1,429 @@
+schema_version: "3.1"
+id: share-out-preview
+name: Share-Out Preview
+description: >
+  Cycle-end distribution calculator that shows each member's projected payout amount.
+  Fetches total corpus (fund balance) and total profit (interest earned) from Fineract,
+  then computes each member's share pro-rata by savings contribution — all calculation
+  is performed client-side. Displays a per-member table and a Confirm button that
+  navigates to share-out-execute for double-confirmation and actual disbursement.
+feature: share-out
+flow: share-out-flow
+version: "1.0.0"
+tags:
+  - share-out
+  - admin
+  - preview
+  - calculation
+  - FR-007
+
+status: enriched
+quality_score: 86
+status_history:
+  - status: draft
+    date: "2026-05-05"
+    author: system
+  - status: enriched
+    date: "2026-05-05"
+    author: system
+
+entry_point: false
+bottom_nav:
+  visible: false
+navigates_to:
+  - share-out-execute
+route: /groups/{groupId}/share-out/preview
+entry_points:
+  - source: group-dashboard
+    label: Share Out (cycle-end action)
+nav_params:
+  groupId: { type: Long, required: true }
+  centerId: { type: Long, required: true }
+
+screens:
+  - id: share-out-preview-screen
+    title: Share-Out Preview
+    type: detail
+    description: Read-only distribution summary with per-member payout table and confirm CTA
+
+state_model:
+  ShareOutPreviewViewModel:
+    state:
+      name: ShareOutPreviewState
+      fields:
+        isLoading: { type: Boolean, default: "true" }
+        totalCorpus: { type: Double, default: "0.0" }
+        totalProfit: { type: Double, default: "0.0" }
+        totalPool: { type: Double, default: "0.0" }
+        memberPayouts: { type: "List<MemberPayout>", default: "emptyList()" }
+        error: { type: "ShareOutPreviewError?", default: "null" }
+        cycleNumber: { type: Int, default: "0" }
+        groupId: { type: Long, default: "0L" }
+        centerId: { type: Long, default: "0L" }
+    screen_state:
+      name: ShareOutPreviewScreenState
+      members: [Loading, Content, Error]
+    errors:
+      name: ShareOutPreviewError
+      types:
+        - { type: Network, retry: true, message_key: error_network }
+        - { type: Server, retry: true, message_key: error_server }
+        - { type: InsufficientData, retry: false, message_key: error_insufficient_data }
+        - { type: Auth, retry: false, message_key: error_auth, redirect: login }
+    events:
+      name: ShareOutPreviewEvent
+      members:
+        - { name: NavigateToShareOutExecute, params: { groupId: Long, centerId: Long, totalPool: Double, memberPayouts: "List<MemberPayout>" } }
+        - { name: NavigateBack }
+        - { name: ShowSnackbar, params: { message: String } }
+    actions:
+      name: ShareOutPreviewAction
+      members:
+        - { name: OnConfirm, trigger: "Tap Confirm & Proceed button" }
+        - { name: OnBack, trigger: "Tap back / nav icon" }
+        - { name: Retry, trigger: "Tap retry button on error state" }
+        - { name: OnRefresh, trigger: "Pull to refresh" }
+    di:
+      - ShareOutRepository
+      - SavingsRepository
+      - NetworkMonitor
+      - SessionManager
+
+flow_logic:
+  on_load:
+    - action: fetch_center_accounts
+      api: get_center_accounts
+    - action: fetch_share_out_record
+      api: get_share_out_datatable
+    - action: compute_distribution
+      description: >
+        For each member compute:
+        memberShare% = memberTotalSavings / totalGroupSavings
+        memberPayout = memberShare% * totalPool
+        where totalPool = totalCorpus + totalProfit
+      on_complete: show_content
+      on_error: show_error
+  on_confirm:
+    - navigate: share-out-execute
+      params: { groupId: "{groupId}", centerId: "{centerId}", totalPool: "{totalPool}", memberPayouts: "{memberPayouts}" }
+  on_refresh:
+    - action: fetch_center_accounts
+      api: get_center_accounts
+      invalidate_cache: true
+
+dependencies:
+  repositories:
+    - name: ShareOutRepository
+      methods:
+        - "getShareOutRecord(centerId: Long): Flow<ShareOutRecord?>"
+        - "getGroupTotalSavings(centerId: Long): Flow<Double>"
+    - name: SavingsRepository
+      methods:
+        - "getCenterAccounts(centerId: Long): Flow<CenterAccounts>"
+        - "getMemberSavingsTotals(groupId: Long): Flow<List<MemberSavingsSummary>>"
+  services:
+    - NetworkMonitor
+    - SessionManager
+
+api:
+  - id: get_center_accounts
+    function: list_accounts
+    method: get
+    endpoint: "/centers/{centerId}/accounts"
+    description: Get all savings and loan accounts for the center to compute corpus and profit
+    params:
+      centerId: { type: Long, required: true, source: nav_params }
+    response:
+      type: object
+      fields:
+        savingsAccounts:
+          type: array
+          items:
+            id: Long
+            accountBalance: Double
+            accountNo: String
+            productName: String
+            status: { value: String }
+        loanAccounts:
+          type: array
+          items:
+            id: Long
+            totalInterestPaid: Double
+    errors:
+      404: Center not found
+      500: Server error
+    cache:
+      ttl: 60
+      strategy: stale-while-revalidate
+
+  - id: get_share_out_datatable
+    function: list_share_outs
+    method: get
+    endpoint: "/datatables/dt_share_out/{centerId}"
+    description: Retrieve existing share-out record for the current cycle (if any)
+    params:
+      centerId: { type: Long, required: true }
+    response:
+      type: array
+      items:
+        id: Long
+        cycle_number: Int
+        total_pool: Double
+        executed_at: "String?"
+        status: String
+    errors:
+      404: No share-out record yet — begin fresh calculation
+      500: Server error
+    cache:
+      ttl: 30
+
+dtos:
+  MemberPayout:
+    memberId: Long
+    memberName: String
+    totalSavings: { type: Double, currency: KES }
+    sharePercent: Double
+    payoutAmount: { type: Double, currency: KES }
+    savingsAccountId: Long
+
+  MemberSavingsSummary:
+    memberId: Long
+    memberName: String
+    totalSavings: { type: Double, currency: KES }
+    savingsAccountId: Long
+
+  ShareOutRecord:
+    id: Long
+    cycleNumber: Int
+    totalPool: { type: Double, currency: KES }
+    executedAt: "String?"
+    status: String
+
+  CenterAccounts:
+    totalCorpus: { type: Double, currency: KES }
+    totalInterestEarned: { type: Double, currency: KES }
+
+components:
+  - id: top_bar
+    type: top-bar
+    title: "Share-Out Preview"
+    style:
+      background: primary
+      text_color: onPrimary
+    navigation_icon: arrow_back
+    on_nav_click: { action: OnBack }
+    actions:
+      - icon: refresh
+        content_description: "Refresh calculation"
+        on_click: { action: OnRefresh }
+    test_context:
+      purpose: "Screen header with back navigation and refresh"
+      interaction_type: static
+      data_driven: false
+      required_fields: []
+
+  - id: cycle_info_banner
+    type: info-banner
+    style:
+      background: primaryContainer
+      corner_radius: 12dp
+      padding: 16dp
+    content:
+      - type: text
+        style: { text_style: titleMedium, color: onPrimaryContainer }
+        value: "Cycle {{cycleNumber}} — Distribution Preview"
+      - type: text
+        style: { text_style: bodySmall, color: onPrimaryContainer }
+        value: "All calculations are preliminary. Confirm to proceed."
+    test_context:
+      purpose: "Shows cycle number and preview disclaimer"
+      interaction_type: static
+      data_driven: true
+      required_fields: [cycleNumber]
+
+  - id: fund_summary_card
+    type: card
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 12dp
+      padding: 16dp
+    content:
+      - id: total_corpus_row
+        type: labeled-value
+        label: "Total Corpus (Fund)"
+        value: "KES {{totalCorpus | number}}"
+        style: { text_style: bodyLarge }
+      - id: total_profit_row
+        type: labeled-value
+        label: "Total Profit (Interest Earned)"
+        value: "KES {{totalProfit | number}}"
+        style: { text_style: bodyLarge, color: primary }
+      - id: divider
+        type: divider
+        style: { margin: "8dp 0dp" }
+      - id: total_pool_row
+        type: labeled-value
+        label: "Total Distribution Pool"
+        value: "KES {{totalPool | number}}"
+        style: { text_style: titleLarge, color: primary, font_weight: bold }
+    test_context:
+      purpose: "Summarises total corpus and profit forming the distribution pool"
+      interaction_type: static
+      data_driven: true
+      required_fields: [totalCorpus, totalProfit, totalPool]
+
+  - id: distribution_formula_chip
+    type: info-chip
+    label: "Formula: Pro-rata by savings contribution"
+    style:
+      background: tertiaryContainer
+      text_color: onTertiaryContainer
+      corner_radius: 16dp
+      padding: "6dp 12dp"
+    test_context:
+      purpose: "Informs users of the distribution formula used"
+      interaction_type: static
+      data_driven: false
+      required_fields: []
+
+  - id: member_payout_table
+    type: data-table
+    headers:
+      - { label: "Member", width: fill }
+      - { label: "Total Savings", width: 104dp }
+      - { label: "Share %", width: 64dp }
+      - { label: "Payout (KES)", width: 104dp }
+    rows_source: memberPayouts
+    row_style:
+      default: { background: surface, text_color: onSurface }
+      highlight_max: { background: "#E8F5E9", text_color: "#1B5E20" }
+    test_context:
+      purpose: "Per-member payout breakdown table; highest payout row highlighted"
+      interaction_type: static
+      data_driven: true
+      required_fields: [memberPayouts]
+
+  - id: confirm_button
+    type: button
+    label: "Confirm & Proceed to Execute"
+    style:
+      background: primary
+      text_color: onPrimary
+      corner_radius: 24dp
+      min_touch_target: 56dp
+      width: fill
+    enabled_when: "memberPayouts.isNotEmpty()"
+    on_click: { action: OnConfirm }
+    test_context:
+      purpose: "Navigate to share-out-execute for double-confirmation and actual disbursement"
+      interaction_type: tap
+      data_driven: true
+      required_fields: [memberPayouts]
+
+  - id: shimmer_detail
+    type: shimmer
+    count: 4
+    style: { height: 80dp, corner_radius: 12dp, background: surfaceVariant }
+    test_context:
+      purpose: "Loading skeleton while computing distribution"
+      interaction_type: static
+      data_driven: false
+      required_fields: []
+
+  - id: error_state
+    type: error-state
+    icon: cloud_off
+    title: "Could not compute distribution"
+    body: "{{error.message}}"
+    cta_label: "Retry"
+    on_click: { action: Retry }
+    test_context:
+      purpose: "Show computation error with retry"
+      interaction_type: tap
+      data_driven: true
+      required_fields: [error.message]
+
+states:
+  initial_state: loading
+  loading:
+    components: [top_bar, shimmer_detail]
+    description: "Fetching corpus, profit, and member savings data; computing distribution"
+  content:
+    components:
+      - top_bar
+      - cycle_info_banner
+      - fund_summary_card
+      - distribution_formula_chip
+      - member_payout_table
+      - confirm_button
+    description: "Distribution computed; table shows per-member payouts; confirm navigates to execute screen"
+    demo_data:
+      cycleNumber: 1
+      totalCorpus: 20000
+      totalProfit: 4000
+      totalPool: 24000
+      memberPayouts:
+        - memberName: "Amina Hassan"
+          totalSavings: 6800
+          sharePercent: 28.3
+          payoutAmount: 6792
+        - memberName: "Peter Otieno"
+          totalSavings: 5200
+          sharePercent: 21.7
+          payoutAmount: 5208
+        - memberName: "Grace Wanjiku"
+          totalSavings: 4800
+          sharePercent: 20.0
+          payoutAmount: 4800
+        - memberName: "John Mwangi"
+          totalSavings: 4400
+          sharePercent: 18.3
+          payoutAmount: 4392
+        - memberName: "Mary Akinyi"
+          totalSavings: 2800
+          sharePercent: 11.7
+          payoutAmount: 2808
+  error:
+    components: [top_bar, error_state]
+    description: "API or computation failed; error shown with retry"
+
+i18n:
+  en:
+    screen_title: "Share-Out Preview"
+    cycle_label: "Cycle {{n}} — Distribution Preview"
+    preview_disclaimer: "All calculations are preliminary. Confirm to proceed."
+    total_corpus: "Total Corpus (Fund)"
+    total_profit: "Total Profit (Interest Earned)"
+    total_pool: "Total Distribution Pool"
+    formula_label: "Formula: Pro-rata by savings contribution"
+    col_member: "Member"
+    col_savings: "Total Savings"
+    col_share: "Share %"
+    col_payout: "Payout (KES)"
+    confirm_button: "Confirm & Proceed to Execute"
+    error_network: "No internet. Showing cached data."
+    error_server: "Server error. Please try again."
+    error_insufficient_data: "Insufficient data to compute distribution. Ensure all members have savings records."
+    error_auth: "Session expired. Please log in again."
+  sw:
+    screen_title: "Muhtasari wa Mgawanyo"
+    confirm_button: "Thibitisha na Endelea"
+  fr:
+    screen_title: "Aperçu du Partage"
+    confirm_button: "Confirmer et Procéder"
+  hi:
+    screen_title: "शेयर-आउट पूर्वावलोकन"
+    confirm_button: "पुष्टि करें और आगे बढ़ें"
+
+analytics:
+  screen_view: share_out_preview_viewed
+  events:
+    - trigger: screen loaded
+      name: share_out_preview_computed
+      params: { cycle_number: Int, total_pool: Double, member_count: Int }
+    - trigger: confirm tapped
+      name: share_out_preview_confirmed
+      params: { total_pool: Double }
+    - trigger: refresh
+      name: share_out_preview_refreshed

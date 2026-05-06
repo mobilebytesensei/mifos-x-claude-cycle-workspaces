@@ -1,0 +1,506 @@
+schema_version: "3.1"
+
+id: personal-savings
+name: Personal Savings
+description: >
+  Dual savings detail screen for end users. Shows group-linked (mandatory,
+  per-meeting contribution) and individual (voluntary) savings separately with
+  contribution history, progress bars, and transaction list. Covers FR-017.
+feature: end-user-dashboard
+flow: end-user-dashboard-flow
+version: "1.0.0"
+tags: [savings, end_user, group-linked, individual, transactions, FR-017]
+
+status: enriched
+quality_score: 89
+status_history:
+  - status: draft
+    date: "2026-05-05"
+    author: system
+  - status: enriched
+    date: "2026-05-05"
+    author: claude-product-cycle
+
+entry_point: false
+bottom_nav: true
+navigates_to:
+  - target: personal-dashboard
+    condition: user_taps_back
+route: /savings
+entry_points:
+  - source: personal-dashboard
+    condition: user_taps_savings_card
+nav_params:
+  clientId: { type: Long, required: true }
+  groupLinkedSavingsId: { type: Long, required: true }
+  individualSavingsId: { type: "Long?", required: false }
+
+screens:
+  - id: personal_savings_screen
+    name: PersonalSavingsScreen
+    composable: PersonalSavingsScreen
+    description: Tabbed savings detail with group-linked and individual accounts
+    layout: Scaffold (top-bar + TabRow + LazyColumn per tab)
+
+state_model:
+  PersonalSavingsViewModel:
+    state:
+      name: PersonalSavingsState
+      fields:
+        clientId: { type: Long, default: "0L" }
+        groupLinkedSavingsId: { type: Long, default: "0L" }
+        individualSavingsId: { type: "Long?", default: "null" }
+        selectedTab: { type: SavingsTab, default: "SavingsTab.GROUP_LINKED" }
+        groupLinkedBalance: { type: Double, default: "0.0" }
+        individualBalance: { type: Double, default: "0.0" }
+        groupLinkedTransactions: { type: "List<SavingsTransactionDto>", default: "emptyList()" }
+        individualTransactions: { type: "List<SavingsTransactionDto>", default: "emptyList()" }
+        contributionTarget: { type: Double, default: "500.0" }
+        meetingsAttended: { type: Int, default: "0" }
+        totalMeetings: { type: Int, default: "0" }
+        isLoading: { type: Boolean, default: "true" }
+        isRefreshing: { type: Boolean, default: "false" }
+        error: { type: "SavingsError?", default: "null" }
+    screen_state:
+      name: PersonalSavingsScreenState
+      members: [Loading, Content, Error]
+    errors:
+      name: SavingsError
+      types:
+        - { type: Network, retry: true, message_key: error_network }
+        - { type: Server, retry: true, message_key: error_server }
+        - { type: Unauthorized, retry: false, message_key: error_session_expired }
+    events:
+      name: PersonalSavingsEvent
+      members:
+        - { name: NavigateBack }
+    actions:
+      name: PersonalSavingsAction
+      members:
+        - { name: OnTabSelected, params: { tab: SavingsTab }, trigger: "Tap tab" }
+        - { name: OnRefresh, trigger: "Pull-to-refresh" }
+        - { name: OnRetry, trigger: "Tap Retry button" }
+    di:
+      - SavingsRepository
+      - SessionManager
+
+flow_logic:
+  - decision: tab_selection
+    branches:
+      - condition: selectedTab == GROUP_LINKED
+        action: show groupLinkedTransactions list and group-linked balance card
+      - condition: selectedTab == INDIVIDUAL
+        action: show individualTransactions list and individual balance card
+  - decision: individual_account_exists
+    branches:
+      - condition: individualSavingsId != null
+        action: show both tabs
+      - condition: individualSavingsId == null
+        action: show GROUP_LINKED tab only; show promo to open individual account
+
+dependencies:
+  tier: ui
+  features: [end-user-dashboard]
+  services:
+    - SavingsRepository
+    - SessionManager
+    - OfflineCacheManager
+  shared_entities:
+    - SavingsTransaction
+    - Member
+
+api:
+  - id: get_group_linked_transactions
+    function: get_savings_transactions
+    method: get
+    endpoint: "/self/savingsaccounts/{savingsId}/transactions"
+    description: Get transaction history for the group-linked savings account
+    params:
+      savingsId: { type: Long, required: true, source: nav_params.groupLinkedSavingsId }
+      limit: { type: Int, required: false, default: 50 }
+      offset: { type: Int, required: false, default: 0 }
+    response:
+      type: array
+      items:
+        id: Long
+        transactionType:
+          value: Int
+          code: String
+          description: String
+        date: "List<Int>"
+        amount: Double
+        runningBalance: Double
+        currency:
+          code: String
+          displaySymbol: String
+    errors:
+      401: Session expired
+      404: Account not found
+      503: Server unavailable
+    cache: { ttl: 300, strategy: stale-while-revalidate, offline: use_sqldelight }
+
+  - id: get_individual_transactions
+    function: get_individual_savings_transactions
+    method: get
+    endpoint: "/self/savingsaccounts/{savingsId}/transactions"
+    description: Get transaction history for the individual voluntary savings account
+    params:
+      savingsId: { type: Long, required: true, source: nav_params.individualSavingsId }
+      limit: { type: Int, required: false, default: 50 }
+      offset: { type: Int, required: false, default: 0 }
+    response:
+      type: array
+      items:
+        id: Long
+        transactionType:
+          value: Int
+          code: String
+          description: String
+        date: "List<Int>"
+        amount: Double
+        runningBalance: Double
+        currency:
+          code: String
+          displaySymbol: String
+    errors:
+      401: Session expired
+      404: Account not found
+      503: Server unavailable
+    cache: { ttl: 300, strategy: stale-while-revalidate, offline: use_sqldelight }
+
+dtos:
+  - name: SavingsTransactionDto
+    fields:
+      id: Long
+      transactionType: TransactionTypeDto
+      date: "List<Int>"
+      amount: Double
+      runningBalance: Double
+      currency: CurrencyDto
+
+  - name: TransactionTypeDto
+    fields:
+      value: Int
+      code: String
+      description: String
+
+  - name: CurrencyDto
+    fields:
+      code: String
+      displaySymbol: String
+
+components:
+  - id: top_bar
+    type: top-bar
+    name: SavingsTopBar
+    description: Top bar with back arrow and screen title
+    style:
+      background: primary
+      elevation: 0dp
+    navigation_icon:
+      name: FluentIcons.arrow_left_24_regular
+      tint: onPrimary
+    title:
+      text_key: i18n.screen_title
+      text_style: titleLarge
+      color: onPrimary
+    a11y:
+      content_description: "My Savings — back to dashboard"
+    test_context:
+      purpose: Back navigation returns to personal-dashboard
+      interaction_type: tap
+      data_driven: false
+      required_fields: []
+    on_click:
+      action: NavigateBack
+      target: personal-dashboard
+
+  - id: savings_tab_row
+    type: chip
+    name: SavingsTabRow
+    description: Two-tab row switching between Group-linked and Individual savings
+    style:
+      background: primaryContainer
+      selected_background: primary
+      selected_text_color: onPrimary
+      unselected_text_color: onPrimaryContainer
+      cornerRadius: full
+      padding: "8dp 16dp"
+      margin_horizontal: 16dp
+      margin_vertical: 12dp
+    tabs:
+      - id: group_linked_tab
+        label_key: i18n.group_linked_tab
+        icon: FluentIcons.people_community_24_filled
+        value: GROUP_LINKED
+      - id: individual_tab
+        label_key: i18n.individual_tab
+        icon: FluentIcons.person_circle_24_filled
+        value: INDIVIDUAL
+        visible_when: individualSavingsId != null
+    a11y:
+      content_description: "Select savings account type"
+    test_context:
+      purpose: Tab selection switches visible content; individual tab hidden when no account
+      interaction_type: tap
+      data_driven: true
+      required_fields: [selectedTab, individualSavingsId]
+    on_click:
+      action: OnTabSelected
+      target: state.selectedTab
+
+  - id: balance_hero_card
+    type: card
+    name: BalanceHeroCard
+    description: Large balance display card for the selected account type
+    style:
+      background: primary
+      cornerRadius: lg
+      padding: 24dp
+      margin_horizontal: 16dp
+      margin_bottom: 16dp
+      elevation: 0dp
+    label:
+      text_key: "{ i18n.group_linked_balance_label | i18n.individual_balance_label }"
+      text_style: labelLarge
+      color: onPrimary
+      opacity: 0.8
+    amount:
+      text: "KES 9,600"
+      text_style: displaySmall
+      color: onPrimary
+      font: Noto Sans
+      weight: bold
+    account_number:
+      prefix: "Acc:"
+      text: "000100012345"
+      text_style: labelMedium
+      color: onPrimary
+      opacity: 0.7
+    a11y:
+      content_description: "Balance KES 9,600"
+    test_context:
+      purpose: Balance card shows correct amount for selected tab
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [groupLinkedBalance, individualBalance, selectedTab]
+    on_click: {}
+
+  - id: contribution_progress_card
+    type: card
+    name: ContributionProgressCard
+    description: >
+      Progress bar showing meetings attended vs total, and contribution vs target.
+      Only shown on GROUP_LINKED tab.
+    style:
+      background: surface
+      cornerRadius: lg
+      elevation: 2dp
+      padding: 16dp
+      margin_horizontal: 16dp
+      margin_bottom: 12dp
+      visible_when: selectedTab == GROUP_LINKED
+    header:
+      icon: FluentIcons.calendar_checkmark_24_filled
+      icon_tint: primary
+      text_key: i18n.contribution_progress_label
+      text_style: labelLarge
+      color: onSurfaceVariant
+    meetings_progress:
+      label: "18 / 24 meetings"
+      progress_fraction: 0.75
+      progress_color: primary
+      track_color: primaryContainer
+      height: 8dp
+      cornerRadius: full
+    contribution_row:
+      min_label: "KES 100 min"
+      max_label: "KES 500 max"
+      this_cycle_label: "This cycle: KES 9,600"
+      text_style: bodySmall
+      color: onSurfaceVariant
+    a11y:
+      content_description: "18 of 24 meetings attended. KES 9,600 contributed this cycle."
+    test_context:
+      purpose: Progress card shows correct meeting attendance fraction and contribution total
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [meetingsAttended, totalMeetings, groupLinkedBalance, contributionTarget]
+    on_click: {}
+
+  - id: transactions_header
+    type: text
+    name: TransactionsHeader
+    description: Section label above transaction list
+    style:
+      text_key: i18n.transaction_history_label
+      text_style: titleMedium
+      color: onSurface
+      weight: semibold
+      margin_horizontal: 16dp
+      margin_top: 8dp
+      margin_bottom: 4dp
+    a11y:
+      content_description: "Transaction history"
+    test_context:
+      purpose: Section header visible above list
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+  - id: transaction_list_item
+    type: list-item
+    name: SavingsTransactionListItem
+    description: Individual transaction row — type, amount, date, running balance
+    style:
+      leading_icon:
+        deposit: FluentIcons.arrow_trending_up_24_filled
+        withdrawal: FluentIcons.arrow_trending_down_24_filled
+        icon_size: 24dp
+        deposit_tint: primary
+        withdrawal_tint: error
+        background: surfaceVariant
+        shape: circle
+        size: 40dp
+      content:
+        title:
+          text: "{ Deposit | Withdrawal | Meeting contribution }"
+          text_style: bodyLarge
+          color: onSurface
+        subtitle:
+          text: "15 Apr 2026"
+          text_style: bodySmall
+          color: onSurfaceVariant
+      trailing:
+        amount:
+          text: "+KES 500"
+          text_style: bodyLarge
+          deposit_color: primary
+          withdrawal_color: error
+          weight: semibold
+        running_balance:
+          text: "Balance: KES 9,600"
+          text_style: labelSmall
+          color: outline
+      divider: true
+      min_touch_target: 48dp
+    a11y:
+      content_description: "Deposit KES 500 on 15 Apr 2026. Running balance KES 9,600."
+    test_context:
+      purpose: Each row shows correct type, amount with sign, date, and running balance
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [groupLinkedTransactions, individualTransactions]
+    on_click: {}
+
+  - id: empty_individual_promo
+    type: empty-state
+    name: EmptyIndividualPromo
+    description: Promo card to open individual savings account — shown when no individual account
+    style:
+      visible_when: "selectedTab == INDIVIDUAL && individualSavingsId == null"
+      icon: FluentIcons.piggy_bank_24_filled
+      icon_size: 64dp
+      icon_tint: secondary
+      title_key: i18n.no_individual_savings_title
+      subtitle_key: i18n.no_individual_savings_subtitle
+      background: secondaryContainer
+      cornerRadius: lg
+      padding: 24dp
+      margin_horizontal: 16dp
+    a11y:
+      content_description: "No individual savings account yet"
+    test_context:
+      purpose: Promo shown when individual account not available
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [individualSavingsId]
+    on_click: {}
+
+  - id: shimmer_loading
+    type: shimmer
+    name: SavingsShimmer
+    description: Skeleton loading for balance card and transaction list
+    style:
+      visible_when: isLoading == true
+      items: 6
+      item_height: 56dp
+      cornerRadius: md
+      margin_horizontal: 16dp
+    a11y:
+      content_description: "Loading savings data"
+    test_context:
+      purpose: Shimmer shown during data fetch; replaced on success
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+  - id: error_state
+    type: empty-state
+    name: SavingsErrorState
+    description: Error state with retry
+    style:
+      visible_when: "error != null && !isLoading"
+      icon: FluentIcons.wifi_off_24_filled
+      icon_size: 64dp
+      icon_tint: onSurfaceVariant
+      title_key: i18n.error_title
+      subtitle_key: i18n.error_subtitle
+      button_text_key: i18n.retry_button
+    a11y:
+      content_description: "Could not load savings. Tap retry."
+      role: button
+      min_touch_target: 48dp
+    test_context:
+      purpose: Error shown on load failure; retry triggers re-fetch
+      interaction_type: tap
+      data_driven: true
+      required_fields: [error]
+    on_click:
+      action: OnRetry
+      target: api.get_group_linked_transactions
+
+states:
+  initial_state: loading
+  loading:
+    description: Fetching savings account data
+    components_visible: [top_bar, savings_tab_row, shimmer_loading]
+  content:
+    description: Data loaded — balance card, progress, transactions shown
+    components_visible: [top_bar, savings_tab_row, balance_hero_card, contribution_progress_card, transactions_header, transaction_list_item, pull_to_refresh]
+  error:
+    description: Load failed
+    components_visible: [top_bar, savings_tab_row, error_state]
+
+i18n:
+  screen_title: "My Savings"
+  group_linked_tab: "Group-linked"
+  individual_tab: "Individual"
+  group_linked_balance_label: "Group-Linked Savings"
+  individual_balance_label: "Individual Savings"
+  contribution_progress_label: "Contribution Progress"
+  transaction_history_label: "Transaction History"
+  no_individual_savings_title: "No individual savings yet"
+  no_individual_savings_subtitle: "Speak to your group treasurer to open an individual savings account."
+  error_title: "Could not load savings"
+  error_subtitle: "Check your internet connection and try again."
+  retry_button: "Try Again"
+
+analytics:
+  screen_viewed:
+    event: screen_viewed
+    params:
+      screen_id: personal-savings
+      flow: end-user-dashboard-flow
+  events:
+    - name: savings_tab_switched
+      trigger: user taps tab
+      params:
+        tab: "{ group_linked | individual }"
+    - name: savings_refreshed
+      trigger: pull-to-refresh
+      params:
+        tab: "{ group_linked | individual }"
+        success: Boolean

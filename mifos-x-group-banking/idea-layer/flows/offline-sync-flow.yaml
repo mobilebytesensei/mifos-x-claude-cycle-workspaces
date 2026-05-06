@@ -1,0 +1,98 @@
+schema_version: "1.0"
+id: offline-sync-flow
+name: Offline Sync Flow
+type: happy
+feature_ref: offline-sync
+client_type: both
+milestone: v1.0.0
+description: >
+  When the device has no connectivity, all CRUD operations are queued in the local
+  sync_queue table; on connectivity restored the app auto-triggers a batch sync to
+  Fineract; conflicts surface in the conflict resolution UI; sync-status screen
+  provides real-time progress and per-item retry for failed operations.
+
+entry_point:
+  screen: sync-status
+  condition: any_screen_while_offline_action_queued
+
+steps:
+  - step: 1
+    screen: any
+    action: User performs any data-mutating action while offline (meeting steps, loan request, savings entry)
+    transition: sync-status
+    condition: device_offline
+
+  - step: 2
+    screen: any
+    action: Operation queued in local SQLDelight sync_queue table with entity type and payload
+    transition: sync-status
+    condition: action_queued
+
+  - step: 3
+    screen: sync-status
+    action: Connectivity detected — auto-sync triggers; sync-status shows "Syncing…" indicator
+    transition: sync-status
+    condition: connectivity_restored
+
+  - step: 4
+    screen: sync-status
+    action: Batch API sends all queued items to Fineract in priority order
+    transition: sync-status
+    condition: batch_in_flight
+
+  - step: 5
+    screen: sync-status
+    action: Fineract responses processed — successful items cleared from queue
+    transition: sync-status
+    condition: batch_response_received
+
+  - step: 6
+    screen: sync-status
+    action: Conflicts detected — conflict resolution UI shown with local vs. server versions side-by-side
+    transition: sync-status
+    condition: conflict_detected
+
+  - step: 7
+    screen: sync-status
+    action: User selects resolution (keep local / accept server / merge) per conflict; sync retried
+    transition: sync-status
+    condition: resolution_selected
+
+  - step: 8
+    screen: sync-status
+    action: All items resolved — sync-status shows green "All synced" with last-sync timestamp
+    transition: end
+    condition: queue_empty
+
+exit_points:
+  - screen: sync-status
+    outcome: success
+    description: All queued operations synced successfully; sync_queue cleared; last-sync timestamp updated.
+
+  - screen: sync-status
+    outcome: failure
+    description: Some operations failed after retry — shown in failed-operations list with per-item retry button.
+
+screens_involved:
+  - sync-status
+
+api_calls:
+  - endpoint: /api/v1/batches
+    method: POST
+    purpose: Submit all pending sync_queue items to Fineract in a single batch request.
+
+offline_capable: true
+offline_notes: >
+  The entire queuing mechanism operates fully offline. sync_queue is a local SQLDelight
+  table. Auto-sync triggers on ConnectivityManager CONNECTED callback. Manual sync via
+  "Sync Now" button on sync-status screen (disabled when offline).
+
+analytics_events:
+  - operation_queued_offline: Any action queued while device is offline
+  - auto_sync_triggered: Connectivity restored and auto-sync begins
+  - batch_sync_started: POST /api/v1/batches request initiated
+  - batch_sync_success: All queued items synced successfully
+  - batch_sync_partial_failure: Some items failed after batch
+  - conflict_detected: Server version differs from local queued version
+  - conflict_resolved: User selects resolution for a conflicting item
+  - sync_queue_cleared: All items processed; queue empty

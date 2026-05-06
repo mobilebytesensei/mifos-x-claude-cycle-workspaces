@@ -1,0 +1,426 @@
+schema_version: "3.1"
+
+id: meeting-calendar
+name: Meeting Calendar
+description: >
+  Calendar and list view of all meetings for the Mwangaza Women's Group. Each meeting
+  card shows meeting number, scheduled date, status (upcoming/completed/missed),
+  attendance count, and total KES collected. Upcoming meetings surface a prominent
+  "Start Meeting" CTA. Admin (treasurer/chairperson) can navigate to conduct a new
+  meeting or review a past one.
+feature: meeting-lifecycle
+flow: meeting-lifecycle-flow
+version: "1.0.0"
+tags: [meetings, calendar, admin, meeting-lifecycle, offline-first]
+
+status: enriched
+quality_score: 87
+status_history:
+  - status: draft
+    date: "2026-05-05"
+    author: system
+  - status: enriched
+    date: "2026-05-05"
+    author: claude-product-cycle
+
+entry_point: false
+bottom_nav: true
+navigates_to:
+  - target: meeting-conduct
+    condition: user_taps_start_meeting
+    params: { meeting_id: String, meeting_number: Int, center_id: Int }
+  - target: previous-meeting-review
+    condition: user_taps_completed_meeting
+    params: { meeting_id: String, meeting_number: Int, center_id: Int }
+route: /meetings
+entry_points:
+  - source: home-dashboard
+    condition: user_taps_meetings_nav
+  - source: bottom_nav
+    condition: meetings_tab_selected
+nav_params:
+  center_id: Int
+
+screens:
+  - id: meeting_calendar_screen
+    name: MeetingCalendarScreen
+    composable: MeetingCalendarScreen
+    description: >
+      Top toolbar with group name. Toggle between calendar view and list view.
+      Upcoming meeting card pinned at top with green "Start Meeting" button.
+      Scrollable list of past meetings below.
+    layout: Column (TopAppBar + ViewToggle + PinnedUpcoming + LazyColumn)
+
+state_model:
+  MeetingCalendarViewModel:
+    state:
+      name: MeetingCalendarState
+      fields:
+        meetings: { type: "List<MeetingListItem>", default: "emptyList()" }
+        isLoading: { type: Boolean, default: "true" }
+        isRefreshing: { type: Boolean, default: "false" }
+        viewMode: { type: "ViewMode", default: "ViewMode.LIST" }
+        error: { type: "String?", default: "null" }
+        centerId: { type: Int, default: "0" }
+    screen_state:
+      name: MeetingCalendarScreenState
+      members: [Loading, Content, Empty, Error]
+    errors:
+      NetworkError: "Could not load meetings. Showing cached data."
+      EmptyState: "No meetings scheduled yet."
+    events:
+      name: MeetingCalendarEvent
+      members:
+        - { name: NavigateToConduct, params: "meetingId: String, meetingNumber: Int" }
+        - { name: NavigateToReview, params: "meetingId: String, meetingNumber: Int" }
+        - { name: ShowError, params: "message: String" }
+    actions:
+      name: MeetingCalendarAction
+      members:
+        - { name: LoadMeetings, trigger: "Screen enters composition" }
+        - { name: RefreshMeetings, trigger: "Pull-to-refresh" }
+        - { name: ToggleViewMode, trigger: "User taps calendar/list toggle" }
+        - { name: StartMeeting, trigger: "Tap Start Meeting button on upcoming card", params: "meetingId: String, meetingNumber: Int" }
+        - { name: OpenPastMeeting, trigger: "Tap completed meeting card", params: "meetingId: String, meetingNumber: Int" }
+    di:
+      - MeetingRepository
+      - NavigationManager
+      - ConnectivityObserver
+
+flow_logic:
+  - decision: screen_loads
+    branches:
+      - condition: cached_data_available
+        action: render Content with stale data, then fetch fresh from API
+      - condition: no_cache
+        action: show Loading skeleton, fetch API
+  - decision: upcoming_meeting_exists
+    branches:
+      - condition: true
+        action: pin upcoming card at top with "Start Meeting" CTA enabled
+      - condition: false
+        action: show "Next meeting not scheduled" placeholder
+  - decision: user_taps_meeting_card
+    branches:
+      - condition: status == upcoming
+        action: emit NavigateToConduct with meeting params
+      - condition: status == completed OR missed
+        action: emit NavigateToReview with meeting params
+
+dependencies:
+  tier: feature
+  features: [meeting-conduct, previous-meeting-review]
+  services:
+    - MeetingRepository
+    - NavigationManager
+    - ConnectivityObserver
+    - LocalMeetingDao (SQLDelight)
+  shared_entities:
+    - MeetingListItem
+    - MeetingStatus (enum: UPCOMING, COMPLETED, MISSED)
+    - ViewMode (enum: LIST, CALENDAR)
+
+api:
+  - id: get_center_meetings
+    method: GET
+    path: /fineract-provider/api/v1/centers/{centerId}/meetings
+    description: Fetch scheduled meetings for the group center
+    auth: BasicAuth (Fineract tenant header)
+    query_params:
+      fromDate: "YYYY-MM-DD"
+      toDate: "YYYY-MM-DD"
+    path_params:
+      centerId: Int
+    response_ref: MeetingListResponse
+    error_handling:
+      401: Redirect to login
+      404: Show empty state
+      5xx: Show error banner, use cached data
+
+  - id: get_meeting_records_datatable
+    method: GET
+    path: /fineract-provider/api/v1/datatables/dt_meeting_record/{centerId}
+    description: Fetch completed meeting records with collected amounts
+    auth: BasicAuth
+    path_params:
+      centerId: Int
+    response_ref: MeetingRecordList
+    error_handling:
+      404: No records yet, continue with empty list
+
+dtos:
+  MeetingListResponse:
+    fields:
+      - { name: meetingId, type: String }
+      - { name: meetingNumber, type: Int }
+      - { name: meetingDate, type: String, format: "YYYY-MM-DD" }
+      - { name: status, type: MeetingStatus }
+      - { name: attendanceCount, type: "Int?", nullable: true }
+      - { name: totalCollectedKES, type: "Long?", nullable: true }
+  MeetingRecordList:
+    fields:
+      - { name: centerId, type: Int }
+      - { name: records, type: "List<MeetingRecordItem>" }
+  MeetingRecordItem:
+    fields:
+      - { name: meetingNumber, type: Int }
+      - { name: actualDate, type: String }
+      - { name: totalSavings, type: Long }
+      - { name: totalRepayments, type: Long }
+      - { name: attendanceCount, type: Int }
+      - { name: closingCorpus, type: Long }
+
+components:
+  - id: top_app_bar
+    type: top-app-bar
+    name: MeetingCalendarTopBar
+    description: Large top bar with group name and view toggle icon
+    style:
+      title_text: "Meetings"
+      subtitle_text: "Mwangaza Women's Group"
+      title_style: titleLarge
+      subtitle_style: bodyMedium
+      subtitle_color: onSurfaceVariant
+      background: surface
+    actions:
+      - id: toggle_view_btn
+        icon: FluentIcons.calendar_list_24_regular
+        content_description: "Toggle calendar/list view"
+        on_click:
+          action: ToggleViewMode
+    a11y:
+      content_description: "Meeting Calendar — Mwangaza Women's Group"
+    test_context:
+      purpose: Confirm title and toggle button visible
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+  - id: upcoming_meeting_card
+    type: card
+    name: UpcomingMeetingCard
+    description: >
+      Pinned elevated card for the next upcoming meeting. Shows meeting number,
+      date, and a forest-green "Start Meeting" button. Visible only when an
+      upcoming meeting exists.
+    style:
+      background: primaryContainer
+      cornerRadius: lg
+      padding: 16dp
+      margin: 16dp
+      elevation: 4dp
+    content:
+      - { type: text, key: meeting_number_label, text_style: labelMedium, color: onPrimaryContainer }
+      - { type: text, key: meeting_number_value, text: "Meeting #3", text_style: headlineSmall, color: onPrimaryContainer, font: "Noto Sans bold" }
+      - { type: text, key: meeting_date, text: "Wednesday, 7 May 2026", text_style: bodyLarge, color: onPrimaryContainer }
+      - { type: chip, text: "Upcoming", background: primary, text_color: onPrimary, corner: full }
+    cta:
+      type: button
+      id: start_meeting_btn
+      text: "Start Meeting"
+      style:
+        type: FilledButton
+        background: primary
+        text_color: onPrimary
+        min_height: 48dp
+        full_width: true
+        margin_top: 12dp
+      a11y:
+        content_description: "Start Meeting #3"
+        role: button
+        min_touch_target: 48dp
+      test_context:
+        purpose: Verify Start Meeting button present and triggers conduct navigation
+        interaction_type: tap
+        data_driven: true
+        required_fields: [meetingId, meetingNumber]
+      on_click:
+        action: StartMeeting
+        target: meeting-conduct
+        params: { meeting_id: "{{meeting.meetingId}}", meeting_number: "{{meeting.meetingNumber}}", center_id: "{{centerId}}" }
+    a11y:
+      content_description: "Upcoming meeting card — Meeting #3 on 7 May 2026"
+    test_context:
+      purpose: Confirm upcoming card pinned at top with correct meeting info
+      interaction_type: tap
+      data_driven: true
+      required_fields: [meetingId, meetingNumber, meetingDate]
+    on_click: {}
+
+  - id: section_header_past
+    type: text
+    name: PastMeetingsSectionHeader
+    description: Section label "Past Meetings" above the scrollable history list
+    style:
+      text_key: i18n.past_meetings_header
+      text_style: titleSmall
+      color: onSurfaceVariant
+      padding_horizontal: 16dp
+      padding_top: 8dp
+      padding_bottom: 4dp
+    a11y:
+      content_description: "Past Meetings section"
+    test_context:
+      purpose: Section header visible above list
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+  - id: meeting_list_item
+    type: list-item
+    name: MeetingListItem
+    description: >
+      Row for each past meeting. Left: meeting number badge. Center: date +
+      attendance count. Right: KES collected chip + status icon. Min 72dp height.
+    style:
+      min_height: 72dp
+      padding_horizontal: 16dp
+      padding_vertical: 12dp
+      divider: true
+    leading:
+      type: avatar
+      text: "{{meeting_number}}"
+      background_completed: primaryContainer
+      background_missed: errorContainer
+      text_color: onPrimaryContainer
+      size: 40dp
+    content:
+      - { type: text, text: "Meeting #{{meeting_number}}", text_style: bodyLarge, color: onSurface }
+      - { type: text, text: "{{meeting_date}} · {{attendance_count}}/5 present", text_style: bodySmall, color: onSurfaceVariant }
+    trailing:
+      type: column
+      children:
+        - { type: text, text: "KES {{total_collected}}", text_style: labelLarge, color: primary }
+        - { type: chip, text: "{{status}}", style_by_status: { completed: successContainer, missed: errorContainer } }
+    a11y:
+      content_description: "Meeting {{meeting_number}}, {{date}}, {{status}}, KES {{amount}} collected"
+      role: button
+      min_touch_target: 48dp
+    test_context:
+      purpose: Verify past meetings render with correct data; tapping completed goes to review
+      interaction_type: tap
+      data_driven: true
+      required_fields: [meetingId, meetingNumber, meetingDate, status, totalCollectedKES]
+    on_click:
+      action: OpenPastMeeting
+      target: previous-meeting-review
+      params: { meeting_id: "{{meeting.meetingId}}", meeting_number: "{{meeting.meetingNumber}}", center_id: "{{centerId}}" }
+
+  - id: loading_skeleton
+    type: skeleton
+    name: MeetingListSkeleton
+    description: Placeholder shimmer cards while data loads
+    style:
+      count: 4
+      item_height: 72dp
+      corner_radius: md
+      margin: 16dp
+    a11y:
+      content_description: "Loading meetings"
+    test_context:
+      purpose: Confirm loading state shows skeleton not blank screen
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+  - id: error_banner
+    type: banner
+    name: NetworkErrorBanner
+    description: Inline banner when API fails — shows cached data message with retry
+    style:
+      background: errorContainer
+      text_color: onErrorContainer
+      padding: 12dp
+    content:
+      text_key: i18n.network_error
+    action:
+      text_key: i18n.retry
+      on_click:
+        action: RefreshMeetings
+    a11y:
+      content_description: "Network error — showing cached meetings. Tap Retry to reload."
+    test_context:
+      purpose: Error banner visible on network failure; retry triggers refresh
+      interaction_type: tap
+      data_driven: false
+      required_fields: []
+    on_click:
+      action: RefreshMeetings
+
+  - id: empty_state
+    type: empty-state
+    name: NoMeetingsEmptyState
+    description: Shown when group has no meetings at all
+    style:
+      icon: FluentIcons.calendar_empty_24_regular
+      icon_size: 64dp
+      icon_tint: onSurfaceVariant
+      title_text_key: i18n.empty_title
+      subtitle_text_key: i18n.empty_subtitle
+      padding: 48dp
+      alignment: center
+    a11y:
+      content_description: "No meetings found"
+    test_context:
+      purpose: Empty state renders when meetings list is empty
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+states:
+  initial_state: loading
+  loading:
+    description: Skeleton shimmer while API call in flight
+    components_visible: [top_app_bar, loading_skeleton]
+  content:
+    description: Upcoming card pinned + scrollable past meeting list
+    components_visible: [top_app_bar, upcoming_meeting_card, section_header_past, meeting_list_item]
+  content_with_error:
+    description: Content visible but error banner shown for stale data
+    components_visible: [top_app_bar, error_banner, upcoming_meeting_card, section_header_past, meeting_list_item]
+  empty:
+    description: No meetings exist
+    components_visible: [top_app_bar, empty_state]
+  error:
+    description: Full-screen error with retry — no cached data available
+    components_visible: [top_app_bar, error_banner]
+
+i18n:
+  past_meetings_header: "Past Meetings"
+  upcoming_section_header: "Next Meeting"
+  start_meeting_btn: "Start Meeting"
+  network_error: "Showing cached meetings — tap Retry to refresh"
+  retry: "Retry"
+  empty_title: "No Meetings Yet"
+  empty_subtitle: "Meetings will appear here once scheduled"
+  status_upcoming: "Upcoming"
+  status_completed: "Completed"
+  status_missed: "Missed"
+  meeting_number_label: "Scheduled Meeting"
+  collected_label: "Collected"
+
+analytics:
+  screen_viewed:
+    event: screen_viewed
+    params:
+      screen_id: meeting-calendar
+      flow: meeting-lifecycle-flow
+  events:
+    - name: start_meeting_tapped
+      trigger: user taps Start Meeting on upcoming card
+      params:
+        meeting_number: Int
+        center_id: Int
+    - name: past_meeting_opened
+      trigger: user taps a past meeting row
+      params:
+        meeting_number: Int
+        status: "{ completed | missed }"
+    - name: view_mode_toggled
+      trigger: user taps calendar/list toggle
+      params:
+        new_mode: "{ LIST | CALENDAR }"

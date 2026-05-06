@@ -1,0 +1,632 @@
+schema_version: "3.1"
+
+id: personal-dashboard
+name: Personal Dashboard
+description: >
+  End user's home screen. Shows group affiliation, own savings balance
+  (group-linked + individual), active loan summary, share-out projection,
+  and recent activity list. Pull-to-refresh. Covers FR-016, FR-017.
+feature: end-user-dashboard
+flow: end-user-dashboard-flow
+version: "1.0.0"
+tags: [dashboard, end_user, savings, loans, self-service, FR-016, FR-017]
+
+status: enriched
+quality_score: 90
+status_history:
+  - status: draft
+    date: "2026-05-05"
+    author: system
+  - status: enriched
+    date: "2026-05-05"
+    author: claude-product-cycle
+
+entry_point: false
+bottom_nav: true
+navigates_to:
+  - target: personal-savings
+    condition: user_taps_savings_card
+  - target: personal-loans
+    condition: user_taps_loan_card or fab_loans
+  - target: loan-request
+    condition: user_taps_request_loan_cta
+route: /dashboard
+entry_points:
+  - source: login
+    condition: end_user_login_success
+nav_params:
+  clientId: { type: Long, required: true }
+  selfServiceToken: { type: String, required: true }
+
+screens:
+  - id: personal_dashboard_screen
+    name: PersonalDashboardScreen
+    composable: PersonalDashboardScreen
+    description: Home screen with summary cards and recent activity
+    layout: Scaffold (top-bar + bottom-nav + LazyColumn body)
+
+state_model:
+  PersonalDashboardViewModel:
+    state:
+      name: PersonalDashboardState
+      fields:
+        clientId: { type: Long, default: "0L" }
+        memberName: { type: String, default: '""' }
+        groupName: { type: String, default: '"Mwangaza Women\'s Group"' }
+        groupLinkedSavingsBalance: { type: "Double", default: "0.0" }
+        individualSavingsBalance: { type: "Double", default: "0.0" }
+        activeLoan: { type: "LoanSummary?", default: "null" }
+        shareOutProjection: { type: "Double", default: "0.0" }
+        recentTransactions: { type: "List<SavingsTransactionDto>", default: "emptyList()" }
+        isRefreshing: { type: Boolean, default: "false" }
+        isLoading: { type: Boolean, default: "true" }
+        error: { type: "DashboardError?", default: "null" }
+    screen_state:
+      name: PersonalDashboardScreenState
+      members: [Loading, Content, Error, Empty]
+    errors:
+      name: DashboardError
+      types:
+        - { type: Network, retry: true, message_key: error_network }
+        - { type: Server, retry: true, message_key: error_server }
+        - { type: Unauthorized, retry: false, message_key: error_session_expired }
+    events:
+      name: PersonalDashboardEvent
+      members:
+        - { name: NavigateToSavings }
+        - { name: NavigateToLoans }
+        - { name: NavigateToLoanRequest }
+    actions:
+      name: PersonalDashboardAction
+      members:
+        - { name: OnRefresh, trigger: "Pull-to-refresh" }
+        - { name: OnRetry, trigger: "Tap Retry button" }
+        - { name: OnSavingsCardClick, trigger: "Tap savings summary card" }
+        - { name: OnLoanCardClick, trigger: "Tap loan summary card" }
+        - { name: OnRequestLoanClick, trigger: "Tap Request a Loan CTA" }
+    di:
+      - SelfServiceRepository
+      - SavingsRepository
+      - LoanRepository
+      - SessionManager
+
+flow_logic:
+  - decision: data_load
+    branches:
+      - condition: online
+        action: parallel fetch accounts + savings transactions; cache results
+      - condition: offline
+        action: serve from SQLDelight cache; show offline badge
+  - decision: active_loan_exists
+    branches:
+      - condition: activeLoan != null
+        action: show loan summary card with repayment info
+      - condition: activeLoan == null
+        action: show "Request a Loan" CTA card
+  - decision: error_handling
+    branches:
+      - condition: error == Unauthorized
+        action: navigate to login, clear session
+      - condition: error == Network or Server
+        action: show error state with retry
+
+dependencies:
+  tier: ui
+  features: [end-user-dashboard, authentication]
+  services:
+    - SelfServiceRepository
+    - SavingsRepository
+    - LoanRepository
+    - SessionManager
+    - OfflineCacheManager
+  shared_entities:
+    - Member
+    - Loan
+    - SavingsTransaction
+
+api:
+  - id: get_client_accounts
+    function: get_client_accounts
+    method: get
+    endpoint: "/self/clients/{clientId}/accounts"
+    description: Get all accounts (savings + loans) for the authenticated self-service client
+    params:
+      clientId: { type: Long, required: true, source: nav_params }
+    response:
+      type: object
+      fields:
+        savingsAccounts:
+          type: array
+          items:
+            savingsProductId: Long
+            savingsProductName: String
+            id: Long
+            accountNo: String
+            status: object
+            balance: Double
+        loanAccounts:
+          type: array
+          items:
+            loanProductId: Long
+            loanProductName: String
+            id: Long
+            accountNo: String
+            status: object
+            loanBalance: Double
+    errors:
+      401: Session expired — navigate to login
+      404: Client not found
+      503: Server unavailable — use cache
+    cache: { ttl: 300, strategy: stale-while-revalidate, offline: use_sqldelight }
+
+  - id: get_savings_account
+    function: get_savings_account
+    method: get
+    endpoint: "/self/savingsaccounts/{savingsId}"
+    description: Get detailed savings account balance and summary for a specific account
+    params:
+      savingsId: { type: Long, required: true, source: api.get_client_accounts }
+    response:
+      type: object
+      fields:
+        id: Long
+        accountNo: String
+        savingsProductName: String
+        currency:
+          code: String
+          displaySymbol: String
+        summary:
+          totalDeposits: Double
+          totalWithdrawals: Double
+          accountBalance: Double
+          availableBalance: Double
+        status:
+          active: Boolean
+    errors:
+      401: Session expired
+      404: Account not found
+      503: Server unavailable — use cache
+    cache: { ttl: 300, strategy: stale-while-revalidate, offline: use_sqldelight }
+
+dtos:
+  - name: ClientAccountsResponse
+    fields:
+      savingsAccounts: "List<SavingsAccountSummaryDto>"
+      loanAccounts: "List<LoanAccountSummaryDto>"
+
+  - name: SavingsAccountSummaryDto
+    fields:
+      id: Long
+      accountNo: String
+      savingsProductId: Long
+      savingsProductName: String
+      balance: Double
+      status: AccountStatusDto
+
+  - name: LoanAccountSummaryDto
+    fields:
+      id: Long
+      accountNo: String
+      loanProductId: Long
+      loanProductName: String
+      loanBalance: Double
+      status: AccountStatusDto
+
+  - name: SavingsAccountDetailDto
+    fields:
+      id: Long
+      accountNo: String
+      savingsProductName: String
+      currency: CurrencyDto
+      summary: SavingsSummaryDto
+      status: AccountStatusDto
+
+  - name: LoanSummary
+    fields:
+      loanId: Long
+      productName: String
+      principalAmount: Double
+      outstandingBalance: Double
+      nextRepaymentDate: String
+      nextRepaymentAmount: Double
+      isOverdue: Boolean
+
+components:
+  - id: top_bar
+    type: top-bar
+    name: DashboardTopBar
+    description: Top bar with greeting and notification icon
+    style:
+      background: primary
+      elevation: 0dp
+    title_composable: custom
+    title:
+      greeting: "{ i18n.good_morning | i18n.good_afternoon | i18n.good_evening }"
+      member_name: "Grace"
+      text_style: titleMedium
+      color: onPrimary
+    trailing_icon:
+      name: FluentIcons.alert_24_regular
+      tint: onPrimary
+      badge: unread_count
+    a11y:
+      content_description: "Dashboard — CommonPurse"
+    test_context:
+      purpose: Top bar shows personalised greeting and notification badge
+      interaction_type: tap
+      data_driven: true
+      required_fields: [memberName]
+    on_click:
+      action: OnNotificationsClick
+      target: notifications
+
+  - id: group_banner
+    type: card
+    name: GroupBanner
+    description: Green banner showing group name and currency
+    style:
+      background: primary
+      padding: "16dp 24dp 24dp"
+      elevation: 0dp
+    group_name:
+      text: "Mwangaza Women's Group"
+      text_style: bodyLarge
+      color: onPrimary
+      weight: semibold
+    currency_chip:
+      text: "KES"
+      background: primaryContainer
+      text_color: onPrimaryContainer
+      cornerRadius: full
+      padding: "4dp 12dp"
+    a11y:
+      content_description: "Mwangaza Women's Group — Kenyan Shillings"
+    test_context:
+      purpose: Group name and currency shown at top
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [groupName]
+    on_click: {}
+
+  - id: savings_summary_card
+    type: card
+    name: SavingsSummaryCard
+    description: >
+      Card showing total savings balance (group-linked + individual combined).
+      Tappable — navigates to personal-savings detail.
+    style:
+      background: surface
+      cornerRadius: lg
+      elevation: 2dp
+      padding: 20dp
+      margin_horizontal: 16dp
+      margin_top: -20dp
+    header:
+      icon: FluentIcons.savings_24_filled
+      icon_tint: primary
+      label_key: i18n.total_savings_label
+      text_style: labelLarge
+      color: onSurfaceVariant
+    balance:
+      amount: "KES 12,450"
+      text_style: displaySmall
+      color: onSurface
+      font: Noto Sans
+      weight: bold
+    breakdown_row:
+      group_linked:
+        label_key: i18n.group_linked_label
+        amount: "KES 9,600"
+        color: primary
+      individual:
+        label_key: i18n.individual_label
+        amount: "KES 2,850"
+        color: secondary
+    trailing_icon:
+      name: FluentIcons.chevron_right_24_regular
+      tint: onSurfaceVariant
+    a11y:
+      content_description: "Total savings KES 12,450. Tap to see details."
+      role: button
+      min_touch_target: 48dp
+    test_context:
+      purpose: Savings card shows correct combined balance; tapping navigates to personal-savings
+      interaction_type: tap
+      data_driven: true
+      required_fields: [groupLinkedSavingsBalance, individualSavingsBalance]
+    on_click:
+      action: OnSavingsCardClick
+      target: personal-savings
+
+  - id: loan_summary_card
+    type: card
+    name: LoanSummaryCard
+    description: Active loan card showing outstanding balance and next repayment. Shown when activeLoan != null.
+    style:
+      background: surface
+      cornerRadius: lg
+      elevation: 2dp
+      padding: 20dp
+      margin_horizontal: 16dp
+      margin_top: 12dp
+      visible_when: activeLoan != null
+    header:
+      icon: FluentIcons.money_24_filled
+      icon_tint: tertiary
+      label_key: i18n.active_loan_label
+      text_style: labelLarge
+      color: onSurfaceVariant
+    outstanding:
+      label_key: i18n.outstanding_balance_label
+      amount: "KES 15,000"
+      text_style: headlineSmall
+      color: onSurface
+    next_repayment:
+      label_key: i18n.next_repayment_label
+      amount: "KES 1,500"
+      due_date: "15 May 2026"
+      overdue_indicator:
+        visible_when: activeLoan.isOverdue == true
+        icon: FluentIcons.warning_24_filled
+        tint: error
+        text_key: i18n.overdue_label
+    trailing_icon:
+      name: FluentIcons.chevron_right_24_regular
+      tint: onSurfaceVariant
+    a11y:
+      content_description: "Active loan — KES 15,000 outstanding. Next repayment KES 1,500 on 15 May 2026."
+      role: button
+      min_touch_target: 48dp
+    test_context:
+      purpose: Loan card shows correct balance and next repayment; overdue badge shown when past due
+      interaction_type: tap
+      data_driven: true
+      required_fields: [activeLoan]
+    on_click:
+      action: OnLoanCardClick
+      target: personal-loans
+
+  - id: request_loan_cta
+    type: card
+    name: RequestLoanCta
+    description: Prompt card to request a loan — shown when activeLoan == null
+    style:
+      background: tertiaryContainer
+      cornerRadius: lg
+      elevation: 0dp
+      padding: 20dp
+      margin_horizontal: 16dp
+      margin_top: 12dp
+      visible_when: activeLoan == null
+    icon:
+      name: FluentIcons.add_circle_24_filled
+      size: 40dp
+      tint: onTertiaryContainer
+    text:
+      title_key: i18n.request_loan_title
+      subtitle_key: i18n.request_loan_subtitle
+      title_style: titleMedium
+      subtitle_style: bodyMedium
+      color: onTertiaryContainer
+    a11y:
+      content_description: "Request a loan — tap to apply"
+      role: button
+      min_touch_target: 48dp
+    test_context:
+      purpose: CTA shown when no active loan; tapping navigates to loan-request
+      interaction_type: tap
+      data_driven: true
+      required_fields: []
+    on_click:
+      action: OnRequestLoanClick
+      target: loan-request
+
+  - id: shareout_projection_card
+    type: card
+    name: ShareOutProjectionCard
+    description: Shows projected share-out amount at next cycle end
+    style:
+      background: secondaryContainer
+      cornerRadius: lg
+      elevation: 0dp
+      padding: 16dp
+      margin_horizontal: 16dp
+      margin_top: 12dp
+    icon:
+      name: FluentIcons.trophy_24_filled
+      tint: onSecondaryContainer
+    label:
+      text_key: i18n.shareout_projection_label
+      text_style: labelLarge
+      color: onSecondaryContainer
+    amount:
+      text: "KES 38,250"
+      text_style: headlineSmall
+      color: onSecondaryContainer
+      weight: bold
+    a11y:
+      content_description: "Projected share-out KES 38,250"
+    test_context:
+      purpose: Share-out projection displays correctly
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [shareOutProjection]
+    on_click: {}
+
+  - id: recent_activity_header
+    type: text
+    name: RecentActivityHeader
+    description: Section header for recent activity list
+    style:
+      text_key: i18n.recent_activity_label
+      text_style: titleMedium
+      color: onSurface
+      weight: semibold
+      margin_horizontal: 16dp
+      margin_top: 24dp
+      margin_bottom: 8dp
+    a11y:
+      content_description: "Recent activity"
+    test_context:
+      purpose: Section header visible above transaction list
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+  - id: recent_activity_list
+    type: list-item
+    name: RecentActivityListItem
+    description: Individual transaction row — amount, type, date. Repeating composable.
+    style:
+      leading_icon:
+        deposit: FluentIcons.arrow_download_24_filled
+        withdrawal: FluentIcons.arrow_upload_24_filled
+        icon_size: 24dp
+        deposit_tint: primary
+        withdrawal_tint: error
+      amount:
+        text_style: bodyLarge
+        deposit_color: primary
+        withdrawal_color: error
+        weight: semibold
+      type_label:
+        text_style: bodyMedium
+        color: onSurfaceVariant
+      date:
+        text_style: labelMedium
+        color: outline
+      divider: true
+      min_touch_target: 48dp
+    a11y:
+      content_description: "Transaction: {type} KES {amount} on {date}"
+    test_context:
+      purpose: Each transaction row shows correct type, amount with sign, and date
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [recentTransactions]
+    on_click: {}
+
+  - id: shimmer_loading
+    type: shimmer
+    name: DashboardShimmer
+    description: Shimmer skeleton for all cards during initial load
+    style:
+      visible_when: isLoading == true
+      card_count: 4
+      card_height: 100dp
+      cornerRadius: lg
+      margin_horizontal: 16dp
+      margin_vertical: 8dp
+    a11y:
+      content_description: "Loading your dashboard"
+    test_context:
+      purpose: Shimmer shown during API calls; replaced by content on success
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+  - id: error_state
+    type: empty-state
+    name: DashboardErrorState
+    description: Error state with retry button — shown on network/server error
+    style:
+      visible_when: error != null && !isLoading
+      icon: FluentIcons.wifi_off_24_filled
+      icon_size: 64dp
+      icon_tint: onSurfaceVariant
+      title_key: i18n.error_title
+      subtitle_key: i18n.error_subtitle
+      button_text_key: i18n.retry_button
+    a11y:
+      content_description: "Failed to load dashboard. Tap retry."
+      role: button
+      min_touch_target: 48dp
+    test_context:
+      purpose: Error state shows correct message and retry button triggers data reload
+      interaction_type: tap
+      data_driven: true
+      required_fields: [error]
+    on_click:
+      action: OnRetry
+      target: api.get_client_accounts
+
+  - id: pull_to_refresh
+    type: card
+    name: PullToRefresh
+    description: SwipeRefresh indicator at top of scroll container
+    style:
+      color: primary
+      visible_when: isRefreshing == true
+    a11y:
+      content_description: "Refreshing dashboard"
+    test_context:
+      purpose: Pull-to-refresh triggers data reload and shows indicator
+      interaction_type: swipe
+      data_driven: false
+      required_fields: []
+    on_click:
+      action: OnRefresh
+      target: api.get_client_accounts
+
+states:
+  initial_state: loading
+  loading:
+    description: Initial data fetch — shimmer shown for all cards
+    components_visible: [top_bar, group_banner, shimmer_loading]
+  content:
+    description: All data loaded — cards and activity list visible
+    components_visible: [top_bar, group_banner, savings_summary_card, loan_summary_card, request_loan_cta, shareout_projection_card, recent_activity_header, recent_activity_list, pull_to_refresh]
+  refreshing:
+    description: Pull-to-refresh in progress
+    components_visible: [top_bar, group_banner, savings_summary_card, loan_summary_card, shareout_projection_card, recent_activity_header, recent_activity_list, pull_to_refresh]
+  error:
+    description: Network/server error — error state shown
+    components_visible: [top_bar, group_banner, error_state]
+  empty:
+    description: No accounts found (new member, no accounts yet)
+    components_visible: [top_bar, group_banner, request_loan_cta]
+
+i18n:
+  good_morning: "Good morning"
+  good_afternoon: "Good afternoon"
+  good_evening: "Good evening"
+  total_savings_label: "Total Savings"
+  group_linked_label: "Group-linked"
+  individual_label: "Individual"
+  active_loan_label: "Active Loan"
+  outstanding_balance_label: "Outstanding"
+  next_repayment_label: "Next repayment"
+  overdue_label: "Overdue"
+  request_loan_title: "Need a loan?"
+  request_loan_subtitle: "Apply for up to KES 37,350 (3× your savings)"
+  shareout_projection_label: "Projected share-out"
+  recent_activity_label: "Recent Activity"
+  error_title: "Could not load dashboard"
+  error_subtitle: "Check your internet connection and try again."
+  retry_button: "Try Again"
+
+analytics:
+  screen_viewed:
+    event: screen_viewed
+    params:
+      screen_id: personal-dashboard
+      flow: end-user-dashboard-flow
+      client_id: "{ clientId }"
+  events:
+    - name: savings_card_tapped
+      trigger: user taps savings summary card
+      params:
+        savings_balance: Double
+    - name: loan_card_tapped
+      trigger: user taps loan summary card
+      params:
+        loan_balance: Double
+    - name: request_loan_cta_tapped
+      trigger: user taps Request a Loan CTA
+      params: {}
+    - name: dashboard_refreshed
+      trigger: pull-to-refresh completed
+      params:
+        success: Boolean

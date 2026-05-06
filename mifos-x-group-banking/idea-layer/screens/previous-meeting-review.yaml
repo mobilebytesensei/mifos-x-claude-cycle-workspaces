@@ -1,0 +1,585 @@
+schema_version: "3.1"
+
+id: previous-meeting-review
+name: Previous Meeting Review
+description: >
+  Read-only detail screen for the previous meeting — surfaced at the start of
+  a new meeting (FR-019 enhanced meeting flow) or when an admin taps a completed
+  meeting on the calendar. Shows the same data as meeting-summary but contextualised
+  as "reviewing before we start." Highlights unresolved items: outstanding loan
+  votes, members who missed the last meeting, unpaid fines. Admin only.
+feature: meeting-lifecycle
+flow: meeting-lifecycle-flow
+version: "1.0.0"
+tags: [meetings, review, read-only, admin, previous-meeting, fr-019, meeting-lifecycle]
+
+status: enriched
+quality_score: 87
+status_history:
+  - status: draft
+    date: "2026-05-05"
+    author: system
+  - status: enriched
+    date: "2026-05-05"
+    author: claude-product-cycle
+
+entry_point: false
+bottom_nav: false
+navigates_to:
+  - target: meeting-conduct
+    condition: user_taps_start_meeting_from_review
+    params: { meeting_id: String, meeting_number: Int, center_id: Int }
+  - target: meeting-calendar
+    condition: user_taps_back
+    params: {}
+route: /meetings/{previousMeetingId}/review
+entry_points:
+  - source: meeting-conduct
+    condition: user_taps_view_full_report_on_step0
+  - source: meeting-calendar
+    condition: user_taps_completed_meeting_card
+nav_params:
+  meeting_id: String
+  meeting_number: Int
+  center_id: Int
+  launched_from: String  # "conduct" | "calendar"
+
+screens:
+  - id: previous_meeting_review_screen
+    name: PreviousMeetingReviewScreen
+    composable: PreviousMeetingReviewScreen
+    description: >
+      Full-screen read-only review. Top AppBar with "Previous Meeting" title and
+      back nav. Banner indicating context (reviewing before meeting / calendar view).
+      Scrollable sections: Summary metrics, Attendance detail, Savings per member,
+      Loan status, Unresolved items alert.
+    layout: Column (TopAppBar + ContextBanner + LazyColumn[MetricsSummary + AttendanceDetail + SavingsDetail + LoanStatus + UnresolvedAlert] + (StartMeetingBtn if launched_from==conduct))
+
+state_model:
+  PreviousMeetingReviewViewModel:
+    state:
+      name: PreviousMeetingReviewState
+      fields:
+        meetingDetail: { type: "PreviousMeetingDetail?", default: "null" }
+        isLoading: { type: Boolean, default: "true" }
+        error: { type: "String?", default: "null" }
+        launchedFrom: { type: String, default: '"calendar"' }
+        meetingId: { type: String, default: '""' }
+        meetingNumber: { type: Int, default: "0" }
+        centerId: { type: Int, default: "0" }
+        nextMeetingId: { type: "String?", default: "null" }
+        nextMeetingNumber: { type: "Int?", default: "null" }
+        unresolvedItems: { type: "List<UnresolvedItem>", default: "emptyList()" }
+    screen_state:
+      name: PreviousMeetingReviewScreenState
+      members: [Loading, Content, Error]
+    errors:
+      LoadFailed: "Could not load previous meeting data. Check connection and try again."
+    events:
+      name: PreviousMeetingReviewEvent
+      members:
+        - { name: NavigateBack }
+        - { name: NavigateToConduct, params: "meetingId: String, meetingNumber: Int" }
+    actions:
+      name: PreviousMeetingReviewAction
+      members:
+        - { name: LoadPreviousMeeting, trigger: "Screen enters composition" }
+        - { name: NavigateBack, trigger: "Back icon or system back press" }
+        - { name: StartNewMeeting, trigger: "Tap Start Meeting button (only when launchedFrom==conduct)" }
+    di:
+      - MeetingRepository
+      - NavigationManager
+      - LocalMeetingDao (SQLDelight)
+
+flow_logic:
+  - decision: screen_init
+    branches:
+      - condition: data_available_in_cache
+        action: Render cached data immediately; fetch fresh in background
+      - condition: no_cache
+        action: Show loading skeleton, fetch from API
+  - decision: launched_from check
+    branches:
+      - condition: launchedFrom == conduct
+        action: Show context banner "Reviewing before Meeting #{{nextMeetingNumber}}" + Start Meeting CTA at bottom
+      - condition: launchedFrom == calendar
+        action: Show context banner "Completed Meeting" + no Start Meeting CTA; back goes to calendar
+  - decision: unresolved items check
+    branches:
+      - condition: unresolvedItems.isNotEmpty()
+        action: Render UnresolvedAlert section with orange warning card
+      - condition: unresolvedItems.isEmpty()
+        action: Hide UnresolvedAlert section
+
+dependencies:
+  tier: feature
+  features: [meeting-conduct, meeting-calendar]
+  services:
+    - MeetingRepository
+    - NavigationManager
+    - LocalMeetingDao (SQLDelight)
+  shared_entities:
+    - PreviousMeetingDetail
+    - AttendanceRecord (memberId, memberName, status, fineAmount)
+    - UnresolvedItem (type: UNPAID_FINE | PENDING_LOAN_VOTE | MISSED_ATTENDANCE, description, memberId)
+    - MemberSavingsSummary (memberId, memberName, groupSavings, individualSavings, totalSavings)
+
+api:
+  - id: get_meeting_record_detail
+    method: GET
+    path: /fineract-provider/api/v1/datatables/dt_meeting_record/{centerId}
+    description: Fetch the specified meeting record including all sub-data
+    auth: BasicAuth
+    path_params:
+      centerId: Int
+    query_params:
+      meetingNumber: Int
+    response_ref: PreviousMeetingDetailResponse
+    error_handling:
+      404: Show error state
+      5xx: Show cached data if available
+
+  - id: get_meeting_attendance
+    method: GET
+    path: /fineract-provider/api/v1/datatables/dt_meeting_attendance/{meetingId}
+    description: Fetch attendance records for the previous meeting
+    auth: BasicAuth
+    path_params:
+      meetingId: String
+    response_ref: AttendanceListResponse
+    error_handling:
+      404: Empty attendance list
+
+  - id: get_pending_loan_votes
+    method: GET
+    path: /fineract-provider/api/v1/datatables/dt_loan_vote/{loanId}
+    description: Check for unresolved loan votes from previous meeting
+    auth: BasicAuth
+    path_params:
+      loanId: String
+    response_ref: LoanVoteRecord
+    error_handling:
+      404: No pending votes
+
+dtos:
+  PreviousMeetingDetailResponse:
+    fields:
+      - { name: meetingId, type: String }
+      - { name: meetingNumber, type: Int }
+      - { name: actualDate, type: String }
+      - { name: status, type: String }
+      - { name: attendanceCount, type: Int }
+      - { name: totalMemberCount, type: Int }
+      - { name: groupSavingsCollected, type: Long }
+      - { name: individualSavingsCollected, type: Long }
+      - { name: totalSavingsCollected, type: Long }
+      - { name: loansDisbursed, type: Long }
+      - { name: loansRepaid, type: Long }
+      - { name: finesCollected, type: Long }
+      - { name: openingCorpus, type: Long }
+      - { name: closingCorpus, type: Long }
+      - { name: savingsBreakdown, type: "List<MemberSavingsSummary>" }
+  AttendanceListResponse:
+    fields:
+      - { name: records, type: "List<AttendanceRecord>" }
+  AttendanceRecord:
+    fields:
+      - { name: memberId, type: String }
+      - { name: memberName, type: String }
+      - { name: status, type: String, values: [PRESENT, LATE, ABSENT] }
+      - { name: fineAmount, type: Long }
+  LoanVoteRecord:
+    fields:
+      - { name: loanId, type: String }
+      - { name: resolved, type: Boolean }
+      - { name: votesFor, type: Int }
+      - { name: votesAgainst, type: Int }
+
+components:
+  - id: top_app_bar
+    type: top-app-bar
+    name: PreviousMeetingReviewTopBar
+    description: App bar with "Meeting #{{meetingNumber}}" title and back navigation
+    style:
+      title_text: "Meeting #{{meetingNumber}}"
+      subtitle_text: "{{meetingDetail.actualDate}}"
+      background: surface
+    navigation_icon:
+      icon: FluentIcons.arrow_left_24_regular
+      content_description: "Go back"
+      on_click:
+        action: NavigateBack
+    a11y:
+      content_description: "Reviewing Meeting #{{meetingNumber}} — {{meetingDetail.actualDate}}"
+    test_context:
+      purpose: Title shows meeting number; back nav goes to appropriate parent
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [meetingNumber, meetingDetail]
+    on_click: {}
+
+  - id: context_banner
+    type: banner
+    name: ContextBanner
+    description: Explains why this screen is being shown — conducting new meeting or calendar review
+    style:
+      background: primaryContainer
+      padding_horizontal: 16dp
+      padding_vertical: 10dp
+    content_conduct:
+      visible_when: launchedFrom == conduct
+      text: "Reviewing before Meeting #{{nextMeetingNumber}} — Wed, 7 May 2026"
+      icon: FluentIcons.history_24_regular
+      text_style: bodyMedium
+      text_color: onPrimaryContainer
+    content_calendar:
+      visible_when: launchedFrom == calendar
+      text: "Completed Meeting — {{meetingDetail.actualDate}}"
+      icon: FluentIcons.checkmark_circle_24_regular
+      text_style: bodyMedium
+      text_color: onPrimaryContainer
+    a11y:
+      content_description: "Context: {{launchedFrom == 'conduct' ? 'Reviewing before new meeting' : 'Completed meeting record'}}"
+    test_context:
+      purpose: Banner text differs based on launchedFrom param
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [launchedFrom, meetingDetail]
+    on_click: {}
+
+  - id: unresolved_alert_card
+    type: card
+    name: UnresolvedItemsAlertCard
+    description: >
+      Warning card listing unresolved items from the previous meeting —
+      unpaid fines, pending loan votes, members who missed. Visible only
+      when unresolvedItems is non-empty.
+    visible_when: unresolvedItems.isNotEmpty()
+    style:
+      background: warningContainer
+      corner_radius: md
+      padding: 16dp
+      margin: 16dp
+    header:
+      type: row
+      children:
+        - { type: icon, name: FluentIcons.warning_24_filled, tint: warning, size: 20dp }
+        - { type: text, text: "Unresolved Items", text_style: titleSmall, color: onWarningContainer, margin_left: 8dp }
+    content:
+      - id: unresolved_item_row
+        type: list-item
+        repeats_for: unresolvedItems
+        style:
+          padding_vertical: 4dp
+        leading:
+          type: icon
+          name: "{{item.type == UNPAID_FINE ? FluentIcons.money_dismiss_16_regular : item.type == PENDING_LOAN_VOTE ? FluentIcons.vote_16_regular : FluentIcons.person_alert_16_regular}}"
+          tint: warning
+          size: 16dp
+        content:
+          - { type: text, text: "{{item.description}}", text_style: bodySmall, color: onWarningContainer }
+    a11y:
+      content_description: "{{unresolvedItems.size}} unresolved items from previous meeting"
+    test_context:
+      purpose: Alert card visible when unresolved items exist; hidden when all clear
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [unresolvedItems]
+    on_click: {}
+
+  - id: summary_metrics_card
+    type: card
+    name: SummaryMetricsCard
+    description: Top-level KES collected and corpus metrics
+    style:
+      background: primaryContainer
+      corner_radius: lg
+      padding: 20dp
+      margin_horizontal: 16dp
+      margin_top: 8dp
+      margin_bottom: 12dp
+    content:
+      - { type: text, text: "Total Collected", text_style: labelLarge, color: onPrimaryContainer }
+      - { type: text, text: "KES {{meetingDetail.totalSavingsCollected}}", text_style: headlineLarge, color: onPrimaryContainer, font: "Noto Sans bold" }
+      - { type: divider, margin_vertical: 8dp, color: outline, opacity: 0.3 }
+      - { type: info_row, label: "Closing Corpus", value: "KES {{meetingDetail.closingCorpus}}", value_color: onPrimaryContainer }
+      - { type: info_row, label: "Fines Collected", value: "KES {{meetingDetail.finesCollected}}", value_color: onPrimaryContainer }
+      - { type: info_row, label: "Loans Disbursed", value: "KES {{meetingDetail.loansDisbursed}}", value_color: onPrimaryContainer }
+    a11y:
+      content_description: "Previous meeting: KES {{meetingDetail.totalSavingsCollected}} collected, corpus KES {{meetingDetail.closingCorpus}}"
+    test_context:
+      purpose: Summary card shows KES 1,850 total collected and KES 12,400 corpus (demo data)
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [meetingDetail.totalSavingsCollected, meetingDetail.closingCorpus]
+    on_click: {}
+
+  - id: attendance_section_header
+    type: text
+    name: AttendanceSectionHeader
+    style:
+      text: "Attendance"
+      text_style: titleSmall
+      color: onSurfaceVariant
+      padding_horizontal: 16dp
+      padding_top: 8dp
+      padding_bottom: 4dp
+    a11y: { content_description: "Attendance section" }
+    test_context:
+      purpose: Attendance section header visible
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+  - id: attendance_chip_row
+    type: row
+    name: AttendanceSummaryChips
+    description: Row of chips showing attendance overview
+    style:
+      padding_horizontal: 16dp
+      margin_bottom: 8dp
+    children:
+      - { type: chip, text: "{{meetingDetail.attendanceCount}}/{{meetingDetail.totalMemberCount}} Present", background: primaryContainer, text_color: onPrimaryContainer }
+    a11y:
+      content_description: "Attendance summary: {{meetingDetail.attendanceCount}} of {{meetingDetail.totalMemberCount}} present"
+    test_context:
+      purpose: Attendance chip shows 5/5 or partial count
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [meetingDetail.attendanceCount, meetingDetail.totalMemberCount]
+    on_click: {}
+
+  - id: attendance_detail_row
+    type: list-item
+    name: AttendanceDetailRow
+    description: Per-member attendance status row
+    repeats_for: meetingDetail.attendanceRecords
+    style:
+      min_height: 56dp
+      padding_horizontal: 16dp
+      padding_vertical: 8dp
+      divider: true
+    leading:
+      type: avatar
+      initials: "{{record.memberName | initials}}"
+      size: 36dp
+      background_present: primaryContainer
+      background_late: warningContainer
+      background_absent: errorContainer
+    content:
+      - { type: text, text: "{{record.memberName}}", text_style: bodyLarge, color: onSurface }
+      - id: fine_label
+        type: text
+        text: "Fine: KES {{record.fineAmount}}"
+        text_style: bodySmall
+        color: error
+        visible_when: "record.fineAmount > 0"
+    trailing:
+      type: chip
+      text: "{{record.status}}"
+      background_PRESENT: primaryContainer
+      background_LATE: warningContainer
+      background_ABSENT: errorContainer
+    a11y:
+      content_description: "{{record.memberName}} — {{record.status}}{{record.fineAmount > 0 ? ', fine KES ' + record.fineAmount : ''}}"
+    test_context:
+      purpose: All 5 members shown with status chips; LATE/ABSENT rows show fine amounts
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [meetingDetail.attendanceRecords]
+    on_click: {}
+
+  - id: savings_section_header
+    type: text
+    name: SavingsSectionHeader
+    style:
+      text: "Savings Per Member"
+      text_style: titleSmall
+      color: onSurfaceVariant
+      padding_horizontal: 16dp
+      padding_top: 16dp
+      padding_bottom: 4dp
+    a11y: { content_description: "Savings per member section" }
+    test_context:
+      purpose: Savings section header visible
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+  - id: member_savings_row
+    type: list-item
+    name: MemberSavingsRow
+    description: Per-member savings breakdown row
+    repeats_for: meetingDetail.savingsBreakdown
+    style:
+      min_height: 56dp
+      padding_horizontal: 16dp
+      divider: true
+    leading:
+      type: avatar
+      initials: "{{item.memberName | initials}}"
+      size: 36dp
+      background: secondaryContainer
+    content:
+      - { type: text, text: "{{item.memberName}}", text_style: bodyLarge, color: onSurface }
+      - { type: text, text: "Group: KES {{item.groupSavings}} · Individual: KES {{item.individualSavings}}", text_style: bodySmall, color: onSurfaceVariant }
+    trailing:
+      type: text
+      text: "KES {{item.totalSavings}}"
+      text_style: labelLarge
+      color: primary
+    a11y:
+      content_description: "{{item.memberName}} total savings KES {{item.totalSavings}}"
+    test_context:
+      purpose: All 5 member savings rows; trailing shows per-member total
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [meetingDetail.savingsBreakdown]
+    on_click: {}
+
+  - id: loans_section_header
+    type: text
+    name: LoansSectionHeader
+    style:
+      text: "Loan Activity"
+      text_style: titleSmall
+      color: onSurfaceVariant
+      padding_horizontal: 16dp
+      padding_top: 16dp
+      padding_bottom: 4dp
+    a11y: { content_description: "Loan activity section" }
+    test_context:
+      purpose: Loans section header visible
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+  - id: loan_activity_row
+    type: list-item
+    name: LoanActivityRow
+    description: Active loan repayment summary per member
+    repeats_for: meetingDetail.loanItems
+    style:
+      min_height: 56dp
+      padding_horizontal: 16dp
+      divider: true
+    leading:
+      type: icon
+      name: FluentIcons.money_24_regular
+      tint: tertiary
+      size: 24dp
+    content:
+      - { type: text, text: "{{item.memberName}}", text_style: bodyLarge }
+      - { type: text, text: "Repaid: KES {{item.amountRepaid}} · Outstanding: KES {{item.outstandingAfter}}", text_style: bodySmall, color: onSurfaceVariant }
+    trailing:
+      type: chip
+      text_disbursed: "Disbursed KES {{item.amountDisbursed}}"
+      visible_when: "item.amountDisbursed > 0"
+      background: primaryContainer
+      text_color: onPrimaryContainer
+    a11y:
+      content_description: "{{item.memberName}} loan: repaid KES {{item.amountRepaid}}, outstanding KES {{item.outstandingAfter}}"
+    test_context:
+      purpose: Peter's KES 1,500 loan shows repayment and outstanding (week 4/12 demo data)
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [meetingDetail.loanItems]
+    on_click: {}
+
+  - id: start_meeting_cta
+    type: button
+    name: StartMeetingCTA
+    description: >
+      Full-width "Start Meeting #{{nextMeetingNumber}}" button at bottom.
+      Only shown when launched from meeting-conduct step 0 context.
+    visible_when: launchedFrom == conduct
+    style:
+      type: FilledButton
+      text: "Start Meeting #{{nextMeetingNumber}}"
+      background: primary
+      text_color: onPrimary
+      min_height: 56dp
+      full_width: true
+      margin: 16dp
+    a11y:
+      content_description: "Start Meeting #{{nextMeetingNumber}}"
+      role: button
+      min_touch_target: 48dp
+    test_context:
+      purpose: CTA visible only when launchedFrom==conduct; navigates back to conduct wizard
+      interaction_type: tap
+      data_driven: true
+      required_fields: [launchedFrom, nextMeetingNumber, nextMeetingId]
+    on_click:
+      action: StartNewMeeting
+      target: meeting-conduct
+      params: { meeting_id: "{{nextMeetingId}}", meeting_number: "{{nextMeetingNumber}}", center_id: "{{centerId}}" }
+
+  - id: loading_skeleton
+    type: skeleton
+    name: ReviewLoadingSkeleton
+    description: Shimmer placeholder while loading previous meeting data
+    style:
+      count: 5
+      item_height: 72dp
+      corner_radius: md
+      margin: 16dp
+    a11y:
+      content_description: "Loading previous meeting review"
+    test_context:
+      purpose: Skeleton shown during data load; not a blank screen
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+states:
+  initial_state: loading
+  loading:
+    description: Fetching previous meeting data
+    components_visible: [top_app_bar, loading_skeleton]
+  content:
+    description: Full review rendered
+    components_visible: [top_app_bar, context_banner, unresolved_alert_card, summary_metrics_card, attendance_section_header, attendance_chip_row, attendance_detail_row, savings_section_header, member_savings_row, loans_section_header, loan_activity_row, start_meeting_cta]
+  content_no_unresolved:
+    description: All clear — unresolved alert hidden
+    components_visible: [top_app_bar, context_banner, summary_metrics_card, attendance_section_header, attendance_chip_row, attendance_detail_row, savings_section_header, member_savings_row, loans_section_header, loan_activity_row, start_meeting_cta]
+  error:
+    description: Could not load data
+    components_visible: [top_app_bar, error_banner]
+
+i18n:
+  screen_title: "Previous Meeting Review"
+  context_conducting: "Reviewing before Meeting #{{nextMeetingNumber}}"
+  context_calendar: "Completed Meeting"
+  unresolved_header: "Unresolved Items"
+  attendance_section: "Attendance"
+  savings_section: "Savings Per Member"
+  loans_section: "Loan Activity"
+  start_meeting_btn: "Start Meeting #{{nextMeetingNumber}}"
+  total_collected_label: "Total Collected"
+  closing_corpus_label: "Closing Corpus"
+  fines_label: "Fines Collected"
+  loans_disbursed_label: "Loans Disbursed"
+
+analytics:
+  screen_viewed:
+    event: screen_viewed
+    params:
+      screen_id: previous-meeting-review
+      flow: meeting-lifecycle-flow
+      launched_from: "{ conduct | calendar }"
+  events:
+    - name: start_meeting_from_review
+      trigger: user taps Start Meeting CTA after reviewing
+      params:
+        previous_meeting_number: Int
+        next_meeting_number: Int
+    - name: unresolved_items_seen
+      trigger: screen loads with non-empty unresolvedItems
+      params:
+        count: Int
+        types: "List<String>"

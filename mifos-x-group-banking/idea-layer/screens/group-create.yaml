@@ -1,0 +1,637 @@
+schema_version: "3.1"
+id: group-create
+name: Group Create
+description: >
+  Three-step wizard to create a new savings group. Step 1 captures group identity
+  (name, office, currency, meeting schedule). Step 2 captures group rules (contribution
+  limits, loan multiplier, interest rate, cycle length, fines). Step 3 shows a review
+  summary before submission. Creates a Fineract Center and writes a dt_group_config
+  datatable entry. Supports offline queueing via SyncQueue. Covers FR-001.
+feature: group-management
+flow: group-management-flow
+version: "1.0.0"
+tags:
+  - group-management
+  - admin
+  - form
+  - wizard
+  - offline-capable
+  - FR-001
+
+# Lifecycle
+status: enriched
+quality_score: 87
+status_history:
+  - status: draft
+    date: "2026-05-05"
+    author: system
+  - status: enriched
+    date: "2026-05-05"
+    author: system
+
+# Navigation
+entry_point: false
+bottom_nav:
+  visible: false
+navigates_to:
+  - group-dashboard
+  - group-list
+route: /groups/create
+entry_points:
+  - source: group-list
+    trigger: fab_tap
+nav_params: {}
+
+screens:
+  - id: group-create-screen
+    title: "New Group"
+    type: wizard
+    description: 3-step form wizard for creating a savings group
+
+state_model:
+  GroupCreateViewModel:
+    state:
+      name: GroupCreateState
+      fields:
+        currentStep: { type: Int, default: "1" }
+        totalSteps: { type: Int, default: "3" }
+        # Step 1 fields
+        groupName: { type: String, default: '""' }
+        officeId: { type: "Long?", default: "null" }
+        officeName: { type: String, default: '""' }
+        currency: { type: String, default: '"KES"' }
+        meetingDay: { type: String, default: '""' }
+        meetingTime: { type: String, default: '""' }
+        # Step 2 fields
+        contributionMin: { type: String, default: '""' }
+        contributionMax: { type: String, default: '""' }
+        loanMultiplier: { type: String, default: '"3"' }
+        interestRate: { type: String, default: '"10"' }
+        cycleLengthMonths: { type: String, default: '"12"' }
+        fineAmount: { type: String, default: '""' }
+        # Step 3
+        isSubmitting: { type: Boolean, default: "false" }
+        isSubmitSuccess: { type: Boolean, default: "false" }
+        officeList: { type: "List<Office>", default: "emptyList()" }
+        validationErrors: { type: "Map<String, String>", default: "emptyMap()" }
+        error: { type: "GroupCreateError?", default: "null" }
+        isOffline: { type: Boolean, default: "false" }
+    screen_state:
+      name: GroupCreateScreenState
+      members: [Content, Submitting, Success, Error]
+    errors:
+      name: GroupCreateError
+      types:
+        - { type: Validation, retry: false, message_key: error_validation }
+        - { type: Network, retry: true, message_key: error_network, fallback: queue_offline }
+        - { type: Server, retry: true, message_key: error_server }
+        - { type: Auth, retry: false, message_key: error_auth, redirect: login }
+    events:
+      name: GroupCreateEvent
+      members:
+        - { name: NavigateToGroupDashboard, params: { groupId: String } }
+        - { name: NavigateBack }
+        - { name: ShowOfflineSyncDialog }
+        - { name: ShowSnackbar, params: { message: String } }
+    actions:
+      name: GroupCreateAction
+      members:
+        - { name: OnNameChange, params: { value: String }, trigger: "Type group name" }
+        - { name: OnOfficeSelect, params: { officeId: Long, officeName: String }, trigger: "Select office from dropdown" }
+        - { name: OnCurrencyChange, params: { value: String }, trigger: "Select currency" }
+        - { name: OnMeetingDaySelect, params: { day: String }, trigger: "Select meeting day" }
+        - { name: OnMeetingTimeSelect, params: { time: String }, trigger: "Select meeting time" }
+        - { name: OnContributionMinChange, params: { value: String }, trigger: "Type min contribution" }
+        - { name: OnContributionMaxChange, params: { value: String }, trigger: "Type max contribution" }
+        - { name: OnLoanMultiplierChange, params: { value: String }, trigger: "Type loan multiplier" }
+        - { name: OnInterestRateChange, params: { value: String }, trigger: "Type interest rate" }
+        - { name: OnCycleLengthChange, params: { value: String }, trigger: "Type cycle length" }
+        - { name: OnFineAmountChange, params: { value: String }, trigger: "Type fine amount" }
+        - { name: OnNextStep, trigger: "Tap Next button" }
+        - { name: OnPreviousStep, trigger: "Tap Back button" }
+        - { name: OnSubmit, trigger: "Tap Submit on review step" }
+        - { name: OnBack, trigger: "Tap system back or top-bar back" }
+    di:
+      - GroupRepository
+      - OfficeRepository
+      - SyncQueueRepository
+      - NetworkMonitor
+
+flow_logic:
+  on_load:
+    - action: load_offices
+      api: get_offices
+      on_success: populate_office_dropdown
+  on_next_step:
+    - action: validate_current_step
+      step_1_fields: [groupName, officeId, meetingDay, meetingTime]
+      step_2_fields: [contributionMin, contributionMax, loanMultiplier, interestRate, cycleLengthMonths, fineAmount]
+      on_valid: advance_step
+      on_invalid: show_validation_errors
+  on_previous_step:
+    - action: decrement_step
+  on_submit:
+    - action: validate_all
+      on_valid:
+        - check: network_available
+          online:
+            - api: create_center
+              on_success:
+                - api: create_group_config
+                  on_success: emit NavigateToGroupDashboard
+                  on_error: show_error
+          offline:
+            - action: queue_to_sync_queue
+              emit: ShowOfflineSyncDialog
+  validation_rules:
+    groupName: { min_length: 3, max_length: 60, required: true }
+    contributionMin: { type: number, min: 1, required: true }
+    contributionMax: { type: number, min: contributionMin, required: true }
+    loanMultiplier: { type: number, min: 1, max: 10, required: true }
+    interestRate: { type: number, min: 0, max: 100, required: true }
+    cycleLengthMonths: { type: integer, min: 1, max: 60, required: true }
+    fineAmount: { type: number, min: 0, required: true }
+
+dependencies:
+  repositories:
+    - name: GroupRepository
+      methods:
+        - createGroup(request: CreateGroupRequest): Result<Group>
+    - name: OfficeRepository
+      methods:
+        - getOffices(): Flow<List<Office>>
+    - name: SyncQueueRepository
+      methods:
+        - enqueue(item: SyncQueueItem): Unit
+  services:
+    - NetworkMonitor
+
+api:
+  - id: get_offices
+    function: get_offices
+    method: get
+    endpoint: "/offices"
+    description: Fetch list of offices for the office dropdown
+    params:
+      orderBy: { type: String, default: "name" }
+    response:
+      type: array
+      items:
+        id: Long
+        name: String
+        nameDecorated: String
+        externalId: String
+    errors:
+      401: Unauthorized
+      500: Server error
+    cache:
+      ttl: 3600
+      strategy: stale-while-revalidate
+      offline: show_cached
+
+  - id: create_center
+    function: create_center
+    method: post
+    endpoint: "/centers"
+    description: Create a new Fineract Center (group)
+    body:
+      name: String
+      officeId: Long
+      staffId: Long
+      active: Boolean
+      activationDate: String   # dd MMMM yyyy
+      locale: String
+      dateFormat: String
+      meetingFrequency: String
+      meetingDay: String
+    response:
+      type: object
+      fields:
+        resourceId: Long
+        groupId: Long
+    errors:
+      400: Validation error — invalid fields
+      401: Unauthorized
+      403: Forbidden
+      500: Server error
+    offline_queue:
+      table: sync_queue
+      operation: CREATE_GROUP
+
+  - id: create_group_config
+    function: create_group_config
+    method: post
+    endpoint: "/datatables/dt_group_config/{centerId}"
+    description: Write group rules to the dt_group_config custom datatable
+    params:
+      centerId: { type: Long, required: true, source: create_center_response }
+    body:
+      contribution_min: Double
+      contribution_max: Double
+      loan_multiplier: Double
+      interest_rate: Double
+      cycle_length_months: Int
+      fine_amount: Double
+    response:
+      type: object
+      fields:
+        resourceId: Long
+    errors:
+      400: Validation error
+      401: Unauthorized
+      500: Server error
+    offline_queue:
+      table: sync_queue
+      operation: CREATE_GROUP_CONFIG
+
+dtos:
+  CreateGroupRequest:
+    name: String
+    officeId: Long
+    staffId: Long
+    active: Boolean
+    activationDate: String
+    meetingDay: String
+    meetingTime: String
+    contributionMin: Double
+    contributionMax: Double
+    loanMultiplier: Double
+    interestRate: Double
+    cycleLengthMonths: Int
+    fineAmount: Double
+    currency: String
+
+  Office:
+    id: Long
+    name: String
+    nameDecorated: String
+
+components:
+  - id: top_bar
+    type: top-bar
+    title: "New Group"
+    style:
+      background: primary
+      text_color: onPrimary
+    navigation_icon: close
+    on_navigation_click: { action: OnBack }
+    test_context:
+      purpose: "Wizard top bar; close icon discards draft and returns to group list"
+      interaction_type: tap
+      data_driven: false
+      required_fields: []
+
+  - id: step_indicator
+    type: step-indicator
+    total_steps: 3
+    current_step: "{{currentStep}}"
+    labels: ["Identity", "Rules", "Review"]
+    style:
+      active_color: primary
+      completed_color: secondary
+      inactive_color: outline
+    test_context:
+      purpose: "Show wizard progress; steps are tappable only for completed steps"
+      interaction_type: static
+      data_driven: true
+      required_fields: [currentStep]
+
+  # ─── Step 1: Group Identity ───────────────────────────────
+  - id: group_name_field
+    type: text-field
+    label: "Group Name"
+    placeholder: "e.g. Mwangaza Women's Group"
+    helper: "3–60 characters"
+    required: true
+    max_length: 60
+    visible_step: 1
+    style: { min_touch_target: 56dp }
+    on_change: { action: OnNameChange, param: value }
+    error_text: "{{validationErrors.groupName}}"
+    test_context:
+      purpose: "Capture the group's display name"
+      interaction_type: text_input
+      data_driven: false
+      required_fields: [groupName]
+
+  - id: office_dropdown
+    type: text-field
+    variant: dropdown
+    label: "Office"
+    placeholder: "Select office"
+    required: true
+    visible_step: 1
+    options: "{{officeList}}"
+    option_label: name
+    option_value: id
+    style: { min_touch_target: 56dp }
+    on_change: { action: OnOfficeSelect, params: { officeId: value.id, officeName: value.name } }
+    error_text: "{{validationErrors.officeId}}"
+    test_context:
+      purpose: "Associate group with a Fineract office"
+      interaction_type: dropdown_select
+      data_driven: true
+      required_fields: [officeList]
+
+  - id: currency_dropdown
+    type: text-field
+    variant: dropdown
+    label: "Currency"
+    default: "KES"
+    required: true
+    visible_step: 1
+    options: ["KES", "USD", "UGX", "TZS"]
+    style: { min_touch_target: 56dp }
+    on_change: { action: OnCurrencyChange, param: value }
+    test_context:
+      purpose: "Set group currency (defaults to KES)"
+      interaction_type: dropdown_select
+      data_driven: false
+      required_fields: []
+
+  - id: meeting_day_dropdown
+    type: text-field
+    variant: dropdown
+    label: "Meeting Day"
+    placeholder: "Select day"
+    required: true
+    visible_step: 1
+    options: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    style: { min_touch_target: 56dp }
+    on_change: { action: OnMeetingDaySelect, param: day }
+    error_text: "{{validationErrors.meetingDay}}"
+    test_context:
+      purpose: "Set weekly meeting day for the group"
+      interaction_type: dropdown_select
+      data_driven: false
+      required_fields: []
+
+  - id: meeting_time_picker
+    type: text-field
+    variant: time-picker
+    label: "Meeting Time"
+    placeholder: "Select time"
+    required: true
+    visible_step: 1
+    style: { min_touch_target: 56dp }
+    on_change: { action: OnMeetingTimeSelect, param: time }
+    error_text: "{{validationErrors.meetingTime}}"
+    test_context:
+      purpose: "Set meeting start time"
+      interaction_type: time_picker
+      data_driven: false
+      required_fields: []
+
+  # ─── Step 2: Group Rules ──────────────────────────────────
+  - id: contribution_min_field
+    type: text-field
+    label: "Min Contribution (KES)"
+    placeholder: "e.g. 100"
+    keyboard: numeric
+    required: true
+    visible_step: 2
+    style: { min_touch_target: 56dp }
+    on_change: { action: OnContributionMinChange, param: value }
+    error_text: "{{validationErrors.contributionMin}}"
+    test_context:
+      purpose: "Minimum mandatory contribution per meeting — FR-020 penalty applies below this"
+      interaction_type: text_input
+      data_driven: false
+      required_fields: [contributionMin]
+
+  - id: contribution_max_field
+    type: text-field
+    label: "Max Contribution (KES)"
+    placeholder: "e.g. 500"
+    keyboard: numeric
+    required: true
+    visible_step: 2
+    style: { min_touch_target: 56dp }
+    on_change: { action: OnContributionMaxChange, param: value }
+    error_text: "{{validationErrors.contributionMax}}"
+    test_context:
+      purpose: "Maximum allowed contribution per meeting"
+      interaction_type: text_input
+      data_driven: false
+      required_fields: [contributionMax]
+
+  - id: loan_multiplier_field
+    type: text-field
+    label: "Loan Multiplier (×savings)"
+    placeholder: "e.g. 3"
+    keyboard: numeric
+    helper: "Member can borrow up to X times their total savings"
+    required: true
+    visible_step: 2
+    style: { min_touch_target: 56dp }
+    on_change: { action: OnLoanMultiplierChange, param: value }
+    error_text: "{{validationErrors.loanMultiplier}}"
+    test_context:
+      purpose: "Defines maximum loan ceiling relative to member savings"
+      interaction_type: text_input
+      data_driven: false
+      required_fields: [loanMultiplier]
+
+  - id: interest_rate_field
+    type: text-field
+    label: "Interest Rate (%)"
+    placeholder: "e.g. 10"
+    keyboard: numeric
+    helper: "Flat interest rate per loan cycle"
+    required: true
+    visible_step: 2
+    style: { min_touch_target: 56dp }
+    on_change: { action: OnInterestRateChange, param: value }
+    error_text: "{{validationErrors.interestRate}}"
+    test_context:
+      purpose: "Set flat loan interest rate for the group"
+      interaction_type: text_input
+      data_driven: false
+      required_fields: [interestRate]
+
+  - id: cycle_length_field
+    type: text-field
+    label: "Cycle Length (months)"
+    placeholder: "e.g. 12"
+    keyboard: numeric
+    required: true
+    visible_step: 2
+    style: { min_touch_target: 56dp }
+    on_change: { action: OnCycleLengthChange, param: value }
+    error_text: "{{validationErrors.cycleLengthMonths}}"
+    test_context:
+      purpose: "Duration of one savings cycle in months"
+      interaction_type: text_input
+      data_driven: false
+      required_fields: [cycleLengthMonths]
+
+  - id: fine_amount_field
+    type: text-field
+    label: "Late Penalty / Fine (KES)"
+    placeholder: "e.g. 50"
+    keyboard: numeric
+    helper: "Fine charged for missing minimum contribution — FR-020"
+    required: true
+    visible_step: 2
+    style: { min_touch_target: 56dp }
+    on_change: { action: OnFineAmountChange, param: value }
+    error_text: "{{validationErrors.fineAmount}}"
+    test_context:
+      purpose: "Penalty for not meeting minimum contribution (FR-020)"
+      interaction_type: text_input
+      data_driven: false
+      required_fields: [fineAmount]
+
+  # ─── Step 3: Review ───────────────────────────────────────
+  - id: review_card
+    type: card
+    visible_step: 3
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 16dp
+      padding: 20dp
+    content:
+      - id: review_title
+        type: text
+        style: { text_style: titleMedium, color: onSurface }
+        value: "Review Group Details"
+      - id: review_identity_section
+        type: section
+        label: "Identity"
+        rows:
+          - { label: "Name", value: "{{groupName}}" }
+          - { label: "Office", value: "{{officeName}}" }
+          - { label: "Currency", value: "{{currency}}" }
+          - { label: "Meeting", value: "{{meetingDay}} at {{meetingTime}}" }
+      - id: review_rules_section
+        type: section
+        label: "Rules"
+        rows:
+          - { label: "Contribution", value: "KES {{contributionMin}} – KES {{contributionMax}}" }
+          - { label: "Loan Multiplier", value: "{{loanMultiplier}}× savings" }
+          - { label: "Interest Rate", value: "{{interestRate}}% flat" }
+          - { label: "Cycle Length", value: "{{cycleLengthMonths}} months" }
+          - { label: "Late Fine", value: "KES {{fineAmount}}" }
+      - id: offline_notice_banner
+        type: banner
+        visible: "{{isOffline}}"
+        icon: wifi_off
+        message: "You are offline. This group will be created when you reconnect."
+        style: { background: tertiaryContainer, text_color: onTertiaryContainer }
+    test_context:
+      purpose: "Display all entered data for user confirmation before submission"
+      interaction_type: static
+      data_driven: true
+      required_fields: [groupName, officeName, currency, meetingDay, meetingTime, contributionMin, contributionMax, loanMultiplier, interestRate, cycleLengthMonths, fineAmount]
+
+  # ─── Navigation Buttons ───────────────────────────────────
+  - id: next_button
+    type: button
+    variant: filled
+    label: "Next"
+    visible: "{{currentStep < 3}}"
+    style: { background: primary, text_color: onPrimary, min_touch_target: 56dp, full_width: true }
+    on_click: { action: OnNextStep }
+    test_context:
+      purpose: "Advance to next wizard step after validation"
+      interaction_type: tap
+      data_driven: false
+      required_fields: []
+
+  - id: back_step_button
+    type: button
+    variant: text
+    label: "Back"
+    visible: "{{currentStep > 1}}"
+    style: { text_color: primary, min_touch_target: 48dp }
+    on_click: { action: OnPreviousStep }
+    test_context:
+      purpose: "Return to previous wizard step"
+      interaction_type: tap
+      data_driven: false
+      required_fields: []
+
+  - id: submit_button
+    type: button
+    variant: filled
+    label: "Create Group"
+    visible: "{{currentStep == 3}}"
+    loading: "{{isSubmitting}}"
+    style: { background: primary, text_color: onPrimary, min_touch_target: 56dp, full_width: true }
+    on_click: { action: OnSubmit }
+    test_context:
+      purpose: "Final submission; shows loading state while API call is in-flight"
+      interaction_type: tap
+      data_driven: true
+      required_fields: [isSubmitting]
+
+states:
+  initial_state: content
+  content:
+    components:
+      step_1: [top_bar, step_indicator, group_name_field, office_dropdown, currency_dropdown, meeting_day_dropdown, meeting_time_picker, next_button]
+      step_2: [top_bar, step_indicator, contribution_min_field, contribution_max_field, loan_multiplier_field, interest_rate_field, cycle_length_field, fine_amount_field, next_button, back_step_button]
+      step_3: [top_bar, step_indicator, review_card, submit_button, back_step_button]
+    description: "Wizard form; active components depend on currentStep"
+    demo_data:
+      groupName: "Mwangaza Women's Group"
+      officeName: "Nairobi Head Office"
+      currency: "KES"
+      meetingDay: "Monday"
+      meetingTime: "09:00"
+      contributionMin: "100"
+      contributionMax: "500"
+      loanMultiplier: "3"
+      interestRate: "10"
+      cycleLengthMonths: "12"
+      fineAmount: "50"
+  submitting:
+    components: [top_bar, step_indicator, review_card, submit_button]
+    description: "Submit button in loading state; form fields disabled"
+  success:
+    description: "Navigated away to group-dashboard"
+  error:
+    components: [top_bar, step_indicator, review_card, submit_button, back_step_button]
+    description: "Inline error shown; user can retry or edit fields"
+
+i18n:
+  en:
+    screen_title: "New Group"
+    step_identity: "Identity"
+    step_rules: "Rules"
+    step_review: "Review"
+    field_name: "Group Name"
+    field_office: "Office"
+    field_currency: "Currency"
+    field_meeting_day: "Meeting Day"
+    field_meeting_time: "Meeting Time"
+    field_contribution_min: "Min Contribution (KES)"
+    field_contribution_max: "Max Contribution (KES)"
+    field_loan_multiplier: "Loan Multiplier (×savings)"
+    field_interest_rate: "Interest Rate (%)"
+    field_cycle_length: "Cycle Length (months)"
+    field_fine_amount: "Late Penalty / Fine (KES)"
+    btn_next: "Next"
+    btn_back: "Back"
+    btn_submit: "Create Group"
+    offline_notice: "You are offline. This group will be created when you reconnect."
+    error_validation: "Please fix the highlighted fields."
+    error_network: "No internet. Your group has been queued for sync."
+    error_server: "Server error. Please retry."
+    error_auth: "Session expired."
+
+analytics:
+  screen_view: group_create_viewed
+  events:
+    - trigger: step advance
+      name: group_create_step_advanced
+      params: { step: Int }
+    - trigger: submit tap
+      name: group_create_submitted
+      params: { is_offline: Boolean }
+    - trigger: offline queue
+      name: group_create_queued_offline
+    - trigger: success
+      name: group_created
+      params: { group_id: String, cycle_months: Int }

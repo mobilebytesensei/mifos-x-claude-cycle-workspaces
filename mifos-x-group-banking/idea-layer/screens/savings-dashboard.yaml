@@ -1,0 +1,648 @@
+schema_version: "3.1"
+
+id: savings-dashboard
+name: Savings Dashboard
+description: >
+  Overview of all group savings across both savings types per FR-017 (dual savings).
+  Two tabs: Group Savings (mandatory contributions, cycle progress, per-member running
+  totals) and Individual Savings (voluntary deposits/withdrawals per member, live
+  balances). Weekly contribution trend chart. Admin (treasurer/chairperson) view.
+  Offline-first — cached balances shown with last-sync timestamp.
+feature: savings-collection
+flow: group-linked-savings-flow
+version: "1.0.0"
+tags: [savings, dashboard, fr-017, dual-savings, admin, charts, offline-first, savings-collection]
+
+status: enriched
+quality_score: 86
+status_history:
+  - status: draft
+    date: "2026-05-05"
+    author: system
+  - status: enriched
+    date: "2026-05-05"
+    author: claude-product-cycle
+
+entry_point: false
+bottom_nav: true
+navigates_to:
+  - target: member-savings-detail
+    condition: user_taps_member_row
+    params: { member_id: String, savings_type: SavingsType }
+route: /savings
+entry_points:
+  - source: home-dashboard
+    condition: user_taps_savings_nav
+  - source: bottom_nav
+    condition: savings_tab_selected
+nav_params:
+  center_id: Int
+
+screens:
+  - id: savings_dashboard_screen
+    name: SavingsDashboardScreen
+    composable: SavingsDashboardScreen
+    description: >
+      Top AppBar with group name. Tab row with Group Savings / Individual Savings.
+      Tab content: chart (weekly trend) + cycle progress indicator + per-member list.
+      Last-sync timestamp shown below AppBar when data is cached.
+    layout: Column (TopAppBar + SyncBand + TabRow + TabContent[Chart + CycleProgress + MemberList])
+
+state_model:
+  SavingsDashboardViewModel:
+    state:
+      name: SavingsDashboardState
+      fields:
+        selectedTab: { type: "SavingsTab", default: "SavingsTab.GROUP" }
+        groupSavingsSummary: { type: "GroupSavingsSummary?", default: "null" }
+        individualSavingsSummary: { type: "IndividualSavingsSummary?", default: "null" }
+        weeklyTrend: { type: "List<WeeklyContributionPoint>", default: "emptyList()" }
+        isLoading: { type: Boolean, default: "true" }
+        isRefreshing: { type: Boolean, default: "false" }
+        error: { type: "String?", default: "null" }
+        lastSyncAt: { type: "String?", default: "null" }
+        centerId: { type: Int, default: "0" }
+        cycleTarget: { type: Long, default: "0L" }
+        cycleCollected: { type: Long, default: "0L" }
+    screen_state:
+      name: SavingsDashboardScreenState
+      members: [Loading, Content, Empty, Error]
+    errors:
+      NetworkError: "Showing cached data. Pull to refresh when connected."
+    events:
+      name: SavingsDashboardEvent
+      members:
+        - { name: NavigateToMemberDetail, params: "memberId: String, savingsType: SavingsType" }
+        - { name: ShowError, params: "message: String" }
+    actions:
+      name: SavingsDashboardAction
+      members:
+        - { name: LoadDashboard, trigger: "Screen enters composition" }
+        - { name: RefreshDashboard, trigger: "Pull-to-refresh" }
+        - { name: SelectTab, trigger: "Tap tab", params: "tab: SavingsTab" }
+        - { name: OpenMemberDetail, trigger: "Tap member row", params: "memberId: String, savingsType: SavingsType" }
+    di:
+      - SavingsRepository
+      - NavigationManager
+      - ConnectivityObserver
+      - LocalSavingsDao (SQLDelight)
+
+flow_logic:
+  - decision: screen_loads
+    branches:
+      - condition: cached_data_available
+        action: Render Content with cached data; show lastSyncAt band; fetch fresh in background
+      - condition: no_cache
+        action: Show Loading skeleton; fetch from API
+  - decision: tab_selected
+    branches:
+      - condition: tab == GROUP
+        action: Show group savings chart + cycle progress + mandatory per-member rows
+      - condition: tab == INDIVIDUAL
+        action: Show individual savings chart + per-member balance rows + deposit/withdrawal history chips
+  - decision: pull_to_refresh
+    branches:
+      - condition: online
+        action: Re-fetch both savings account transactions; update lastSyncAt
+      - condition: offline
+        action: Show snackbar "Cannot refresh — you're offline"
+
+dependencies:
+  tier: feature
+  features: []
+  services:
+    - SavingsRepository
+    - NavigationManager
+    - ConnectivityObserver
+    - LocalSavingsDao (SQLDelight)
+  shared_entities:
+    - SavingsTab (enum: GROUP, INDIVIDUAL)
+    - GroupSavingsSummary (totalCollected, cycleTarget, cycleProgress, memberRows)
+    - IndividualSavingsSummary (totalBalance, memberRows)
+    - MemberGroupSavingsRow (memberId, name, totalContributed, lastContribution, meetingsContributed)
+    - MemberIndividualSavingsRow (memberId, name, currentBalance, lastTransaction, lastTransactionDate)
+    - WeeklyContributionPoint (weekLabel, groupAmount, individualAmount)
+
+api:
+  - id: get_group_savings_transactions
+    method: GET
+    path: /fineract-provider/api/v1/savingsaccounts/{groupSavingsId}/transactions
+    description: Fetch group (mandatory) savings transactions to compute per-member contributions
+    auth: BasicAuth
+    path_params:
+      groupSavingsId: String
+    query_params:
+      limit: 50
+    response_ref: SavingsTransactionListResponse
+    error_handling:
+      401: Redirect to login
+      404: Show empty group savings state
+      5xx: Show cached data
+
+  - id: get_client_savings_accounts
+    method: GET
+    path: /fineract-provider/api/v1/clients/{clientId}/accounts
+    description: Fetch individual savings account per member for individual savings tab
+    auth: BasicAuth
+    path_params:
+      clientId: String
+    response_ref: ClientAccountsResponse
+    error_handling:
+      404: Member has no individual savings account yet
+
+  - id: get_individual_savings_transactions
+    method: GET
+    path: /fineract-provider/api/v1/savingsaccounts/{individualSavingsId}/transactions
+    description: Fetch individual savings transactions per member
+    auth: BasicAuth
+    path_params:
+      individualSavingsId: String
+    query_params:
+      limit: 20
+    response_ref: SavingsTransactionListResponse
+    error_handling:
+      404: No individual transactions yet
+
+dtos:
+  SavingsTransactionListResponse:
+    fields:
+      - { name: pageItems, type: "List<SavingsTransaction>" }
+      - { name: totalFilteredRecords, type: Int }
+  SavingsTransaction:
+    fields:
+      - { name: id, type: String }
+      - { name: transactionType, type: String, values: [DEPOSIT, WITHDRAWAL] }
+      - { name: date, type: "List<Int>", note: "[year, month, day]" }
+      - { name: amount, type: Double }
+      - { name: runningBalance, type: Double }
+      - { name: note, type: "String?", nullable: true }
+  ClientAccountsResponse:
+    fields:
+      - { name: savingsAccounts, type: "List<SavingsAccountSummary>" }
+  SavingsAccountSummary:
+    fields:
+      - { name: id, type: String }
+      - { name: productId, type: String }
+      - { name: productName, type: String }
+      - { name: status, type: String }
+      - { name: accountBalance, type: Double }
+
+components:
+  - id: top_app_bar
+    type: top-app-bar
+    name: SavingsDashboardTopBar
+    description: TopAppBar with "Savings" title and group name subtitle
+    style:
+      title_text: "Savings"
+      subtitle_text: "Mwangaza Women's Group"
+      background: surface
+    a11y:
+      content_description: "Savings Dashboard — Mwangaza Women's Group"
+    test_context:
+      purpose: Title and group name visible on screen load
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+  - id: sync_band
+    type: banner
+    name: LastSyncBand
+    description: Slim band below AppBar showing last data sync time. Shown when using cached data.
+    visible_when: lastSyncAt != null
+    style:
+      background: surfaceVariant
+      padding_horizontal: 16dp
+      padding_vertical: 4dp
+    content:
+      - { type: text, text: "Last synced: {{lastSyncAt}}", text_style: labelSmall, color: onSurfaceVariant }
+    a11y:
+      content_description: "Data last synced {{lastSyncAt}}"
+    test_context:
+      purpose: Sync band appears with timestamp when data is cached; hidden when fresh
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [lastSyncAt]
+    on_click: {}
+
+  - id: tab_row
+    type: tab-row
+    name: SavingsTabRow
+    description: Tab selector between Group Savings and Individual Savings
+    style:
+      tabs:
+        - { id: GROUP, label: "Group Savings", icon: FluentIcons.people_money_24_regular }
+        - { id: INDIVIDUAL, label: "Individual", icon: FluentIcons.person_money_24_regular }
+      indicator_color: primary
+      selected_label_color: primary
+      unselected_label_color: onSurfaceVariant
+      divider: true
+    a11y:
+      content_description: "Savings type tab selector"
+    test_context:
+      purpose: Both tabs selectable; switching changes chart and member list below
+      interaction_type: tap
+      data_driven: true
+      required_fields: [selectedTab]
+    on_click:
+      action: SelectTab
+      params: { tab: "{{tappedTabId}}" }
+
+  # --- GROUP SAVINGS TAB CONTENT ---
+  - id: group_savings_content
+    type: tab-content
+    name: GroupSavingsTabContent
+    tab_id: GROUP
+    visible_when: selectedTab == GROUP
+    layout: Column
+
+    children:
+      - id: weekly_trend_chart_group
+        type: chart
+        name: WeeklyTrendChartGroup
+        description: >
+          Bar chart showing weekly group savings contributions over last 6 weeks.
+          Primary green bars. X-axis: week labels (e.g. "W1", "W2"). Y-axis: KES.
+        style:
+          type: bar
+          bar_color: primary
+          label_color: onSurfaceVariant
+          height: 180dp
+          margin_horizontal: 16dp
+          margin_top: 12dp
+          margin_bottom: 8dp
+          x_axis_label: "Week"
+          y_axis_label: "KES"
+        data_source: weeklyTrend
+        x_field: weekLabel
+        y_field: groupAmount
+        demo_data:
+          - { weekLabel: "W48", groupAmount: 1000 }
+          - { weekLabel: "W49", groupAmount: 1200 }
+          - { weekLabel: "W50", groupAmount: 850 }
+          - { weekLabel: "W51", groupAmount: 1500 }
+          - { weekLabel: "W52", groupAmount: 1200 }
+          - { weekLabel: "W3", groupAmount: 1850 }
+        a11y:
+          content_description: "Weekly group savings trend chart — last 6 weeks"
+        test_context:
+          purpose: Bar chart renders with 6 bars matching weekly trend data
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [weeklyTrend]
+        on_click: {}
+
+      - id: cycle_progress_card
+        type: card
+        name: CycleProgressCard
+        description: Card showing cycle savings progress — total collected vs target
+        style:
+          background: primaryContainer
+          corner_radius: md
+          padding: 16dp
+          margin_horizontal: 16dp
+          margin_bottom: 12dp
+        content:
+          - { type: text, text: "Cycle Progress", text_style: labelLarge, color: onPrimaryContainer }
+          - id: cycle_progress_bar
+            type: linear-progress
+            progress: "{{cycleCollected / cycleTarget}}"
+            color: primary
+            track_color: primary
+            track_alpha: 0.3
+            height: 8dp
+            corner_radius: 4dp
+            margin_top: 8dp
+            margin_bottom: 8dp
+          - id: cycle_amounts_row
+            type: row
+            children:
+              - { type: text, text: "KES {{cycleCollected}} collected", text_style: bodyMedium, color: onPrimaryContainer, flex: 1 }
+              - { type: text, text: "Target: KES {{cycleTarget}}", text_style: bodyMedium, color: onPrimaryContainer }
+          - id: cycle_percent
+            type: text
+            text: "{{(cycleCollected * 100 / cycleTarget)}}% of cycle target reached"
+            text_style: labelSmall
+            color: onPrimaryContainer
+            opacity: 0.8
+        a11y:
+          content_description: "Cycle savings {{(cycleCollected * 100 / cycleTarget)}}% complete — KES {{cycleCollected}} of KES {{cycleTarget}}"
+        test_context:
+          purpose: Progress bar and amounts update as meetings accumulate; correct % shown
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [cycleCollected, cycleTarget]
+        on_click: {}
+
+      - id: group_savings_section_header
+        type: text
+        name: GroupMembersSectionHeader
+        style:
+          text: "Per-Member Contributions"
+          text_style: titleSmall
+          color: onSurfaceVariant
+          padding_horizontal: 16dp
+          padding_top: 8dp
+          padding_bottom: 4dp
+        a11y: { content_description: "Per-member group savings contributions" }
+        test_context:
+          purpose: Section header visible above member list
+          interaction_type: non_interactive
+          data_driven: false
+          required_fields: []
+        on_click: {}
+
+      - id: group_savings_total_chip
+        type: chip
+        name: GroupSavingsTotalChip
+        style:
+          text: "Group total: KES {{groupSavingsSummary.totalCollected}}"
+          background: primaryContainer
+          text_color: onPrimaryContainer
+          margin_horizontal: 16dp
+          margin_bottom: 8dp
+        a11y:
+          content_description: "Group savings total KES {{groupSavingsSummary.totalCollected}}"
+        test_context:
+          purpose: Total chip shows group savings total
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [groupSavingsSummary.totalCollected]
+        on_click: {}
+
+      - id: group_member_savings_row
+        type: list-item
+        name: GroupMemberSavingsRow
+        description: Per-member group savings row with contribution total and meetings count
+        repeats_for: groupSavingsSummary.memberRows
+        style:
+          min_height: 72dp
+          padding_horizontal: 16dp
+          padding_vertical: 12dp
+          divider: true
+        leading:
+          type: avatar
+          initials: "{{member.name | initials}}"
+          size: 40dp
+          background: secondaryContainer
+        content:
+          - { type: text, text: "{{member.name}}", text_style: bodyLarge, color: onSurface }
+          - { type: text, text: "{{member.meetingsContributed}} meetings · Last: KES {{member.lastContribution}}", text_style: bodySmall, color: onSurfaceVariant }
+        trailing:
+          type: column
+          alignment: end
+          children:
+            - { type: text, text: "KES {{member.totalContributed}}", text_style: labelLarge, color: primary }
+            - { type: text, text: "total", text_style: labelSmall, color: onSurfaceVariant }
+        a11y:
+          content_description: "{{member.name}} group savings: KES {{member.totalContributed}} across {{member.meetingsContributed}} meetings"
+          role: button
+          min_touch_target: 48dp
+        test_context:
+          purpose: All 5 member rows; amounts realistic (e.g. Amina KES 600 over 3 meetings); tapping opens detail
+          interaction_type: tap
+          data_driven: true
+          required_fields: [groupSavingsSummary.memberRows]
+        on_click:
+          action: OpenMemberDetail
+          target: member-savings-detail
+          params: { member_id: "{{member.memberId}}", savings_type: GROUP_LINKED }
+
+  # --- INDIVIDUAL SAVINGS TAB CONTENT ---
+  - id: individual_savings_content
+    type: tab-content
+    name: IndividualSavingsTabContent
+    tab_id: INDIVIDUAL
+    visible_when: selectedTab == INDIVIDUAL
+    layout: Column
+
+    children:
+      - id: weekly_trend_chart_individual
+        type: chart
+        name: WeeklyTrendChartIndividual
+        description: >
+          Line chart showing weekly individual savings activity. Amber line (#FF8F00).
+          X-axis: week labels. Y-axis: KES net deposits.
+        style:
+          type: line
+          line_color: secondary
+          line_width: 2dp
+          dot_color: secondary
+          label_color: onSurfaceVariant
+          height: 180dp
+          margin_horizontal: 16dp
+          margin_top: 12dp
+          margin_bottom: 8dp
+          fill_below: true
+          fill_color: secondary
+          fill_alpha: 0.12
+        data_source: weeklyTrend
+        x_field: weekLabel
+        y_field: individualAmount
+        demo_data:
+          - { weekLabel: "W48", individualAmount: 300 }
+          - { weekLabel: "W49", individualAmount: 500 }
+          - { weekLabel: "W50", individualAmount: 200 }
+          - { weekLabel: "W51", individualAmount: 700 }
+          - { weekLabel: "W52", individualAmount: 400 }
+          - { weekLabel: "W3", individualAmount: 650 }
+        a11y:
+          content_description: "Weekly individual savings trend chart — last 6 weeks"
+        test_context:
+          purpose: Line chart renders with amber color; 6 data points
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [weeklyTrend]
+        on_click: {}
+
+      - id: individual_total_card
+        type: card
+        name: IndividualTotalCard
+        description: Total individual savings balance across all members
+        style:
+          background: secondaryContainer
+          corner_radius: md
+          padding: 16dp
+          margin_horizontal: 16dp
+          margin_bottom: 12dp
+        content:
+          - { type: text, text: "Total Individual Balances", text_style: labelLarge, color: onSecondaryContainer }
+          - { type: text, text: "KES {{individualSavingsSummary.totalBalance}}", text_style: headlineMedium, color: onSecondaryContainer, font: "Noto Sans bold" }
+        a11y:
+          content_description: "Total individual savings balances KES {{individualSavingsSummary.totalBalance}}"
+        test_context:
+          purpose: Card shows total of all member individual savings balances
+          interaction_type: non_interactive
+          data_driven: true
+          required_fields: [individualSavingsSummary.totalBalance]
+        on_click: {}
+
+      - id: individual_savings_section_header
+        type: text
+        name: IndividualMembersSectionHeader
+        style:
+          text: "Member Balances"
+          text_style: titleSmall
+          color: onSurfaceVariant
+          padding_horizontal: 16dp
+          padding_top: 8dp
+          padding_bottom: 4dp
+        a11y: { content_description: "Individual savings member balances" }
+        test_context:
+          purpose: Section header visible
+          interaction_type: non_interactive
+          data_driven: false
+          required_fields: []
+        on_click: {}
+
+      - id: individual_member_row
+        type: list-item
+        name: IndividualMemberSavingsRow
+        description: Per-member individual savings row with current balance and last transaction
+        repeats_for: individualSavingsSummary.memberRows
+        style:
+          min_height: 72dp
+          padding_horizontal: 16dp
+          padding_vertical: 12dp
+          divider: true
+        leading:
+          type: avatar
+          initials: "{{member.name | initials}}"
+          size: 40dp
+          background: tertiaryContainer
+        content:
+          - { type: text, text: "{{member.name}}", text_style: bodyLarge, color: onSurface }
+          - id: last_txn_row
+            type: row
+            children:
+              - id: txn_type_chip
+                type: chip
+                text_deposit: "↑ Deposit"
+                text_withdrawal: "↓ Withdrawal"
+                background_deposit: primaryContainer
+                background_withdrawal: errorContainer
+                text_color_deposit: onPrimaryContainer
+                text_color_withdrawal: onErrorContainer
+                visible_when: "member.lastTransaction != null"
+              - { type: text, text: "KES {{member.lastTransaction}} on {{member.lastTransactionDate}}", text_style: bodySmall, color: onSurfaceVariant, margin_left: 4dp }
+        trailing:
+          type: column
+          alignment: end
+          children:
+            - { type: text, text: "KES {{member.currentBalance}}", text_style: labelLarge, color: secondary }
+            - { type: text, text: "balance", text_style: labelSmall, color: onSurfaceVariant }
+        a11y:
+          content_description: "{{member.name}} individual savings balance KES {{member.currentBalance}}"
+          role: button
+          min_touch_target: 48dp
+        test_context:
+          purpose: All 5 member rows with current balance; last transaction chip shows deposit/withdrawal type
+          interaction_type: tap
+          data_driven: true
+          required_fields: [individualSavingsSummary.memberRows]
+        on_click:
+          action: OpenMemberDetail
+          target: member-savings-detail
+          params: { member_id: "{{member.memberId}}", savings_type: INDIVIDUAL }
+
+  # --- Shared components ---
+  - id: loading_skeleton
+    type: skeleton
+    name: SavingsDashboardSkeleton
+    description: Shimmer skeleton while savings data loads
+    style:
+      count: 6
+      item_height: 72dp
+      corner_radius: md
+      margin: 16dp
+    a11y:
+      content_description: "Loading savings data"
+    test_context:
+      purpose: Skeleton shown during load; not a blank screen
+      interaction_type: non_interactive
+      data_driven: false
+      required_fields: []
+    on_click: {}
+
+  - id: error_banner
+    type: banner
+    name: SavingsErrorBanner
+    description: Error banner when API fails with cached data present
+    style:
+      background: errorContainer
+      padding: 12dp
+    content:
+      text_key: i18n.network_error
+    action:
+      text: "Retry"
+      on_click:
+        action: RefreshDashboard
+    a11y:
+      content_description: "Error loading savings — tap Retry"
+    test_context:
+      purpose: Error banner visible on network failure; retry reloads
+      interaction_type: tap
+      data_driven: false
+      required_fields: []
+    on_click:
+      action: RefreshDashboard
+
+states:
+  initial_state: loading
+  loading:
+    description: Fetching savings data from API or cache
+    components_visible: [top_app_bar, tab_row, loading_skeleton]
+  content_group:
+    description: Group tab selected — chart + cycle progress + member list
+    components_visible: [top_app_bar, sync_band, tab_row, group_savings_content]
+  content_individual:
+    description: Individual tab selected — chart + total card + member list
+    components_visible: [top_app_bar, sync_band, tab_row, individual_savings_content]
+  content_with_error:
+    description: Cached data shown with error banner for refresh failure
+    components_visible: [top_app_bar, sync_band, error_banner, tab_row, group_savings_content]
+  empty:
+    description: No savings data at all for this group
+    components_visible: [top_app_bar, tab_row, empty_state]
+  error:
+    description: No cached data — full-screen error
+    components_visible: [top_app_bar, error_banner]
+
+i18n:
+  screen_title: "Savings"
+  group_tab_label: "Group Savings"
+  individual_tab_label: "Individual"
+  cycle_progress_label: "Cycle Progress"
+  per_member_header: "Per-Member Contributions"
+  member_balances_header: "Member Balances"
+  total_group_label: "Group total"
+  total_individual_label: "Total Individual Balances"
+  network_error: "Showing cached savings — pull down to retry"
+  last_synced_prefix: "Last synced:"
+  chart_x_label: "Week"
+  chart_y_label: "KES"
+  meetings_suffix: "meetings"
+  last_contribution_prefix: "Last:"
+  empty_title: "No Savings Data"
+  empty_subtitle: "Savings will appear after the first meeting is conducted"
+
+analytics:
+  screen_viewed:
+    event: screen_viewed
+    params:
+      screen_id: savings-dashboard
+      flow: group-linked-savings-flow
+  events:
+    - name: savings_tab_switched
+      trigger: user taps tab
+      params:
+        new_tab: "{ GROUP | INDIVIDUAL }"
+    - name: member_savings_opened
+      trigger: user taps member row
+      params:
+        member_id: String
+        savings_type: "{ GROUP_LINKED | INDIVIDUAL }"
+    - name: savings_dashboard_refreshed
+      trigger: pull-to-refresh
+      params:
+        online: Boolean
