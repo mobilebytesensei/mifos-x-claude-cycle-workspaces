@@ -17,7 +17,7 @@ _blueprint:
 | idea-plan.yaml | ✅ v1.0 · quality 98% · promoted 2026-05-05 |
 | design-tokens.yaml | ✅ present |
 | screens/ | ✅ 25 YAMLs enriched (2026-05-05) · avg quality 89% · min 85% |
-| flows/ | ✅ 9 YAMLs generated (2026-05-05) |
+| flows/ | ✅ 12 YAMLs (9 original 2026-05-05 + 3 added 2026-05-06: member-onboarding, multi-language, field-officer-view) |
 | APP_FLOW.mmd | ✅ generated (2026-05-05) |
 | TAG_REGISTRY.yaml | ✅ 36 analytics events (2026-05-05) |
 | server/ | ✅ api_manifest.yaml + 6 API group files · 42 endpoints (2026-05-05) |
@@ -26,6 +26,7 @@ _blueprint:
 | state/ | ✅ PIPELINE_STATE.yaml (2026-05-05) |
 
 **Overall**: ✅ COMPLETE — project scaffolded · exports missing → run `/idea export`
+| CAPABILITY_STATE.yaml | ✅ initialized via /idea init (2026-05-06) — 4 capabilities backfilled |
 
 ---
 

@@ -10,10 +10,10 @@
 
 | # | Feature | Priority | Client | Version | Screens | Flow | API | Data Tables | Reqs |
 |---|---------|----------|--------|---------|---------|------|-----|-------------|------|
-| 1 | authentication | must | both | 1.0.0 | client-type-selector, login | admin-auth, end-user-auth | 2 | dt_member_role | FR-013-15 |
+| 1 | authentication | must | both | 1.0.0 | client-type-selector, login, admin-dashboard | admin-auth, end-user-auth | 2 | dt_member_role | FR-013-15 |
 | 2 | end-user-dashboard | must | end_user | 1.0.0 | personal-dashboard, personal-savings, personal-loans, loan-request | end-user-loan-request | 4 | dt_loan_request | FR-014, FR-016 |
 | 3 | group-management | must | admin | 1.0.0 | group-list, group-dashboard, group-create | group-creation | 4 | dt_group_config | FR-001, FR-020 |
-| 4 | member-onboarding | must | admin | 1.0.0 | member-list, member-profile, member-add | - | 3 | dt_member_role | FR-002 |
+| 4 | member-onboarding | must | admin | 1.0.0 | member-list, member-profile, member-add, member-savings-detail | - | 3 | dt_member_role | FR-002 |
 | 5 | meeting-lifecycle | must | admin | 1.0.0 | meeting-calendar, meeting-conduct, meeting-summary, previous-meeting-review | meeting | 2 | dt_meeting_record, dt_meeting_attendance | FR-003, FR-019 |
 | 6 | savings-collection | must | admin | 1.0.0 | savings-dashboard, meeting-conduct | meeting | 2 | - | FR-004 |
 | 7 | group-linked-savings | must | admin | 1.0.0 | savings-dashboard, meeting-conduct, group-dashboard | - | 2 | - | FR-017, FR-020 |
@@ -47,12 +47,13 @@ mobile-money-integration, web-admin-dashboard, sms-notifications, inter-group-le
 | Platform Foundation | offline-sync, multi-language | v1.0.0 |
 | Supervision & Social | field-officer-view, social-fund | v1.1.0 |
 
-## Screen Inventory (24 screens)
+## Screen Inventory (28 screens)
 
 | Screen | Archetype | Features |
 |--------|-----------|----------|
 | client-type-selector | form | authentication |
 | login | form | authentication |
+| admin-dashboard | dashboard | authentication |
 | personal-dashboard | dashboard | end-user-dashboard |
 | personal-savings | detail_screen | end-user-dashboard |
 | personal-loans | index_list | end-user-dashboard |
@@ -63,6 +64,7 @@ mobile-money-integration, web-admin-dashboard, sms-notifications, inter-group-le
 | member-list | index_list | member-onboarding |
 | member-profile | detail_screen | member-onboarding |
 | member-add | form | member-onboarding |
+| member-savings-detail | detail_screen | member-onboarding |
 | meeting-calendar | index_list | meeting-lifecycle |
 | meeting-conduct | form | meeting-lifecycle, savings-collection, loan-management, corpus-tracking, group-linked-savings, fines-tracking |
 | meeting-summary | detail_screen | meeting-lifecycle |
@@ -71,11 +73,14 @@ mobile-money-integration, web-admin-dashboard, sms-notifications, inter-group-le
 | loan-list | index_list | loan-management |
 | loan-apply | form | loan-management |
 | loan-detail | detail_screen | loan-management |
+| loan-repayment-dialog | dialog | loan-management |
+| loan-mark-defaulted-dialog | dialog | loan-management |
 | share-out-preview | detail_screen | share-out |
 | share-out-execute | form | share-out |
 | sync-status | dashboard | offline-sync |
 | field-officer-dashboard | dashboard | field-officer-view |
 | settings | settings | multi-language |
+| settings-logout-dialog | dialog | authentication |
 
 ## Data Entities (8)
 

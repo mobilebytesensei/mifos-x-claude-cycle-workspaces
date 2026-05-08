@@ -1,0 +1,560 @@
+schema_version: "3.1"
+id: member-savings-detail
+name: Member Savings Detail
+description: >
+  Detailed savings transaction history for a specific group member. Displays member photo
+  and name header, current savings balance (large/prominent), a sparkline mini-chart of
+  the last 6 months of savings, and a paginated, filterable transaction history list
+  (deposits and withdrawals with running balance). Supports pull-to-refresh.
+  API: GET /clients/{clientId}/accounts (savings transactions). Covers FR-003.
+feature: member-onboarding
+flow: member-onboarding-flow
+version: "1.0.0"
+tags:
+  - member-onboarding
+  - savings
+  - transactions
+  - detail
+  - offline-first
+  - FR-003
+
+# Lifecycle
+status: enriched
+quality_score: 87
+status_history:
+  - status: draft
+    date: "2026-05-07"
+    author: system
+  - status: enriched
+    date: "2026-05-07"
+    author: system
+
+# Navigation
+entry_point: false
+bottom_nav:
+  visible: false
+navigates_to: []
+route: /groups/{groupId}/members/{memberId}/savings
+entry_points:
+  - source: member-profile
+    trigger: savings_card_tap
+    params: { memberId: String, groupId: String }
+nav_params:
+  groupId: { type: String, required: true }
+  memberId: { type: String, required: true }
+
+screens:
+  - id: member-savings-detail-screen
+    title: "Member Savings"
+    type: detail
+    description: Scrollable member savings page with balance, sparkline chart, filter chips, and paginated transaction list
+
+state_model:
+  MemberSavingsDetailViewModel:
+    state:
+      name: MemberSavingsDetailState
+      fields:
+        isLoading: { type: Boolean, default: "true" }
+        isRefreshing: { type: Boolean, default: "false" }
+        member: { type: "Member?", default: "null" }
+        savingsBalance: { type: Double, default: "0.0" }
+        savingsAccountNo: { type: "String?", default: "null" }
+        sparklineData: { type: "List<SavingsDataPoint>", default: "emptyList()" }
+        transactions: { type: "List<SavingsTransaction>", default: "emptyList()" }
+        filteredTransactions: { type: "List<SavingsTransaction>", default: "emptyList()" }
+        selectedFilter: { type: TransactionFilter, default: "TransactionFilter.ALL" }
+        isLoadingNextPage: { type: Boolean, default: "false" }
+        hasNextPage: { type: Boolean, default: "true" }
+        currentPage: { type: Int, default: "0" }
+        error: { type: "SavingsDetailError?", default: "null" }
+    screen_state:
+      name: MemberSavingsDetailScreenState
+      members: [Loading, Content, Error, Empty]
+    errors:
+      name: SavingsDetailError
+      types:
+        - { type: Network, retry: true, message_key: error_network }
+        - { type: Server, retry: true, message_key: error_server }
+        - { type: NotFound, retry: false, message_key: error_not_found }
+        - { type: Auth, retry: false, message_key: error_auth, redirect: login }
+    events:
+      name: MemberSavingsDetailEvent
+      members:
+        - { name: NavigateBack }
+        - { name: ShowSnackbar, params: { message: String } }
+    actions:
+      name: MemberSavingsDetailAction
+      members:
+        - { name: OnBack, trigger: "Tap back arrow" }
+        - { name: OnFilterChange, params: { filter: TransactionFilter }, trigger: "Tap filter chip" }
+        - { name: OnRefresh, trigger: "Pull to refresh" }
+        - { name: OnLoadNextPage, trigger: "Scroll to list end" }
+        - { name: Retry, trigger: "Tap retry on error" }
+    di:
+      - MemberRepository
+      - SavingsRepository
+      - NetworkMonitor
+      - SessionManager
+
+flow_logic:
+  on_load:
+    - action: fetch_all_parallel
+      calls:
+        - api: get_client
+        - api: get_client_savings_accounts
+      on_all_success:
+        - compute: sparklineData = last 6 months of transaction balance snapshots
+        - compute: filteredTransactions = transactions (filter ALL)
+        - show_content
+      on_error: show_error
+  on_filter_change:
+    - action: filter_transactions_locally
+      description: Client-side filter by transaction type; no extra API call
+  on_refresh:
+    - action: fetch_all_parallel
+      calls:
+        - api: get_client
+        - api: get_client_savings_accounts
+      invalidate_cache: true
+  on_load_next_page:
+    - condition: hasNextPage && !isLoadingNextPage
+      true:
+        - api: get_client_savings_accounts
+          pagination: increment_page
+
+dependencies:
+  repositories:
+    - name: MemberRepository
+      methods:
+        - getMember(memberId: String): Flow<Member>
+    - name: SavingsRepository
+      methods:
+        - getMemberSavingsAccounts(clientId: Long): Flow<MemberSavingsAccounts>
+        - getSavingsTransactions(savingsAccountId: Long, page: Int, size: Int): Flow<List<SavingsTransaction>>
+  services:
+    - NetworkMonitor
+    - SessionManager
+  local_db:
+    - table: members
+    - table: savings_transactions
+    - table: savings_accounts
+
+api:
+  - id: get_client
+    function: get_client
+    method: get
+    endpoint: "/clients/{clientId}"
+    description: Fetch member profile (name, photo) for the header
+    params:
+      clientId: { type: Long, required: true, source: nav_params }
+    response:
+      type: object
+      fields:
+        id: Long
+        displayName: String
+        firstname: String
+        lastname: String
+        imagePresent: Boolean
+        mobileNo: String
+        status: { id: Int, value: String }
+    errors:
+      401: Unauthorized
+      404: Client not found
+      500: Server error
+    cache:
+      ttl: 300
+      strategy: stale-while-revalidate
+      offline: show_cached
+
+  - id: get_client_savings_accounts
+    function: get_client_accounts
+    method: get
+    endpoint: "/clients/{clientId}/accounts"
+    description: Fetch savings accounts and paginated transaction history for the member
+    params:
+      clientId: { type: Long, required: true, source: nav_params }
+      limit: { type: Int, default: 20 }
+      offset: { type: Int, default: 0 }
+    response:
+      type: object
+      fields:
+        savingsAccounts:
+          type: array
+          items:
+            id: Long
+            accountNo: String
+            productName: String
+            accountBalance: Double
+            status: { id: Int, value: String }
+            transactions:
+              type: array
+              items:
+                id: Long
+                transactionType: { id: Int, value: String }
+                date: List<Int>
+                amount: Double
+                runningBalance: Double
+                reversed: Boolean
+    errors:
+      401: Unauthorized
+      404: Client not found
+      500: Server error
+    cache:
+      ttl: 120
+      strategy: stale-while-revalidate
+      offline: show_cached
+    pagination:
+      type: offset
+      page_size: 20
+
+dtos:
+  Member:
+    id: String
+    fineractClientId: Long
+    displayName: String
+    firstName: String
+    lastName: String
+    photoUri: "String?"
+    phone: String
+
+  MemberSavingsAccounts:
+    savingsAccountId: Long
+    savingsAccountNo: String
+    savingsBalance: Double
+    transactions: "List<SavingsTransaction>"
+    sparklineData: "List<SavingsDataPoint>"
+
+  SavingsTransaction:
+    id: Long
+    date: String
+    type: TransactionType
+    amount: Double
+    runningBalance: Double
+    reversed: Boolean
+
+  TransactionType:
+    values: [DEPOSIT, WITHDRAWAL, INTEREST_POSTING, FEE_DEDUCTION, TRANSFER]
+
+  TransactionFilter:
+    values: [ALL, DEPOSITS, WITHDRAWALS]
+
+  SavingsDataPoint:
+    date: String
+    balance: Double
+
+components:
+  - id: top_bar
+    type: top-bar
+    title: "Member Savings"
+    style:
+      background: primary
+      text_color: onPrimary
+    navigation_icon: arrow_back
+    on_navigation_click: { action: OnBack, target: member-profile }
+    test_context:
+      purpose: "Navigation back to member profile"
+      interaction_type: tap
+      data_driven: false
+      required_fields: []
+
+  - id: member_header_card
+    type: card
+    style:
+      background: primaryContainer
+      elevation: 0dp
+      corner_radius: 0dp
+      padding: 20dp
+    content:
+      - id: member_avatar
+        type: avatar
+        image_url: "{{member.photoUri}}"
+        fallback_initials: "{{member.displayName | initials}}"
+        size: 64dp
+        style: { background: secondaryContainer, text_color: onSecondaryContainer }
+      - id: member_name_text
+        type: text
+        style: { text_style: headlineSmall, color: onPrimaryContainer }
+        value: "{{member.displayName}}"
+      - id: savings_balance_label
+        type: text
+        style: { text_style: labelMedium, color: onPrimaryContainer }
+        value: "Current Savings Balance"
+      - id: savings_balance_amount
+        type: text
+        style: { text_style: displaySmall, color: primary, font_weight: bold }
+        value: "KES {{savingsBalance | number}}"
+      - id: savings_account_no_text
+        type: text
+        style: { text_style: bodySmall, color: onPrimaryContainer }
+        value: "Account: {{savingsAccountNo}}"
+    test_context:
+      purpose: "Member identity and prominent savings balance"
+      interaction_type: static
+      data_driven: true
+      required_fields: [member.displayName, savingsBalance, savingsAccountNo]
+
+  - id: savings_sparkline_card
+    type: card
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 16dp
+      padding: 16dp
+    content:
+      - id: sparkline_label
+        type: text
+        style: { text_style: titleMedium, color: onSurface }
+        value: "6-Month Trend"
+      - id: savings_sparkline
+        type: chart
+        chart_type: sparkline
+        data: "{{sparklineData}}"
+        x_key: date
+        y_key: balance
+        style:
+          line_color: primary
+          fill_color: primaryContainer
+          height: 80dp
+          point_color: primary
+          point_radius: 3dp
+        test_context:
+          purpose: "Visual trend of member savings over the last 6 months"
+          interaction_type: static
+          data_driven: true
+          required_fields: [sparklineData]
+    test_context:
+      purpose: "Mini chart showing savings trend for the past 6 months"
+      interaction_type: static
+      data_driven: true
+      required_fields: [sparklineData]
+
+  - id: filter_chips_row
+    type: chip-group
+    style:
+      scroll: horizontal
+      padding: "8dp 16dp"
+    chips:
+      - id: chip_all
+        label: "All"
+        selected: "{{selectedFilter == ALL}}"
+        selected_color: primaryContainer
+        on_click: { action: OnFilterChange, params: { filter: ALL }, target: self }
+      - id: chip_deposits
+        label: "Deposits"
+        selected: "{{selectedFilter == DEPOSITS}}"
+        selected_color: primaryContainer
+        on_click: { action: OnFilterChange, params: { filter: DEPOSITS }, target: self }
+      - id: chip_withdrawals
+        label: "Withdrawals"
+        selected: "{{selectedFilter == WITHDRAWALS}}"
+        selected_color: errorContainer
+        on_click: { action: OnFilterChange, params: { filter: WITHDRAWALS }, target: self }
+    test_context:
+      purpose: "Filter transaction list by type without API call"
+      interaction_type: tap
+      data_driven: false
+      required_fields: [selectedFilter]
+
+  - id: transaction_card
+    type: card
+    style:
+      background: surface
+      elevation: 1dp
+      corner_radius: 12dp
+      padding: "12dp 16dp"
+      min_touch_target: 64dp
+    content:
+      - id: transaction_type_icon
+        type: icon
+        icon:
+          DEPOSIT: arrow_downward
+          WITHDRAWAL: arrow_upward
+          INTEREST_POSTING: savings
+          FEE_DEDUCTION: receipt
+          TRANSFER: swap_horiz
+        tint:
+          DEPOSIT: "#2E7D32"
+          WITHDRAWAL: "#C62828"
+          INTEREST_POSTING: "#1565C0"
+          FEE_DEDUCTION: "#E65100"
+          TRANSFER: "#6A1B9A"
+        size: 24dp
+      - id: transaction_date_text
+        type: text
+        style: { text_style: bodySmall, color: onSurfaceVariant }
+        value: "{{transaction.date | date_format('dd MMM yyyy')}}"
+      - id: transaction_type_text
+        type: text
+        style: { text_style: bodyMedium, color: onSurface }
+        value: "{{transaction.type | title_case}}"
+      - id: transaction_amount_text
+        type: text
+        style:
+          text_style: titleMedium
+          color:
+            DEPOSIT: "#2E7D32"
+            WITHDRAWAL: error
+            default: onSurface
+          font_weight: semibold
+        value:
+          DEPOSIT: "+ KES {{transaction.amount | number}}"
+          WITHDRAWAL: "- KES {{transaction.amount | number}}"
+          default: "KES {{transaction.amount | number}}"
+      - id: running_balance_text
+        type: text
+        style: { text_style: bodySmall, color: onSurfaceVariant }
+        value: "Balance: KES {{transaction.runningBalance | number}}"
+      - id: reversed_badge
+        type: badge
+        visible_when: "transaction.reversed"
+        label: "REVERSED"
+        style: { background: surfaceVariant, text_color: onSurfaceVariant }
+    on_click: { action: OnBack, target: self }
+    test_context:
+      purpose: "Single transaction row with coloured amount and running balance"
+      interaction_type: static
+      data_driven: true
+      required_fields: [transaction.date, transaction.type, transaction.amount, transaction.runningBalance]
+
+  - id: load_more_indicator
+    type: circular-progress
+    visible: "{{isLoadingNextPage}}"
+    style:
+      size: 32dp
+      color: primary
+      alignment: center
+      padding: 16dp
+    test_context:
+      purpose: "Spinner shown while fetching the next page of transactions"
+      interaction_type: static
+      data_driven: false
+      required_fields: [isLoadingNextPage]
+
+  - id: shimmer_list
+    type: shimmer
+    count: 6
+    style: { height: 72dp, corner_radius: 12dp, background: surfaceVariant }
+    test_context:
+      purpose: "Loading skeleton while fetching savings data"
+      interaction_type: static
+      data_driven: false
+      required_fields: []
+
+  - id: empty_state
+    type: empty-state
+    icon: account_balance_wallet
+    title: "No transactions"
+    body: "No transactions match the selected filter."
+    test_context:
+      purpose: "Shown when filter returns zero transactions"
+      interaction_type: static
+      data_driven: false
+      required_fields: []
+
+  - id: error_state
+    type: error-state
+    icon: cloud_off
+    title: "Could not load savings"
+    body: "{{error.message}}"
+    cta_label: "Retry"
+    on_click: { action: Retry, target: self }
+    test_context:
+      purpose: "Error state with retry when API fails"
+      interaction_type: tap
+      data_driven: true
+      required_fields: [error.message]
+
+states:
+  initial_state: loading
+  loading:
+    components: [top_bar, shimmer_list]
+    description: "Parallel API calls in-flight for member profile and savings accounts"
+  content:
+    components: [top_bar, member_header_card, savings_sparkline_card, filter_chips_row, transaction_card, load_more_indicator]
+    description: "All savings data loaded; transactions filterable client-side; pull-to-refresh enabled"
+    demo_data:
+      member:
+        displayName: "Amina Wanjiru"
+        firstName: "Amina"
+        lastName: "Wanjiru"
+        photoUri: null
+      savingsBalance: 3500.00
+      savingsAccountNo: "SA-00012345"
+      sparklineData:
+        - { date: "2025-12-01", balance: 500.00 }
+        - { date: "2026-01-01", balance: 1000.00 }
+        - { date: "2026-02-01", balance: 1500.00 }
+        - { date: "2026-03-01", balance: 2500.00 }
+        - { date: "2026-04-01", balance: 3000.00 }
+        - { date: "2026-05-01", balance: 3500.00 }
+      selectedFilter: ALL
+      transactions:
+        - id: 1
+          date: "2026-05-05"
+          type: DEPOSIT
+          amount: 500.00
+          runningBalance: 3500.00
+          reversed: false
+        - id: 2
+          date: "2026-04-28"
+          type: DEPOSIT
+          amount: 500.00
+          runningBalance: 3000.00
+          reversed: false
+        - id: 3
+          date: "2026-04-14"
+          type: WITHDRAWAL
+          amount: 200.00
+          runningBalance: 2500.00
+          reversed: false
+        - id: 4
+          date: "2026-04-07"
+          type: DEPOSIT
+          amount: 700.00
+          runningBalance: 2700.00
+          reversed: false
+  empty:
+    components: [top_bar, member_header_card, savings_sparkline_card, filter_chips_row, empty_state]
+    description: "No transactions match the active filter"
+  error:
+    components: [top_bar, error_state]
+    description: "API error loading savings data; error message with retry"
+
+i18n:
+  en:
+    screen_title: "Member Savings"
+    balance_label: "Current Savings Balance"
+    account_no_label: "Account: {{accountNo}}"
+    trend_label: "6-Month Trend"
+    filter_all: "All"
+    filter_deposits: "Deposits"
+    filter_withdrawals: "Withdrawals"
+    transaction_deposit: "Deposit"
+    transaction_withdrawal: "Withdrawal"
+    transaction_interest: "Interest Posting"
+    transaction_fee: "Fee Deduction"
+    transaction_transfer: "Transfer"
+    running_balance_label: "Balance: KES {{amount}}"
+    reversed_label: "REVERSED"
+    empty_title: "No transactions"
+    empty_body: "No transactions match the selected filter."
+    error_network: "No internet. Showing cached savings data."
+    error_server: "Server error. Please retry."
+    error_not_found: "Savings account not found."
+    error_auth: "Session expired. Please log in again."
+
+analytics:
+  screen_view: member_savings_detail_viewed
+  events:
+    - trigger: filter chip tap
+      name: savings_filter_applied
+      params: { filter: String, member_id: String }
+    - trigger: pull to refresh
+      name: savings_detail_refreshed
+      params: { member_id: String }
+    - trigger: scroll to end
+      name: savings_transactions_next_page_loaded
+      params: { member_id: String, page: Int }
+    - trigger: screen view
+      name: member_savings_detail_opened
+      params: { member_id: String, group_id: String, balance: Double }
