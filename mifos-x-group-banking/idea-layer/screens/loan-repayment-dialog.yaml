@@ -1,0 +1,347 @@
+schema_version: "3.1"
+id: loan-repayment-dialog
+name: Loan Repayment Dialog
+description: >
+  Modal dialog allowing the treasurer to record a loan repayment for a specific
+  member. Pre-fills the installment amount from the current schedule. Supports
+  MPesa and Cash payment methods with an optional reference number. Submits to
+  Fineract via make_repayment, then dismisses and triggers a refresh on the
+  parent loan-detail screen.
+feature: loan-management
+version: "1.0.0"
+tags:
+  - loan-management
+  - dialog
+  - treasurer
+  - repayment
+  - offline-first
+
+status: enriched
+quality_score: 85
+status_history:
+  - status: draft
+    date: "2026-05-07"
+    author: system
+  - status: enriched
+    date: "2026-05-07"
+    author: system
+
+archetype: dialog
+entry_point: false
+navigates_to: []
+parent_screen: loan-detail
+
+nav_params:
+  loanId: { type: Long, required: true }
+  memberId: { type: Long, required: true }
+  installmentAmount: { type: Double, required: true }
+
+state_model:
+  LoanRepaymentDialogViewModel:
+    state:
+      name: LoanRepaymentDialogState
+      fields:
+        amount: { type: String, default: "\"\"", note: "Pre-filled from installmentAmount nav param" }
+        paymentMethod: { type: PaymentMethod, default: "PaymentMethod.MPESA" }
+        referenceNumber: { type: String, default: "\"\"" }
+        isSubmitting: { type: Boolean, default: "false" }
+        amountError: { type: "String?", default: "null" }
+        submitError: { type: "String?", default: "null" }
+    events:
+      name: LoanRepaymentDialogEvent
+      members:
+        - { name: Dismiss }
+        - { name: RepaymentRecorded, params: { loanId: Long } }
+        - { name: ShowError, params: { message: String } }
+    actions:
+      name: LoanRepaymentDialogAction
+      members:
+        - { name: OnAmountChanged, params: { value: String }, trigger: "User edits amount field" }
+        - { name: OnPaymentMethodSelected, params: { method: PaymentMethod }, trigger: "User selects payment method chip" }
+        - { name: OnReferenceNumberChanged, params: { value: String }, trigger: "User edits reference number field" }
+        - { name: OnSubmit, trigger: "Tap Record Repayment button" }
+        - { name: OnDismiss, trigger: "Tap Cancel or outside dialog" }
+    di:
+      - LoanRepository
+      - InputValidator
+
+dtos:
+  PaymentMethod:
+    values: [MPESA, CASH]
+    labels:
+      MPESA: "M-Pesa"
+      CASH: "Cash"
+
+flow_logic:
+  on_open:
+    - action: pre_fill_amount
+      description: "Set amount field to installmentAmount from nav_params formatted as string"
+  on_submit:
+    - action: validate_amount
+      guard: "amount must be > 0 and numeric"
+      on_fail: set_amountError
+    - action: post_repayment
+      api: make_repayment
+      on_success: emit_RepaymentRecorded_then_dismiss
+      on_error: set_submitError
+  on_dismiss:
+    - action: emit_Dismiss
+
+dependencies:
+  repositories:
+    - name: LoanRepository
+      methods:
+        - "recordRepayment(loanId: Long, memberId: Long, amount: Double, paymentMethod: String, referenceNumber: String?): Flow<Unit>"
+  services:
+    - InputValidator
+
+api:
+  - id: make_repayment
+    function: make_repayment
+    method: post
+    endpoint: "/loans/{loanId}/transactions?command=repayment"
+    description: Record a loan repayment transaction in Fineract
+    params:
+      loanId: { type: Long, required: true, source: nav_params }
+    body:
+      transactionDate: { type: String, note: "Today's date formatted as dd MMMM yyyy" }
+      transactionAmount: { type: Double, source: state.amount }
+      paymentTypeId: { type: Int, note: "Resolved from paymentMethod: MPESA=1, CASH=2" }
+      receiptNumber: { type: "String?", source: state.referenceNumber }
+      locale: { type: String, default: "en" }
+      dateFormat: { type: String, default: "dd MMMM yyyy" }
+    response:
+      type: object
+      fields:
+        officeId: Int
+        clientId: Long
+        loanId: Long
+        resourceId: Long
+    errors:
+      400: Validation error (amount exceeds outstanding)
+      401: Unauthorized
+      403: Forbidden (role check)
+      404: Loan not found
+      500: Server error
+
+components:
+  - id: dialog_title
+    type: text
+    style: { text_style: titleLarge, color: onSurface }
+    value: "Record Repayment"
+    test_context:
+      purpose: "Dialog header label"
+      interaction_type: static
+      data_driven: false
+      required_fields: []
+
+  - id: amount_field
+    type: text-field
+    label: "Amount (KES)"
+    placeholder: "0.00"
+    keyboard_type: number_decimal
+    value: "{{amount}}"
+    error: "{{amountError}}"
+    on_change: { action: OnAmountChanged }
+    style:
+      corner_radius: 8dp
+      min_touch_target: 48dp
+    test_context:
+      purpose: "Primary repayment amount input, pre-filled with installment amount"
+      interaction_type: text_input
+      data_driven: true
+      required_fields: [amount, amountError]
+
+  - id: payment_method_label
+    type: text
+    style: { text_style: labelMedium, color: onSurfaceVariant }
+    value: "Payment Method"
+    test_context:
+      purpose: "Label above payment method selector"
+      interaction_type: static
+      data_driven: false
+      required_fields: []
+
+  - id: payment_method_chips
+    type: chip-group
+    selection_mode: single
+    chips:
+      - id: chip_mpesa
+        label: "M-Pesa"
+        value: MPESA
+        selected_when: "paymentMethod == MPESA"
+        on_click: { action: OnPaymentMethodSelected, params: { method: MPESA }, state: selectedPaymentMethod }
+      - id: chip_cash
+        label: "Cash"
+        value: CASH
+        selected_when: "paymentMethod == CASH"
+        on_click: { action: OnPaymentMethodSelected, params: { method: CASH }, state: selectedPaymentMethod }
+    style:
+      selected_background: primaryContainer
+      selected_text_color: onPrimaryContainer
+      unselected_background: surfaceVariant
+      unselected_text_color: onSurfaceVariant
+      gap: 8dp
+    test_context:
+      purpose: "Select M-Pesa or Cash as the payment channel"
+      interaction_type: tap
+      data_driven: true
+      required_fields: [paymentMethod]
+
+  - id: reference_number_field
+    type: text-field
+    label: "Reference Number (optional)"
+    placeholder: "e.g. QJZ7X9A1BK"
+    keyboard_type: text
+    value: "{{referenceNumber}}"
+    on_change: { action: OnReferenceNumberChanged }
+    style:
+      corner_radius: 8dp
+      min_touch_target: 48dp
+    test_context:
+      purpose: "Optional M-Pesa or receipt reference for audit trail"
+      interaction_type: text_input
+      data_driven: true
+      required_fields: [referenceNumber]
+
+  - id: submit_error_text
+    type: text
+    style: { text_style: bodySmall, color: error }
+    value: "{{submitError}}"
+    visible_when: "submitError != null"
+    test_context:
+      purpose: "Inline API error shown below fields before buttons"
+      interaction_type: static
+      data_driven: true
+      required_fields: [submitError]
+
+  - id: dialog_actions_row
+    type: row
+    style:
+      gap: 12dp
+      padding: "8dp 0dp 0dp 0dp"
+      arrangement: end
+    content:
+      - id: cancel_button
+        type: button
+        label: "Cancel"
+        style:
+          type: text
+          text_color: primary
+          min_touch_target: 48dp
+        on_click: { action: OnDismiss }
+        test_context:
+          purpose: "Dismiss dialog without submitting"
+          interaction_type: tap
+          data_driven: false
+          required_fields: []
+      - id: record_repayment_button
+        type: button
+        label: "Record Repayment"
+        loading_when: "isSubmitting"
+        style:
+          type: filled
+          background: primary
+          text_color: onPrimary
+          corner_radius: 24dp
+          min_touch_target: 48dp
+        on_click: { action: OnSubmit, api: make_repayment }
+        test_context:
+          purpose: "Submit repayment; shows spinner while posting to Fineract"
+          interaction_type: tap
+          data_driven: true
+          required_fields: [isSubmitting, amount, paymentMethod]
+
+states:
+  idle:
+    components:
+      - dialog_title
+      - amount_field
+      - payment_method_label
+      - payment_method_chips
+      - reference_number_field
+      - dialog_actions_row
+    demo_data:
+      amount: "125.00"
+      paymentMethod: MPESA
+      referenceNumber: ""
+      isSubmitting: false
+      amountError: null
+      submitError: null
+  submitting:
+    components:
+      - dialog_title
+      - amount_field
+      - payment_method_label
+      - payment_method_chips
+      - reference_number_field
+      - dialog_actions_row
+    description: "Record Repayment button shows loading indicator; inputs disabled"
+  error:
+    components:
+      - dialog_title
+      - amount_field
+      - payment_method_label
+      - payment_method_chips
+      - reference_number_field
+      - submit_error_text
+      - dialog_actions_row
+    description: "API or validation error displayed; user can correct and retry"
+
+i18n:
+  en:
+    dialog_title: "Record Repayment"
+    amount_label: "Amount (KES)"
+    amount_placeholder: "0.00"
+    payment_method_label: "Payment Method"
+    mpesa_label: "M-Pesa"
+    cash_label: "Cash"
+    reference_label: "Reference Number (optional)"
+    reference_placeholder: "e.g. QJZ7X9A1BK"
+    cancel: "Cancel"
+    submit: "Record Repayment"
+    error_amount_required: "Please enter a repayment amount."
+    error_amount_invalid: "Amount must be a valid positive number."
+    error_amount_exceeds: "Amount cannot exceed the outstanding balance."
+    error_server: "Could not record repayment. Please try again."
+  sw:
+    dialog_title: "Rekodi Malipo"
+    amount_label: "Kiasi (KES)"
+    payment_method_label: "Njia ya Malipo"
+    mpesa_label: "M-Pesa"
+    cash_label: "Taslimu"
+    cancel: "Ghairi"
+    submit: "Rekodi Malipo"
+  fr:
+    dialog_title: "Enregistrer un Remboursement"
+    amount_label: "Montant (KES)"
+    payment_method_label: "Mode de Paiement"
+    cancel: "Annuler"
+    submit: "Enregistrer"
+  hi:
+    dialog_title: "पुनर्भुगतान दर्ज करें"
+    amount_label: "राशि (KES)"
+    payment_method_label: "भुगतान विधि"
+    cancel: "रद्द करें"
+    submit: "दर्ज करें"
+
+analytics:
+  events:
+    - trigger: dialog opened
+      name: loan_repayment_dialog_opened
+      params: { loan_id: Long, installment_amount: Double }
+    - trigger: payment method changed
+      name: loan_repayment_payment_method_changed
+      params: { method: String }
+    - trigger: repayment submitted
+      name: loan_repayment_submitted
+      params: { loan_id: Long, amount: Double, method: String }
+    - trigger: repayment succeeded
+      name: loan_repayment_success
+      params: { loan_id: Long }
+    - trigger: repayment failed
+      name: loan_repayment_error
+      params: { loan_id: Long, error: String }
+    - trigger: dialog dismissed
+      name: loan_repayment_dialog_dismissed
+      params: { loan_id: Long }
