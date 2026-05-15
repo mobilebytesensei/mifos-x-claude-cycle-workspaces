@@ -1,0 +1,278 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: share-out-execute
+
+route: /groups/{groupId}/share-out/execute
+entry_points:
+  - source: share-out-preview
+    condition: chairperson_taps_confirm_and_execute
+nav_params:
+  groupId: { type: Long, required: true }
+  centerId: { type: Long, required: true }
+  cycleNumber: { type: Int, required: true }
+  totalPool: { type: Double, required: true, currency: KES }
+  memberPayouts: { type: "List<MemberPayout>", required: true }
+
+screens:
+  - id: share-out-execute-screen
+    name: ShareOutExecuteScreen
+    composable: ShareOutExecuteScreen
+    type: detail
+    description: >
+      Scrollable Column with sticky top bar. Content: summary card → MemberPayoutRow list →
+      offline info banner (conditional) → double confirmation section → execute button.
+      During execution: progress bar replaces confirmation section. On completion: success banner
+      replaces execution UI. On partial failure: error state with per-member retry info.
+    layout: Column (TopAppBar + ScrollableContent + StickyFooterButton)
+
+state_model:
+  ShareOutExecuteViewModel:
+    state:
+      name: ShareOutExecuteState
+      fields:
+        groupId: { type: Long, default: "0L" }
+        centerId: { type: Long, default: "0L" }
+        cycleNumber: { type: Int, default: "0" }
+        confirmationText: { type: String, default: '""' }
+        isConfirmed: { type: Boolean, default: "false" }
+        isExecuting: { type: Boolean, default: "false" }
+        executedCount: { type: Int, default: "0" }
+        totalCount: { type: Int, default: "0" }
+        memberPayouts: { type: "List<MemberPayout>", default: "emptyList()" }
+        memberExecutionStatus: { type: "Map<Long, MemberExecutionStatus>", default: "emptyMap()" }
+        totalPool: { type: Double, default: "0.0" }
+        isOnline: { type: Boolean, default: "true" }
+        isCompleted: { type: Boolean, default: "false" }
+        queuedOffline: { type: Boolean, default: "false" }
+        error: { type: "ShareOutError?", default: "null" }
+        failedPayouts: { type: "List<MemberPayout>", default: "emptyList()" }
+        succeededCount: { type: Int, default: "0" }
+    screen_state:
+      name: ShareOutExecuteScreenState
+      members:
+        - Content: awaiting double-confirmation from chairperson
+        - Executing: executing payouts sequentially; per-member status shown
+        - Success: all payouts completed; completion banner shown
+        - PartialFailure: some payouts failed; retry available for failed members
+        - Error: full failure or fatal error; retry re-runs all payouts
+    errors:
+      name: ShareOutError
+      types:
+        - { type: Network, retry: false, message_key: error_queued_offline }
+        - { type: Server, retry: true, message_key: error_server }
+        - { type: PartialFailure, retry: true, message_key: error_partial }
+        - { type: Auth, retry: false, message_key: error_auth, redirect: login }
+        - { type: ConfirmationRequired, retry: false, message_key: error_confirmation_required }
+    events:
+      name: ShareOutExecuteEvent
+      members:
+        - { name: NavigateToGroupDashboard, params: "groupId: Long" }
+        - { name: NavigateBack }
+        - { name: ShowBiometricPrompt }
+        - { name: ShowSnackbar, params: "message: String" }
+    actions:
+      name: ShareOutExecuteAction
+      members:
+        - { name: OnConfirmationTextChanged, params: "text: String", trigger: "Type in confirmation field" }
+        - { name: OnBiometricSelected, trigger: "Tap Use Biometric Instead button" }
+        - { name: OnExecute, trigger: "Tap Execute Share-Out button" }
+        - { name: OnRetryFailed, trigger: "Tap Retry Failed Payouts button on PartialFailure state" }
+        - { name: OnBack, trigger: "Tap back navigation icon (only enabled before execution starts)" }
+        - { name: OnDone, trigger: "Tap Done button after completion or offline queue" }
+    di:
+      - ShareOutRepository
+      - SyncQueueRepository
+      - BiometricManager
+      - NetworkMonitor
+      - SessionManager
+
+components:
+  - id: top_bar
+    type: top-app-bar
+    title: "Execute Share-Out"
+    style: { background: primary, text_color: onPrimary }
+    navigation_icon: arrow_left_24_regular
+    nav_enabled_when: "!isExecuting && !isCompleted"
+    on_navigation_click: { action: OnBack }
+
+  - id: summary_card
+    type: card
+    style: { background: primaryContainer, corner_radius: 12dp, padding: 16dp, elevation: 0dp, margin: "16dp 16dp 0dp" }
+    content:
+      - { type: text, value: "Total Distribution Pool", style: { text_style: labelMedium, color: onPrimaryContainer } }
+      - { type: text, value: "KES {{totalPool | number}}", style: { text_style: headlineSmall, color: onPrimaryContainer, font_weight: bold } }
+      - { type: text, value: "{{totalCount}} members to receive payouts", style: { text_style: bodyMedium, color: onPrimaryContainer, margin_top: 4dp } }
+
+  - id: payout_list_header
+    type: text
+    value: "Member Payouts"
+    style: { text_style: titleSmall, color: onSurfaceVariant, padding: "16dp 16dp 4dp" }
+
+  - id: member_payout_row
+    type: list-item
+    repeats_for: memberPayouts
+    style: { padding_horizontal: 16dp, padding_vertical: 12dp, divider: true, min_height: 56dp }
+    content:
+      leading: { type: avatar, initials: "{{payout.memberInitials}}", size: 40dp, background: secondaryContainer }
+      headline: { type: text, value: "{{payout.memberName}}", style: { text_style: bodyLarge } }
+      supporting: { type: text, value: "KES {{payout.payoutAmount | number}} ({{(payout.sharePercent * 100).toInt()}}%)", style: { text_style: bodyMedium, color: primary } }
+      trailing:
+        type: icon_badge
+        visible_when: "isExecuting || isCompleted || queuedOffline"
+        value: "{{memberExecutionStatus[payout.memberId]}}"
+        style:
+          PENDING: { icon: circle_24_regular, color: onSurfaceVariant }
+          IN_PROGRESS: { icon: spinner_ios_20_filled, color: secondary, animated: true }
+          DONE: { icon: checkmark_circle_24_filled, color: primary }
+          FAILED: { icon: error_circle_24_filled, color: error }
+          QUEUED: { icon: cloud_arrow_up_24_regular, color: secondary }
+
+  - id: offline_info_banner
+    type: banner
+    visible_when: "!isOnline"
+    style: { background: warningContainer, padding: 12dp, margin: "12dp 16dp 0dp" }
+    content: "You are offline. Share-out will be queued and executed automatically when you reconnect."
+
+  - id: double_confirmation_section
+    type: card
+    visible_when: "!isExecuting && !isCompleted && !queuedOffline"
+    style: { background: surface, elevation: 2dp, corner_radius: 12dp, padding: 16dp, margin: "12dp 16dp 0dp" }
+    content:
+      - { type: text, value: "Confirm Share-Out", style: { text_style: titleSmall, color: onSurface, margin_bottom: 4dp } }
+      - { type: text, value: 'This action is irreversible. Type "SHARE OUT" below or use biometric authentication to confirm.', style: { text_style: bodySmall, color: onSurfaceVariant, margin_bottom: 12dp } }
+      - id: confirmation_text_field
+        type: text-field
+        label: "Confirmation"
+        placeholder: 'Type "SHARE OUT"'
+        keyboard_type: text
+        value: "{{confirmationText}}"
+        error_text: '{{confirmationText.isNotBlank() && !isConfirmed ? "Must type exactly \"SHARE OUT\"" : null}}'
+        style: { min_touch_target: 48dp, corner_radius: 8dp }
+        on_change: { action: OnConfirmationTextChanged, params: { text: "{{inputValue}}" } }
+      - id: biometric_button
+        type: button
+        variant: outlined
+        label: "Use Biometric Instead"
+        icon: fingerprint_24_regular
+        style: { corner_radius: 24dp, min_touch_target: 48dp, full_width: true, margin_top: 12dp }
+        on_click: { action: OnBiometricSelected }
+
+  - id: execute_button
+    type: button
+    variant: filled
+    label: "Execute Share-Out"
+    visible_when: "!isCompleted && !queuedOffline"
+    enabled_when: "isConfirmed && !isExecuting"
+    style: { background: error, text_color: onError, corner_radius: 24dp, min_touch_target: 56dp, full_width: true, margin: "12dp 16dp 0dp", loading_when: isExecuting }
+    on_click: { action: OnExecute }
+
+  - id: progress_indicator
+    type: linear-progress
+    visible_when: isExecuting
+    value: "{{executedCount.toFloat() / totalCount.toFloat()}}"
+    label: "{{executedCount}} of {{totalCount}} payouts completed"
+    style: { color: primary, height: 8dp, corner_radius: 4dp, margin: "12dp 16dp 0dp" }
+
+  - id: completion_banner
+    type: banner
+    visible_when: "isCompleted && failedPayouts.isEmpty()"
+    style: { background: primaryContainer, corner_radius: 12dp, padding: 20dp, margin: "16dp 16dp 0dp" }
+    content:
+      - { type: icon, icon: checkmark_circle_24_filled, size: 48dp, color: primary }
+      - { type: text, value: "Share-Out Complete!", style: { text_style: titleLarge, color: onPrimaryContainer, margin_top: 8dp } }
+      - { type: text, value: "KES {{totalPool | number}} distributed to {{succeededCount}} members successfully.", style: { text_style: bodyMedium, color: onPrimaryContainer, margin_top: 4dp } }
+
+  - id: partial_failure_banner
+    type: banner
+    visible_when: "isCompleted && failedPayouts.isNotEmpty()"
+    style: { background: warningContainer, corner_radius: 12dp, padding: 16dp, margin: "16dp 16dp 0dp" }
+    content:
+      - { type: icon, icon: warning_24_filled, size: 32dp, color: onWarningContainer }
+      - { type: text, value: "Partial Completion", style: { text_style: titleMedium, color: onWarningContainer, margin_top: 4dp } }
+      - { type: text, value: "{{succeededCount}} of {{totalCount}} payouts succeeded. {{failedPayouts.size}} failed. Tap Retry to re-attempt.", style: { text_style: bodySmall, color: onWarningContainer } }
+
+  - id: queued_offline_banner
+    type: banner
+    visible_when: queuedOffline
+    style: { background: secondaryContainer, corner_radius: 12dp, padding: 16dp, margin: "16dp 16dp 0dp" }
+    content:
+      - { type: text, value: "Queued for Sync", style: { text_style: titleSmall, color: onSecondaryContainer } }
+      - { type: text, value: "{{totalCount}} payouts queued. They will be processed automatically when you reconnect.", style: { text_style: bodySmall, color: onSecondaryContainer } }
+
+  - id: retry_failed_button
+    type: button
+    variant: filled
+    label: "Retry Failed Payouts"
+    visible_when: "isCompleted && failedPayouts.isNotEmpty()"
+    style: { background: secondary, text_color: onSecondary, min_touch_target: 48dp, full_width: true, margin: "12dp 16dp 0dp" }
+    on_click: { action: OnRetryFailed }
+
+  - id: done_button
+    type: button
+    variant: filled
+    label: "Done"
+    visible_when: "(isCompleted && failedPayouts.isEmpty()) || queuedOffline"
+    style: { background: primary, text_color: onPrimary, corner_radius: 24dp, min_touch_target: 56dp, full_width: true, margin: "12dp 16dp 16dp" }
+    on_click: { action: OnDone, target: group-dashboard, params: { groupId: "{{groupId}}" } }
+
+states:
+  initial_state: content
+  content:
+    components_visible: [top_bar, summary_card, payout_list_header, member_payout_row, offline_info_banner, double_confirmation_section, execute_button]
+    description: "Awaiting double-confirmation from chairperson"
+    demo_data:
+      cycleNumber: 1
+      totalPool: 24000.0
+      totalCount: 5
+      isOnline: true
+      isConfirmed: false
+      confirmationText: ""
+      memberPayouts:
+        - { memberId: 101, memberName: "Amina Hassan", memberInitials: "AH", totalSavings: 5600, sharePercent: 0.283, payoutAmount: 6792.0, savingsAccountId: 1001 }
+        - { memberId: 102, memberName: "Peter Otieno", memberInitials: "PO", totalSavings: 4300, sharePercent: 0.217, payoutAmount: 5208.0, savingsAccountId: 1002 }
+        - { memberId: 103, memberName: "Grace Wanjiku", memberInitials: "GW", totalSavings: 4000, sharePercent: 0.200, payoutAmount: 4800.0, savingsAccountId: 1003 }
+        - { memberId: 104, memberName: "John Mwangi", memberInitials: "JM", totalSavings: 3650, sharePercent: 0.183, payoutAmount: 4392.0, savingsAccountId: 1004 }
+        - { memberId: 105, memberName: "Mary Akinyi", memberInitials: "MA", totalSavings: 2337, sharePercent: 0.117, payoutAmount: 2808.0, savingsAccountId: 1005 }
+  executing:
+    components_visible: [top_bar, summary_card, payout_list_header, member_payout_row, progress_indicator]
+    description: "Sequential payout execution in progress; back navigation disabled"
+  success:
+    components_visible: [top_bar, summary_card, payout_list_header, member_payout_row, completion_banner, done_button]
+    description: "All payouts executed successfully"
+  partial_failure:
+    components_visible: [top_bar, summary_card, payout_list_header, member_payout_row, partial_failure_banner, retry_failed_button]
+    description: "Some payouts failed; retry available"
+  error:
+    components_visible: [top_bar, summary_card, payout_list_header, member_payout_row, execute_button]
+    description: "Fatal execution error; execute button re-enabled for retry"
+
+i18n:
+  en:
+    screen_title: "Execute Share-Out"
+    total_pool_label: "Total Distribution Pool"
+    execute_button: "Execute Share-Out"
+    confirmation_title: "Confirm Share-Out"
+    success_title: "Share-Out Complete!"
+    partial_title: "Partial Completion"
+    queued_title: "Queued for Sync"
+    done_button: "Done"
+    retry_button: "Retry Failed Payouts"
+    biometric_button: "Use Biometric Instead"
+    error_confirmation_required: 'Please type "SHARE OUT" or use biometric to confirm.'
+    error_server: "Server error. Please try again."
+    error_auth: "Session expired. Please log in again."
+  sw:
+    screen_title: "Fanya Mgawanyo"
+    execute_button: "Fanya Mgawanyo"
+    success_title: "Mgawanyo Umekamilika!"
+    done_button: "Maliza"
+  fr:
+    screen_title: "Exécuter le Partage"
+    execute_button: "Exécuter le Partage"
+    success_title: "Partage Terminé!"
+    done_button: "Terminer"
+  hi:
+    screen_title: "शेयर-आउट निष्पादित करें"
+    execute_button: "शेयर-आउट निष्पादित करें"
+    success_title: "शेयर-आउट पूर्ण!"
+    done_button: "समाप्त"

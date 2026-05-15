@@ -1,0 +1,265 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: loan-apply
+
+route: /groups/{groupId}/loans/apply
+entry_points:
+  - source: loan-list
+    label: Apply for Loan (FAB)
+nav_params:
+  groupId: { type: Long, required: true }
+
+screens:
+  - id: loan-apply-screen
+    title: Apply for Loan
+    type: form
+    description: Multi-field application form with real-time eligibility and corpus checks
+
+state_model:
+  LoanApplyViewModel:
+    state:
+      name: LoanApplyState
+      fields:
+        selectedMember: { type: "GroupMember?", default: "null" }
+        requestedAmount: { type: String, default: '""' }
+        durationWeeks: { type: Int, default: "12" }
+        purpose: { type: LoanPurpose, default: "LoanPurpose.BUSINESS" }
+        selectedProduct: { type: "LoanProduct?", default: "null" }
+        members: { type: "List<GroupMember>", default: "emptyList()" }
+        loanProducts: { type: "List<LoanProduct>", default: "emptyList()" }
+        memberSavingsBalance: { type: Double, default: "0.0" }
+        loanMultiplier: { type: Double, default: "3.0" }
+        eligibleAmount: { type: Double, default: "0.0" }
+        corpusBalance: { type: Double, default: "0.0" }
+        corpusWarning: { type: Boolean, default: "false" }
+        isSubmitting: { type: Boolean, default: "false" }
+        isLoadingTemplate: { type: Boolean, default: "false" }
+        amountError: { type: "String?", default: "null" }
+        error: { type: "LoanApplyError?", default: "null" }
+        submitSuccess: { type: Boolean, default: "false" }
+    screen_state:
+      name: LoanApplyScreenState
+      members: [Loading, Content, Submitting, Error, Success]
+    errors:
+      name: LoanApplyError
+      types:
+        - { type: Network, retry: true, message_key: error_network }
+        - { type: Server, retry: true, message_key: error_server }
+        - { type: AmountExceedsEligibility, retry: false, message_key: error_amount_exceeds }
+        - { type: CorpusInsufficient, retry: false, message_key: error_corpus }
+        - { type: Auth, retry: false, message_key: error_auth, redirect: login }
+    events:
+      name: LoanApplyEvent
+      members:
+        - { name: NavigateToMeetingConduct, params: { loanId: Long } }
+        - { name: NavigateBack }
+        - { name: ShowSnackbar, params: { message: String } }
+    actions:
+      name: LoanApplyAction
+      members:
+        - { name: OnMemberSelected, params: { member: GroupMember }, trigger: "Select from member dropdown" }
+        - { name: OnAmountChanged, params: { amount: String }, trigger: "Type loan amount" }
+        - { name: OnDurationChanged, params: { weeks: Int }, trigger: "Select duration" }
+        - { name: OnPurposeChanged, params: { purpose: LoanPurpose }, trigger: "Select purpose" }
+        - { name: OnProductSelected, params: { product: LoanProduct }, trigger: "Select loan product" }
+        - { name: OnSubmit, trigger: "Tap Submit button" }
+        - { name: OnBack, trigger: "Tap back / nav icon" }
+    di:
+      - LoanRepository
+      - MemberRepository
+      - GroupRepository
+      - NetworkMonitor
+      - SessionManager
+
+components:
+  - id: top_bar
+    type: top-bar
+    title: "Apply for Loan"
+    style:
+      background: primary
+      text_color: onPrimary
+    navigation_icon: arrow_back
+    on_nav_click: { action: OnBack }
+
+  - id: member_selector
+    type: dropdown
+    label: "Select Member"
+    placeholder: "Choose group member"
+    icon: person
+    style:
+      min_touch_target: 48dp
+      corner_radius: 8dp
+    options_source: members
+    option_label: "displayName"
+    on_change: { action: OnMemberSelected, param: member }
+
+  - id: eligibility_banner
+    type: info-banner
+    style:
+      background: primaryContainer
+      text_color: onPrimaryContainer
+      corner_radius: 8dp
+      padding: 12dp
+    content:
+      - type: text
+        style: { text_style: bodyMedium }
+        value: "Savings balance: KES {{memberSavingsBalance | number}}"
+      - type: text
+        style: { text_style: titleSmall, color: primary }
+        value: "Max eligible: KES {{eligibleAmount | number}} ({{loanMultiplier}}× savings)"
+    visible_when: "selectedMember != null"
+
+  - id: amount_input
+    type: text-field
+    label: "Requested Amount (KES)"
+    placeholder: "e.g. 1500"
+    input_type: number
+    keyboard: decimal
+    leading_icon: currency_exchange
+    style:
+      min_touch_target: 48dp
+      corner_radius: 8dp
+    on_change: { action: OnAmountChanged, param: amount }
+    error_text: "{{amountError}}"
+
+  - id: corpus_warning_banner
+    type: warning-banner
+    style:
+      background: "#FFF9C4"
+      text_color: "#E65100"
+      corner_radius: 8dp
+      padding: 12dp
+    message: "Warning: Disbursing this amount will reduce the group corpus below 10% buffer. Current balance: KES {{corpusBalance | number}}."
+    visible_when: "corpusWarning"
+
+  - id: duration_dropdown
+    type: dropdown
+    label: "Loan Duration"
+    style:
+      min_touch_target: 48dp
+      corner_radius: 8dp
+    options:
+      - { label: "4 weeks", value: 4 }
+      - { label: "8 weeks", value: 8 }
+      - { label: "12 weeks", value: 12 }
+      - { label: "24 weeks", value: 24 }
+      - { label: "52 weeks (1 year)", value: 52 }
+    selected_value: "{{durationWeeks}}"
+    on_change: { action: OnDurationChanged, param: weeks }
+
+  - id: purpose_dropdown
+    type: dropdown
+    label: "Loan Purpose"
+    style:
+      min_touch_target: 48dp
+      corner_radius: 8dp
+    options:
+      - { label: "Medical", value: MEDICAL }
+      - { label: "Education", value: EDUCATION }
+      - { label: "Business", value: BUSINESS }
+      - { label: "Emergency", value: EMERGENCY }
+      - { label: "Other", value: OTHER }
+    selected_value: "{{purpose}}"
+    on_change: { action: OnPurposeChanged, param: purpose }
+
+  - id: product_dropdown
+    type: dropdown
+    label: "Loan Product"
+    placeholder: "Select product"
+    style:
+      min_touch_target: 48dp
+      corner_radius: 8dp
+    options_source: loanProducts
+    option_label: "name"
+    on_change: { action: OnProductSelected, param: product }
+
+  - id: submit_button
+    type: button
+    label: "Submit Application"
+    style:
+      background: primary
+      text_color: onPrimary
+      corner_radius: 24dp
+      min_touch_target: 56dp
+      width: fill
+    loading_when: "isSubmitting"
+    enabled_when: "selectedMember != null && requestedAmount.isNotBlank() && amountError == null && selectedProduct != null"
+    on_click: { action: OnSubmit, target: loan-list }
+
+  - id: error_state
+    type: error-state
+    icon: cloud_off
+    title: "Could not submit"
+    body: "{{error.message}}"
+    cta_label: "Try Again"
+    on_click: { action: OnSubmit, target: loan-list }
+
+states:
+  initial_state: content
+  loading:
+    components: [top_bar]
+    description: "Loading members, products, and config in parallel before showing form"
+  content:
+    components:
+      - top_bar
+      - member_selector
+      - eligibility_banner
+      - amount_input
+      - corpus_warning_banner
+      - duration_dropdown
+      - purpose_dropdown
+      - product_dropdown
+      - submit_button
+    description: "Form ready for input; eligibility and corpus banners shown conditionally"
+    demo_data:
+      selectedMember: { id: 1, displayName: "Peter Otieno" }
+      memberSavingsBalance: 5000
+      loanMultiplier: 3.0
+      eligibleAmount: 15000
+      corpusBalance: 24000
+      requestedAmount: "1500"
+      durationWeeks: 12
+      purpose: BUSINESS
+  submitting:
+    components:
+      - top_bar
+      - member_selector
+      - eligibility_banner
+      - amount_input
+      - corpus_warning_banner
+      - duration_dropdown
+      - purpose_dropdown
+      - product_dropdown
+      - submit_button
+    description: "Submit button shows loading indicator; form inputs disabled"
+  error:
+    components: [top_bar, error_state]
+    description: "API submission failed; error shown with retry"
+
+i18n:
+  en:
+    screen_title: "Apply for Loan"
+    member_label: "Select Member"
+    amount_label: "Requested Amount (KES)"
+    duration_label: "Loan Duration"
+    purpose_label: "Loan Purpose"
+    product_label: "Loan Product"
+    eligibility_savings: "Savings balance: KES {{amount}}"
+    eligibility_max: "Max eligible: KES {{amount}} ({{multiplier}}× savings)"
+    corpus_warning: "Warning: Disbursing this amount will reduce the group corpus below 10% buffer."
+    submit_button: "Submit Application"
+    error_amount_exceeds: "Amount exceeds eligible limit of KES {{limit}}"
+    error_corpus: "Corpus balance too low to support this disbursement."
+    error_network: "No internet. Application will be queued offline."
+    error_server: "Server error. Please try again."
+    error_auth: "Session expired. Please log in again."
+  sw:
+    screen_title: "Omba Mkopo"
+    submit_button: "Wasilisha Ombi"
+    corpus_warning: "Onyo: Kiasi hiki kitapunguza hazina ya kikundi chini ya 10%."
+  fr:
+    screen_title: "Demande de Prêt"
+    submit_button: "Soumettre la Demande"
+  hi:
+    screen_title: "ऋण आवेदन"
+    submit_button: "आवेदन जमा करें"

@@ -1,0 +1,330 @@
+sibling: api
+schema_version: "4.0"
+feature_id: meeting-conduct
+
+api:
+  - id: get_previous_meeting_record
+    function: get_previous_meeting_record
+    method: get
+    endpoint: "/fineract-provider/api/v1/datatables/dt_meeting_record/{centerId}"
+    description: Fetch previous meeting summary for step 0 review
+    params:
+      centerId: { type: Int, required: true, source: nav_params }
+      meetingNumber: { type: Int, computed: "current - 1" }
+    errors:
+      404: Show "First meeting — no previous record" placeholder on step 0
+      401: Redirect to login
+      5xx: Show error, allow wizard to continue with empty step 0
+    offline_queue:
+      table: sync_queue
+      operation: READ_ONLY
+
+  - id: get_group_members
+    function: get_group_members
+    method: get
+    endpoint: "/fineract-provider/api/v1/centers/{centerId}"
+    description: Fetch center detail including group members list for attendance and savings steps
+    params:
+      centerId: { type: Int, required: true, source: nav_params }
+    errors:
+      404: Show error banner, block wizard advance — members required
+      401: Redirect to login
+
+  - id: get_group_corpus
+    function: get_group_corpus
+    method: get
+    endpoint: "/fineract-provider/api/v1/datatables/dt_group_corpus/{centerId}"
+    description: Fetch opening corpus balance for step 2 and corpus gate on step 5
+    params:
+      centerId: { type: Int, required: true, source: nav_params }
+    errors:
+      404: Default openingCorpus to 0, cashOnHand to 0
+      5xx: Show warning chip on step 2
+
+  - id: get_active_loans
+    function: get_active_loans
+    method: get
+    endpoint: "/fineract-provider/api/v1/loans"
+    description: Fetch active loans for group members for step 4 repayment entry
+    params:
+      groupId: { type: Int, required: true, source: nav_params }
+      loanStatus: { type: String, default: "active" }
+    errors:
+      404: Show empty state on step 4 (no active loans)
+      5xx: Show error chip on step 4
+
+  - id: get_loan_votes
+    function: get_loan_votes
+    method: get
+    endpoint: "/fineract-provider/api/v1/datatables/dt_loan_vote/{loanId}"
+    description: Fetch existing vote tally for each pending loan application (step 5)
+    params:
+      loanId: { type: String, required: true }
+    errors:
+      404: Treat as no votes cast yet (votesFor=0, votesAgainst=0)
+
+  - id: post_meeting_record
+    function: post_meeting_record
+    method: post
+    endpoint: "/fineract-provider/api/v1/datatables/dt_meeting_record"
+    description: Create meeting record on submit — first in ordered submission sequence
+    body_ref: CreateMeetingRecordRequest
+    errors:
+      400: Show validation error snackbar
+      5xx: Queue entire meeting payload to SyncQueue
+    offline_queue:
+      table: sync_queue
+      operation: CREATE_MEETING_RECORD
+      priority: 1
+
+  - id: post_meeting_attendance
+    function: post_meeting_attendance
+    method: post
+    endpoint: "/fineract-provider/api/v1/datatables/dt_meeting_attendance"
+    description: Record per-member attendance — one call per member on submit
+    body_ref: CreateAttendanceRequest
+    errors:
+      5xx: Queue this member's attendance to SyncQueue
+    offline_queue:
+      table: sync_queue
+      operation: CREATE_MEETING_ATTENDANCE
+      priority: 2
+
+  - id: post_savings_transaction
+    function: post_savings_transaction
+    method: post
+    endpoint: "/fineract-provider/api/v1/savingsaccounts/{savingsId}/transactions"
+    description: Post savings deposit per member per savings type — one call per member per type
+    params:
+      savingsId: { type: String, required: true }
+    body_ref: SavingsTransactionRequest
+    errors:
+      5xx: Queue this transaction to SyncQueue
+    offline_queue:
+      table: sync_queue
+      operation: POST_SAVINGS_TRANSACTION
+      priority: 3
+
+  - id: post_loan_repayment
+    function: post_loan_repayment
+    method: post
+    endpoint: "/fineract-provider/api/v1/loans/{loanId}/transactions"
+    description: Record loan repayment on submit — one call per repaid loan
+    params:
+      loanId: { type: String, required: true }
+      command: "repayment"
+    body_ref: LoanRepaymentRequest
+    errors:
+      5xx: Queue this repayment to SyncQueue
+    offline_queue:
+      table: sync_queue
+      operation: POST_LOAN_REPAYMENT
+      priority: 4
+
+  - id: post_loan_disbursal
+    function: post_loan_disbursal
+    method: post
+    endpoint: "/fineract-provider/api/v1/loans/{loanId}/transactions"
+    description: Disburse approved loan — one call per approved application on submit
+    params:
+      loanId: { type: String, required: true }
+      command: "disburse"
+    body_ref: LoanDisbursalRequest
+    errors:
+      400: Corpus gate should have blocked this — log and show error
+      5xx: Queue to SyncQueue
+    offline_queue:
+      table: sync_queue
+      operation: POST_LOAN_DISBURSAL
+      priority: 5
+
+  - id: patch_corpus
+    function: patch_corpus
+    method: put
+    endpoint: "/fineract-provider/api/v1/datatables/dt_group_corpus/{centerId}"
+    description: Update corpus balance to closingCorpus after all transactions complete
+    params:
+      centerId: { type: Int, required: true, source: nav_params }
+    body_ref: UpdateCorpusRequest
+    errors:
+      5xx: Queue corpus update to SyncQueue (highest priority item)
+    offline_queue:
+      table: sync_queue
+      operation: UPDATE_CORPUS
+      priority: 6
+
+dtos:
+  MeetingRecordDetail:
+    meetingNumber: Int
+    actualDate: String
+    totalSavings: Long
+    totalRepayments: Long
+    totalLoansDisbursed: Long
+    totalFinesCollected: Long
+    closingCorpus: Long
+    attendanceCount: Int
+
+  CenterDetail:
+    id: Int
+    name: String
+    groups: "List<GroupSummary>"
+    activeClientMembers: "List<ClientMember>"
+
+  CorpusRecord:
+    centerId: Int
+    corpusBalance: Long
+    cashOnHand: Long
+    lastUpdatedMeeting: Int
+    lastUpdatedDate: String
+
+  LoanListResponse:
+    totalFilteredRecords: Int
+    pageItems: "List<LoanDetail>"
+
+  LoanDetail:
+    loanId: String
+    clientId: String
+    clientName: String
+    principal: Long
+    outstandingBalance: Long
+    isOverdue: Boolean
+    weekNumber: Int
+    numberOfRepayments: Int
+    expectedWeeklyRepayment: Long
+
+  LoanVoteRecord:
+    loanId: String
+    votesFor: Int
+    votesAgainst: Int
+    votesAbstain: Int
+
+  CreateMeetingRecordRequest:
+    centerId: Int
+    meetingNumber: Int
+    actualDate: String
+    openingCorpus: Long
+    closingCorpus: Long
+    totalSavingsCollected: Long
+    totalRepaymentsReceived: Long
+    totalLoansDisbursed: Long
+    totalFinesCollected: Long
+    attendanceCount: Int
+    locale: { type: String, default: "en" }
+    dateFormat: { type: String, default: "dd MMMM yyyy" }
+
+  CreateAttendanceRequest:
+    meetingId: String
+    memberId: String
+    status: { type: String, values: [PRESENT, LATE, ABSENT] }
+    fineAmount: Long
+    locale: { type: String, default: "en" }
+
+  SavingsTransactionRequest:
+    transactionDate: String
+    transactionAmount: Long
+    paymentTypeId: { type: Int, note: "1=Cash" }
+    locale: { type: String, default: "en" }
+    dateFormat: { type: String, default: "dd MMMM yyyy" }
+
+  LoanRepaymentRequest:
+    transactionDate: String
+    transactionAmount: Long
+    paymentTypeId: Int
+    locale: { type: String, default: "en" }
+    dateFormat: { type: String, default: "dd MMMM yyyy" }
+
+  LoanDisbursalRequest:
+    actualDisbursementDate: String
+    note: String
+    locale: { type: String, default: "en" }
+    dateFormat: { type: String, default: "dd MMMM yyyy" }
+
+  UpdateCorpusRequest:
+    corpusBalance: Long
+    lastUpdatedMeeting: Int
+    lastUpdatedDate: String
+    locale: { type: String, default: "en" }
+    dateFormat: { type: String, default: "dd MMMM yyyy" }
+
+  DataTableEntryResponse:
+    resourceId: Long
+    resourceIdentifier: String
+
+  GroupMember:
+    memberId: String
+    name: String
+    initials: String
+    role: String
+
+  AttendanceStatus:
+    values: [PRESENT, LATE, ABSENT]
+
+  SavingsEntry:
+    memberId: String
+    groupAmount: Long
+    individualAmount: Long
+
+  SavingsType:
+    values: [GROUP_LINKED, INDIVIDUAL]
+
+  LoanSummary:
+    loanId: String
+    memberId: String
+    memberName: String
+    memberInitials: String
+    principal: Long
+    outstandingBalance: Long
+    isOverdue: Boolean
+    weekNumber: Int
+    expectedWeeklyRepayment: Long
+
+  LoanApplication:
+    id: String
+    memberId: String
+    memberName: String
+    requestedAmount: Long
+    purpose: String
+
+  LoanVote:
+    values: [FOR, AGAINST, ABSTAIN]
+
+  PreviousMeetingSummary:
+    meetingNumber: Int
+    date: String
+    totalCollected: Long
+    corpusAtClose: Long
+    attendanceCount: Int
+
+dependencies:
+  tier: feature
+  features: [meeting-summary, previous-meeting-review, meeting-calendar]
+  repositories:
+    - name: MeetingRepository
+      methods:
+        - "getPreviousMeetingRecord(centerId: Int, meetingNumber: Int): Flow<MeetingRecordDetail?>"
+        - "createMeetingRecord(request: CreateMeetingRecordRequest): Result<DataTableEntryResponse>"
+        - "recordAttendance(request: CreateAttendanceRequest): Result<DataTableEntryResponse>"
+    - name: SavingsRepository
+      methods:
+        - "postSavingsTransaction(savingsId: String, request: SavingsTransactionRequest): Result<Unit>"
+    - name: LoanRepository
+      methods:
+        - "getActiveLoans(groupId: Int): Flow<List<LoanDetail>>"
+        - "getLoanVotes(loanId: String): Flow<LoanVoteRecord>"
+        - "postRepayment(loanId: String, request: LoanRepaymentRequest): Result<Unit>"
+        - "disburse(loanId: String, request: LoanDisbursalRequest): Result<Unit>"
+    - name: CorpusRepository
+      methods:
+        - "getCorpus(centerId: Int): Flow<CorpusRecord>"
+        - "updateCorpus(centerId: Int, request: UpdateCorpusRequest): Result<Unit>"
+    - name: SyncQueueRepository
+      methods:
+        - "enqueue(item: SyncQueueItem): Unit"
+  services:
+    - ConnectivityObserver
+    - NavigationManager
+  local_db:
+    - table: meeting_wizard_state
+      schema: SQLDelight LocalMeetingDao
+    - table: sync_queue
+      schema: SQLDelight SyncQueueDao

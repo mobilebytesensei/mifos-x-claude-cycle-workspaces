@@ -1,0 +1,232 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: sync-status
+
+route: /sync-status
+entry_points:
+  - source: bottom_nav
+    label: Sync
+  - source: sync_indicator_tap
+    condition: pending_or_failed_ops_exist
+nav_params: {}
+
+screens:
+  - id: sync-status-screen
+    name: SyncStatusScreen
+    type: detail
+    description: Read-only sync dashboard; terminal screen with no outbound navigation
+
+state_model:
+  SyncStatusViewModel:
+    state:
+      name: SyncStatusState
+      fields:
+        isOnline: { type: Boolean, default: "false" }
+        pendingCount: { type: Int, default: "0" }
+        failedCount: { type: Int, default: "0" }
+        lastSyncAt: { type: "Instant?", default: "null" }
+        isSyncing: { type: Boolean, default: "false" }
+        pendingByType: { type: "Map<EntityType, Int>", default: "emptyMap()" }
+        failedOperations: { type: "List<SyncQueueItem>", default: "emptyList()" }
+        conflictCount: { type: Int, default: "0" }
+        overallStatus: { type: SyncOverallStatus, default: "SyncOverallStatus.SYNCED" }
+        isLoading: { type: Boolean, default: "true" }
+    screen_state:
+      name: SyncStatusScreenState
+      members: [Loading, Content, Error]
+    errors:
+      name: SyncStatusError
+      types:
+        - { type: DbRead, retry: true, message_key: error_db }
+        - { type: SyncFailed, retry: true, message_key: error_sync_failed }
+    events:
+      name: SyncStatusEvent
+      members:
+        - { name: ShowSnackbar, params: "message: String" }
+        - { name: SyncCompleted }
+    actions:
+      name: SyncStatusAction
+      members:
+        - { name: OnSyncNow, trigger: "Tap Sync Now button" }
+        - { name: OnRetryOperation, params: { itemId: Long }, trigger: "Tap retry on failed item" }
+        - { name: OnRefresh, trigger: "Pull to refresh (re-reads local DB)" }
+    di:
+      - SyncQueueRepository
+      - SyncManager
+      - NetworkMonitor
+
+components:
+  - id: top_bar
+    type: top-app-bar
+    title: "Sync Status"
+    style: { background: primary, text_color: onPrimary }
+
+  - id: overall_status_card
+    type: card
+    style: { corner_radius: 16dp, padding: 20dp, elevation: 2dp }
+    style_by_status:
+      SYNCED: { background: "#C8E6C9" }
+      PENDING: { background: "#FFF9C4" }
+      FAILED: { background: "#FFCDD2" }
+    content:
+      - id: status_icon
+        type: icon
+        size: 48dp
+        value: "{{overallStatus}}"
+        style:
+          SYNCED: { icon: cloud_done, color: "#2E7D32" }
+          PENDING: { icon: cloud_sync, color: "#E65100" }
+          FAILED: { icon: cloud_off, color: "#B71C1C" }
+      - id: status_label
+        type: text
+        style: { text_style: titleLarge, font_weight: bold }
+        style_by_status:
+          SYNCED: { color: "#1B5E20" }
+          PENDING: { color: "#E65100" }
+          FAILED: { color: "#B71C1C" }
+        value_by_status:
+          SYNCED: "All Synced"
+          PENDING: "Sync Pending"
+          FAILED: "Sync Failed"
+      - id: last_sync_text
+        type: text
+        style: { text_style: bodySmall, color: onSurfaceVariant }
+        value: "Last synced: {{lastSyncAt | timeAgo}}"
+        fallback_when_null: "Never synced"
+
+  - id: conflict_chip
+    type: chip
+    visible_when: "conflictCount > 0"
+    label: "{{conflictCount}} conflict(s) detected — review before syncing"
+    style: { background: tertiaryContainer, text_color: onTertiaryContainer, corner_radius: 16dp }
+
+  - id: pending_breakdown_card
+    type: card
+    visible_when: "pendingCount > 0"
+    style: { background: surface, elevation: 2dp, corner_radius: 12dp, padding: 16dp }
+    content:
+      - { type: text, value: "Pending Operations ({{pendingCount}})", style: { text_style: titleSmall, color: onSurface } }
+      - id: entity_breakdown_rows
+        type: list
+        items_source: pendingByType
+        item_template:
+          type: list-item
+          content:
+            - { type: text, value: "{{entityType | humanize}}", style: { text_style: bodyMedium } }
+            - type: badge
+              value: "{{count}}"
+              style: { background: secondaryContainer, text_color: onSecondaryContainer }
+
+  - id: sync_now_button
+    type: button
+    variant: filled
+    label: "Sync Now"
+    icon: sync
+    enabled_when: "isOnline && !isSyncing"
+    style: { background: primary, text_color: onPrimary, corner_radius: 24dp, min_touch_target: 56dp, full_width: true, loading_when: isSyncing }
+    disabled_label_when: "!isOnline"
+    disabled_label: "Offline — Connect to sync"
+    on_click: { action: OnSyncNow }
+
+  - id: failed_operations_section
+    type: card
+    visible_when: "failedCount > 0"
+    style: { background: errorContainer, corner_radius: 12dp, padding: 16dp }
+    content:
+      - { type: text, value: "Failed Operations ({{failedCount}})", style: { text_style: titleSmall, color: onErrorContainer } }
+      - id: failed_ops_list
+        type: list
+        items_source: failedOperations
+        item_template:
+          type: list-item
+          style: { padding: "8dp 0dp" }
+          content:
+            - { type: text, value: "{{item.entityType | humanize}} — {{item.operation}}", style: { text_style: bodyMedium, color: onErrorContainer } }
+            - { type: text, value: "{{item.errorMessage}}", style: { text_style: bodySmall, color: onErrorContainer } }
+            - id: retry_button
+              type: button
+              variant: outlined
+              label: "Retry"
+              style: { corner_radius: 16dp, min_touch_target: 40dp, border_color: onErrorContainer, text_color: onErrorContainer }
+              on_click: { action: OnRetryOperation, params: { itemId: "{{item.id}}" } }
+
+  - id: all_synced_empty
+    type: empty-state
+    icon: cloud_done
+    title: "All caught up!"
+    body: "No pending or failed operations."
+    visible_when: "pendingCount == 0 && failedCount == 0"
+
+  - id: shimmer_status
+    type: shimmer
+    count: 3
+    style: { height: 80dp, corner_radius: 12dp }
+
+states:
+  initial_state: loading
+  loading:
+    components: [top_bar, shimmer_status]
+    description: "Reading SyncQueue from local SQLDelight DB"
+  content:
+    components: [top_bar, overall_status_card, conflict_chip, pending_breakdown_card, sync_now_button, failed_operations_section, all_synced_empty]
+    description: "Dashboard showing full sync state; Sync Now button enabled only when online"
+    demo_data:
+      isOnline: true
+      overallStatus: PENDING
+      pendingCount: 3
+      failedCount: 0
+      conflictCount: 0
+      lastSyncAt: "2026-05-05T08:30:00Z"
+      pendingByType:
+        MEETING: 1
+        SAVINGS: 2
+      failedOperations: []
+  error:
+    components: [top_bar, overall_status_card]
+    description: "Local DB read error"
+
+i18n:
+  en:
+    screen_title: "Sync Status"
+    status_synced: "All Synced"
+    status_pending: "Sync Pending"
+    status_failed: "Sync Failed"
+    last_sync_label: "Last synced: {{time}}"
+    never_synced: "Never synced"
+    pending_title: "Pending Operations ({{count}})"
+    failed_title: "Failed Operations ({{count}})"
+    conflict_label: "{{count}} conflict(s) detected — review before syncing"
+    sync_now: "Sync Now"
+    sync_now_offline: "Offline — Connect to sync"
+    all_synced_title: "All caught up!"
+    all_synced_body: "No pending or failed operations."
+    retry: "Retry"
+    error_db: "Could not read sync queue from local database."
+    error_sync_failed: "Sync failed. Check your connection and try again."
+    entity_meeting: "Meeting Records"
+    entity_loan: "Loan Operations"
+    entity_savings: "Savings Transactions"
+    entity_attendance: "Attendance Records"
+    entity_share_out: "Share-Out Records"
+    entity_member: "Member Updates"
+  sw:
+    screen_title: "Hali ya Usawazishaji"
+    status_synced: "Imesawazishwa"
+    status_pending: "Inasubiri Usawazishaji"
+    status_failed: "Usawazishaji Umeshindwa"
+    sync_now: "Sawazisha Sasa"
+    all_synced_title: "Kila kitu kimekamilika!"
+  fr:
+    screen_title: "État de Synchronisation"
+    status_synced: "Tout Synchronisé"
+    status_pending: "Synchronisation en Attente"
+    status_failed: "Synchronisation Échouée"
+    sync_now: "Synchroniser Maintenant"
+    all_synced_title: "Tout est à jour!"
+  hi:
+    screen_title: "सिंक स्थिति"
+    status_synced: "सभी सिंक हो गए"
+    status_pending: "सिंक लंबित"
+    status_failed: "सिंक विफल"
+    sync_now: "अभी सिंक करें"
+    all_synced_title: "सब कुछ अप-टू-डेट है!"

@@ -1,0 +1,198 @@
+sibling: api
+schema_version: "4.0"
+feature_id: loan-apply
+
+api:
+  - id: get_group_members
+    function: get_group_members
+    method: get
+    endpoint: "/groups/{groupId}?associations=clientMembers"
+    description: Fetch all group members for the member selector
+    params:
+      groupId: { type: Long, required: true, source: nav_params }
+    response:
+      type: object
+      fields:
+        clientMembers:
+          type: array
+          items:
+            id: Long
+            displayName: String
+            imagePresent: Boolean
+    errors:
+      404: Group not found
+      500: Server error
+    cache:
+      ttl: 3600
+      strategy: cache-first
+
+  - id: get_loan_products
+    function: list_available_loan_products
+    method: get
+    endpoint: "/loanproducts"
+    description: List available loan products from Fineract
+    params: {}
+    response:
+      type: array
+      items:
+        id: Long
+        name: String
+        shortName: String
+        principal: Double
+        minPrincipal: Double
+        maxPrincipal: Double
+        numberOfRepayments: Int
+        interestRatePerPeriod: Double
+    cache:
+      ttl: 3600
+      strategy: cache-first
+
+  - id: get_loan_template
+    function: get_loan_app_template
+    method: get
+    endpoint: "/loans/template"
+    description: Load loan template for selected client and product (pre-fills defaults)
+    params:
+      clientId: { type: Long, required: true }
+      productId: { type: Long, required: true }
+      templateType: { type: String, default: "individual" }
+    response:
+      type: object
+      fields:
+        principal: Double
+        numberOfRepayments: Int
+        interestRatePerPeriod: Double
+        interestType: { id: Int, value: String }
+        amortizationType: { id: Int, value: String }
+        repaymentEvery: Int
+
+  - id: get_member_savings
+    function: get_savings
+    method: get
+    endpoint: "/clients/{clientId}/accounts"
+    description: Get savings account balance for eligibility computation
+    params:
+      clientId: { type: Long, required: true }
+    response:
+      type: object
+      fields:
+        savingsAccounts:
+          type: array
+          items:
+            id: Long
+            accountBalance: Double
+            status: { value: String }
+
+  - id: get_group_corpus
+    function: get_group_corpus
+    method: get
+    endpoint: "/datatables/dt_group_corpus/{groupId}"
+    description: Get current group fund balance for corpus check
+    params:
+      groupId: { type: Long, required: true }
+    response:
+      type: object
+      fields:
+        corpus_balance: Double
+        last_updated: String
+
+  - id: get_group_config
+    function: get_group_config
+    method: get
+    endpoint: "/datatables/dt_group_config/{groupId}"
+    description: Fetch loan_multiplier and other group policy settings
+    params:
+      groupId: { type: Long, required: true }
+    response:
+      type: object
+      fields:
+        loan_multiplier: Double
+        max_loan_amount: Double
+        meeting_frequency: String
+
+  - id: post_loan
+    function: create_new_loan
+    method: post
+    endpoint: "/loans"
+    description: Submit loan application; Fineract creates it with status "submitted and pending approval"
+    body:
+      clientId: Long
+      productId: Long
+      principal: Double
+      loanTermFrequency: Int
+      loanTermFrequencyType: { id: 1, value: "Weeks" }
+      numberOfRepayments: Int
+      repaymentEvery: 1
+      repaymentFrequencyType: { id: 1, value: "Weeks" }
+      interestRatePerPeriod: Double
+      amortizationType: { id: 1, value: "Equal installments" }
+      interestType: { id: 0, value: "Declining Balance" }
+      interestCalculationPeriodType: { id: 1, value: "Same as repayment period" }
+      transactionProcessingStrategyId: 1
+      expectedDisbursementDate: String
+      submittedOnDate: String
+      loanPurposeId: Int
+    response:
+      type: object
+      fields:
+        officeId: Long
+        clientId: Long
+        loanId: Long
+        resourceId: Long
+    errors:
+      400: Validation error — show field errors
+      403: Forbidden — insufficient role
+      500: Server error
+
+dtos:
+  GroupMember:
+    id: Long
+    displayName: String
+    imagePresent: Boolean
+    fineractClientId: Long
+
+  LoanProduct:
+    id: Long
+    name: String
+    shortName: String
+    minPrincipal: Double
+    maxPrincipal: Double
+    interestRatePerPeriod: Double
+
+  LoanPurpose:
+    values: [MEDICAL, EDUCATION, BUSINESS, EMERGENCY, OTHER]
+
+  LoanApplicationRequest:
+    memberId: Long
+    productId: Long
+    amount: Double
+    durationWeeks: Int
+    purpose: LoanPurpose
+    groupId: Long
+
+  GroupConfig:
+    loanMultiplier: Double
+    maxLoanAmount: Double
+
+dependencies:
+  repositories:
+    - name: LoanRepository
+      methods:
+        - "submitLoanApplication(request: LoanApplicationRequest): Flow<Long>"
+        - "getLoanProducts(): Flow<List<LoanProduct>>"
+        - "getLoanTemplate(clientId: Long, productId: Long): Flow<LoanTemplate>"
+    - name: MemberRepository
+      methods:
+        - "getGroupMembers(groupId: Long): Flow<List<GroupMember>>"
+        - "getMemberSavingsBalance(memberId: Long): Flow<Double>"
+    - name: GroupRepository
+      methods:
+        - "getGroupCorpus(groupId: Long): Flow<Double>"
+        - "getGroupConfig(groupId: Long): Flow<GroupConfig>"
+  services:
+    - NetworkMonitor
+    - SessionManager
+  local_db:
+    - table: group_members
+    - table: loan_products
+    - table: dt_group_config

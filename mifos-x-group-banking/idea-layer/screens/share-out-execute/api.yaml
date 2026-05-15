@@ -1,0 +1,117 @@
+sibling: api
+schema_version: "4.0"
+feature_id: share-out-execute
+
+api:
+  - id: post_share_out_record
+    method: POST
+    endpoint: "/fineract-provider/api/v1/datatables/dt_share_out/{centerId}"
+    description: Create the cycle share-out record in the dt_share_out datatable
+    auth: BasicAuth
+    path_params:
+      centerId: Long
+    body_ref: CreateShareOutRequest
+    response_ref: DataTableEntryResponse
+    offline_queue:
+      strategy: enqueue_to_sync_queue
+      priority: HIGH
+      entity_type: SHARE_OUT
+    error_handling:
+      400: Show validation error snackbar; remain in Executing state
+      403: Forbidden — chairperson role required; navigate back
+      5xx: Queue entire payload to SyncQueue if offline strategy; show error
+
+  - id: post_member_payout
+    method: POST
+    endpoint: "/fineract-provider/api/v1/savingsaccounts/{savingsAccountId}/transactions"
+    description: Post withdrawal transaction for one member's share-out payout (called sequentially per member)
+    auth: BasicAuth
+    path_params:
+      savingsAccountId: Long
+    body_ref: SavingsWithdrawalRequest
+    response_ref: SavingsTransactionResponse
+    offline_queue:
+      strategy: enqueue_to_sync_queue
+      priority: HIGH
+      entity_type: SAVINGS
+      ordered_by: member_index
+    error_handling:
+      400: Member FAILED status; add to failedPayouts; continue with next member
+      403: Forbidden; member FAILED status
+      5xx: Member FAILED status; add to failedPayouts; continue with next member
+
+dtos:
+  MemberPayout:
+    fields:
+      - { name: memberId, type: Long }
+      - { name: memberName, type: String }
+      - { name: memberInitials, type: String }
+      - { name: totalSavings, type: Double, currency: KES }
+      - { name: sharePercent, type: Double }
+      - { name: payoutAmount, type: Double, currency: KES }
+      - { name: savingsAccountId, type: Long }
+
+  MemberExecutionStatus:
+    values: [PENDING, IN_PROGRESS, DONE, FAILED, QUEUED]
+    descriptions:
+      PENDING: Not yet started
+      IN_PROGRESS: Withdrawal POST in flight
+      DONE: Withdrawal succeeded
+      FAILED: Withdrawal failed — will appear in failedPayouts
+      QUEUED: Enqueued to SyncQueue for offline execution
+
+  CreateShareOutRequest:
+    fields:
+      - { name: cycle_number, type: Int }
+      - { name: total_pool, type: Double }
+      - { name: executed_at, type: String, format: "dd MMMM yyyy" }
+      - { name: status, type: String, default: "completed" }
+      - { name: locale, type: String, default: "en" }
+      - { name: dateFormat, type: String, default: "dd MMMM yyyy" }
+
+  SavingsWithdrawalRequest:
+    fields:
+      - { name: transactionDate, type: String }
+      - { name: transactionAmount, type: Double }
+      - { name: paymentTypeId, type: Int, default: 1, note: "1=Cash" }
+      - { name: note, type: String, example: "Share-out payout — Cycle {{cycleNumber}}" }
+      - { name: locale, type: String, default: "en" }
+      - { name: dateFormat, type: String, default: "dd MMMM yyyy" }
+
+  SavingsTransactionResponse:
+    fields:
+      - { name: officeId, type: Long }
+      - { name: savingsId, type: Long }
+      - { name: resourceId, type: Long }
+
+  DataTableEntryResponse:
+    fields:
+      - { name: resourceId, type: Long }
+      - { name: resourceIdentifier, type: String }
+
+  SyncQueueItem:
+    fields:
+      - { name: id, type: Long }
+      - { name: entityType, type: String }
+      - { name: operation, type: String }
+      - { name: payloadJson, type: String }
+      - { name: status, type: SyncStatus }
+      - { name: priority, type: Int }
+
+  SyncStatus:
+    values: [PENDING, IN_PROGRESS, SYNCED, FAILED]
+
+dependencies:
+  repositories:
+    - name: ShareOutRepository
+      methods:
+        - "recordShareOut(centerId: Long, cycleNumber: Int, totalPool: Double, executedAt: String): Flow<Long>"
+        - "executeMemberPayout(savingsAccountId: Long, amount: Double, cycleNumber: Int, note: String): Flow<Unit>"
+    - name: SyncQueueRepository
+      methods:
+        - "enqueue(entityType: String, operation: String, payloadJson: String, priority: Int): Flow<Unit>"
+        - "getPendingByType(entityType: String): Flow<List<SyncQueueItem>>"
+  services:
+    - BiometricManager
+    - NetworkMonitor
+    - SessionManager

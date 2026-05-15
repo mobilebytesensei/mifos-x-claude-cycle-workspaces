@@ -1,0 +1,491 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: meeting-conduct
+
+route: /meetings/{meetingId}/conduct
+entry_points:
+  - source: meeting-calendar
+    trigger: user_taps_start_meeting_on_upcoming_card
+nav_params:
+  meetingId: { type: String, required: true }
+  meetingNumber: { type: Int, required: true }
+  centerId: { type: Int, required: true }
+
+screens:
+  - id: meeting-conduct-screen
+    name: MeetingConductScreen
+    type: wizard
+    description: >
+      Full-screen wizard with sticky top stepper, back/next navigation footer,
+      and step-specific content in the body. Corpus balance shown in persistent
+      header band throughout steps 2-6. Step 0 is a read-only preview;
+      steps 1-6 require explicit user input before advancing.
+    layout: "Column (TopAppBar + StepperHeader + CorpusBand(conditional) + StepContent + NavigationFooter)"
+
+state_model:
+  MeetingConductViewModel:
+    state:
+      name: MeetingConductState
+      fields:
+        currentStep: { type: Int, default: "0" }
+        totalSteps: { type: Int, default: "7" }
+        meetingId: { type: String, default: '""' }
+        meetingNumber: { type: Int, default: "0" }
+        centerId: { type: Int, default: "0" }
+        previousMeetingSummary: { type: "PreviousMeetingSummary?", default: "null" }
+        groupMembers: { type: "List<GroupMember>", default: "emptyList()" }
+        attendanceMap: { type: "Map<String, AttendanceStatus>", default: "emptyMap()" }
+        lateFines: { type: "Map<String, Long>", default: "emptyMap()" }
+        absentFines: { type: "Map<String, Long>", default: "emptyMap()" }
+        openingCorpus: { type: Long, default: "0L" }
+        cashOnHand: { type: Long, default: "0L" }
+        savingsMap: { type: "Map<String, SavingsEntry>", default: "emptyMap()" }
+        runningSavingsTotal: { type: Long, default: "0L" }
+        activeLoans: { type: "List<LoanSummary>", default: "emptyList()" }
+        loanRepayments: { type: "Map<String, Long>", default: "emptyMap()" }
+        loanFines: { type: "Map<String, Long>", default: "emptyMap()" }
+        pendingLoanApplications: { type: "List<LoanApplication>", default: "emptyList()" }
+        loanVotes: { type: "Map<String, LoanVote>", default: "emptyMap()" }
+        closingCorpus: { type: Long, default: "0L" }
+        totalCashCollected: { type: Long, default: "0L" }
+        totalLoansDisbursed: { type: Long, default: "0L" }
+        totalRepayments: { type: Long, default: "0L" }
+        totalFinesCollected: { type: Long, default: "0L" }
+        isSubmitting: { type: Boolean, default: "false" }
+        isOffline: { type: Boolean, default: "false" }
+        submitError: { type: "String?", default: "null" }
+        stepValidationError: { type: "String?", default: "null" }
+        isSavingProgress: { type: Boolean, default: "false" }
+    screen_state:
+      name: MeetingConductScreenState
+      members:
+        - Loading: initial data fetch in progress
+        - Content: wizard active, step content rendered per currentStep
+        - Submitting: API calls in flight after Submit tapped (overlay shown)
+        - SubmitSuccess: brief toast then navigate to meeting-summary
+        - SubmitError: error snackbar with offline queue fallback confirmation
+    errors:
+      CorpusInsufficient: "Corpus balance insufficient to disburse this loan. Current corpus: KES {{currentCorpus}}."
+      AttendanceIncomplete: "Please record attendance for all {{totalMembers}} members before proceeding."
+      SavingsValidation: "Savings amount cannot exceed KES 10,000 per member per meeting."
+      SubmitFailed: "Meeting submission failed. Data saved offline and will sync when connected."
+      MinContributionNotMet: "{{member_name}} has not met the minimum contribution of KES {{min_amount}}."
+      RepaymentExceedsBalance: "Repayment amount exceeds outstanding balance for {{member_name}}."
+    events:
+      name: MeetingConductEvent
+      members:
+        - { name: NavigateToMeetingSummary, params: "meetingId: String, meetingNumber: Int, centerId: Int" }
+        - { name: NavigateToPreviousMeetingReview, params: "meetingId: String, centerId: Int" }
+        - { name: NavigateBack }
+        - { name: ShowStepError, params: "message: String" }
+        - { name: ShowSubmitSuccess }
+        - { name: ShowSubmitError, params: "message: String" }
+    actions:
+      name: MeetingConductAction
+      members:
+        - { name: LoadMeetingData, trigger: "Screen enters composition" }
+        - { name: NextStep, trigger: "Tap Next / Continue footer button" }
+        - { name: PreviousStep, trigger: "Tap Back footer button" }
+        - { name: SetAttendance, params: "memberId: String, status: AttendanceStatus", trigger: "Tap attendance toggle" }
+        - { name: SetSavingsAmount, params: "memberId: String, amount: Long, type: SavingsType", trigger: "Edit savings input" }
+        - { name: SetLoanRepayment, params: "loanId: String, amount: Long", trigger: "Edit repayment input" }
+        - { name: SetLoanFine, params: "loanId: String, fineAmount: Long", trigger: "Edit fine input" }
+        - { name: CastLoanVote, params: "loanId: String, vote: LoanVote", trigger: "Tap For/Against" }
+        - { name: ApproveLoanApplication, params: "loanId: String", trigger: "Chairperson taps Approve" }
+        - { name: SubmitMeeting, trigger: "Tap Submit on step 6" }
+        - { name: ViewFullPreviousMeeting, trigger: "Tap View Full Report on step 0" }
+        - { name: SaveProgressLocally, trigger: "App background or step advance" }
+        - { name: DismissError, trigger: "Snackbar auto-dismiss or user swipe" }
+    di:
+      - MeetingRepository
+      - SavingsRepository
+      - LoanRepository
+      - CorpusRepository
+      - SyncQueueRepository
+      - NavigationManager
+      - ConnectivityObserver
+      - LocalMeetingDao
+
+components:
+  - id: top_app_bar
+    type: top-app-bar
+    title: "Meeting #{{meetingNumber}}"
+    subtitle: "{{i18n['step' + currentStep + '_title']}} — Step {{currentStep + 1}} of 7"
+    style: { background: surface }
+    actions:
+      - id: close_btn
+        icon: dismiss_24_regular
+        on_click: { action: NavigateBack, target: meeting-calendar }
+      - id: offline_badge
+        type: chip
+        label: "Offline"
+        visible_when: "isOffline == true"
+        style: { background: warningContainer, text_color: onWarningContainer }
+
+  - id: step_stepper
+    type: stepper
+    orientation: horizontal
+    style:
+      active_color: primary
+      completed_color: primaryContainer
+      inactive_color: outlineVariant
+      connector_color: outline
+      step_size: 28dp
+    steps:
+      - { index: 0, label: "Review", icon: history_24_regular }
+      - { index: 1, label: "Attendance", icon: people_checkmark_24_regular }
+      - { index: 2, label: "Balance", icon: wallet_24_regular }
+      - { index: 3, label: "Savings", icon: piggy_bank_24_regular }
+      - { index: 4, label: "Loans", icon: money_24_regular }
+      - { index: 5, label: "Apply", icon: document_checkmark_24_regular }
+      - { index: 6, label: "Close", icon: checkmark_circle_24_regular }
+
+  - id: corpus_band
+    type: banner
+    visible_when: "currentStep >= 2"
+    style: { background: tertiaryContainer, padding_horizontal: 16dp, padding_vertical: 8dp }
+    content:
+      - { type: text, value: "Corpus: KES {{openingCorpus + runningSavingsTotal + totalRepayments - totalLoansDisbursed}}", style: { text_style: labelLarge, color: onTertiaryContainer } }
+      - { type: text, value: "Cash on Hand: KES {{cashOnHand}}", style: { text_style: labelMedium, color: onTertiaryContainer } }
+
+  - id: step0_previous_review
+    type: step-content
+    step_index: 0
+    visible_when: "currentStep == 0"
+    children:
+      - id: prev_meeting_summary_card
+        type: card
+        style: { background: surfaceVariant, corner_radius: md, padding: 16dp }
+        content:
+          - { type: info_row, label: "Meeting", value: "#{{previousMeetingSummary.meetingNumber}}" }
+          - { type: info_row, label: "Date", value: "{{previousMeetingSummary.date}}" }
+          - { type: info_row, label: "Total Collected", value: "KES {{previousMeetingSummary.totalCollected}}" }
+          - { type: info_row, label: "Closing Corpus", value: "KES {{previousMeetingSummary.corpusAtClose}}" }
+          - { type: info_row, label: "Attendance", value: "{{previousMeetingSummary.attendanceCount}}/{{groupMembers.size}}" }
+      - id: no_prev_meeting_placeholder
+        type: empty-state
+        visible_when: "previousMeetingSummary == null"
+        icon: history_24_regular
+        title: "First Meeting"
+        body: "No previous meeting data — this is the group's first meeting."
+      - id: view_full_previous_btn
+        type: button
+        variant: outlined
+        label: "View Full Report"
+        visible: "{{previousMeetingSummary != null}}"
+        on_click:
+          action: ViewFullPreviousMeeting
+          target: previous-meeting-review
+          params: { meeting_id: "{{previousMeetingSummary.meetingNumber}}", center_id: "{{centerId}}" }
+
+  - id: step1_attendance
+    type: step-content
+    step_index: 1
+    visible_when: "currentStep == 1"
+    children:
+      - id: fine_info_chip
+        type: chip
+        label: "Late: KES 50 fine · Absent: KES 100 fine (FR-012)"
+        style: { background: warningContainer, text_color: onWarningContainer }
+      - id: attendance_member_row
+        type: list-item-input
+        repeats_for: groupMembers
+        style: { min_height: 64dp, divider: true }
+        leading: { type: avatar, initials: "{{member.initials}}", size: 40dp }
+        content:
+          - { type: text, value: "{{member.name}}", style: { text_style: bodyLarge } }
+          - { type: text, value: "{{member.role}}", style: { text_style: labelSmall, color: primary } }
+        trailing:
+          type: segmented-button
+          segments:
+            - { value: PRESENT, label: "Present" }
+            - { value: LATE, label: "Late" }
+            - { value: ABSENT, label: "Absent" }
+          selected: "{{attendanceMap[member.memberId]}}"
+        fine_chip:
+          visible_when: "attendanceMap[member.memberId] == LATE || attendanceMap[member.memberId] == ABSENT"
+          label: "Fine: KES {{attendanceMap[member.memberId] == LATE ? lateFines[member.memberId] : absentFines[member.memberId]}}"
+          style: { background: errorContainer, text_color: onErrorContainer }
+        on_click: { action: SetAttendance, params: { member_id: "{{member.memberId}}", status: "{{selectedSegment}}" } }
+      - id: attendance_progress_chip
+        type: chip
+        label: "{{attendanceMap.size}}/{{groupMembers.size}} recorded"
+        style:
+          background: "{{attendanceMap.size == groupMembers.size ? primaryContainer : surfaceVariant}}"
+          text_color: "{{attendanceMap.size == groupMembers.size ? onPrimaryContainer : onSurfaceVariant}}"
+
+  - id: step2_opening_balance
+    type: step-content
+    step_index: 2
+    visible_when: "currentStep == 2"
+    children:
+      - id: corpus_balance_card
+        type: card
+        style: { background: primaryContainer, corner_radius: lg, padding: 24dp }
+        content:
+          - { type: text, value: "Group Corpus Fund", style: { text_style: labelLarge, color: onPrimaryContainer } }
+          - { type: text, value: "KES {{openingCorpus}}", style: { text_style: displaySmall, color: onPrimaryContainer, font_weight: bold } }
+          - { type: text, value: "At start of Meeting #{{meetingNumber}}", style: { text_style: bodySmall, color: onPrimaryContainer } }
+      - id: cash_on_hand_card
+        type: card
+        style: { background: surfaceVariant, corner_radius: md, padding: 16dp }
+        content:
+          - { type: text, value: "Cash on Hand", style: { text_style: labelLarge, color: onSurfaceVariant } }
+          - { type: text, value: "KES {{cashOnHand}}", style: { text_style: headlineMedium, color: onSurface } }
+
+  - id: step3_savings_collection
+    type: step-content
+    step_index: 3
+    visible_when: "currentStep == 3"
+    children:
+      - id: min_contribution_chip
+        type: chip
+        label: "Min. group savings: KES 200/member (FR-020)"
+        style: { background: secondaryContainer, text_color: onSecondaryContainer }
+      - id: savings_member_row
+        type: list-item-input
+        repeats_for: groupMembers
+        style: { padding_vertical: 12dp, divider: true }
+        leading: { type: avatar, initials: "{{member.initials}}", size: 40dp }
+        content:
+          - { type: text, value: "{{member.name}}", style: { text_style: bodyLarge } }
+          - id: group_savings_input
+            type: text-field
+            label: "Group Savings (KES)"
+            hint: "Min. 200"
+            keyboard_type: number
+            prefix: "KES"
+            value: "{{savingsMap[member.memberId].groupAmount}}"
+            on_change: { action: SetSavingsAmount, params: { member_id: "{{member.memberId}}", type: GROUP_LINKED, amount: "{{inputValue}}" } }
+          - id: individual_savings_input
+            type: text-field
+            label: "Individual Savings (KES)"
+            hint: "Optional"
+            keyboard_type: number
+            prefix: "KES"
+            value: "{{savingsMap[member.memberId].individualAmount}}"
+            on_change: { action: SetSavingsAmount, params: { member_id: "{{member.memberId}}", type: INDIVIDUAL, amount: "{{inputValue}}" } }
+      - id: running_total_band
+        type: banner
+        style: { background: primaryContainer, padding: 16dp }
+        content:
+          - { type: text, value: "Total Savings This Step:", style: { text_style: labelMedium, color: onPrimaryContainer } }
+          - { type: text, value: "KES {{runningSavingsTotal}}", style: { text_style: headlineSmall, color: onPrimaryContainer, font_weight: bold } }
+
+  - id: step4_loan_review
+    type: step-content
+    step_index: 4
+    visible_when: "currentStep == 4"
+    children:
+      - id: loan_review_row
+        type: list-item-input
+        repeats_for: activeLoans
+        style: { padding_vertical: 12dp, divider: true }
+        leading: { type: avatar, initials: "{{loan.memberInitials}}", size: 40dp, background: "{{loan.isOverdue ? errorContainer : secondaryContainer}}" }
+        content:
+          - { type: text, value: "{{loan.memberName}}", style: { text_style: bodyLarge } }
+          - { type: text, value: "KES {{loan.principal}} loan · KES {{loan.outstandingBalance}} outstanding · Week {{loan.weekNumber}}/{{loan.numberOfRepayments}}", style: { text_style: bodySmall, color: onSurfaceVariant } }
+          - id: overdue_chip
+            type: chip
+            label: "OVERDUE"
+            visible_when: "loan.isOverdue == true"
+            style: { background: errorContainer, text_color: onErrorContainer }
+          - id: repayment_input
+            type: text-field
+            label: "Repayment (KES)"
+            hint: "Expected: KES {{loan.expectedWeeklyRepayment}}"
+            keyboard_type: number
+            value: "{{loanRepayments[loan.loanId]}}"
+            on_change: { action: SetLoanRepayment, params: { loan_id: "{{loan.loanId}}", amount: "{{inputValue}}" } }
+          - id: fine_input
+            type: text-field
+            label: "Penalty Fine (KES)"
+            hint: "0"
+            keyboard_type: number
+            value: "{{loanFines[loan.loanId]}}"
+            visible_when: "loan.isOverdue == true"
+            on_change: { action: SetLoanFine, params: { loan_id: "{{loan.loanId}}", fine_amount: "{{inputValue}}" } }
+      - id: no_active_loans_placeholder
+        type: empty-state
+        visible_when: "activeLoans.isEmpty()"
+        icon: checkmark_circle_24_regular
+        title: "No Active Loans"
+        body: "No members currently have active loans. Tap Next to proceed."
+
+  - id: step5_loan_applications
+    type: step-content
+    step_index: 5
+    visible_when: "currentStep == 5"
+    children:
+      - id: corpus_gate_chip
+        type: chip
+        visible_when: "totalLoansDisbursed > 0"
+        label: "Available to disburse: KES {{openingCorpus + runningSavingsTotal + totalRepayments + totalFinesCollected - totalLoansDisbursed}}"
+        style: { background: tertiaryContainer, text_color: onTertiaryContainer }
+      - id: loan_application_card
+        type: card
+        repeats_for: pendingLoanApplications
+        style: { background: surfaceVariant, corner_radius: md, padding: 16dp, margin_bottom: 12dp }
+        content:
+          - { type: text, value: "{{application.memberName}}", style: { text_style: titleSmall } }
+          - { type: text, value: "Requests KES {{application.requestedAmount}}", style: { text_style: bodyLarge } }
+          - { type: text, value: "Purpose: {{application.purpose}}", style: { text_style: bodySmall, color: onSurfaceVariant } }
+          - id: vote_tally
+            type: text
+            value: "{{loanVotes[application.id].votesFor}} For · {{loanVotes[application.id].votesAgainst}} Against"
+            style: { text_style: labelMedium, color: outline }
+          - id: vote_for_btn
+            type: button
+            variant: outlined
+            label: "For"
+            selected_when: "loanVotes[application.id] == FOR"
+            style: { selected_background: primaryContainer }
+            on_click: { action: CastLoanVote, params: { loan_id: "{{application.id}}", vote: FOR } }
+          - id: vote_against_btn
+            type: button
+            variant: outlined
+            label: "Against"
+            selected_when: "loanVotes[application.id] == AGAINST"
+            style: { selected_background: errorContainer }
+            on_click: { action: CastLoanVote, params: { loan_id: "{{application.id}}", vote: AGAINST } }
+          - id: approve_btn
+            type: button
+            variant: filled
+            label: "Chairperson Approve"
+            enabled_when: "currentUserRole == CHAIRPERSON && loanVotes[application.id].votesFor > loanVotes[application.id].votesAgainst"
+            style: { background: primary, text_color: onPrimary, full_width: true }
+            on_click: { action: ApproveLoanApplication, params: { loan_id: "{{application.id}}" } }
+      - id: no_pending_loans_placeholder
+        type: empty-state
+        visible_when: "pendingLoanApplications.isEmpty()"
+        icon: document_checkmark_24_regular
+        title: "No Pending Applications"
+        body: "No loan applications to review this meeting. Tap Next to proceed."
+
+  - id: step6_closing_balance
+    type: step-content
+    step_index: 6
+    visible_when: "currentStep == 6"
+    children:
+      - id: reconciliation_card
+        type: card
+        style: { background: surfaceVariant, corner_radius: md, padding: 16dp }
+        content:
+          - { type: info_row, label: "Opening Corpus", value: "KES {{openingCorpus}}" }
+          - { type: divider }
+          - { type: info_row, label: "+ Group Savings", value: "KES {{runningSavingsTotal}}", value_color: primary }
+          - { type: info_row, label: "+ Loan Repayments", value: "KES {{totalRepayments}}", value_color: primary }
+          - { type: info_row, label: "+ Fines Collected", value: "KES {{totalFinesCollected}}", value_color: primary }
+          - { type: info_row, label: "— Loans Disbursed", value: "KES {{totalLoansDisbursed}}", value_color: error }
+          - { type: divider, weight: 2dp }
+          - { type: info_row, label: "Closing Corpus", value: "KES {{closingCorpus}}", label_style: titleSmall, value_style: titleLarge, value_color: primary }
+      - id: submit_meeting_btn
+        type: button
+        variant: filled
+        label: "Submit Meeting"
+        loading: "{{isSubmitting}}"
+        enabled_when: "!isSubmitting"
+        style: { background: primary, text_color: onPrimary, min_height: 56dp, full_width: true }
+        on_click: { action: SubmitMeeting, target: meeting-summary }
+      - id: offline_submit_note
+        type: text
+        visible_when: "isOffline == true"
+        value: "You're offline. Meeting data will be saved locally and synced when connected."
+        style: { text_style: bodySmall, color: onSurfaceVariant, alignment: center }
+
+  - id: wizard_footer
+    type: navigation-footer
+    style: { background: surface, elevation: 8dp, padding: 16dp }
+    children:
+      - id: back_footer_btn
+        type: button
+        variant: outlined
+        label: "Back"
+        visible_when: "currentStep > 0"
+        on_click: { action: PreviousStep }
+      - id: next_footer_btn
+        type: button
+        variant: filled
+        label: "{{currentStep < 6 ? 'Next' : 'Submit Meeting'}}"
+        loading: "{{isSubmitting}}"
+        style: { background: primary, text_color: onPrimary }
+        on_click: { action: "{{currentStep < 6 ? NextStep : SubmitMeeting}}" }
+
+  - id: step_validation_error_snackbar
+    type: snackbar
+    visible_when: "stepValidationError != null"
+    content: "{{stepValidationError}}"
+    style: { background: errorContainer, text_color: onErrorContainer, duration: 4000ms }
+    on_dismiss: { action: DismissError }
+
+  - id: submit_error_snackbar
+    type: snackbar
+    visible_when: "submitError != null"
+    content: "{{submitError}}"
+    style: { background: errorContainer, text_color: onErrorContainer, duration: 6000ms, action_text: "Retry" }
+    on_action: { action: SubmitMeeting }
+
+states:
+  initial_state: loading
+  loading:
+    components: [top_app_bar, step_stepper]
+    description: "Loading meeting data — 5 parallel API calls; skeleton on step content"
+  content:
+    components: [top_app_bar, step_stepper, corpus_band, step0_previous_review, step1_attendance, step2_opening_balance, step3_savings_collection, step4_loan_review, step5_loan_applications, step6_closing_balance, wizard_footer]
+    description: "Wizard active; step content rendered per currentStep; corpus_band on steps 2-6"
+    demo_data:
+      meetingNumber: 4
+      centerId: 7
+      currentStep: 1
+      openingCorpus: 12400
+      cashOnHand: 2000
+      groupMembers:
+        - { memberId: "m1", name: "Amina Hassan", initials: "AH", role: "Chairperson" }
+        - { memberId: "m2", name: "Peter Otieno", initials: "PO", role: "Treasurer" }
+        - { memberId: "m3", name: "Grace Wanjiku", initials: "GW", role: "Secretary" }
+        - { memberId: "m4", name: "John Mwangi", initials: "JM", role: "Member" }
+        - { memberId: "m5", name: "Mary Akinyi", initials: "MA", role: "Member" }
+      previousMeetingSummary:
+        meetingNumber: 3
+        date: "2026-04-28"
+        totalCollected: 1850
+        corpusAtClose: 12400
+        attendanceCount: 5
+  submitting:
+    components: [top_app_bar, step_stepper, corpus_band, step6_closing_balance, wizard_footer]
+    description: "API calls in flight; overlay CircularProgressIndicator; footer buttons disabled"
+    overlay: "CircularProgressIndicator centered — Submitting meeting..."
+  submit_success:
+    components: []
+    description: "Brief toast then navigate to meeting-summary"
+    toast: "Meeting #{{meetingNumber}} submitted successfully!"
+    toast_duration: 2000ms
+  submit_error:
+    components: [top_app_bar, step_stepper, step6_closing_balance, wizard_footer, submit_error_snackbar]
+    description: "Submit failure — snackbar with Retry; offline goes to optimistic success path"
+
+i18n:
+  en:
+    step0_title: "Previous Meeting Review"
+    step1_title: "Attendance"
+    step2_title: "Opening Balance"
+    step3_title: "Savings Collection"
+    step4_title: "Loan Review"
+    step5_title: "Loan Applications"
+    step6_title: "Closing Balance"
+    view_full_report: "View Full Report"
+    submit_meeting: "Submit Meeting"
+    next_btn: "Next"
+    back_btn: "Back"
+    fine_policy_label: "Late: KES 50 · Absent: KES 100"
+    min_contribution_label: "Min. group savings: KES 200/member"
+    min_contribution_error: "Below minimum KES 200 required"
+    repayment_exceeds_balance: "Cannot exceed outstanding balance"
+    offline_submit_note: "Offline — data queued for sync"
+    corpus_label: "Corpus Fund"
+    cash_on_hand_label: "Cash on Hand"
+    closing_corpus_label: "Closing Corpus"
+    submit_success_toast: "Meeting #{{meetingNumber}} submitted successfully!"
+    submit_offline_toast: "Meeting saved offline — will sync when connected"
+    attendance_incomplete: "Record attendance for all {{count}} members before proceeding"
+    corpus_insufficient: "Corpus insufficient for this disbursement — available KES {{amount}}"

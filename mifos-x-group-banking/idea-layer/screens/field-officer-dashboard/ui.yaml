@@ -1,0 +1,414 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: field-officer-dashboard
+
+route: /field-officer/dashboard
+entry_points:
+  - source: app_launch
+    condition: "userRole == FIELD_OFFICER"
+  - source: app_launch
+    condition: "userRole == PROGRAM_MANAGER"
+  - source: bottom_nav
+    condition: "userRole == FIELD_OFFICER || userRole == PROGRAM_MANAGER"
+nav_params:
+  staffId: { type: Long, required: false, source: session }
+
+screens:
+  - id: field_officer_dashboard_screen
+    name: FieldOfficerDashboardScreen
+    composable: FieldOfficerDashboardScreen
+    description: >
+      Scrollable LazyColumn with sticky top bar, pull-to-refresh. Top section:
+      4-card KPI row (horizontal scroll). Second section: filter chip row (3 chips + clear).
+      Body: group count header + group health card list. Empty state when no groups.
+      Error state with retry on load failure. All interactions read-only.
+    layout: >
+      Scaffold (TopAppBar + LazyColumn(
+        item: KPICardsRow,
+        item: FilterChipRow,
+        item: GroupsListHeader,
+        items: GroupHealthCard per filteredGroups,
+        item: EmptyState or ErrorState conditional
+      ))
+
+state_model:
+  FieldOfficerDashboardViewModel:
+    state:
+      name: FieldOfficerDashboardState
+      fields:
+        isLoading: { type: Boolean, default: "true" }
+        isRefreshing: { type: Boolean, default: "false" }
+        staffId: { type: Long, default: "0L" }
+        userRole: { type: String, default: '""' }
+        canExport: { type: Boolean, default: "false", note: "true when userRole == FIELD_OFFICER || userRole == PROGRAM_MANAGER" }
+        totalGroupsCount: { type: Int, default: "0" }
+        totalActiveMembers: { type: Int, default: "0" }
+        totalSavingsThisMonth: { type: Double, default: "0.0" }
+        totalLoansOutstanding: { type: Double, default: "0.0" }
+        groups: { type: "List<GroupHealthSummary>", default: "emptyList()" }
+        filteredGroups: { type: "List<GroupHealthSummary>", default: "emptyList()" }
+        availableRegions: { type: "List<String>", default: "emptyList()" }
+        selectedRegionFilter: { type: "String?", default: "null" }
+        selectedStatusFilter: { type: "GroupStatusFilter?", default: "null" }
+        selectedOverdueFilter: { type: "OverdueRateFilter?", default: "null" }
+        isExporting: { type: Boolean, default: "false" }
+        error: { type: "FieldOfficerDashboardError?", default: "null" }
+    screen_state:
+      name: FieldOfficerDashboardScreenState
+      members:
+        - Loading: fetching and aggregating groups KPIs
+        - Content: data loaded; KPI cards and group list shown
+        - Empty: no groups assigned to this field officer
+        - Error: API failure during load; retry available
+    errors:
+      name: FieldOfficerDashboardError
+      types:
+        - { type: Network, retry: true, message_key: error_network }
+        - { type: Server, retry: true, message_key: error_server }
+        - { type: Auth, retry: false, message_key: error_auth, redirect: login }
+        - { type: NoGroupsAssigned, retry: false, message_key: error_no_groups }
+    events:
+      name: FieldOfficerDashboardEvent
+      members:
+        - { name: NavigateToGroupDashboard, params: "groupId: Long" }
+        - { name: NavigateToExportReport, params: "staffId: Long" }
+        - { name: ShowSnackbar, params: "message: String" }
+        - { name: ShowRegionPickerDialog }
+        - { name: ShowStatusPickerDialog }
+        - { name: ShowOverduePickerDialog }
+    actions:
+      name: FieldOfficerDashboardAction
+      members:
+        - { name: LoadDashboard, trigger: "Screen enters composition" }
+        - { name: OnGroupTapped, params: "groupId: Long", trigger: "Tap group health card" }
+        - { name: OnRegionFilterSelected, params: "region: String?", trigger: "Select region in picker dialog" }
+        - { name: OnStatusFilterSelected, params: "status: GroupStatusFilter?", trigger: "Select status in picker dialog" }
+        - { name: OnOverdueFilterSelected, params: "filter: OverdueRateFilter?", trigger: "Select overdue threshold in picker dialog" }
+        - { name: OnClearFilters, trigger: "Tap Clear Filters chip" }
+        - { name: OnExportReport, trigger: "Tap Export Report in top bar; canExport must be true" }
+        - { name: OnRefresh, trigger: "Pull to refresh" }
+        - { name: OnRetry, trigger: "Tap retry button on error state" }
+    di:
+      - GroupRepository
+      - StaffRepository
+      - ReportRepository
+      - NetworkMonitor
+      - SessionManager
+
+components:
+  - id: top_bar
+    type: top-app-bar
+    name: FieldOfficerTopBar
+    description: >
+      Top bar showing "Field Officer Dashboard" title. Export Report action in the overflow menu
+      or toolbar (visible and enabled only when canExport == true). Export shows loading spinner
+      while isExporting == true.
+    style:
+      title_text: "Field Officer Dashboard"
+      background: primary
+      text_color: onPrimary
+    actions:
+      - id: export_action
+        icon: FluentIcons.arrow_download_24_regular
+        content_description: "Export Field Officer Group Report as CSV"
+        visible_when: "canExport == true"
+        loading_when: "isExporting"
+        on_click:
+          action: OnExportReport
+    a11y:
+      content_description: "Field Officer Dashboard — monitoring {{totalGroupsCount}} groups"
+      role: toolbar
+    test_context:
+      purpose: >
+        Export button visible for FIELD_OFFICER and PROGRAM_MANAGER; hidden for other roles;
+        shows loading spinner during report generation
+      interaction_type: tap
+      data_driven: true
+      required_fields: [canExport, isExporting, totalGroupsCount]
+    on_click: {}
+
+  - id: kpi_cards_row
+    type: row
+    name: KPICardsRow
+    description: >
+      Horizontally scrollable row of 4 KPI summary cards. Each card uses a distinct
+      MD3 container color token: primaryContainer, secondaryContainer, tertiaryContainer,
+      errorContainer. Cards are non-interactive.
+    style:
+      scroll: horizontal
+      padding: "16dp"
+      gap: 12dp
+    a11y:
+      content_description: "KPI summary cards — {{totalGroupsCount}} groups, {{totalActiveMembers}} members, KES {{totalSavingsThisMonth}} savings, KES {{totalLoansOutstanding}} loans"
+    test_context:
+      purpose: Four KPI cards visible; each uses correct MD3 container token; values update on load
+      interaction_type: non_interactive
+      data_driven: true
+      required_fields: [totalGroupsCount, totalActiveMembers, totalSavingsThisMonth, totalLoansOutstanding]
+    on_click: {}
+    children:
+      - id: kpi_total_groups
+        type: kpi_card
+        name: KPITotalGroups
+        style:
+          background: primaryContainer
+          corner_radius: 12dp
+          padding: 16dp
+          min_width: 140dp
+          min_height: 88dp
+        content:
+          - { id: kpi_groups_value, type: text, text: "{{totalGroupsCount}}", text_style: headlineMedium, color: onPrimaryContainer, font_weight: bold }
+          - { id: kpi_groups_label, type: text, text: "Groups Managed", text_style: bodySmall, color: onPrimaryContainer, margin_top: 4dp }
+          - { id: kpi_groups_icon, type: icon, icon: FluentIcons.people_24_regular, color: onPrimaryContainer, size: 20dp }
+        on_click: {}
+
+      - id: kpi_total_members
+        type: kpi_card
+        name: KPITotalMembers
+        style:
+          background: secondaryContainer
+          corner_radius: 12dp
+          padding: 16dp
+          min_width: 140dp
+          min_height: 88dp
+        content:
+          - { id: kpi_members_value, type: text, text: "{{totalActiveMembers}}", text_style: headlineMedium, color: onSecondaryContainer, font_weight: bold }
+          - { id: kpi_members_label, type: text, text: "Active Members", text_style: bodySmall, color: onSecondaryContainer, margin_top: 4dp }
+          - { id: kpi_members_icon, type: icon, icon: FluentIcons.person_24_regular, color: onSecondaryContainer, size: 20dp }
+        on_click: {}
+
+      - id: kpi_total_savings
+        type: kpi_card
+        name: KPITotalSavings
+        style:
+          background: tertiaryContainer
+          corner_radius: 12dp
+          padding: 16dp
+          min_width: 156dp
+          min_height: 88dp
+        content:
+          - { id: kpi_savings_value, type: text, text: "KES {{totalSavingsThisMonth | compact}}", text_style: headlineMedium, color: onTertiaryContainer, font_weight: bold }
+          - { id: kpi_savings_label, type: text, text: "Savings This Month", text_style: bodySmall, color: onTertiaryContainer, margin_top: 4dp }
+          - { id: kpi_savings_icon, type: icon, icon: FluentIcons.piggy_bank_24_regular, color: onTertiaryContainer, size: 20dp }
+        on_click: {}
+
+      - id: kpi_loans_outstanding
+        type: kpi_card
+        name: KPILoansOutstanding
+        style:
+          background: errorContainer
+          corner_radius: 12dp
+          padding: 16dp
+          min_width: 156dp
+          min_height: 88dp
+        content:
+          - { id: kpi_loans_value, type: text, text: "KES {{totalLoansOutstanding | compact}}", text_style: headlineMedium, color: onErrorContainer, font_weight: bold }
+          - { id: kpi_loans_label, type: text, text: "Loans Outstanding", text_style: bodySmall, color: onErrorContainer, margin_top: 4dp }
+          - { id: kpi_loans_icon, type: icon, icon: FluentIcons.money_24_regular, color: onErrorContainer, size: 20dp }
+        on_click: {}
+
+  - id: filter_row
+    type: row
+    name: FilterChipRow
+    style: { scroll: horizontal, padding: "0dp 16dp 8dp", gap: 8dp }
+    children:
+      - id: region_filter_chip
+        type: filter_chip
+        label: "{{selectedRegionFilter != null ? selectedRegionFilter : 'All Regions'}}"
+        icon: FluentIcons.location_24_regular
+        selected_when: "selectedRegionFilter != null"
+        on_click: { action: ShowRegionPickerDialog }
+
+      - id: status_filter_chip
+        type: filter_chip
+        label: "{{selectedStatusFilter != null ? selectedStatusFilter.name : 'All Statuses'}}"
+        icon: FluentIcons.filter_24_regular
+        selected_when: "selectedStatusFilter != null"
+        on_click: { action: ShowStatusPickerDialog }
+
+      - id: overdue_filter_chip
+        type: filter_chip
+        label: "{{selectedOverdueFilter != null ? i18n.overdue_labels[selectedOverdueFilter] : 'Any Overdue Rate'}}"
+        icon: FluentIcons.warning_24_regular
+        selected_when: "selectedOverdueFilter != null"
+        on_click: { action: ShowOverduePickerDialog }
+
+      - id: clear_filters_chip
+        type: chip
+        label: "Clear Filters"
+        icon: FluentIcons.dismiss_16_regular
+        visible_when: "selectedRegionFilter != null || selectedStatusFilter != null || selectedOverdueFilter != null"
+        style: { background: errorContainer, text_color: onErrorContainer }
+        on_click: { action: OnClearFilters }
+
+  - id: groups_list_header
+    type: row
+    name: GroupsListHeader
+    style: { padding: "0dp 16dp 4dp" }
+    content:
+      - id: group_count_text
+        type: text
+        text: "{{filteredGroups.size}} of {{groups.size}} groups"
+        text_style: titleSmall
+        color: onSurfaceVariant
+    on_click: {}
+
+  - id: group_health_card
+    type: card
+    name: GroupHealthCard
+    repeats_for: filteredGroups
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 12dp
+      padding: 16dp
+      min_touch_target: 72dp
+      margin: "0dp 16dp 8dp"
+    content:
+      - { id: group_name_text, type: text, text: "{{group.name}}", text_style: titleMedium, color: onSurface }
+      - { id: group_office_text, type: text, text: "{{group.officeName}} · Cycle {{group.cycleNumber}}", text_style: bodySmall, color: onSurfaceVariant, margin_top: 2dp }
+      - id: group_health_badge
+        type: badge
+        value: "{{group.healthIndicator}}"
+        style:
+          GREEN: { background: primaryContainer, text_color: onPrimaryContainer, text: "Healthy" }
+          AMBER: { background: warningContainer, text_color: onWarningContainer, text: "At Risk" }
+          RED: { background: errorContainer, text_color: onErrorContainer, text: "Critical" }
+        margin_top: 8dp
+    on_click:
+      action: OnGroupTapped
+      params: { groupId: "{{group.id}}" }
+      target: group-dashboard
+
+  - id: shimmer_dashboard
+    type: shimmer
+    name: DashboardShimmer
+    visible_when: isLoading
+    style: { count: 6, height: 100dp, corner_radius: 12dp, background: surfaceVariant, margin: "0dp 16dp 8dp" }
+    on_click: {}
+
+  - id: empty_state
+    type: empty_state
+    name: NoGroupsEmptyState
+    visible_when: "!isLoading && groups.isEmpty() && error == null"
+    style:
+      icon: FluentIcons.people_24_regular
+      title_text: "No Groups Assigned"
+      body_text: "You don't have any groups assigned yet. Contact your office administrator."
+    on_click: {}
+
+  - id: empty_filter_state
+    type: empty_state
+    name: NoFilterResultsState
+    visible_when: "!isLoading && groups.isNotEmpty() && filteredGroups.isEmpty()"
+    style:
+      icon: FluentIcons.filter_dismiss_24_regular
+      title_text: "No Groups Match Filters"
+      body_text: "Try adjusting or clearing your filters."
+      cta_text: "Clear Filters"
+    on_click: { action: OnClearFilters }
+
+  - id: error_state
+    type: error_state
+    name: DashboardErrorState
+    visible_when: "error != null && !isLoading"
+    style:
+      icon: FluentIcons.wifi_off_24_regular
+      title_text: "Could not load dashboard"
+      body_text: "{{error.message}}"
+      cta_text: "Retry"
+    on_click: { action: OnRetry }
+
+states:
+  initial_state: loading
+  loading:
+    description: Fetching groups and centers from Fineract API in parallel. Shimmer skeleton shown.
+    components_visible: [top_bar, shimmer_dashboard]
+
+  content:
+    description: Dashboard loaded. 4 KPI cards, 3 filter chips, and group health card list visible.
+    components_visible: [top_bar, kpi_cards_row, filter_row, groups_list_header, group_health_card]
+    demo_data:
+      staffId: 12
+      userRole: FIELD_OFFICER
+      canExport: true
+      totalGroupsCount: 8
+      totalActiveMembers: 94
+      totalSavingsThisMonth: 142000.0
+      totalLoansOutstanding: 87500.0
+      selectedRegionFilter: null
+      selectedStatusFilter: null
+      selectedOverdueFilter: null
+      groups:
+        - { id: 1, name: "Mwangaza Women's Group", officeName: "Nairobi East", status: "ACTIVE", activeClientCount: 12, totalSavingsBalance: 24000.0, totalLoansOutstanding: 9000.0, overdueRate: 0.00, healthIndicator: GREEN, cycleNumber: 1 }
+        - { id: 2, name: "Tumaini Savings Circle", officeName: "Nairobi West", status: "ACTIVE", activeClientCount: 10, totalSavingsBalance: 18500.0, totalLoansOutstanding: 12000.0, overdueRate: 0.12, healthIndicator: AMBER, cycleNumber: 3 }
+        - { id: 3, name: "Umoja Welfare Group", officeName: "Nairobi East", status: "ACTIVE", activeClientCount: 8, totalSavingsBalance: 11200.0, totalLoansOutstanding: 9800.0, overdueRate: 0.25, healthIndicator: RED, cycleNumber: 2 }
+        - { id: 4, name: "Pamoja Savings Group", officeName: "Nairobi North", status: "ACTIVE", activeClientCount: 11, totalSavingsBalance: 19800.0, totalLoansOutstanding: 14500.0, overdueRate: 0.03, healthIndicator: GREEN, cycleNumber: 4 }
+        - { id: 5, name: "Maisha Bora Circle", officeName: "Nairobi West", status: "ACTIVE", activeClientCount: 9, totalSavingsBalance: 15600.0, totalLoansOutstanding: 8200.0, overdueRate: 0.08, healthIndicator: AMBER, cycleNumber: 2 }
+
+  empty:
+    description: No groups assigned to this field officer. Empty state shown.
+    components_visible: [top_bar, empty_state]
+
+  error:
+    description: API failed during load. Error state shown with retry CTA.
+    components_visible: [top_bar, error_state]
+
+i18n:
+  en:
+    screen_title: "Field Officer Dashboard"
+    kpi_groups: "Groups Managed"
+    kpi_members: "Active Members"
+    kpi_savings: "Savings This Month"
+    kpi_loans: "Loans Outstanding"
+    filter_all_regions: "All Regions"
+    filter_all_statuses: "All Statuses"
+    filter_overdue_any: "Any Overdue Rate"
+    filter_overdue_none: "No Overdue"
+    filter_overdue_lt10: "Overdue < 10%"
+    filter_overdue_gt10: "Overdue > 10%"
+    filter_clear: "Clear Filters"
+    overdue_labels:
+      NONE: "No Overdue"
+      LESS_THAN_10: "Overdue < 10%"
+      GREATER_THAN_10: "Overdue > 10%"
+    groups_count_label: "{{filtered}} of {{total}} groups"
+    health_green: "Healthy"
+    health_amber: "At Risk"
+    health_red: "Critical"
+    export_button: "Export Report"
+    export_error: "Failed to generate report. Please try again."
+    empty_title: "No Groups Assigned"
+    empty_body: "You don't have any groups assigned yet. Contact your office admin."
+    empty_filter_title: "No Groups Match Filters"
+    empty_filter_body: "Try adjusting or clearing your filters."
+    clear_filters: "Clear Filters"
+    error_network: "No internet connection. Showing cached data."
+    error_server: "Server error. Please try again."
+    error_auth: "Session expired. Please log in again."
+    error_no_groups: "No groups assigned to your account."
+  sw:
+    screen_title: "Dashibodi ya Afisa Shamba"
+    kpi_groups: "Vikundi Vinavyosimamiwa"
+    kpi_members: "Wanachama Wanaofanya Kazi"
+    kpi_savings: "Akiba Za Mwezi Huu"
+    kpi_loans: "Mikopo Inayosubiri"
+    export_button: "Toa Ripoti"
+    empty_title: "Hakuna vikundi vilivyopewa"
+    empty_body: "Huna vikundi vilivyopewa. Wasiliana na msimamizi wako wa ofisi."
+  fr:
+    screen_title: "Tableau de Bord Agent de Terrain"
+    kpi_groups: "Groupes Gérés"
+    kpi_members: "Membres Actifs"
+    kpi_savings: "Épargne Ce Mois"
+    kpi_loans: "Prêts En Cours"
+    export_button: "Exporter le Rapport"
+    empty_title: "Aucun groupe assigné"
+  hi:
+    screen_title: "फील्ड ऑफिसर डैशबोर्ड"
+    kpi_groups: "प्रबंधित समूह"
+    kpi_members: "सक्रिय सदस्य"
+    kpi_savings: "इस महीने की बचत"
+    kpi_loans: "बकाया ऋण"
+    export_button: "रिपोर्ट निर्यात करें"
+    empty_title: "कोई समूह नहीं सौंपा गया"

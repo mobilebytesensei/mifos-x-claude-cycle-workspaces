@@ -1,0 +1,101 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: meeting-conduct
+
+navigates_to:
+  - target: meeting-summary
+    condition: wizard_submitted_successfully
+    params: { meeting_id: String, meeting_number: Int, center_id: Int }
+  - target: previous-meeting-review
+    condition: user_taps_view_full_previous_meeting
+    params: { meeting_id: String, meeting_number: Int, center_id: Int }
+  - target: meeting-calendar
+    condition: user_taps_back_or_cancel
+    params: {}
+
+flow_logic:
+  screen_init:
+    - action: parallel_load
+      apis:
+        - get_previous_meeting_record
+        - get_group_members
+        - get_group_corpus
+        - get_active_loans
+        - get_loan_votes
+      on_all_success:
+        - state: ScreenState.Content
+        - emit: meeting_started
+      on_any_failure:
+        - state: ScreenState.SubmitError
+          message: relevant_error_message
+
+  step_advance:
+    step_0:
+      validation: none
+      on_valid: advance_to_step_1
+    step_1:
+      validation: all_members_attendance_set
+      on_invalid: emit_AttendanceIncomplete
+      on_valid:
+        - auto_calc_fines: { late: 50, absent: 100 }
+        - update_totalFinesCollected
+        - save_progress_locally
+        - advance_to_step_2
+    step_2:
+      validation: none
+      on_valid:
+        - save_progress_locally
+        - advance_to_step_3
+    step_3:
+      validation: all_savings_amounts_gte_200
+      on_invalid: emit_MinContributionNotMet
+      on_valid:
+        - update_runningSavingsTotal
+        - save_progress_locally
+        - advance_to_step_4
+    step_4:
+      validation: repayments_lte_outstanding_balance
+      on_invalid: emit_RepaymentExceedsBalance
+      on_valid:
+        - update_totalRepayments
+        - save_progress_locally
+        - advance_to_step_5
+    step_5:
+      validation:
+        corpus_gate: >
+          prospectiveClosing = openingCorpus + runningSavingsTotal + totalRepayments
+                               + totalFinesCollected - totalLoansDisbursed - disbursementAmount
+          if prospectiveClosing < 0 → emit CorpusInsufficient
+      on_invalid: emit_CorpusInsufficient
+      on_valid:
+        - update_totalLoansDisbursed
+        - save_progress_locally
+        - advance_to_step_6
+    step_6:
+      action: compute_closing_corpus
+      formula: "closingCorpus = openingCorpus + runningSavingsTotal + totalRepayments + totalFinesCollected - totalLoansDisbursed"
+      enable_submit_button: true
+
+  submit_meeting:
+    online:
+      - state: ScreenState.Submitting
+      - sequential:
+          1: post_meeting_record
+          2: post_meeting_attendance (per member)
+          3: post_savings_transaction (per member per type)
+          4: post_loan_repayment (per repaid loan)
+          5: post_loan_disbursal (per approved application)
+          6: patch_corpus
+      - on_all_2xx:
+          - emit: meeting_submitted
+          - state: ScreenState.SubmitSuccess
+          - navigate: meeting-summary
+      - on_any_5xx: fallthrough_to_offline_path
+    offline:
+      - action: enqueue_all_payloads_to_sync_queue
+        priority: ordered
+        key: meeting_id
+      - state: ScreenState.SubmitSuccess (optimistic)
+      - show: offline_submit_toast
+      - navigate: meeting-summary (cached data)
+      - emit: meeting_submitted(is_offline=true)

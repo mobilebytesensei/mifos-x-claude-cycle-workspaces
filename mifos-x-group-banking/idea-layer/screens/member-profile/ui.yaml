@@ -1,0 +1,322 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: member-profile
+
+route: /groups/{groupId}/members/{memberId}
+entry_points:
+  - source: member-list
+    trigger: member_row_tap
+    params: { memberId: String, groupId: String }
+nav_params:
+  memberId: { type: String, required: true }
+  groupId: { type: String, required: true }
+
+screens:
+  - id: member-profile-screen
+    title: "Member Profile"
+    type: detail
+    description: Scrollable profile with savings sparkline, active loan, and attendance stats; role edit bottom sheet for chairperson
+
+state_model:
+  MemberProfileViewModel:
+    state:
+      name: MemberProfileState
+      fields:
+        isLoading: { type: Boolean, default: "true" }
+        member: { type: "Member?", default: "null" }
+        accounts: { type: "MemberAccounts?", default: "null" }
+        role: { type: "MemberRole", default: "MemberRole.MEMBER" }
+        isCurrentUserChairperson: { type: Boolean, default: "false" }
+        isEditingRole: { type: Boolean, default: "false" }
+        selectedRole: { type: "MemberRole?", default: "null" }
+        isUpdatingRole: { type: Boolean, default: "false" }
+        meetingsAttended: { type: Int, default: "0" }
+        totalMeetings: { type: Int, default: "0" }
+        attendanceRate: { type: Double, default: "0.0" }
+        error: { type: "MemberProfileError?", default: "null" }
+    screen_state:
+      name: MemberProfileScreenState
+      members: [Loading, Content, Error]
+    errors:
+      name: MemberProfileError
+      types:
+        - { type: Network, retry: true, message_key: error_network }
+        - { type: Server, retry: true, message_key: error_server }
+        - { type: NotFound, retry: false, message_key: error_not_found }
+        - { type: Auth, retry: false, message_key: error_auth, redirect: login }
+        - { type: RoleUpdateFailed, retry: true, message_key: error_role_update }
+    events:
+      name: MemberProfileEvent
+      members:
+        - { name: NavigateToMemberList, params: { groupId: String } }
+        - { name: NavigateToSavingsDetail, params: { memberId: String, groupId: String } }
+        - { name: ShowSnackbar, params: { message: String } }
+    actions:
+      name: MemberProfileAction
+      members:
+        - { name: OnEditRoleTap, trigger: "Tap edit role button (chairperson only)" }
+        - { name: OnRoleSelected, params: { role: MemberRole }, trigger: "Tap role option in bottom sheet" }
+        - { name: OnConfirmRoleChange, trigger: "Tap Confirm in role bottom sheet" }
+        - { name: OnDismissRoleEdit, trigger: "Dismiss bottom sheet" }
+        - { name: OnViewSavings, trigger: "Tap savings history card" }
+        - { name: Retry, trigger: "Tap Retry on error" }
+        - { name: OnBack, trigger: "Tap back arrow" }
+    di:
+      - MemberRepository
+      - GroupRepository
+      - NetworkMonitor
+      - SessionManager
+
+components:
+  - id: top_bar
+    type: top-bar
+    title: "Member Profile"
+    style: { background: primary, text_color: onPrimary }
+    navigation_icon: arrow_back
+    on_navigation_click: { action: OnBack }
+
+  - id: member_header_card
+    type: card
+    style:
+      background: primaryContainer
+      elevation: 0dp
+      corner_radius: 16dp
+      padding: 16dp
+    content:
+      - id: member_avatar
+        type: avatar
+        image_url: "{{member.photoUri}}"
+        fallback_initials: "{{member.displayName | initials}}"
+        size: 72dp
+        style: { background: primary, text_color: onPrimary }
+      - id: member_name_text
+        type: text
+        style: { text_style: headlineSmall, color: onPrimaryContainer }
+        value: "{{member.displayName}}"
+      - id: member_since_text
+        type: text
+        style: { text_style: bodySmall, color: onPrimaryContainer }
+        value: "Member since {{member.joinDate | date}}"
+      - id: member_phone_text
+        type: text
+        style: { text_style: bodyMedium, color: onPrimaryContainer }
+        value: "{{member.phone}}"
+      - id: role_chip
+        type: chip
+        label: "{{role}}"
+        style:
+          CHAIRPERSON: { background: primary, text_color: onPrimary }
+          TREASURER: { background: secondary, text_color: onSecondary }
+          SECRETARY: { background: tertiary, text_color: onTertiary }
+          MEMBER: { background: surfaceVariant, text_color: onSurfaceVariant }
+      - id: edit_role_button
+        type: button
+        variant: outlined
+        label: "Edit Role"
+        visible: "{{isCurrentUserChairperson}}"
+        style: { border_color: primary, text_color: primary, min_touch_target: 40dp }
+        on_click: { action: OnEditRoleTap }
+
+  - id: savings_history_card
+    type: card
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 16dp
+      padding: 16dp
+    content:
+      - id: savings_label
+        type: text
+        style: { text_style: titleMedium, color: onSurface }
+        value: "Savings History"
+      - id: savings_balance_text
+        type: text
+        style: { text_style: displaySmall, color: primary }
+        value: "KES {{accounts.savingsBalance | number}}"
+      - id: savings_sparkline
+        type: sparkline-chart
+        data: "{{accounts.savingsHistory}}"
+        x_key: date
+        y_key: balance
+        style:
+          line_color: primary
+          fill_color: primaryContainer
+          height: 80dp
+      - id: view_full_history_button
+        type: button
+        variant: text
+        label: "View Full History"
+        style: { text_color: primary }
+        on_click: { action: OnViewSavings, target: member-savings-detail }
+
+  - id: active_loan_card
+    type: card
+    visible: "{{accounts.activeLoan != null}}"
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 16dp
+      padding: 16dp
+      border:
+        arrears: { color: error, width: 2dp }
+        current: { color: transparent, width: 0dp }
+    content:
+      - id: loan_card_label
+        type: text
+        style: { text_style: titleMedium, color: onSurface }
+        value: "Active Loan"
+      - id: loan_product_text
+        type: text
+        style: { text_style: bodyMedium, color: onSurfaceVariant }
+        value: "{{accounts.activeLoan.productName}}"
+      - id: loan_outstanding_text
+        type: text
+        style: { text_style: titleLarge, color: onSurface }
+        value: "KES {{accounts.activeLoan.outstandingBalance | number}} outstanding"
+      - id: loan_arrears_banner
+        type: banner
+        visible: "{{accounts.activeLoan.inArrears}}"
+        icon: warning
+        message: "This loan is in arrears. Due: {{accounts.activeLoan.dueDate}}"
+        style: { background: errorContainer, text_color: onErrorContainer }
+
+  - id: attendance_card
+    type: card
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 16dp
+      padding: 16dp
+    content:
+      - id: attendance_label
+        type: text
+        style: { text_style: titleMedium, color: onSurface }
+        value: "Meeting Attendance"
+      - id: attendance_fraction_text
+        type: text
+        style: { text_style: headlineMedium, color: tertiary }
+        value: "{{meetingsAttended}} / {{totalMeetings}}"
+      - id: attendance_rate_text
+        type: text
+        style: { text_style: bodyMedium, color: onSurfaceVariant }
+        value: "{{attendanceRate | percent}} attendance rate"
+      - id: attendance_progress_bar
+        type: linear-progress
+        value: "{{attendanceRate}}"
+        style:
+          track_color: surfaceVariant
+          indicator_color:
+            gte_80: tertiary
+            gte_60: secondary
+            lt_60: error
+
+  - id: role_edit_bottom_sheet
+    type: bottom-sheet
+    visible: "{{isEditingRole}}"
+    title: "Change Member Role"
+    content:
+      - id: role_option_chairperson
+        type: list-item
+        headline: "Chairperson"
+        trailing: radio_button
+        selected: "{{selectedRole == CHAIRPERSON}}"
+        on_click: { action: OnRoleSelected, params: { role: CHAIRPERSON }, state: selectedRole }
+        style: { min_touch_target: 56dp }
+      - id: role_option_treasurer
+        type: list-item
+        headline: "Treasurer"
+        trailing: radio_button
+        selected: "{{selectedRole == TREASURER}}"
+        on_click: { action: OnRoleSelected, params: { role: TREASURER }, state: selectedRole }
+        style: { min_touch_target: 56dp }
+      - id: role_option_secretary
+        type: list-item
+        headline: "Secretary"
+        trailing: radio_button
+        selected: "{{selectedRole == SECRETARY}}"
+        on_click: { action: OnRoleSelected, params: { role: SECRETARY }, state: selectedRole }
+        style: { min_touch_target: 56dp }
+      - id: role_option_member
+        type: list-item
+        headline: "Member"
+        trailing: radio_button
+        selected: "{{selectedRole == MEMBER}}"
+        on_click: { action: OnRoleSelected, params: { role: MEMBER }, state: selectedRole }
+        style: { min_touch_target: 56dp }
+      - id: confirm_role_button
+        type: button
+        variant: filled
+        label: "Confirm"
+        loading: "{{isUpdatingRole}}"
+        style: { background: primary, text_color: onPrimary, min_touch_target: 56dp, full_width: true }
+        on_click: { action: OnConfirmRoleChange, api: update_member_role }
+    on_dismiss: { action: OnDismissRoleEdit }
+
+  - id: shimmer_profile
+    type: shimmer
+    count: 4
+    style: { height: 100dp, corner_radius: 16dp, background: surfaceVariant }
+
+  - id: error_state
+    type: error-state
+    icon: cloud_off
+    title: "Could not load profile"
+    body: "{{error.message}}"
+    cta_label: "Retry"
+    on_click: { action: Retry, state: reload }
+
+states:
+  initial_state: loading
+  loading:
+    components: [top_bar, shimmer_profile]
+    description: "Parallel API calls in-flight"
+  content:
+    components: [top_bar, member_header_card, savings_history_card, active_loan_card, attendance_card]
+    description: "All member data loaded; role edit sheet overlays on demand"
+    demo_data:
+      member:
+        displayName: "Amina Wanjiru"
+        firstName: "Amina"
+        lastName: "Wanjiru"
+        phone: "+254712345678"
+        photoUri: null
+        joinDate: "2026-01-15"
+        status: "Active"
+      role: TREASURER
+      isCurrentUserChairperson: true
+      accounts:
+        savingsBalance: 3500.00
+        savingsHistory:
+          - { date: "2026-01-20", balance: 500.00 }
+          - { date: "2026-01-27", balance: 1000.00 }
+          - { date: "2026-02-03", balance: 1500.00 }
+          - { date: "2026-02-10", balance: 2000.00 }
+          - { date: "2026-02-17", balance: 2500.00 }
+          - { date: "2026-02-24", balance: 3000.00 }
+          - { date: "2026-03-03", balance: 3500.00 }
+        activeLoan: null
+      meetingsAttended: 14
+      totalMeetings: 15
+      attendanceRate: 0.93
+  error:
+    components: [top_bar, error_state]
+    description: "API error"
+
+i18n:
+  en:
+    screen_title: "Member Profile"
+    member_since: "Member since {{date}}"
+    edit_role: "Edit Role"
+    savings_label: "Savings History"
+    loan_label: "Active Loan"
+    loan_arrears: "This loan is in arrears. Due: {{date}}"
+    attendance_label: "Meeting Attendance"
+    attendance_fraction: "{{attended}} / {{total}}"
+    attendance_rate: "{{rate}} attendance rate"
+    change_role_title: "Change Member Role"
+    role_updated: "Role updated successfully."
+    error_network: "No internet. Showing cached profile."
+    error_server: "Server error. Please retry."
+    error_not_found: "Member not found."
+    error_auth: "Session expired."
+    error_role_update: "Could not update role. Please retry."
