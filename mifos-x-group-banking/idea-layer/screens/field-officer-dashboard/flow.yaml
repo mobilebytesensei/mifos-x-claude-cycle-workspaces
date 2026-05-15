@@ -1,0 +1,104 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: field-officer-dashboard
+
+navigates_to:
+  - target: group-dashboard
+    condition: user_taps_group_health_card
+    params: { groupId: Long }
+
+flow_logic:
+  - decision: on_load
+    branches:
+      - condition: always
+        action: >
+          Get staffId and userRole from SessionManager.
+          Set canExport = userRole == FIELD_OFFICER || userRole == PROGRAM_MANAGER.
+          Parallel API calls:
+            GET /fineract-provider/api/v1/centers?staffId={staffId} (centers)
+            GET /fineract-provider/api/v1/groups?staffId={staffId} (groups)
+          On success:
+            Aggregate KPIs client-side:
+              totalGroupsCount = groups.pageItems.size
+              totalActiveMembers = sum(group.activeClientCount)
+              totalSavingsThisMonth = sum from savings accounts for current month
+              totalLoansOutstanding = sum(group.totalLoansOutstanding)
+              availableRegions = distinct(group.officeName).sorted()
+            Set filteredGroups = groups (unfiltered)
+            ScreenState → Content (or Empty if totalGroupsCount == 0)
+            Emit analytics: field_officer_dashboard_loaded(group_count, total_members)
+          On failure: ScreenState → Error
+
+  - decision: on_filter_applied
+    branches:
+      - condition: any filter changed (region, status, overdue)
+        action: >
+          Filter groups locally (no API call):
+            If selectedRegionFilter != null: groups.filter { it.officeName == selectedRegionFilter }
+            If selectedStatusFilter != null: groups.filter { it.status == selectedStatusFilter.name }
+            If selectedOverdueFilter != null:
+              NONE: groups.filter { it.overdueRate == 0.0 }
+              LESS_THAN_10: groups.filter { it.overdueRate < 0.10 }
+              GREATER_THAN_10: groups.filter { it.overdueRate >= 0.10 }
+          Set filteredGroups = result.
+          Emit analytics: field_officer_filter_applied(filter_type, filter_value)
+
+  - decision: on_clear_filters
+    branches:
+      - condition: always
+        action: >
+          Reset selectedRegionFilter, selectedStatusFilter, selectedOverdueFilter to null.
+          Set filteredGroups = groups (full list).
+
+  - decision: on_group_tapped
+    branches:
+      - condition: always
+        action: >
+          Navigate to group-dashboard with groupId.
+          Note: field officer cannot perform mutations from group-dashboard.
+          Emit analytics: field_officer_group_tapped(group_id, health_indicator, overdue_rate)
+
+  - decision: on_export_report
+    branches:
+      - condition: "canExport == true"
+        action: >
+          Set isExporting = true.
+          GET /fineract-provider/api/v1/runreports/FieldOfficerGroupReport?R_staffId={staffId}&output-type=CSV
+          On success: launch system share sheet with CSV file.
+          On failure: ShowSnackbar(i18n.export_error).
+          Set isExporting = false.
+          Emit analytics: field_officer_export_requested(group_count, staff_id)
+      - condition: "canExport == false"
+        action: >
+          Do not expose button. Role-gate enforced in UI (button hidden for other roles).
+
+  - decision: on_refresh
+    branches:
+      - condition: always
+        action: >
+          Set isRefreshing = true.
+          Re-run parallel API calls (invalidate cache).
+          Re-aggregate KPIs.
+          Set isRefreshing = false.
+          Emit analytics: field_officer_dashboard_refreshed(group_count)
+
+dependencies:
+  tier: feature
+  features: [group-dashboard]
+  repositories:
+    - name: GroupRepository
+      methods:
+        - "getGroupsForStaff(staffId: Long): Flow<PagedResponse<GroupHealthSummary>>"
+        - "getCentersForStaff(staffId: Long): Flow<PagedResponse<Center>>"
+    - name: StaffRepository
+      methods:
+        - "getCurrentStaff(): Flow<Staff>"
+    - name: ReportRepository
+      methods:
+        - "runFieldOfficerGroupReport(staffId: Long): Flow<ByteArray>"
+  services:
+    - NetworkMonitor
+    - SessionManager
+  local_db:
+    - table: groups (SQLDelight, cache TTL 300s)
+    - table: centers (SQLDelight, cache TTL 300s)

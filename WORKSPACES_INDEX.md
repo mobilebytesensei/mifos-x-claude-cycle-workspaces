@@ -2,7 +2,7 @@
 
 > Per-project workspace directory for claude-product-cycle
 
-**Last Updated**: 2025-01-06
+**Last Updated**: 2026-05-09
 
 ---
 
@@ -11,6 +11,11 @@
 | # | Project | Type | Status | Progress | Workspace Path |
 |:-:|---------|------|:------:|:--------:|----------------|
 | 1 | mifos-mobile | Self-Service Banking | Active | 79% | `workspaces/mifos-mobile/` |
+| 2 | mifos-x-group-banking | Group Banking (KMP) | Active | 45% | `workspaces/mifos-x/mifos-x-group-banking/` |
+| 3 | mifos-x-field-officer-app | Field Officer App (KMP) | Planning | 10% | `workspaces/mifos-x/mifos-x-field-officer-app/` |
+| 4 | kmp-project-template | KMP Project Template | Active | 80% | `workspaces/mifos-x/kmp-project-template/` |
+| 5 | mcp-mifosx | Mifos X MCP Server | Active | 60% | `workspaces/mifos-x/mcp-mifosx/` |
+| 6 | mobile-wallet | Mobile Wallet (KMP) | Planning | 5% | `workspaces/mifos-x/mobile-wallet/` |
 
 ---
 

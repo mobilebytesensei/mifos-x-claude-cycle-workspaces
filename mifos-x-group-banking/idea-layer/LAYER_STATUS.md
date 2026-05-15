@@ -25,7 +25,7 @@ _blueprint:
 | dashboard/ | ✅ DEV_STATUS.md + dev-status.html (2026-05-05) |
 | state/ | ✅ PIPELINE_STATE.yaml (2026-05-05) |
 
-**Overall**: ✅ COMPLETE — project scaffolded · exports missing → run `/idea export`
+**Overall**: ✅ COMPLETE — idea-matrix.md + dashboard/ + APPROVAL_STATUS.md + all siblings present
 | CAPABILITY_STATE.yaml | ✅ initialized via /idea init (2026-05-06) — 4 capabilities backfilled |
 
 ---

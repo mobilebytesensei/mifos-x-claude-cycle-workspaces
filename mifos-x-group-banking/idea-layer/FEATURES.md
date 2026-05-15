@@ -47,7 +47,7 @@ mobile-money-integration, web-admin-dashboard, sms-notifications, inter-group-le
 | Platform Foundation | offline-sync, multi-language | v1.0.0 |
 | Supervision & Social | field-officer-view, social-fund | v1.1.0 |
 
-## Screen Inventory (28 screens)
+## Screen Inventory (30 screens)
 
 | Screen | Archetype | Features |
 |--------|-----------|----------|

@@ -1,0 +1,71 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: share-out-execute
+
+entries:
+  - screen_id: shareOutExecuteScreen
+    trigger: on_mount
+    description: Initialize from nav params — no API call; data pre-populated from share-out-preview
+    endpoints: []
+    dtos:
+      - { name: MemberPayout, role: response, api_id: nav_params }
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    local_sources:
+      - { source: NavArgs, keys: [groupId, centerId, cycleNumber, totalPool, memberPayouts] }
+      - { source: NetworkMonitor, key: is_online, field: isOnline }
+    error_paths: []
+
+  - screen_id: shareOutExecuteScreen
+    trigger: on_interact
+    description: Chairperson taps Execute Share-Out — records datatable entry then disburses sequentially per member
+    endpoints:
+      - { api_id: post_share_out_record, transport: rest, method: post }
+      - { api_id: post_member_payout, transport: rest, method: post }
+    dtos:
+      - { name: CreateShareOutRequest, role: request, api_id: post_share_out_record }
+      - { name: DataTableEntryResponse, role: response, api_id: post_share_out_record }
+      - { name: SavingsWithdrawalRequest, role: request, api_id: post_member_payout }
+      - { name: SavingsTransactionResponse, role: response, api_id: post_member_payout }
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    offline_behavior:
+      strategy: enqueue_to_sync_queue
+      priority: HIGH
+      entity_type: SHARE_OUT
+      show_state: queued_offline_banner
+    error_paths:
+      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "403", behavior: navigate, nav_target: group-dashboard, message_key: error_forbidden }
+      - { error_code: "400", behavior: mark_member_failed, continue_sequence: true }
+      - { error_code: "5xx", behavior: mark_member_failed, continue_sequence: true }
+      - { error_code: "network.offline", behavior: enqueue_offline, message_key: error_offline }
+    execution_pattern:
+      type: sequential_per_member
+      on_member_success: update_status_DONE
+      on_member_failure: update_status_FAILED
+      on_complete: transition_to_success_or_partial_failure
+
+  - screen_id: shareOutExecuteScreen
+    trigger: on_interact
+    description: Retry failed payouts — re-attempts only FAILED members
+    endpoints:
+      - { api_id: post_member_payout, transport: rest, method: post }
+    dtos:
+      - { name: SavingsWithdrawalRequest, role: request, api_id: post_member_payout }
+      - { name: SavingsTransactionResponse, role: response, api_id: post_member_payout }
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths:
+      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "5xx", behavior: mark_member_failed, continue_sequence: true }
+      - { error_code: "network.offline", behavior: enqueue_offline, message_key: error_offline }

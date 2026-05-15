@@ -1,0 +1,105 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: share-out-execute
+
+navigates_to:
+  - target: group-dashboard
+    condition: user_taps_done_after_completion
+    params: { groupId: Long }
+  - target: share-out-preview
+    condition: user_taps_back_before_execution
+    params: { groupId: Long, centerId: Long }
+
+flow_logic:
+  on_load:
+    - action: initialize_from_nav_params
+      fields: [memberPayouts, totalPool, cycleNumber, groupId, centerId]
+    - action: set_totalCount
+      value: "memberPayouts.size"
+    - action: initialize_member_execution_status
+      value: "all members → MemberExecutionStatus.PENDING"
+    - action: check_network_status
+      source: NetworkMonitor
+
+  on_confirmation_text_changed:
+    - action: update_confirmationText
+    - action: set_isConfirmed
+      value: "confirmationText.trim().uppercase() == \"SHARE OUT\""
+
+  on_biometric_selected:
+    - decision: biometric_available
+      branches:
+        - condition: "BiometricManager.isAvailable"
+          action: trigger_biometric_prompt
+          on_success:
+            - action: set_isConfirmed_true
+          on_failure:
+            - action: show_snackbar
+              message: "Biometric authentication failed. Please type SHARE OUT instead."
+        - condition: "!BiometricManager.isAvailable"
+          action: show_snackbar
+          message: "Biometric not available on this device. Please type SHARE OUT."
+
+  on_execute:
+    - decision: confirmation_guard
+      branches:
+        - condition: "!isConfirmed"
+          action: show_snackbar
+          message: "{{i18n.error_confirmation_required}}"
+        - condition: "isConfirmed && isOnline"
+          action: set_screen_state_executing
+          then:
+            - action: disable_back_navigation
+            - api_call: post_share_out_record
+              on_success:
+                - action: execute_member_payouts_sequential
+                  for_each: memberPayouts
+                  steps:
+                    - action: set_member_status_in_progress
+                    - api_call: post_member_payout
+                      on_success:
+                        - action: set_member_status_done
+                        - action: increment_succeeded_count
+                      on_error:
+                        - action: set_member_status_failed
+                        - action: add_to_failed_payouts
+                  on_all_complete:
+                    - decision: partial_failure_check
+                      branches:
+                        - condition: "failedPayouts.isEmpty()"
+                          action: set_screen_state_success
+                        - condition: "failedPayouts.isNotEmpty()"
+                          action: set_screen_state_partial_failure
+        - condition: "isConfirmed && !isOnline"
+          action: enqueue_all_to_sync_queue
+          then:
+            - action: set_all_member_status_queued
+            - action: set_queued_offline_true
+            - action: set_screen_state_success_optimistic
+
+  on_retry_failed:
+    - decision: online_guard
+      branches:
+        - condition: "failedPayouts.isNotEmpty() && isOnline"
+          action: retry_failed_payouts_sequential
+          steps:
+            - action: reset_failed_member_status_pending
+            - api_call: post_member_payout
+              on_success:
+                - action: remove_from_failed_payouts
+                - action: check_if_all_done
+                  on_empty: set_screen_state_success
+
+  on_done:
+    - navigate: group-dashboard
+      params: { groupId: "{{groupId}}" }
+
+  on_back:
+    - decision: execution_state_guard
+      branches:
+        - condition: "!isExecuting && !isCompleted"
+          navigate: share-out-preview
+          params: { groupId: "{{groupId}}", centerId: "{{centerId}}" }
+        - condition: "isExecuting || isCompleted"
+          action: noop
+          description: "Back disabled during and after execution"

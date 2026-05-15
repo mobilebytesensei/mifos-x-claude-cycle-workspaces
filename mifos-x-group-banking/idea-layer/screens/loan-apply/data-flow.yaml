@@ -1,0 +1,76 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: loan-apply
+
+entries:
+  - screen_id: loanApplyScreen
+    trigger: on_mount
+    endpoints:
+      - { api_id: get_group_members, transport: rest, method: get }
+      - { api_id: get_loan_products, transport: rest, method: get }
+      - { api_id: get_group_corpus, transport: rest, method: get }
+      - { api_id: get_group_config, transport: rest, method: get }
+    tables: []
+    dtos:
+      - { name: GroupMember, role: response, api_id: get_group_members }
+      - { name: LoanProduct, role: response, api_id: get_loan_products }
+      - { name: GroupConfig, role: response, api_id: get_group_config }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 3600
+      key_template: "loan_apply:group:{groupId}"
+    error_paths:
+      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "404", behavior: show_error, message_key: error_group_not_found }
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      Four calls fire in parallel on mount. GroupMember and LoanProduct lists populate
+      Step 1 selectors. GroupCorpus and GroupConfig are used for eligibility computation
+      (maxLoanAmount = member savings balance * loanMultiplier, capped by corpus.currentBalance).
+
+  - screen_id: loanApplyScreen
+    trigger: on_interact
+    endpoints:
+      - { api_id: get_loan_template, transport: rest, method: get }
+      - { api_id: get_member_savings, transport: rest, method: get }
+    tables: []
+    dtos:
+      - { name: LoanProduct, role: response, api_id: get_loan_template }
+      - { name: GroupMember, role: response, api_id: get_member_savings }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 3600
+      key_template: "loan_template:{clientId}:{productId}"
+    error_paths:
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+    notes: >
+      Triggered when member + product are both selected. get_loan_template pre-fills
+      defaults (principal, repayments, interest). get_member_savings computes eligibility
+      ceiling = savingsBalance * loanMultiplier.
+
+  - screen_id: loanApplyScreen
+    trigger: on_interact
+    endpoints:
+      - { api_id: post_loan, transport: rest, method: post }
+    tables: []
+    dtos:
+      - { name: LoanApplicationRequest, role: request, api_id: post_loan }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths:
+      - { error_code: "400", behavior: show_field_errors, message_key: error_validation }
+      - { error_code: "403", behavior: show_error, message_key: error_forbidden }
+      - { error_code: "network.offline", behavior: show_error, message_key: error_no_offline_submit }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      Submit fires post_loan. Loan submissions require network — no offline queue (risk management).
+      On success, navigate back to group-dashboard with a success snackbar.
