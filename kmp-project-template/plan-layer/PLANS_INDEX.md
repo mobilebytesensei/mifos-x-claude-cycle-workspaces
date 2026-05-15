@@ -14,4 +14,7 @@
 | security-hardening-260501 | [PLAN-security-hardening-260501.md](plans/PLAN-security-hardening-260501.md) | Completed | Security hardening | 2026-05-01 |
 | migration-mifos-mobile-260501 | [PLAN-migration-mifos-mobile-260501.md](plans/PLAN-migration-mifos-mobile-260501.md) | Completed | Mifos Mobile migration | 2026-05-01 |
 | migration-mobile-wallet-260501 | [PLAN-migration-mobile-wallet-260501.md](plans/PLAN-migration-mobile-wallet-260501.md) | Completed | Mobile Wallet migration | 2026-05-01 |
-| store-form-mutation-260514 | [PLAN-store-form-mutation-260514.md](plans/PLAN-store-form-mutation-260514.md) | **Draft** | Form/mutation submission capability | 2026-05-14 |
+| core-base-reorg-260514 | [PLAN-core-base-reorg-260514.md](plans/PLAN-core-base-reorg-260514.md) | Completed | core-base/store + core-base/ui sub-package re-org + mutation screen pattern | 2026-05-14 |
+| store-form-mutation-260514 | [PLAN-store-form-mutation-260514.md](plans/PLAN-store-form-mutation-260514.md) | Completed | Form/mutation submission capability | 2026-05-14 |
+| offline-submit-fetch-policy-260514 | [PLAN-offline-submit-fetch-policy-260514.md](plans/PLAN-offline-submit-fetch-policy-260514.md) | Completed | Offline submit outbox + FetchPolicy + FrameworkDatabase + DraftTTL + KDoc + docs | 2026-05-14 |
+| core-domain-reorg-260515 | [PLAN-core-domain-reorg-260515.md](plans/PLAN-core-domain-reorg-260515.md) | **Draft** | core/ domain-context re-organisation + sync-dirs.sh extension | 2026-05-15 |
