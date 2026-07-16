@@ -1,0 +1,380 @@
+requires_stitch: true   # opt-in backfilled (RULE-STITCH-OPTIN-CONSISTENCY-001)
+sibling: ui
+schema_version: "4.0"
+feature_id: join-with-code
+
+route: /groups/join
+entry_points:
+  - source: personal-dashboard
+    trigger: join_group_tap
+  - source: deep_link
+    trigger: "app://groups/join?code={inviteCode}"
+nav_params:
+  inviteCode: { type: "String?", default: "null", description: "Pre-filled 6-char invite code from deep-link" }
+
+screens:
+  - id: join-with-code-screen
+    title: "{strings.screen_title}"
+    type: form
+    description: Single-screen invite code entry and group preview confirmation flow
+
+state_model:
+  JoinWithCodeViewModel:
+    state:
+      name: JoinWithCodeState
+      fields:
+        inviteCode: { type: String, default: '""' }
+        inviteStatus: { type: InviteStatus, default: "InviteStatus.IDLE" }
+        groupPreview: { type: "GroupPreview?", default: "null" }
+        isJoining: { type: Boolean, default: "false" }
+        error: { type: "JoinError?", default: "null" }
+    screen_state:
+      name: JoinWithCodeScreenState
+      members: [Initial, Validating, Preview, Joining, Success, ErrorInvalidCode, ErrorExpired, ErrorAlreadyMember, ErrorNetwork]
+    errors:
+      name: JoinError
+      types:
+        - { type: InvalidCode, retry: true, message_key: error_invalid_code }
+        - { type: ExpiredCode, retry: false, message_key: error_expired }
+        - { type: AlreadyMember, retry: false, message_key: error_already_member }
+        - { type: Network, retry: true, message_key: error_network }
+        - { type: Auth, retry: false, message_key: error_auth, redirect: login-signup }
+    events:
+      name: JoinWithCodeEvent
+      members:
+        - { name: NavigateToGroupDashboard, params: { groupId: String } }
+        - { name: NavigateToLoginSignup, params: { pendingInviteCode: String } }
+        - { name: NavigateBack }
+        - { name: ShowSnackbar, params: { message: String } }
+    actions:
+      name: JoinWithCodeAction
+      members:
+        - { name: OnCodeChange, params: { value: String }, trigger: "Type or paste invite code" }
+        - { name: OnValidateCode, trigger: "Tap Validate / code reaches 6 chars" }
+        - { name: OnConfirmJoin, trigger: "Tap Join Group on preview card" }
+        - { name: OnBack, trigger: "Tap system back or top-bar back arrow" }
+        - { name: OnRetry, trigger: "Tap Retry after network error" }
+    di:
+      - InvitationRepository
+      - GroupRepository
+      - AuthRepository
+      - NetworkMonitor
+
+forms:
+  invite_code_form:
+    fields:
+      - id: invite_code_field
+        type: text-field
+        label: "{strings.field_invite_code}"
+        placeholder: "{strings.field_invite_code_placeholder}"
+        required: true
+        max_length: 6
+        keyboard: text
+        auto_capitalize: characters
+        validation: { pattern: "^[A-Z0-9]{6}$", message_key: error_invalid_code_format }
+
+components:
+  - id: top_bar
+    type: top-bar
+    title: "{strings.screen_title}"
+    style: { background: primary, text_color: onPrimary }
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: OnBack
+      action_contract:
+        effect: navigate
+        description: "Dismiss the join screen and return to the previous screen without joining any group."
+
+  - id: hero_icon
+    type: icon
+    icon: group_add
+    size: 64dp
+    style: { color: primary, alignment: center }
+    accessibility_label: "{strings.accessibility_hero_icon}"
+
+  - id: invite_code_field
+    type: text-field
+    label: "{strings.field_invite_code}"
+    placeholder: "{strings.field_invite_code_placeholder}"
+    value: "{{inviteCode}}"
+    max_length: 6
+    keyboard: text
+    auto_capitalize: characters
+    style: { text_style: headlineMedium, letter_spacing: 8sp, text_align: center }
+    accessibility_label: "{strings.accessibility_invite_code_field}"
+    on_click:
+      action: OnCodeChange
+      action_contract:
+        effect: transform_state
+        description: "Update the inviteCode field in ViewModel state as the user types or pastes the 6-character alphanumeric invite code."
+        library_refs: []
+
+  - id: validate_button
+    type: button
+    variant: filled
+    label: "{strings.btn_validate}"
+    enabled: "{{inviteCode.length == 6}}"
+    style: { background: primary, text_color: onPrimary, min_touch_target: 56dp, full_width: true }
+    accessibility_label: "{strings.accessibility_btn_validate}"
+    on_click:
+      action: OnValidateCode
+      action_contract:
+        effect: call_api
+        description: "Submit the 6-character invite code to the invitations datatable API to validate the token and fetch the associated group preview details before showing the confirmation card."
+        library_refs: [InvitationRepository]
+
+  - id: validating_indicator
+    type: loading-indicator
+    visible: "{{inviteStatus == VALIDATING}}"
+    label: "{strings.label_validating}"
+    style: { color: primary, alignment: center }
+    accessibility_label: "{strings.accessibility_validating}"
+
+  - id: group_preview_card
+    type: card
+    visible: "{{inviteStatus == VALID}}"
+    style: { background: surface, elevation: 2dp, corner_radius: 16dp, padding: 20dp }
+    accessibility_label: "{strings.accessibility_group_preview_card}"
+    content:
+      - id: preview_title
+        type: text
+        style: { text_style: titleMedium, color: onSurface }
+        value: "{strings.label_group_preview_title}"
+
+      - id: preview_group_name
+        type: text
+        style: { text_style: headlineSmall, color: primary, font_weight: bold }
+        value: "{{groupPreview.groupName}}"
+
+      - id: preview_group_type_row
+        type: row
+        children:
+          - id: preview_type_label
+            type: text
+            style: { text_style: bodySmall, color: onSurfaceVariant }
+            value: "{strings.label_group_type}"
+          - id: preview_type_value
+            type: text
+            style: { text_style: bodyMedium, color: onSurface }
+            value: "{{groupPreview.groupType}}"
+
+      - id: preview_organizer_row
+        type: row
+        children:
+          - id: preview_organizer_label
+            type: text
+            style: { text_style: bodySmall, color: onSurfaceVariant }
+            value: "{strings.label_organizer}"
+          - id: preview_organizer_value
+            type: text
+            style: { text_style: bodyMedium, color: onSurface }
+            value: "{{groupPreview.organizerName}}"
+
+      - id: preview_member_count_row
+        type: row
+        children:
+          - id: preview_member_label
+            type: text
+            style: { text_style: bodySmall, color: onSurfaceVariant }
+            value: "{strings.label_member_count}"
+          - id: preview_member_value
+            type: text
+            style: { text_style: bodyMedium, color: onSurface }
+            value: "{{groupPreview.memberCount}} {strings.label_members}"
+
+      - id: preview_role_chip
+        type: chip
+        label: "{{groupPreview.roleToAssign}}"
+        style: { background: secondaryContainer, text_color: onSecondaryContainer, corner_radius: 8dp }
+        accessibility_label: "{strings.accessibility_role_chip}"
+
+  - id: confirm_join_button
+    type: button
+    variant: filled
+    label: "{strings.btn_join_group}"
+    visible: "{{inviteStatus == VALID}}"
+    loading: "{{isJoining}}"
+    style: { background: primary, text_color: onPrimary, min_touch_target: 56dp, full_width: true }
+    accessibility_label: "{strings.accessibility_btn_join}"
+    on_click:
+      action: OnConfirmJoin
+      action_contract:
+        effect: call_api
+        description: "Confirm joining the group shown in the preview card. If the user is authenticated, calls the associate-clients API immediately. If not yet registered, redirects to login-signup preserving the invite code as a nav param so the flow auto-resumes after registration."
+        library_refs: [GroupRepository, AuthRepository, InvitationRepository]
+
+  - id: error_card
+    type: card
+    visible: "{{error != null}}"
+    style: { background: errorContainer, corner_radius: 12dp, padding: 16dp }
+    content:
+      - id: error_icon
+        type: icon
+        icon: error_outline
+        style: { color: onErrorContainer }
+        accessibility_label: "{strings.accessibility_error_icon}"
+      - id: error_message
+        type: text
+        style: { text_style: bodyMedium, color: onErrorContainer }
+        value: "{{error.message}}"
+      - id: error_hint_expired
+        type: text
+        visible: "{{error.type == ExpiredCode}}"
+        style: { text_style: bodySmall, color: onErrorContainer }
+        value: "{strings.hint_ask_organizer}"
+      - id: retry_button
+        type: button
+        variant: text
+        label: "{strings.btn_retry}"
+        visible: "{{error.retry == true}}"
+        style: { text_color: primary, min_touch_target: 48dp }
+        on_click:
+          action: OnRetry
+          action_contract:
+            effect: call_api
+            description: "Clear the current error state and re-submit the invite code validation request after a transient network failure."
+            library_refs: [InvitationRepository]
+
+states:
+  initial_state: initial
+  initial:
+    components: [top_bar, hero_icon, invite_code_field, validate_button]
+    description: "Empty code entry field; validate button disabled until 6 chars entered"
+    demo_data:
+      inviteCode: ""
+      inviteStatus: "IDLE"
+      groupPreview: null
+      isJoining: false
+      error: null
+
+  validating:
+    components: [top_bar, hero_icon, invite_code_field, validating_indicator]
+    description: "Spinner shown while API validates the invite token"
+    demo_data:
+      inviteCode: "MWG7X2"
+      inviteStatus: "VALIDATING"
+      groupPreview: null
+      isJoining: false
+      error: null
+
+  preview:
+    components: [top_bar, hero_icon, invite_code_field, group_preview_card, confirm_join_button]
+    description: "Group preview card visible; user confirms to proceed with joining"
+    demo_data:
+      inviteCode: "MWG7X2"
+      inviteStatus: "VALID"
+      groupPreview:
+        groupName: "Mwangaza Women's Group"
+        groupType: "Savings & Credit"
+        organizerName: "Jane Otieno"
+        memberCount: 14
+        roleToAssign: "Member"
+      isJoining: false
+      error: null
+
+  joining:
+    components: [top_bar, hero_icon, invite_code_field, group_preview_card, confirm_join_button]
+    description: "Join button in loading state while associate-clients and mark-accepted APIs run"
+    demo_data:
+      inviteCode: "MWG7X2"
+      inviteStatus: "VALID"
+      groupPreview:
+        groupName: "Mwangaza Women's Group"
+        groupType: "Savings & Credit"
+        organizerName: "Jane Otieno"
+        memberCount: 14
+        roleToAssign: "Member"
+      isJoining: true
+      error: null
+
+  success:
+    components: []
+    description: "Navigation dispatched to group-dashboard; this state is transient"
+    demo_data:
+      inviteCode: "MWG7X2"
+      inviteStatus: "VALID"
+      isJoining: false
+      error: null
+
+  error_invalid_code:
+    components: [top_bar, hero_icon, invite_code_field, validate_button, error_card]
+    description: "Error card shows invalid code message; user can re-type and retry"
+    demo_data:
+      inviteCode: "XXXXXX"
+      inviteStatus: "INVALID"
+      groupPreview: null
+      isJoining: false
+      error: { type: "InvalidCode", message: "{strings.error_invalid_code}", retry: true }
+
+  error_expired:
+    components: [top_bar, hero_icon, invite_code_field, validate_button, error_card]
+    description: "Error card shows expired code with 'Ask organizer for a new code' hint"
+    demo_data:
+      inviteCode: "EXP001"
+      inviteStatus: "INVALID"
+      groupPreview: null
+      isJoining: false
+      error: { type: "ExpiredCode", message: "{strings.error_expired}", retry: false }
+
+  error_already_member:
+    components: [top_bar, hero_icon, invite_code_field, validate_button, error_card]
+    description: "Error card shows user is already a member of this group"
+    demo_data:
+      inviteCode: "MWG7X2"
+      inviteStatus: "INVALID"
+      groupPreview: null
+      isJoining: false
+      error: { type: "AlreadyMember", message: "{strings.error_already_member}", retry: false }
+
+  error_network:
+    components: [top_bar, hero_icon, invite_code_field, validate_button, error_card]
+    description: "Network error with retry button"
+    demo_data:
+      inviteCode: "MWG7X2"
+      inviteStatus: "IDLE"
+      groupPreview: null
+      isJoining: false
+      error: { type: "Network", message: "{strings.error_network}", retry: true }
+
+business_logic:
+  kind: processor
+  description: >
+    Validates a 6-character alphanumeric invite token against the companion invitations datatable. On valid token,
+    fetches and displays a group preview (name, type, organizer, member count, role to assign). If the user is
+    unauthenticated, the code is persisted as a nav param and the flow redirects to login-signup; after authentication
+    the same code is auto-submitted. On confirmation, calls associate-clients to link the user to the group and then
+    marks the invitation as accepted in the datatable before navigating to the group dashboard.
+  library_refs:
+    - core/network
+    - core/data
+    - core/store
+
+i18n:
+  en:
+    screen_title: "Join a Group"
+    field_invite_code: "Invite Code"
+    field_invite_code_placeholder: "e.g. MWG7X2"
+    btn_validate: "Validate Code"
+    btn_join_group: "Join Group"
+    btn_retry: "Retry"
+    label_validating: "Checking code…"
+    label_group_preview_title: "You're invited to join"
+    label_group_type: "Type"
+    label_organizer: "Organiser"
+    label_member_count: "Members"
+    label_members: "members"
+    hint_ask_organizer: "Ask your group organiser for a new invite code."
+    error_invalid_code: "This invite code is not valid. Please check and try again."
+    error_invalid_code_format: "Invite codes are 6 uppercase letters or digits."
+    error_expired: "This invite code has expired."
+    error_already_member: "You are already a member of this group."
+    error_network: "No internet connection. Please check your network and retry."
+    error_auth: "Your session has expired. Please log in again."
+    accessibility_hero_icon: "Join a group illustration"
+    accessibility_invite_code_field: "Invite code text field, 6 characters"
+    accessibility_btn_validate: "Validate the entered invite code"
+    accessibility_validating: "Validating invite code, please wait"
+    accessibility_group_preview_card: "Group preview details"
+    accessibility_role_chip: "Your role in the group"
+    accessibility_btn_join: "Confirm and join the group"
+    accessibility_error_icon: "Error"

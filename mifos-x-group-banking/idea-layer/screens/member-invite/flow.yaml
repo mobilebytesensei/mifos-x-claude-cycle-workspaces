@@ -1,0 +1,133 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: member-invite
+
+navigates_to:
+  - member-list
+  - group-dashboard
+
+flow_logic:
+  on_load:
+    - action: load_pending_invites
+      api: list_pending_invites
+      params:
+        groupId: "{{nav_params.groupId}}"
+      on_success: populate_pending_invites_list
+      on_error: show_error_banner
+
+  on_generate_invite:
+    - action: validate_email_phone
+      field: emailPhone
+      rules:
+        required: true
+        pattern: "email_or_e164_phone"
+      on_invalid: show_validation_error
+      on_valid:
+        - check: network_available
+          online:
+            - api: create_invite
+              body:
+                invited_email_phone: "{{emailPhone}}"
+                role_to_assign: "{{selectedRole}}"
+                expires_at: "{{now + 7 days, ISO-8601}}"
+              on_success:
+                - action: set_generated_code
+                  value: "{{response.token}}"
+                - action: set_generated_link
+                  value: "{{response.invite_link}}"
+                - action: transition_to_generated_state
+                - action: reload_pending_invites
+                  api: list_pending_invites
+              on_error:
+                - action: show_error_banner
+                  error_type: "{{response.status}}"
+          offline:
+            - action: show_error_banner
+              error_type: Network
+              message_key: error_network
+
+  on_copy_code:
+    - action: copy_to_clipboard
+      value: "{{generatedCode}}"
+    - action: show_snackbar
+      message_key: snack_code_copied
+
+  on_copy_link:
+    - action: copy_to_clipboard
+      value: "{{generatedLink}}"
+    - action: show_snackbar
+      message_key: snack_link_copied
+
+  on_share_link:
+    - action: open_share_sheet
+      subject: "{strings.share_subject}"
+      text: "{strings.share_body} {{generatedCode}} — {{generatedLink}}"
+
+  on_revoke_invite:
+    - action: optimistic_remove
+      list: pendingInvites
+      match_by: rowId
+      value: "{{inviteId}}"
+    - api: revoke_invite
+      params:
+        groupId: "{{nav_params.groupId}}"
+        rowId: "{{inviteId}}"
+      on_success:
+        - action: show_snackbar
+          message_key: snack_invite_revoked
+      on_error:
+        - action: undo_optimistic_remove
+          list: pendingInvites
+        - action: show_error_banner
+          error_type: RevokeFailure
+
+  on_retry:
+    - action: load_pending_invites
+      api: list_pending_invites
+      params:
+        groupId: "{{nav_params.groupId}}"
+      on_success: populate_pending_invites_list
+      on_error: show_error_banner
+
+  on_back:
+    - action: emit NavigateBack
+
+  transitions:
+    - from: loading
+      to: content
+      trigger: list_pending_invites_success
+    - from: loading
+      to: error
+      trigger: list_pending_invites_error
+    - from: content
+      to: generating
+      trigger: on_generate_invite (while API in-flight)
+    - from: generating
+      to: generated
+      trigger: create_invite_success
+    - from: generating
+      to: error
+      trigger: create_invite_error
+    - from: generated
+      to: content
+      trigger: on_generate_invite (new invite started)
+    - from: error
+      to: loading
+      trigger: on_retry
+
+  validation_rules:
+    emailPhone:
+      required: true
+      pattern: "^(\\+?[0-9]{7,15}|[\\w._%+\\-]+@[\\w.\\-]+\\.[A-Za-z]{2,})$"
+      message_key: error_validation
+
+dependencies:
+  repositories:
+    - name: InvitationRepository
+      methods:
+        - "createInvite(request: CreateInviteRequest): Result<GeneratedInvite>"
+        - "listPendingInvites(groupId: Long): Flow<List<PendingInvite>>"
+        - "revokeInvite(groupId: Long, rowId: Long): Result<Unit>"
+  services:
+    - ClipboardManager
+    - NetworkMonitor

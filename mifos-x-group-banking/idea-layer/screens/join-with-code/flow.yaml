@@ -1,0 +1,148 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: join-with-code
+
+navigates_to:
+  - group-dashboard
+  - login-signup
+  - personal-dashboard
+
+flow_logic:
+  on_mount:
+    - action: parse_deep_link_code
+      description: >
+        Check nav_params.inviteCode; if non-null and exactly 6 chars, pre-fill
+        the invite_code_field and auto-trigger validate_invite_token immediately,
+        skipping the manual entry step.
+      condition: "navParams.inviteCode != null && navParams.inviteCode.length == 6"
+      on_match:
+        - action: set_invite_code
+          value: "navParams.inviteCode"
+        - action: auto_validate
+          api: validate_invite_token
+
+  on_code_change:
+    - action: update_state
+      field: inviteCode
+      value: "event.value.uppercase().take(6)"
+      side_effect: clear_error
+
+  on_validate_code:
+    - action: set_status
+      value: "InviteStatus.VALIDATING"
+    - api: validate_invite_token
+      params:
+        entityId: "{{inviteCode}}"
+      on_success:
+        - action: check_expiry
+          condition: "response.expires_at < now()"
+          expired:
+            - action: set_error
+              type: ExpiredCode
+          not_expired:
+            - action: check_already_accepted
+              condition: "response.accepted_at != null"
+              already_accepted:
+                - action: set_error
+                  type: AlreadyMember
+              not_accepted:
+                - api: get_group_preview
+                  params:
+                    groupId: "{{response.group_id}}"
+                  on_success:
+                    - action: set_group_preview
+                      fields:
+                        groupId: "{{groupPreviewResponse.groupId}}"
+                        groupName: "{{groupPreviewResponse.groupName}}"
+                        groupType: "{{groupPreviewResponse.groupType}}"
+                        organizerName: "{{groupPreviewResponse.organizerName}}"
+                        memberCount: "{{groupPreviewResponse.memberCount}}"
+                        roleToAssign: "{{invitationRow.role_to_assign}}"
+                    - action: set_status
+                      value: "InviteStatus.VALID"
+                  on_error:
+                    - action: set_error
+                      type: Network
+      on_error:
+        - action: classify_error
+          401: set_error(Auth) → emit NavigateToLoginSignup(pendingInviteCode=inviteCode)
+          404: set_error(InvalidCode)
+          default: set_error(Network)
+
+  on_confirm_join:
+    - action: check_auth
+      authenticated:
+        - action: set_joining
+          value: true
+        - api: associate_client_to_group
+          params:
+            groupId: "{{groupPreview.groupId}}"
+          body:
+            clientIds: "[currentUser.clientId]"
+            roleToAssign: "{{groupPreview.roleToAssign}}"
+          on_success:
+            - api: mark_invitation_accepted
+              params:
+                entityId: "{{inviteCode}}"
+                rowId: "{{invitationRow.id}}"
+              body:
+                accepted_at: "{{now_iso8601()}}"
+              on_success:
+                - action: set_joining
+                  value: false
+                - action: emit
+                  event: NavigateToGroupDashboard
+                  params:
+                    groupId: "{{groupPreview.groupId}}"
+              on_error:
+                # Non-fatal: association succeeded, accepted_at update failed — still navigate
+                - action: set_joining
+                  value: false
+                - action: emit
+                  event: NavigateToGroupDashboard
+                  params:
+                    groupId: "{{groupPreview.groupId}}"
+          on_error:
+            - action: set_joining
+              value: false
+            - action: classify_error
+              400_already_member: set_error(AlreadyMember)
+              401: set_error(Auth) → emit NavigateToLoginSignup(pendingInviteCode=inviteCode)
+              403: set_error(InvalidCode)
+              default: set_error(Network)
+      unauthenticated:
+        - action: emit
+          event: NavigateToLoginSignup
+          params:
+            pendingInviteCode: "{{inviteCode}}"
+
+  on_retry:
+    - action: clear_error
+    - action: on_validate_code
+
+  on_back:
+    - action: emit
+      event: NavigateBack
+
+  validation_rules:
+    inviteCode:
+      pattern: "^[A-Z0-9]{6}$"
+      required: true
+      message_key: error_invalid_code_format
+
+dependencies:
+  repositories:
+    - name: InvitationRepository
+      methods:
+        - "validateToken(token: String): Result<InvitationRow>"
+        - "markAccepted(token: String, rowId: Long, acceptedAt: String): Result<Unit>"
+    - name: GroupRepository
+      methods:
+        - "getGroupPreview(groupId: Long): Result<GroupPreview>"
+        - "associateClient(groupId: Long, request: AssociateClientsRequest): Result<AssociateClientsResponse>"
+    - name: AuthRepository
+      methods:
+        - "isAuthenticated(): Boolean"
+        - "getCurrentClientId(): Long?"
+  services:
+    - NetworkMonitor
