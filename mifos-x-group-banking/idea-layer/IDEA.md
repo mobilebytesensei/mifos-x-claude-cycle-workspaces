@@ -35,20 +35,24 @@ CommonPurse provides a Kotlin Multiplatform mobile app that digitizes every step
 
 ## Target Users
 
-### Admin Client (Staff Auth)
+> **One unified identity — anyone can self-sign-up.** No up-front "admin vs member" choice. After login, capabilities are **auto-resolved per group** from the roles the user holds. The same person can organize one group and be a plain member of another. (Global self-signup pivot, 2026-07-17.)
+
+### Roles (resolved per group, after login)
+| Role | Scope | Key Capabilities |
+|---|---|---|
+| **Organizer** | creates & owns a group; acts as its loan officer | create/approve loans, schedule + run meetings, record savings, execute share-out, invite members |
+| Treasurer | delegated by organizer | record savings, repayments, fines, attendance |
+| Chairperson | delegated | approve/reject loans, run meetings, initiate share-out |
+| Secretary | delegated | meeting notes, action items |
+| **Member** | any group participant | view own savings/loans, group summary, request loans, participate in votes |
+
+> A user with **zero groups** lands on "create your first group / join with an invite code" — never rejected.
+
+### Optional supervisory tier (opt-in, NOT the default identity)
 | Persona | Role | Key Capabilities |
 |---------|------|-----------------|
-| Amina | Group Treasurer / Secretary | Record savings (group-linked + individual), track loans, calculate share-out, mark attendance |
-| Joseph | Group Chairperson | Conduct meetings, approve/reject loans, initiate share-out, manage group parameters |
-| David | MFI Field Officer | Read-only cross-group monitoring, force sync, reports |
+| David | MFI Field Officer | Read-only cross-group monitoring, reports |
 | Sarah | NGO Program Manager | Read-only analytics, donor reports, program metrics |
-
-### End User Client (Self-Service Auth)
-| Persona | Role | Key Capabilities |
-|---------|------|-----------------|
-| Grace | Regular Group Member | View own savings/loans (group-linked + individual), group summary, request loans, see share-out projection |
-
-> **Two client types**: Admin (manages groups via staff auth) vs End User (sees own data via self-service auth). Different navigation graphs, different screens, different permissions.
 
 ## Success Metrics
 
@@ -62,6 +66,11 @@ CommonPurse provides a Kotlin Multiplatform mobile app that digitizes every step
 ## Scope
 
 ### In Scope (v1.0.0)
+- **Global self-signup**: anyone downloads → self-registers → creates or joins a group (no back-office provisioning)
+- **Single login/signup** screen with post-login capability auto-resolution (organizer vs member, per group)
+- **Config-driven group types** — VSLA · ASCA · ROSCA · SILC · SHG · SACCO/Credit-Union · CBO/Village-Banking · Burial/Welfare-Society · JLG — extensible to ANY type via config (see `ARCHITECTURE.md`)
+- **Pluggable distribution** — pro-rata share-out (VSLA/ASCA/SILC) · rotation payout (ROSCA) · auction/bid (chit/hui)
+- **Invite members** via link/code
 - Group creation, member onboarding, role assignment
 - Meeting lifecycle (schedule, attendance, agenda) with enhanced step-by-step flow
 - Dual savings: Group-Linked (mandatory, min/max enforced) + Individual (voluntary)

@@ -66,6 +66,15 @@
     );
   }
 
+  /**
+   * Read the intra-screen state target (Phase 3 of live-prototype-bridge-e2e).
+   * `data-state-to` is emitted by the renderer (SP-02) when an `on_click`
+   * resolves to one of THIS screen's `states[]` rather than a cross-screen nav.
+   */
+  function getStateTarget(el) {
+    return el.getAttribute('data-state-to') || null;
+  }
+
   function getNavType(el) {
     var t = el.getAttribute('data-nav-type');
     if (t === 'pop' || t === 'tab' || t === 'replace' || t === 'push') return t;
@@ -125,6 +134,9 @@
 
   // Phase 13 T1+T2: data-action handler (non-nav clicks — state changes, toggles, etc.)
   // Posts pdb:action so the dashboard can show a toast or log it.
+  // Version 1.4.0 (2026-06-27) — adds data-state-to → pdb:state emit (Phase 3 of
+  //   live-prototype-bridge-e2e: intra-screen state transitions post the existing
+  //   `pdb:state {newState}` contract; the dashboard onState swaps the iframe).
   // Version 1.3.0 (2026-05-20) — adds data-action support; was 1.2.0 (data-nav-to only).
 
   function getElPath(el) {
@@ -165,6 +177,26 @@
     console.log('[preview-runtime] pdb:action', payload);
   }
 
+  // Phase 3 of live-prototype-bridge-e2e — intra-screen state transition.
+  // Modeled on postAction(): posts the EXISTING `pdb:state {newState}` contract
+  // (postmessage.ts already carries the handler), so no dashboard protocol change.
+  function postState(newState, el) {
+    var payload = {
+      kind: 'pdb:state',
+      newState: newState,
+      el: getElPath(el),
+      timestamp: Date.now(),
+    };
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(payload, '*');
+        return;
+      }
+    } catch (_) { /* fall through */ }
+    // eslint-disable-next-line no-console
+    console.log('[preview-runtime] pdb:state', payload);
+  }
+
   document.addEventListener(
     'click',
     function (ev) {
@@ -188,6 +220,19 @@
           params: getNavParams(navEl),
         };
         postNavigate(payload);
+        return;
+      }
+
+      // Branch 1.5: data-state-to (Phase 3 of live-prototype-bridge-e2e — intra-screen
+      // state transition). Wins over data-action (state transitions are more specific);
+      // loses to data-nav-to (cross-screen nav already returned at Branch 1).
+      var stateEl = t.closest('[data-state-to]');
+      if (stateEl) {
+        var newState = getStateTarget(stateEl);
+        if (!newState) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        postState(newState, stateEl);
         return;
       }
 
@@ -229,6 +274,16 @@
           params: getNavParams(navEl),
         };
         postNavigate(payload);
+        return;
+      }
+
+      // Branch 1.5: data-state-to keyboard parity (Phase 3 of live-prototype-bridge-e2e).
+      var stateElK = t.closest('[data-state-to]');
+      if (stateElK) {
+        var newStateK = getStateTarget(stateElK);
+        if (!newStateK) return;
+        ev.preventDefault();
+        postState(newStateK, stateElK);
         return;
       }
 

@@ -1,6 +1,7 @@
 # Requirements — CommonPurse (mifos-x-group-banking)
 
-> 20 functional requirements · 8 data entities · 2 third-party services
+> 26 functional requirements · 8 data entities · 2 third-party services
+> **Global self-signup pivot (2026-07-17):** FR-013/014/015 revised, FR-021..FR-026 added, FR-009 demoted. See `ARCHITECTURE.md` for the backend contract + 9-type group registry.
 > Generated from `idea-plan.yaml` §requirements (quality 95%, approved 2026-05-03).
 > Source of truth: `idea-layer/idea-plan.yaml` — do not hand-edit acceptance criteria here; edit the plan.
 
@@ -29,9 +30,15 @@
 | FR-006 | Track loan repayments with schedule, overdue detection, and fine calculation |
 | FR-007 | Calculate and execute share-out at end of cycle based on savings ratio + profit distribution |
 | FR-008 | Work fully offline with local SQLDelight database and queue-based sync to Fineract |
-| FR-013 | Authenticate users via Fineract credentials with local PIN and optional biometric for offline access |
-| FR-014 | Two client types — Admin (staff) and End User (self-service) — each with a distinct UI surface |
-| FR-015 | Admin role-based permissions: treasurer, chairperson, field officer, program manager |
+| FR-013 | Self-signup + login via the companion API (Fineract self-service registration bridged to back-office) + local PIN/biometric for offline re-auth |
+| FR-014 | **Single unified login/signup** with post-login capability auto-resolution (organizer vs member, per group) — replaces the prior dual client-type split |
+| FR-015 | **Group-scoped roles** resolved per group: organizer (loan-officer powers), treasurer, chairperson, secretary, member |
+| FR-021 | Self-signup registers the user as a group **organizer** by default — creates & runs a group end-to-end like a loan officer |
+| FR-022 | **Config-driven group_type** (2-axis GroupTypeConfig); 9 seeded types (ROSCA/ASCA/VSLA/SILC/SHG/SACCO/CBO/Burial/JLG); new types = config rows |
+| FR-023 | **Pluggable distribution** — pro-rata share-out · ROSCA rotation · auction/bid, selected by group_type |
+| FR-024 | Members join a group via **invite link/code** (invitee self-registers, is associated to the group) |
+| FR-025 | Group-type state as Fineract **datatables** via the companion API (group_type_config, rosca_rotation, rosca_auction, vsla_cycle, welfare_fund) |
+| FR-026 | **Non-goals**: no standalone DDD service, no YAPE/PLIN, no group-level GL, no deployment-time group-type trapdoor |
 | FR-017 | Dual savings: mandatory group savings (meeting-collected) and voluntary individual savings (anytime) — CR-003 |
 | FR-018 | Real-time fund balance (corpus) for the group; blocks loan disbursement when insufficient — CR-003 |
 | FR-019 | Enhanced meeting flow: review previous, separate cash inflows/outflows, fund balance throughout, opening/closing reconciliation — CR-003 |
@@ -40,7 +47,7 @@
 
 | ID | Description |
 |----|-------------|
-| FR-009 | Field officer can view and supervise multiple groups with read-only access |
+| FR-009 | *(demoted → Could)* OPTIONAL supervisory tier: field officer / NGO program manager read-only cross-group monitoring — no longer the primary identity |
 | FR-010 | Support multiple languages (English, Swahili, French, Hindi) with runtime switching |
 | FR-012 | Fine collection for late attendance, missed meetings, or late loan repayment |
 | FR-016 | End user can submit loan request from personal dashboard; appears as pending in next admin meeting |
