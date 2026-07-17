@@ -1,6 +1,23 @@
 # Authentication — API Contract
 
-## Endpoints
+> **Backend note (global self-signup pivot, 2026-07-17):** The auth operations for the unified
+> login/signup flow (self-register, login, me) are now implemented as **Companion API tools in mcp-mifosx**,
+> not direct Fineract calls. The endpoints below (`/authentication`, `/self/authentication`) remain valid
+> for Fineract back-office credential flows but the primary client path uses COMP-AUTH-001/002/003 at
+> `/companion/auth/*`. See `exports/login-signup/API.md` for the full companion auth contract and
+> `server-layer/COMPANION_API_BUILD_DEPLOY.md` for the backend build spec (TIER-1: auth-model change + COMP-AUTH tools).
+
+## Companion Auth Endpoints (primary path — mcp-mifosx)
+
+| Contract | Method | Path | Description |
+|----------|--------|------|-------------|
+| COMP-AUTH-001 | POST | `/companion/auth/self-register` | Self-register → Fineract `POST /self/registration` |
+| COMP-AUTH-002 | POST | `/companion/auth/login` | Login → Fineract session + group memberships |
+| COMP-AUTH-003 | GET | `/companion/auth/me` | Session identity + memberships (Bearer) |
+
+Full request/response contract: `exports/login-signup/API.md`
+
+## Fineract Direct Endpoints (back-office / legacy path)
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|

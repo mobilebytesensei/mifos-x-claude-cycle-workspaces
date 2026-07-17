@@ -1,5 +1,12 @@
 # Login Signup — API Contract
 
+> **Backend build gate:** These endpoints are implemented as **COMP-AUTH-001/002/003** tools in the
+> mcp-mifosx Go server (`go/tools/companion_auth.go`). The companion API requires the **P0 auth-model
+> change** (per-call user credential + service-credential group orchestration) to be shipped before
+> `/device-test` can exercise this flow. Self-registration also requires a **self-service-enabled
+> Fineract instance** (the community sandbox does NOT have `/self/*` enabled).
+> Build spec: `server-layer/COMPANION_API_BUILD_DEPLOY.md §1a + §1c + §3`
+
 ## Endpoints
 
 | ID | Method | Endpoint | Auth | Writable | Companion Tool |

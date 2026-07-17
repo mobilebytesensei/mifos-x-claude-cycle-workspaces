@@ -9,6 +9,7 @@
 
 | # | Feature | Priority | Client | v1.0.0 | v1.1.0 | v2.0.0 | Admin | End User | Status |
 |---|---------|----------|--------|--------|--------|--------|-------|----------|--------|
+| 0 | companion-api-backend | **external-gate** | server-infra | pre-req | | | — | — | pending-deploy |
 | 1 | authentication | must | both | ✓ | | | ✓ | ✓ | designed |
 | 2 | end-user-dashboard | must | end_user | ✓ | | | | ✓ | designed |
 | 3 | group-management | must | admin | ✓ | | | ✓ | | designed |
@@ -27,6 +28,30 @@
 | 16 | mobile-money-integration | future | both | | | ✓ | ✓ | ✓ | planned |
 | 17 | web-admin-dashboard | future | admin | | | ✓ | ✓ | | planned |
 | 18 | sms-notifications | future | both | | | ✓ | ✓ | ✓ | planned |
+
+---
+
+## Companion API Build + Deploy (External Gate — pre-v1.0.0)
+
+> **Status: external_gate** — This is not an app release milestone. It is the backend infrastructure
+> prerequisite that must be satisfied before `/device-test` can pass and `matrix-green` can be reached.
+> Until this gate is satisfied, app features compile + build-green but `/device-test` returns `pending-device-verify`.
+
+**What must land** (full spec: `server-layer/COMPANION_API_BUILD_DEPLOY.md`):
+
+| # | Item | Priority | Contracts |
+|---|------|----------|-----------|
+| 1 | Auth-model change in mcp-mifosx: per-call user credential + service-credential group orchestration | P0 | — |
+| 2 | TIER-1 tools: self-register, login, me | P0 | COMP-AUTH-001..003 |
+| 3 | TIER-1 tools: group create/activate/associate/assign-role/assign-staff | P1 | COMP-GRP-001..005 |
+| 4 | TIER-1 tools: calendar + collection-sheet | P1 | COMP-CAL-001..003 |
+| 5 | TIER-2 datatable CRUD tools | P0 | COMP-DT-001..005 |
+| 6 | TIER-2 distribution execute tools | P1 | COMP-DIST-001/002 |
+| 7 | Self-service-enabled Fineract deployed (tenant/office strategy decided) | P0 | — |
+| 8 | 6 companion datatables provisioned via COMP-DT-001 | P0 | dt_group_type_config, dt_companion_invitations, dt_rosca_rotation, dt_rosca_auction, dt_vsla_cycle, dt_welfare_fund |
+| 9 | App companion base URL wired to deployed mcp-mifosx | P0 | — |
+
+**Gate criteria**: End-to-end Maestro flow (signup → create group → invite → savings/loan → share-out) passes on device.
 
 ---
 

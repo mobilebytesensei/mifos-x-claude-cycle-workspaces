@@ -1,15 +1,17 @@
 # Features - CommonPurse (mifos-x-group-banking)
 
-> 15 features | 11 must | 3 should | 1 could
+> 21 features | 12 must | 4 should | 1 could | 1 external-gate (companion-api-backend)
+> Global self-signup pivot (2026-07-17): unified-auth, self-signup-organizer, group-type-config, pluggable-distribution, member-invitations added; companion-api-backend added as external infrastructure gate.
 
 ## Feature Matrix
 
-> 15 features | 11 must | 3 should | 1 could
-> Two client types: **Admin** (staff auth, group management) | **End User** (self-service, personal dashboard)
-> Source: idea-plan.yaml + Community Research (CR-003: professionally curated)
+> 21 features | 12 must | 4 should | 1 could | 1 external-gate
+> **One unified identity — self-signup**: anyone downloads → self-registers → creates or joins a group. Post-login capabilities auto-resolved per group.
+> Source: idea-plan.yaml + Community Research (CR-003: professionally curated) + global self-signup pivot 2026-07-17
 
 | # | Feature | Priority | Client | Version | Screens | Flow | API | Data Tables | Reqs |
 |---|---------|----------|--------|---------|---------|------|-----|-------------|------|
+| 0 | **companion-api-backend** | **external-gate** | server-infra | pre-1.0.0 | — | — | COMP-AUTH-001..003, COMP-GRP-001..005, COMP-CAL-001..003, COMP-DT-001..005, COMP-DIST-001/002 | dt_group_type_config, dt_companion_invitations, dt_rosca_rotation, dt_rosca_auction, dt_vsla_cycle, dt_welfare_fund | IR-001..006 |
 | 1 | authentication | must | both | 1.0.0 | client-type-selector, login, admin-dashboard | admin-auth, end-user-auth | 2 | dt_member_role | FR-013-15 |
 | 2 | end-user-dashboard | must | end_user | 1.0.0 | personal-dashboard, personal-savings, personal-loans, loan-request | end-user-loan-request | 4 | dt_loan_request | FR-014, FR-016 |
 | 3 | group-management | must | admin | 1.0.0 | group-list, group-dashboard, group-create | group-creation | 4 | dt_group_config | FR-001, FR-020 |
@@ -26,7 +28,28 @@
 | 14 | field-officer-view | should | admin | 1.1.0 | field-officer-dashboard | - | 3 | dt_sync_metadata | FR-009 |
 | 15 | social-fund | could | admin | 1.1.0 | - | - | 1 | dt_social_fund | FR-011 |
 
+## companion-api-backend (External Infrastructure Gate)
+
+> **Not an app feature** — this is the backend build + deploy prerequisite that unlocks `/device-test`.
+> Until this gate is satisfied, app features **compile + build-green** but device-test returns `pending-device-verify`.
+
+| Build item | Contracts | Notes |
+|---|---|---|
+| P0 auth-model change | — | Per-call user credential intake; service-credential group orchestration; organizer-vs-member authz at companion tier |
+| TIER-1: auth tools | COMP-AUTH-001 (self-register), COMP-AUTH-002 (login), COMP-AUTH-003 (me) | `go/tools/companion_auth.go` |
+| TIER-1: group orchestration tools | COMP-GRP-001 (create/read), COMP-GRP-002 (activate), COMP-GRP-003 (associate-clients), COMP-GRP-004 (assign-role), COMP-GRP-005 (assign-staff) | `go/tools/companion_groups.go` |
+| TIER-1: calendar + collection-sheet | COMP-CAL-001 (calendar), COMP-CAL-002 (get collection-sheet), COMP-CAL-003 (save collection-sheet) | `go/tools/companion_calendar.go` |
+| TIER-2: datatable CRUD | COMP-DT-001 (register), COMP-DT-002 (create row), COMP-DT-003 (read rows), COMP-DT-004 (update row), COMP-DT-005 (delete row) | `go/tools/datatables.go` |
+| TIER-2: distribution execute | COMP-DIST-001 (share-out execute), COMP-DIST-002 (rotation execute) | Client computes payout; server re-validates + executes (CK4) |
+| Fineract with self-service ENABLED | — | Community sandbox does NOT qualify; deploy a fresh instance |
+| 6 datatables provisioned | dt_group_type_config, dt_companion_invitations, dt_rosca_rotation, dt_rosca_auction, dt_vsla_cycle, dt_welfare_fund | Run once via COMP-DT-001 after deploy |
+
+**Full spec**: `server-layer/COMPANION_API_BUILD_DEPLOY.md` | **Contract**: `server-layer/API_CONTRACT.yaml` (companion section)
+
 ## Milestone Roadmap
+
+### companion-api-backend (External gate — must land before v1.0.0 device-verify)
+See section above. Spec: `server-layer/COMPANION_API_BUILD_DEPLOY.md`
 
 ### v1.0.0 - Core Group Banking (13 features)
 authentication, group-management, member-onboarding, meeting-lifecycle, savings-collection, group-linked-savings, corpus-tracking, loan-management, share-out, offline-sync, fines-tracking, multi-language, end-user-dashboard

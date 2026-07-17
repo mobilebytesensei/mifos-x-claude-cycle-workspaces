@@ -1,5 +1,11 @@
 # Member Invite — API Contract
 
+> **Backend build gate:** These endpoints use **COMP-DT-002/003/005** — generic datatable-CRUD tools
+> in mcp-mifosx (`go/tools/datatables.go`) operating on the `dt_companion_invitations` datatable
+> (attached to `m_group`). The datatable must be **provisioned once at deploy** (via COMP-DT-001) and
+> the companion API must be built and deployed before this flow is reachable on device.
+> Build spec: `server-layer/COMPANION_API_BUILD_DEPLOY.md §1b (TIER-2) + §2 + §3`
+
 ## Endpoints
 
 | ID | Method | Endpoint | Auth | Writable | Companion Tool |

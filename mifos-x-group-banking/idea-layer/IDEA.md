@@ -102,6 +102,38 @@ CommonPurse provides a Kotlin Multiplatform mobile app that digitizes every step
 | Local DB | SQLDelight |
 | Platform Targets | Android, iOS, Desktop |
 
+## Backend — Companion API (mcp-mifosx)
+
+The app consumes a **Companion API** layer that sits between the KMP client and Apache Fineract Core.
+This layer is implemented as an **extension of the existing `mcp-mifosx` Go server** — no Supabase, no
+standalone DDD service.
+
+**Why a companion layer?** Fineract's self-service scope grants only one privilege class. The companion
+API bridges self-signed-up users into Fineract's office-scoped model (COMP-AUTH-001..003), orchestrates
+group back-office operations with a service credential (COMP-GRP-001..005, COMP-CAL-001..003), and
+provides generic datatable CRUD for all group-type state (COMP-DT-001..005, COMP-DIST-001/002).
+
+### Build tiers (mcp-mifosx Go extension)
+
+| Tier | Tools | What to build |
+|---|---|---|
+| **TIER-1** | COMP-AUTH-001..003, COMP-GRP-001..005, COMP-CAL-001..003 (9 tools) | Thin `BaseToolDef` wraps over existing Fineract endpoints in `go/tools/companion_*.go` |
+| **TIER-2** | COMP-DT-001..005, COMP-DIST-001/002 (7 tools) | Generic datatable-CRUD + distribution-execute in `go/tools/datatables.go` |
+| **P0 auth-model** | — | Per-call user credential + service-credential group orchestration (the one structural lift) |
+
+### Companion datatables to provision (once at deploy)
+
+`dt_group_type_config` · `dt_companion_invitations` · `dt_rosca_rotation` · `dt_rosca_auction` · `dt_vsla_cycle` · `dt_welfare_fund` (all attached to `m_group`)
+
+### Deploy gate (external, blocks device-verify)
+
+Until the companion API is built and deployed:
+- Implemented features **compile + build-green**
+- `/device-test` returns **`pending-device-verify`** (not a failure — the honest external gate)
+- `matrix-green` is gated on this spec being executed
+
+**Full spec**: `server-layer/COMPANION_API_BUILD_DEPLOY.md` · **Contracts**: `server-layer/API_CONTRACT.yaml` (companion section)
+
 ## Branding
 
 | Element | Value |
