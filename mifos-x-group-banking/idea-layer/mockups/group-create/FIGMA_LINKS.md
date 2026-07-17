@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — group-create
 
-<!-- schema: v3.2 | generated: 2026-07-17T06:19:35.920Z -->
+<!-- schema: v3.2 | generated: 2026-07-17T11:50:11.825Z -->
 
 ## Stitch Project
 
@@ -8,22 +8,22 @@
 |-------|-------|
 | Project URL | [6387644860533383795](https://stitch.google.com/projects/6387644860533383795) |
 | Design System ID | 17261554270924114992 |
-| Generated | 2026-07-17T06:19:35.917Z |
+| Generated | 2026-07-17T11:50:11.825Z |
 | Success | 2/2 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| content | 1626094bd17a42878cfd1a6bc74950cc | 01-group-create-content | PNG ✅ | HTML ✅ | ✅ generated |
-| success | 0f36abd85031438baebfc47c5c7cabda | 02-group-create-success | PNG ✅ | HTML ✅ | ✅ generated |
+| submitting | — | 01-group-create-submitting | PNG ❌ | HTML ✅ | ⏳ pending |
+| error | — | 02-group-create-error | PNG ❌ | HTML ✅ | ⏳ pending |
 
 ## Open in Figma / Stitch
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
-| content | [Open](https://stitch.google.com/projects/6387644860533383795/screens/1626094bd17a42878cfd1a6bc74950cc) | — |
-| success | [Open](https://stitch.google.com/projects/6387644860533383795/screens/0f36abd85031438baebfc47c5c7cabda) | — |
+| submitting | — | — |
+| error | — | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >
