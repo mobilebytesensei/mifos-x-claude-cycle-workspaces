@@ -5,57 +5,102 @@ feature_id: group-list
 entries:
   - screen_id: groupListScreen
     trigger: on_mount
+    description: >
+      Load all groups the authenticated user belongs to via companion API.
+      get_my_groups returns all groups with groupType + viewerRole per group (from dt_member_role).
+      Replaces old get_centers (/centers?staffId=) which was staff-only and missing groupType.
+      Paginated — page_size 20, offset-based.
     endpoints:
-      - { api_id: get_centers, transport: rest, method: get }
-    tables: []
+      - { api_id: get_my_groups, transport: rest, method: get }
+    tables:
+      - name: group_list_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: Group, role: response, api_id: get_centers }
+      - { name: Group, role: response, api_id: get_my_groups }
     produces_state: Content
     auth_required: true
     cache:
       strategy: stale_while_revalidate
       ttl_seconds: 300
-      key_template: "group_list:{staffId}:page:{offset}"
+      key_template: "group_list:{userId}:page:{offset}"
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
       - { error_code: "403", behavior: show_error, message_key: error_forbidden }
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
       - { error_code: "500", behavior: show_retry, message_key: error_server }
     notes: >
-      Paginated load (page_size=20, offset=0). Empty page items produces Empty state.
-      HealthIndicator is derived client-side from overdueRate.
-      Search is client-side filter on cached group name — no additional API call.
+      Response includes groupType (VSLA|ROSCA|ASCA|SILC|SHG|SACCO|CBO|BURIAL|JLG) and
+      viewerRole (ORGANIZER|MEMBER|TREASURER|CHAIRPERSON|SECRETARY) per group.
+      HealthIndicator is derived client-side from overdueRate (GREEN<5%, AMBER<20%, RED>=20%).
+      Empty pageItems → Empty state (ZeroGroups). Search is client-side filter on cached name.
+      Replaces old get_centers which used staffId path param (inapplicable to community users).
 
   - screen_id: groupListScreen
     trigger: on_refresh
+    description: >
+      Pull-to-refresh resets pagination and forces a fresh fetch from companion API.
+      Bypasses stale_while_revalidate and overwrites the cache.
     endpoints:
-      - { api_id: get_centers, transport: rest, method: get }
-    tables: []
+      - { api_id: get_my_groups, transport: rest, method: get }
+    tables:
+      - name: group_list_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: Group, role: response, api_id: get_centers }
+      - { name: Group, role: response, api_id: get_my_groups }
     produces_state: Content
     auth_required: true
     cache:
-      strategy: network_first
+      strategy: bypass_and_refresh
       ttl_seconds: 300
-      key_template: "group_list:{staffId}:page:0"
+      key_template: "group_list:{userId}:page:0"
     error_paths:
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
-    notes: >
-      Pull-to-refresh resets offset to 0 and invalidates all paginated caches.
+    notes: Resets offset to 0 and invalidates all paginated cache pages.
 
   - screen_id: groupListScreen
-    trigger: on_background_sync
+    trigger: on_interact
+    action: OnLoadMoreTap
+    description: Pagination load-next page on scroll-to-end.
     endpoints:
-      - { api_id: get_centers, transport: rest, method: get }
-    tables: []
+      - { api_id: get_my_groups, transport: rest, method: get }
+    tables:
+      - name: group_list_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: Group, role: response, api_id: get_centers }
+      - { name: Group, role: response, api_id: get_my_groups }
     produces_state: Content
     auth_required: true
     cache:
-      strategy: network_first
+      strategy: append_to_existing
       ttl_seconds: 300
-      key_template: "group_list:{staffId}:page:0"
-    error_paths: []
-    notes: Background sync when app resumes from offline — silently refreshes first page.
+      key_template: "group_list:{userId}:page:{offset}"
+    error_paths:
+      - { error_code: "network.offline", behavior: show_error, message_key: error_offline }
+    notes: >
+      Appends page results to group_list_cache using upsert (duplicate groupId handled by PK).
+      hasMore computed from totalFilteredRecords vs current count.
+
+tables:
+  - name: group_list_cache
+    description: >
+      SQLDelight cache of Group rows for the authenticated user. Keyed by groupId.
+      Each row includes groupType and viewerRole from the companion API response.
+      Supports pagination via upsert (incremental loading). Keyed by (userId, groupId).
+    persistence_contract: sqldelight_entity
+    primary_key: "groupId"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+cache:
+  strategy: stale_while_revalidate
+  ttl_seconds: 300
+  notes: >
+    Group list cached 5 min (stale_while_revalidate). Refresh overrides to bypass_and_refresh.
+    Paginated cache keyed by offset page. No legacy api.yaml#cache — single source here.
+
+sync_queue:
+  entries: []
+  notes: Group list is read-only. No write operations; no sync-queue entries needed.

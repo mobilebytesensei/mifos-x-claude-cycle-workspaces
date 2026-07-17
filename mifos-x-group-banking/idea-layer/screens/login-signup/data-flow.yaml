@@ -1,0 +1,156 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: login-signup
+
+entries:
+  - screen_id: loginSignupScreen
+    trigger: on_mount
+    description: >
+      Check for a stored session token. If found and valid, attempt biometric unlock.
+      If biometric hardware is available, prompt biometric immediately.
+      No network call on mount — only token presence check from local SessionStore.
+    endpoints: []
+    tables:
+      - name: session_store
+        persistence_contract: local_encrypted_prefs
+        mutation: read
+    dtos: []
+    produces_state: Login
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      Mount reads SessionStore (SQLDelight / multiplatform-settings) for
+      sessionToken + tokenExpiresAt. If hasValidToken → PromptBiometric event.
+      No network call here — defer to biometric-success or manual login.
+
+  - screen_id: loginSignupScreen
+    trigger: on_action
+    action: OnBiometricUnlockTap
+    description: >
+      User taps biometric unlock. On hardware success, call GET /companion/auth/me
+      to refresh session and fetch current group memberships. Routes based on
+      groupMemberships.isNotEmpty().
+    endpoints:
+      - { api_id: companion_me, transport: rest, method: get }
+    tables:
+      - name: session_store
+        persistence_contract: local_encrypted_prefs
+        mutation: read
+      - name: group_memberships_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: UserProfile, role: response, api_id: companion_me }
+      - { name: GroupMembership, role: response, api_id: companion_me }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 300
+      key_template: "companion_me:{userId}"
+    error_paths:
+      - { error_code: "401", behavior: show_error, message_key: error_session_expired }
+      - { error_code: "network.offline", behavior: show_error, message_key: error_offline_biometric }
+      - { error_code: "500", behavior: show_error, message_key: error_server }
+    navigation:
+      - { condition: "groupMemberships.isNotEmpty()", nav_target: personal-dashboard }
+      - { condition: "groupMemberships.isEmpty()", nav_target: null, produces_state: ZeroGroups }
+
+  - screen_id: loginSignupScreen
+    trigger: on_action
+    action: OnLoginTap
+    description: >
+      User submits login credentials. POST /companion/auth/login returns session token
+      and group membership list. Token is persisted to session_store.
+    endpoints:
+      - { api_id: companion_login, transport: rest, method: post }
+    tables:
+      - name: session_store
+        persistence_contract: local_encrypted_prefs
+        mutation: write
+      - name: group_memberships_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: LoginRequest, role: request, api_id: companion_login }
+      - { name: AuthResponse, role: response, api_id: companion_login }
+      - { name: GroupMembership, role: response, api_id: companion_login }
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths:
+      - { error_code: "401", behavior: show_error, message_key: error_invalid_credentials }
+      - { error_code: "429", behavior: show_error, message_key: error_rate_limited }
+      - { error_code: "network.offline", behavior: show_error, message_key: error_offline }
+      - { error_code: "500", behavior: show_error, message_key: error_server }
+    navigation:
+      - { condition: "groupMemberships.isNotEmpty()", nav_target: personal-dashboard }
+      - { condition: "groupMemberships.isEmpty()", nav_target: null, produces_state: ZeroGroups }
+
+  - screen_id: loginSignupScreen
+    trigger: on_action
+    action: OnSignupTap
+    description: >
+      New user submits self-registration form. POST /companion/auth/self-register
+      creates a companion account + linked Fineract client in one atomic call.
+      Successful new user always gets empty groupMemberships → ZeroGroups state.
+    endpoints:
+      - { api_id: companion_self_register, transport: rest, method: post }
+    tables:
+      - name: session_store
+        persistence_contract: local_encrypted_prefs
+        mutation: write
+    dtos:
+      - { name: SelfRegisterRequest, role: request, api_id: companion_self_register }
+      - { name: AuthResponse, role: response, api_id: companion_self_register }
+    produces_state: ZeroGroups
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths:
+      - { error_code: "400", behavior: show_field_errors, message_key: error_validation }
+      - { error_code: "409", behavior: show_error, message_key: error_account_exists }
+      - { error_code: "network.offline", behavior: show_error, message_key: error_offline }
+      - { error_code: "500", behavior: show_error, message_key: error_server }
+
+tables:
+  - name: session_store
+    description: >
+      Encrypted local store for sessionToken and tokenExpiresAt. Written on every
+      successful login/register. Read on mount for token presence check.
+    persistence_contract: local_encrypted_prefs
+    primary_key: "userId"
+    mutations: [write, read]
+    offline_strategy: always_available
+
+  - name: group_memberships_cache
+    description: >
+      SQLDelight cache of GroupMembership rows for the authenticated user.
+      Hydrated after every successful auth call; read by personal-dashboard
+      to pre-populate group selector without a second network call.
+    persistence_contract: sqldelight_entity
+    primary_key: "groupId"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+cache:
+  strategy: no_cache
+  notes: >
+    Auth endpoints are write/mutation paths — no caching. companion_me response
+    (biometric re-auth) uses stale_while_revalidate 300s in its own entry above.
+    session_store and group_memberships_cache are the offline truth for auth state.
+
+sync_queue:
+  entries: []
+  notes: >
+    No offline enqueue for auth flows — login/signup requires connectivity.
+    Biometric unlock degrades to manual login form when offline.

@@ -3,33 +3,41 @@ sibling: ui
 schema_version: "4.0"
 feature_id: personal-dashboard
 
-route: /dashboard
+route: /dashboard/member
 entry_points:
-  - source: login
-    trigger: end_user_login_success
-    params: { clientId: Long, selfServiceToken: String }
-nav_params:
-  clientId: { type: Long, required: true }
-  selfServiceToken: { type: String, required: true }
+  - source: app_launch
+    condition: "user_authenticated && !isOrganizerInAnyGroup"   # member-only entry
+  - source: app_launch
+    condition: "user_authenticated && isOrganizerInAnyGroup && sessionRoleHint == 'member'"
+    description: "Organizers may switch to their member view via nav"
+nav_params: {}   # no clientId or selfServiceToken — unified identity resolves from auth token
 
 screens:
   - id: personal-dashboard-screen
     name: PersonalDashboardScreen
     type: dashboard
-    description: Home screen with summary cards and recent activity
+    description: >
+      Member home screen. Unified identity — no selfServiceToken nav-param; identity
+      resolved from auth token. Supports multi-group context (member in N groups);
+      shows group selector if myGroups.size > 1. Group-type-aware shareout projection
+      label: ACCUMULATING types show "Projected Share-Out"; ROTATING_PAYOUT types show
+      "Your Rotation Position" with next-recipient ETA. Data from companion API
+      (/companion/member/dashboard). Replaces /self/clients/{id}/accounts SelfService path.
 
 state_model:
   PersonalDashboardViewModel:
     state:
       name: PersonalDashboardState
       fields:
-        clientId: { type: Long, default: "0L" }
-        memberName: { type: String, default: '""' }
-        groupName: { type: String, default: '"Mwangaza Women''s Group"' }
+        memberName: { type: String, default: '""' }     # from session.displayName (no clientId nav-param)
+        myGroups: { type: "List<GroupSummary>", default: "emptyList()" }   # multi-group support
+        selectedGroup: { type: "GroupSummary?", default: "null" }           # active group context
+        poolModel: { type: String, default: '""' }      # ACCUMULATING | ROTATING_PAYOUT | NONE (from selectedGroup.typeConfig)
         groupLinkedSavingsBalance: { type: Double, default: "0.0" }
         individualSavingsBalance: { type: Double, default: "0.0" }
-        activeLoan: { type: "LoanSummary?", default: "null" }
-        shareOutProjection: { type: Double, default: "0.0" }
+        shareOutProjection: { type: Double, default: "0.0" }      # ACCUMULATING types
+        rotationPosition: { type: "Int?", default: "null" }        # ROTATING_PAYOUT types
+        nextRecipientEta: { type: "String?", default: "null" }     # ROTATING_PAYOUT types
         recentTransactions: { type: "List<SavingsTransactionDto>", default: "emptyList()" }
         isRefreshing: { type: Boolean, default: "false" }
         isLoading: { type: Boolean, default: "true" }
@@ -47,20 +55,16 @@ state_model:
       name: PersonalDashboardEvent
       members:
         - { name: NavigateToSavings }
-        - { name: NavigateToLoans }
-        - { name: NavigateToLoanRequest }
+        - { name: NavigateToGroupList }
     actions:
       name: PersonalDashboardAction
       members:
         - { name: OnRefresh, trigger: "Pull-to-refresh" }
         - { name: OnRetry, trigger: "Tap Retry button" }
         - { name: OnSavingsCardClick, trigger: "Tap savings summary card" }
-        - { name: OnLoanCardClick, trigger: "Tap loan summary card" }
-        - { name: OnRequestLoanClick, trigger: "Tap Request a Loan CTA" }
+        - { name: OnSelectGroup, params: { groupId: String }, trigger: "Tap group selector chip" }
     di:
-      - SelfServiceRepository
-      - SavingsRepository
-      - LoanRepository
+      - MemberDashboardRepository   # companion API /companion/member/dashboard (replaces SelfServiceRepository)
       - SessionManager
 
 components:
@@ -84,12 +88,20 @@ components:
     content:
       - id: group_name_text
         type: text
-        value: "{{groupName}}"
+        value: "{{selectedGroup.name}}"    # active group context; resolved from myGroups[0] if single
         style: { text_style: bodyLarge, color: onPrimary, font_weight: semibold }
       - id: currency_chip
         type: chip
         label: "KES"
         style: { background: primaryContainer, text_color: onPrimaryContainer, corner_radius: full }
+      # Multi-group selector — visible only when user is in 2+ groups
+      - id: group_selector_row
+        type: chip-group
+        visible: "{{myGroups.size > 1}}"
+        selection: single
+        chips: "{{myGroups | map(g => { id: g.groupId, label: g.name, selected: g.groupId == selectedGroup.groupId })}}"
+        on_click: { action: OnSelectGroup, params: { groupId: "{{tappedChipId}}" } }
+        style: { scroll_horizontal: true, padding_vertical: 8dp }
 
   - id: savings_summary_card
     type: card
@@ -130,66 +142,8 @@ components:
         tint: onSurfaceVariant
     on_click: { action: OnSavingsCardClick, target: personal-savings }
 
-  - id: loan_summary_card
-    type: card
-    visible: "{{activeLoan != null}}"
-    style:
-      background: surface
-      corner_radius: lg
-      elevation: 2dp
-      padding: 20dp
-      margin_horizontal: 16dp
-      margin_top: 12dp
-    content:
-      - id: loan_icon
-        type: icon
-        icon: money_24_filled
-        tint: tertiary
-      - id: loan_label
-        type: text
-        style: { text_style: labelLarge, color: onSurfaceVariant }
-        value: "Active Loan"
-      - id: loan_outstanding_text
-        type: text
-        style: { text_style: headlineSmall, color: onSurface }
-        value: "KES {{activeLoan.outstandingBalance | number}}"
-      - id: next_repayment_text
-        type: text
-        style: { text_style: bodyMedium, color: onSurfaceVariant }
-        value: "Next repayment: KES {{activeLoan.nextRepaymentAmount | number}} on {{activeLoan.nextRepaymentDate}}"
-      - id: overdue_indicator
-        type: chip
-        visible: "{{activeLoan.isOverdue}}"
-        label: "Overdue"
-        icon: warning_24_filled
-        style: { background: errorContainer, text_color: onErrorContainer }
-    on_click: { action: OnLoanCardClick, target: personal-loans }
-
-  - id: request_loan_cta
-    type: card
-    visible: "{{activeLoan == null}}"
-    style:
-      background: tertiaryContainer
-      corner_radius: lg
-      elevation: 0dp
-      padding: 20dp
-      margin_horizontal: 16dp
-      margin_top: 12dp
-    content:
-      - id: request_loan_icon
-        type: icon
-        icon: add_circle_24_filled
-        size: 40dp
-        tint: onTertiaryContainer
-      - id: request_loan_title
-        type: text
-        style: { text_style: titleMedium, color: onTertiaryContainer }
-        value: "Need a loan?"
-      - id: request_loan_subtitle
-        type: text
-        style: { text_style: bodyMedium, color: onTertiaryContainer }
-        value: "Apply for up to KES 37,350 (3× your savings)"
-    on_click: { action: OnRequestLoanClick, target: loan-request }
+  # Loan summary card deferred to v1.1 — savings groups are the primary product
+  # Loan context (SACCO/CBO lending) will be introduced as an optional screen tile
 
   - id: shareout_projection_card
     type: card
@@ -203,16 +157,31 @@ components:
     content:
       - id: shareout_icon
         type: icon
-        icon: trophy_24_filled
+        # Group-type-adaptive icon
+        icon: "{{poolModel == 'ROTATING_PAYOUT' ? 'swap_horiz_24_filled' : 'trophy_24_filled'}}"
         tint: onSecondaryContainer
       - id: shareout_label
         type: text
         style: { text_style: labelLarge, color: onSecondaryContainer }
-        value: "Projected share-out"
+        # Group-type-adaptive label
+        value: "{{poolModel == 'ROTATING_PAYOUT' ? 'Your Rotation Position' : 'Projected Share-Out'}}"
+      # ACCUMULATING types: show projected KES amount
       - id: shareout_amount
         type: text
+        visible: "{{poolModel != 'ROTATING_PAYOUT'}}"
         style: { text_style: headlineSmall, color: onSecondaryContainer, font_weight: bold }
         value: "KES {{shareOutProjection | number}}"
+      # ROTATING_PAYOUT types: show rotation position and ETA
+      - id: rotation_position_text
+        type: text
+        visible: "{{poolModel == 'ROTATING_PAYOUT'}}"
+        style: { text_style: headlineSmall, color: onSecondaryContainer, font_weight: bold }
+        value: "#{{rotationPosition}} in queue"
+      - id: next_recipient_eta_text
+        type: text
+        visible: "{{poolModel == 'ROTATING_PAYOUT' && nextRecipientEta != null}}"
+        style: { text_style: bodySmall, color: onSecondaryContainer }
+        value: "Your turn: ~{{nextRecipientEta}}"
 
   - id: recent_activity_header
     type: text
@@ -269,17 +238,31 @@ states:
     components: [top_bar, group_banner, shimmer_loading]
     description: "Initial data fetch — shimmer shown for all cards"
   content:
-    components: [top_bar, group_banner, savings_summary_card, loan_summary_card, request_loan_cta, shareout_projection_card, recent_activity_header, recent_activity_list, pull_to_refresh]
-    description: "All data loaded — cards and activity list visible"
+    components: [top_bar, group_banner, savings_summary_card, shareout_projection_card, recent_activity_header, recent_activity_list, pull_to_refresh]
+    description: "All data loaded — savings, share-out projection, and activity visible; multi-group selector in banner if 2+ groups"
+    demo_data:
+      memberName: "Amina Hassan"
+      myGroups:
+        - { groupId: "grp-001", name: "Mwangaza VSLA", poolModel: "ACCUMULATING" }
+      selectedGroup: { groupId: "grp-001", name: "Mwangaza VSLA", poolModel: "ACCUMULATING" }
+      poolModel: "ACCUMULATING"
+      groupLinkedSavingsBalance: 20000.0   # VSLA share value total
+      individualSavingsBalance: 5000.0
+      shareOutProjection: 23500.0
+      rotationPosition: null
+      nextRecipientEta: null
+      recentTransactions:
+        - { id: "t-1", date: "2026-07-10", type: "DEPOSIT", amount: 2500.0 }
+        - { id: "t-2", date: "2026-06-26", type: "DEPOSIT", amount: 2500.0 }
   refreshing:
-    components: [top_bar, group_banner, savings_summary_card, loan_summary_card, shareout_projection_card, recent_activity_header, recent_activity_list, pull_to_refresh]
+    components: [top_bar, group_banner, savings_summary_card, shareout_projection_card, recent_activity_header, recent_activity_list, pull_to_refresh]
     description: "Pull-to-refresh in progress"
   error:
     components: [top_bar, group_banner, error_state]
     description: "Network/server error — error state shown"
   empty:
-    components: [top_bar, group_banner, request_loan_cta]
-    description: "No accounts found (new member)"
+    components: [top_bar, group_banner]
+    description: "New member — no groups joined yet"
 
 i18n:
   en:
@@ -289,13 +272,10 @@ i18n:
     total_savings_label: "Total Savings"
     group_linked_label: "Group-linked"
     individual_label: "Individual"
-    active_loan_label: "Active Loan"
-    outstanding_balance_label: "Outstanding"
-    next_repayment_label: "Next repayment"
-    overdue_label: "Overdue"
-    request_loan_title: "Need a loan?"
-    request_loan_subtitle: "Apply for up to KES 37,350 (3× your savings)"
-    shareout_projection_label: "Projected share-out"
+    shareout_projection_label: "Projected Share-Out"   # ACCUMULATING types
+    rotation_position_label: "Your Rotation Position"  # ROTATING_PAYOUT types
+    next_in_queue_label: "#{{n}} in queue"
+    your_turn_eta_label: "Your turn: ~{{eta}}"
     recent_activity_label: "Recent Activity"
     error_title: "Could not load dashboard"
     error_subtitle: "Check your internet connection and try again."

@@ -3,20 +3,24 @@ sibling: ui
 schema_version: "4.0"
 feature_id: savings-dashboard
 
-route: /savings
+route: /groups/{groupId}/savings
 entry_points:
-  - source: home-dashboard
-    trigger: user_taps_savings_nav
-  - source: bottom_nav
-    trigger: savings_tab_selected
+  - source: group-dashboard
+    trigger: "OnViewSavings (all roles)"
 nav_params:
-  center_id: { type: Int, required: true }
+  groupId: { type: String, required: true }
+  typeConfig: { type: GroupTypeConfig, required: true }   # drives contribution model display
 
 screens:
   - id: savings-dashboard-screen
     name: SavingsDashboardScreen
     type: dashboard
-    description: Tabbed savings dashboard with charts, cycle progress, and per-member lists
+    description: >
+      Contribution-model-aware savings dashboard scoped to a single group. Display adapts to
+      GroupTypeConfig.contribution_model: SHARE_BASED_VARIABLE (VSLA/SILC) shows "X shares @
+      KES Y/share" per member and cycle shares target; FIXED_AMOUNT (ROSCA/SHG) shows
+      "KES Z per meeting" and cycle meeting progress; FIXED_NEGOTIATED (JLG) shows negotiated
+      amounts. Cycle progress bar adapts to model. Data from companion API.
 
 state_model:
   SavingsDashboardViewModel:
@@ -24,6 +28,9 @@ state_model:
       name: SavingsDashboardState
       fields:
         selectedTab: { type: SavingsTab, default: "SavingsTab.GROUP" }
+        groupId: { type: String, default: '""' }
+        typeConfig: { type: "GroupTypeConfig?", default: "null" }
+        contributionModel: { type: String, default: '""' }   # SHARE_BASED_VARIABLE | FIXED_AMOUNT | FIXED_NEGOTIATED
         groupSavingsSummary: { type: "GroupSavingsSummary?", default: "null" }
         individualSavingsSummary: { type: "IndividualSavingsSummary?", default: "null" }
         weeklyTrend: { type: "List<WeeklyContributionPoint>", default: "emptyList()" }
@@ -31,7 +38,6 @@ state_model:
         isRefreshing: { type: Boolean, default: "false" }
         error: { type: "String?", default: "null" }
         lastSyncAt: { type: "String?", default: "null" }
-        centerId: { type: Int, default: "0" }
         cycleTarget: { type: Long, default: "0L" }
         cycleCollected: { type: Long, default: "0L" }
     screen_state:
@@ -42,7 +48,7 @@ state_model:
     events:
       name: SavingsDashboardEvent
       members:
-        - { name: NavigateToMemberDetail, params: "memberId: String, savingsType: SavingsType" }
+        - { name: NavigateToMemberDetail, params: "memberId: String, groupId: String, typeConfig: GroupTypeConfig" }
         - { name: ShowError, params: "message: String" }
     actions:
       name: SavingsDashboardAction
@@ -50,9 +56,9 @@ state_model:
         - { name: LoadDashboard, trigger: "Screen enters composition" }
         - { name: RefreshDashboard, trigger: "Pull-to-refresh" }
         - { name: SelectTab, params: { tab: SavingsTab }, trigger: "Tap tab" }
-        - { name: OpenMemberDetail, params: { memberId: String, savingsType: SavingsType }, trigger: "Tap member row" }
+        - { name: OpenMemberDetail, params: { memberId: String }, trigger: "Tap member row" }
     di:
-      - SavingsRepository
+      - SavingsRepository    # companion API /companion/groups/{groupId}/savings
       - NavigationManager
       - ConnectivityObserver
       - LocalSavingsDao
@@ -113,7 +119,9 @@ components:
             type: linear-progress
             value: "{{cycleCollected / cycleTarget}}"
             style: { track_color: primary, track_alpha: 0.3, indicator_color: primary, height: 8dp }
-          - { type: text, value: "KES {{cycleCollected}} of KES {{cycleTarget}}", style: { text_style: bodyMedium, color: onPrimaryContainer } }
+          # Contribution-model-adaptive progress text
+          - { type: text, visible: "{{contributionModel == 'SHARE_BASED_VARIABLE'}}", value: "{{cycleCollected}} shares of {{cycleTarget}} target", style: { text_style: bodyMedium, color: onPrimaryContainer } }
+          - { type: text, visible: "{{contributionModel != 'SHARE_BASED_VARIABLE'}}", value: "KES {{cycleCollected}} of KES {{cycleTarget}}", style: { text_style: bodyMedium, color: onPrimaryContainer } }
           - { type: text, value: "{{(cycleCollected * 100 / cycleTarget)}}% of cycle target", style: { text_style: labelSmall, color: onPrimaryContainer } }
       - id: group_savings_total_chip
         type: chip
@@ -128,14 +136,15 @@ components:
           headline: { type: text, value: "{{member.name}}", style: { text_style: bodyLarge } }
           supporting:
             type: text
-            value: "{{member.meetingsContributed}} meetings · Last: KES {{member.lastContribution}}"
+            # Contribution-model-adaptive supporting text
+            value: "{{contributionModel == 'SHARE_BASED_VARIABLE' ? member.sharesHeld + ' shares @ KES ' + typeConfig.share_value + '/share' : member.meetingsContributed + ' meetings · Last: KES ' + member.lastContribution}}"
             style: { text_style: bodySmall, color: onSurfaceVariant }
           trailing:
             type: column
             children:
-              - { type: text, value: "KES {{member.totalContributed}}", style: { text_style: labelLarge, color: primary } }
-              - { type: text, value: "total", style: { text_style: labelSmall, color: onSurfaceVariant } }
-        on_click: { action: OpenMemberDetail, params: { member_id: "{{member.memberId}}", savings_type: GROUP_LINKED }, target: member-savings-detail }
+              - { type: text, value: "{{contributionModel == 'SHARE_BASED_VARIABLE' ? 'KES ' + member.shareValue : 'KES ' + member.totalContributed}}", style: { text_style: labelLarge, color: primary } }
+              - { type: text, value: "{{contributionModel == 'SHARE_BASED_VARIABLE' ? 'share value' : 'total'}}", style: { text_style: labelSmall, color: onSurfaceVariant } }
+        on_click: { action: OpenMemberDetail, params: { member_id: "{{member.memberId}}" }, target: member-savings-detail }
 
   - id: individual_savings_content
     type: tab-content
@@ -202,10 +211,21 @@ states:
   initial_state: loading
   loading:
     components: [top_app_bar, tab_row, loading_skeleton]
-    description: "Fetching savings data"
+    description: "Fetching savings data from companion API"
   content_group:
     components: [top_app_bar, sync_band, tab_row, group_savings_content]
-    description: "Group tab selected"
+    description: "Group tab selected; contribution model drives per-member row display"
+    demo_data:
+      groupId: "grp-001"
+      contributionModel: "SHARE_BASED_VARIABLE"
+      cycleTarget: 200     # total shares target for VSLA
+      cycleCollected: 120  # shares collected so far
+      groupSavingsSummary:
+        totalCollected: 120000    # KES equivalent (120 shares × KES 1000)
+        memberRows:
+          - { memberId: "m-101", name: "Amina Hassan", sharesHeld: 20, shareValue: 20000, meetingsContributed: 8, lastContribution: 2500 }
+          - { memberId: "m-102", name: "Peter Otieno", sharesHeld: 15, shareValue: 15000, meetingsContributed: 8, lastContribution: 1875 }
+          - { memberId: "m-103", name: "Grace Wanjiku", sharesHeld: 12, shareValue: 12000, meetingsContributed: 7, lastContribution: 1500 }
   content_individual:
     components: [top_app_bar, sync_band, tab_row, individual_savings_content]
     description: "Individual tab selected"

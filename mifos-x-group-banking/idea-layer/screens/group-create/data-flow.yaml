@@ -5,9 +5,16 @@ feature_id: group-create
 entries:
   - screen_id: groupCreateScreen
     trigger: on_mount
+    description: >
+      Load the GroupTypeConfig forwarded as a nav_arg from group-type-picker.
+      No API call needed — typeConfig is embedded in nav params.
+      The office field uses a companion-hosted office list fetched in the background.
     endpoints:
       - { api_id: get_offices, transport: rest, method: get }
-    tables: []
+    tables:
+      - name: offices_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: Office, role: response, api_id: get_offices }
     produces_state: Content
@@ -15,23 +22,40 @@ entries:
     cache:
       strategy: stale_while_revalidate
       ttl_seconds: 3600
-      key_template: "group_create:offices"
+      key_template: "offices"
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
       - { error_code: "500", behavior: show_retry, message_key: error_server }
     notes: >
-      Load offices list to populate the office dropdown in Step 1.
-      Cached aggressively (1h) since offices rarely change.
+      typeConfig arrives from group-type-picker nav_arg — no separate API call.
+      Offices are fetched once (TTL 1h) since they rarely change. Cached offline.
+      Pre-select the first office alphabetically as a sensible default.
 
   - screen_id: groupCreateScreen
-    trigger: on_interact
+    trigger: on_action
+    action: OnCreateGroupTap
+    description: >
+      User submits the group creation form. Single companion API call that orchestrates:
+      (1) createCenter in Fineract, (2) activate group, (3) associateClients (creator),
+      (4) assignRole (ORGANIZER for creator), (5) provision dt_group_type_config row
+      with the GroupTypeConfig from nav_args. Returns the new groupId + an inviteCode.
+      If offline, enqueues to sync_queue for deferred execution.
     endpoints:
-      - { api_id: create_center, transport: rest, method: post }
-      - { api_id: create_group_config, transport: rest, method: post }
-    tables: []
+      - { api_id: create_group_orchestrate, transport: rest, method: post }
+    tables:
+      - name: groups_cache
+        persistence_contract: sqldelight_entity
+        mutation: write
+      - name: group_type_config_cache
+        persistence_contract: sqldelight_entity
+        mutation: write
+      - name: sync_queue
+        persistence_contract: sqldelight_entity
+        mutation: write
     dtos:
-      - { name: CreateGroupRequest, role: request, api_id: create_center }
+      - { name: CreateGroupOrchestrationRequest, role: request, api_id: create_group_orchestrate }
+      - { name: CreateGroupOrchestrationResponse, role: response, api_id: create_group_orchestrate }
     produces_state: Content
     auth_required: true
     cache:
@@ -40,11 +64,78 @@ entries:
       key_template: ""
     error_paths:
       - { error_code: "400", behavior: show_field_errors, message_key: error_validation }
-      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
       - { error_code: "403", behavior: show_error, message_key: error_forbidden }
+      - { error_code: "409", behavior: show_error, message_key: error_group_name_taken }
       - { error_code: "network.offline", behavior: enqueue_sync, message_key: offline_queued }
       - { error_code: "500", behavior: show_retry, message_key: error_server }
+    offline_behavior:
+      strategy: enqueue_to_sync_queue
+      priority: NORMAL
+      entity_type: CREATE_GROUP_ORCHESTRATE
+      show_state: Queued
+    navigation:
+      - { condition: "createSuccess", nav_target: group-dashboard, params: [groupId] }
     notes: >
-      On submit: create_center fires first. On success, resourceId is used as centerId
-      for create_group_config. Both must succeed before navigating to group-dashboard.
-      If offline, both are enqueued to sync_queue (operation: CREATE_GROUP + CREATE_GROUP_CONFIG).
+      Replaces the old two-step create_center + create_group_config calls with a single
+      companion orchestration endpoint (COMP-GRP-001). The typeConfig from nav_arg is
+      embedded in the request body. Both groups_cache and group_type_config_cache are
+      written on success so the group-dashboard can render offline.
+
+tables:
+  - name: offices_cache
+    description: >
+      SQLDelight cache of available Fineract Office rows. Keyed by id.
+      Served offline from cache (TTL 1h). Updated by /offices endpoint on mount.
+    persistence_contract: sqldelight_entity
+    primary_key: "id"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+  - name: groups_cache
+    description: >
+      Local record of created group metadata (groupId, name, fineractCenterId).
+      Written immediately after create_group_orchestrate succeeds so the new group
+      appears in the group-list offline without needing a re-fetch.
+    persistence_contract: sqldelight_entity
+    primary_key: "groupId"
+    mutations: [write, read]
+    offline_strategy: serve_stale
+
+  - name: group_type_config_cache
+    description: >
+      Per-group copy of the GroupTypeConfig used at creation, stored locally in
+      the dt_group_type_config shape. Populated from nav_arg after creation success.
+      Drives metric card selection on group-dashboard when offline.
+    persistence_contract: sqldelight_entity
+    primary_key: "groupId"
+    mutations: [write, read]
+    offline_strategy: serve_stale
+    source_datatable: dt_group_type_config
+
+  - name: sync_queue
+    description: >
+      Offline sync queue table (Store5/Bookkeeper pattern). Accepts CREATE_GROUP_ORCHESTRATE
+      payloads when the device is offline. Drained by background sync when connectivity
+      is restored.
+    persistence_contract: sqldelight_entity
+    primary_key: "id"
+    mutations: [write, read, delete]
+    offline_strategy: drain_on_connect
+
+cache:
+  strategy: no_cache
+  notes: >
+    Group creation is a write/mutation endpoint — no response caching.
+    offices_cache uses stale_while_revalidate (TTL 3600s) declared in the on_mount entry.
+    No legacy api.yaml#cache. Single source: this data-flow file.
+
+sync_queue:
+  entries:
+    - entity_type: CREATE_GROUP_ORCHESTRATE
+      table: sync_queue
+      priority: NORMAL
+      idempotency_key: "name:{name}:officeId:{officeId}:userId:{userId}"
+      notes: >
+        Queued when offline. The companion API uses an idempotency key to prevent
+        duplicate group creation if the sync drains multiple times.

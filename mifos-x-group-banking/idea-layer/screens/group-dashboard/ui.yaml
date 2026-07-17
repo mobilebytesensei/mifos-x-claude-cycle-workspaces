@@ -6,15 +6,25 @@ feature_id: group-dashboard
 route: /groups/{groupId}
 entry_points:
   - source: group-list
-    params: { groupId: String }
+    params: { groupId: String, viewerRole: String }    # viewerRole = ORGANIZER | MEMBER | TREASURER | CHAIRPERSON
+  - source: group-create
+    trigger: group_created
+    params: { groupId: String, viewerRole: "ORGANIZER" }   # creator always lands as ORGANIZER
 nav_params:
   groupId: { type: String, required: true }
+  viewerRole: { type: String, required: true }    # from dt_member_role; drives action gating
 
 screens:
   - id: group-dashboard-screen
     title: "{{group.name}}"
     type: dashboard
-    description: Scrollable single-group dashboard with header, corpus card, stats, quick actions, and activity feed
+    description: >
+      Scrollable single-group dashboard. Header shows group name + group-type badge (VSLA/ROSCA/etc.)
+      + viewer's per-group role chip. Metric cards are GROUP-TYPE-AWARE: ACCUMULATING types show corpus
+      + shareout projection; ROTATING_PAYOUT types show rotation position + next-recipient chip.
+      Quick actions are ROLE-GATED: organizer/treasurer/chairperson see management actions (Start Meeting,
+      Members, Loans, Share-Out); member sees read-only actions (View savings, View loans, Meetings).
+      Data sourced from companion API (COMP-GRP-001 read path + group_type_config datatable).
 
 state_model:
   GroupDashboardViewModel:
@@ -25,10 +35,19 @@ state_model:
         group: { type: "Group?", default: "null" }
         corpus: { type: "GroupCorpus?", default: "null" }
         config: { type: "GroupConfig?", default: "null" }
+        typeConfig: { type: "GroupTypeConfig?", default: "null" }    # from group_type_config datatable; drives metric cards + action visibility
+        groupTypeName: { type: String, default: '""' }               # display label e.g. "VSLA"
+        viewerRole: { type: String, default: '"MEMBER"' }            # ORGANIZER | MEMBER | TREASURER | CHAIRPERSON — from dt_member_role
         accounts: { type: "GroupAccounts?", default: "null" }
         recentActivity: { type: "List<ActivityItem>", default: "emptyList()" }
         isCorpusInsufficient: { type: Boolean, default: "false" }
         isCycleEnd: { type: Boolean, default: "false" }
+        # ROTATING_PAYOUT type state
+        rotationPosition: { type: "Int?", default: "null" }          # viewer's position in payout order (ROSCA)
+        nextRecipientName: { type: "String?", default: "null" }      # next in rotation
+        nextRecipientPosition: { type: "Int?", default: "null" }
+        # ACCUMULATING type state
+        shareOutProjection: { type: "Double?", default: "null" }     # estimated payout at cycle end (VSLA/SILC/ASCA)
         error: { type: "GroupDashboardError?", default: "null" }
     screen_state:
       name: GroupDashboardScreenState
@@ -46,22 +65,24 @@ state_model:
         - { name: NavigateToMeetingCalendar, params: { groupId: String } }
         - { name: NavigateToMemberList, params: { groupId: String } }
         - { name: NavigateToLoanList, params: { groupId: String } }
-        - { name: NavigateToShareOut, params: { groupId: String } }
+        - { name: NavigateToShareOut, params: { groupId: String, distributionStrategy: String } }
         - { name: ShowCorpusBlockedDialog }
         - { name: ShowSnackbar, params: { message: String } }
     actions:
       name: GroupDashboardAction
       members:
-        - { name: OnStartMeeting, trigger: "Tap Start Meeting button" }
-        - { name: OnViewMembers, trigger: "Tap View Members button" }
-        - { name: OnViewLoans, trigger: "Tap View Loans button" }
-        - { name: OnShareOut, trigger: "Tap Share-Out button" }
+        - { name: OnStartMeeting, trigger: "Tap Start Meeting button (organizer/chairperson only)" }
+        - { name: OnViewMembers, trigger: "Tap Members button" }
+        - { name: OnViewLoans, trigger: "Tap Loans button" }
+        - { name: OnShareOut, trigger: "Tap Share-Out button (organizer/treasurer only; cycle-end required)" }
+        - { name: OnViewSavings, trigger: "Tap savings card (member role)" }
         - { name: OnRefresh, trigger: "Pull to refresh" }
         - { name: Retry, trigger: "Tap retry on error" }
         - { name: OnBack, trigger: "Tap back arrow" }
     di:
-      - GroupRepository
+      - GroupRepository      # reads group + group_type_config via companion API
       - CorpusRepository
+      - RoleRepository       # reads dt_member_role to resolve viewerRole
       - NetworkMonitor
       - SessionManager
 
@@ -83,19 +104,22 @@ components:
     content:
       - { id: group_name_large, type: text, style: { text_style: headlineSmall, color: onPrimaryContainer }, value: "{{group.name}}" }
       - { id: cycle_info_text, type: text, style: { text_style: bodyMedium, color: onPrimaryContainer }, value: "Cycle {{group.cycleNumber}} of {{group.cycleLengthMonths}} months • {{group.meetingFrequency}} meetings" }
-      - id: member_stats_row
+      - id: header_badges_row
         type: row
         children:
-          - { id: member_count_chip, type: chip, label: "{{group.memberCount}} members", style: { background: secondaryContainer, text_color: onSecondaryContainer } }
+          - { id: group_type_chip, type: chip, label: "{{groupTypeName}}", icon: category_24_regular, style: { background: tertiaryContainer, text_color: onTertiaryContainer } }
+          - { id: viewer_role_chip, type: chip, label: "{{viewerRole | lowercase}}", icon: person_24_regular, style: { background: secondaryContainer, text_color: onSecondaryContainer } }
+          - { id: member_count_chip, type: chip, label: "{{group.memberCount}} members", style: { background: surfaceVariant, text_color: onSurfaceVariant } }
           - id: overdue_loans_chip
             type: chip
             label: "{{group.overdueLoansCount}} overdue"
-            style:
-              default: { background: surfaceVariant, text_color: onSurfaceVariant }
-              nonzero: { background: errorContainer, text_color: onErrorContainer }
+            visible: "{{group.overdueLoansCount > 0}}"
+            style: { background: errorContainer, text_color: onErrorContainer }
 
+  # ACCUMULATING metric card (VSLA, SILC, ASCA, SHG, CBO, SACCO, Burial)
   - id: corpus_card
     type: card
+    visible: "{{typeConfig.pool_model != 'ROTATING_PAYOUT'}}"
     style:
       background: surface
       elevation: 4dp
@@ -107,6 +131,11 @@ components:
     content:
       - { id: corpus_label, type: text, style: { text_style: titleMedium, color: onSurface }, value: "Corpus Fund" }
       - { id: corpus_balance_large, type: text, style: { text_style: displaySmall, color: primary }, value: "KES {{corpus.currentBalance | number}}" }
+      - id: shareout_projection_text
+        type: text
+        visible: "{{shareOutProjection != null}}"
+        style: { text_style: bodyMedium, color: secondary }
+        value: "Projected share-out: KES {{shareOutProjection | number}}"
       - id: corpus_blocked_banner
         type: banner
         visible: "{{isCorpusInsufficient}}"
@@ -120,14 +149,34 @@ components:
           - { id: contributions_stat, type: stat, label: "Contributions", value: "KES {{corpus.totalContributionsThisCycle | number}}" }
           - { id: loans_outstanding_stat, type: stat, label: "Loans Out", value: "KES {{corpus.totalLoansOutstanding | number}}" }
 
+  # ROTATING_PAYOUT metric card (ROSCA and variants)
+  - id: rotation_card
+    type: card
+    visible: "{{typeConfig.pool_model == 'ROTATING_PAYOUT'}}"
+    style: { background: surface, elevation: 4dp, corner_radius: 16dp, padding: 20dp }
+    content:
+      - { id: rotation_label, type: text, style: { text_style: titleMedium, color: onSurface }, value: "Rotation Status" }
+      - id: viewer_position_text
+        type: text
+        style: { text_style: displaySmall, color: primary }
+        value: "Your position: #{{rotationPosition}}"
+      - id: next_recipient_row
+        type: row
+        children:
+          - { id: next_recipient_label, type: text, style: { text_style: bodyMedium, color: onSurfaceVariant }, value: "Next payout →" }
+          - { id: next_recipient_chip, type: chip, label: "{{nextRecipientName}} (#{{nextRecipientPosition}})", style: { background: secondaryContainer, text_color: onSecondaryContainer } }
+      - { id: corpus_balance_small, type: text, style: { text_style: bodyLarge, color: tertiary }, value: "Pool: KES {{corpus.currentBalance | number}}" }
+
   - id: quick_actions_section
     type: card
     style: { background: surface, elevation: 2dp, corner_radius: 16dp, padding: 16dp }
     content:
       - { id: quick_actions_label, type: text, style: { text_style: titleSmall, color: onSurfaceVariant }, value: "Quick Actions" }
-      - id: quick_actions_grid
+      # ORGANIZER / CHAIRPERSON / TREASURER — management actions
+      - id: management_actions_grid
         type: grid
         columns: 2
+        visible: "{{viewerRole == 'ORGANIZER' || viewerRole == 'CHAIRPERSON' || viewerRole == 'TREASURER'}}"
         children:
           - { id: start_meeting_button, type: button, variant: filled, label: "Start Meeting", icon: meeting_room, style: { background: primary, text_color: onPrimary, min_touch_target: 56dp }, on_click: { action: OnStartMeeting, target: meeting-calendar } }
           - { id: view_members_button, type: button, variant: outlined, label: "Members", icon: group, style: { border_color: primary, text_color: primary, min_touch_target: 56dp }, on_click: { action: OnViewMembers, target: member-list } }
@@ -137,18 +186,35 @@ components:
             variant: outlined
             label: "Share-Out"
             icon: share
-            enabled: "{{isCycleEnd}}"
+            enabled: "{{isCycleEnd && (viewerRole == 'ORGANIZER' || viewerRole == 'TREASURER')}}"
             style:
               enabled: { border_color: secondary, text_color: secondary, min_touch_target: 56dp }
               disabled: { border_color: outline, text_color: onSurfaceVariant, min_touch_target: 56dp }
             on_click: { action: OnShareOut, target: share-out-preview }
+      # MEMBER — read-only actions
+      - id: member_actions_grid
+        type: grid
+        columns: 2
+        visible: "{{viewerRole == 'MEMBER'}}"
+        children:
+          - { id: view_savings_button, type: button, variant: outlined, label: "My Savings", icon: savings_24_regular, style: { border_color: primary, text_color: primary, min_touch_target: 56dp }, on_click: { action: OnViewSavings, target: member-savings-detail } }
+          - { id: view_loans_member_button, type: button, variant: outlined, label: "My Loans", icon: account_balance, style: { border_color: primary, text_color: primary, min_touch_target: 56dp }, on_click: { action: OnViewLoans, target: loan-list } }
+          - { id: view_meetings_button, type: button, variant: outlined, label: "Meetings", icon: calendar_month_24_regular, style: { border_color: primary, text_color: primary, min_touch_target: 56dp }, on_click: { action: OnStartMeeting, target: meeting-calendar } }
+          - { id: view_members_member_button, type: button, variant: outlined, label: "Members", icon: group, style: { border_color: outline, text_color: onSurfaceVariant, min_touch_target: 56dp }, on_click: { action: OnViewMembers, target: member-list } }
 
   - id: savings_summary_card
     type: card
     style: { background: surface, elevation: 2dp, corner_radius: 16dp, padding: 16dp }
     content:
       - { id: savings_label, type: text, style: { text_style: titleMedium, color: onSurface }, value: "Savings Summary" }
-      - { id: contribution_rate_text, type: text, style: { text_style: bodyMedium, color: onSurfaceVariant }, value: "Mandatory contribution: KES {{config.contributionMin}} – KES {{config.contributionMax}} per meeting" }
+      # Contribution model display — adapts to group type
+      - id: contribution_model_text
+        type: text
+        style: { text_style: bodyMedium, color: onSurfaceVariant }
+        value:
+          SHARE_BASED_VARIABLE: "Share-based: {{config.shareValue | currency:KES}} / share · {{config.shareMin}}–{{config.shareMax}} shares / meeting"
+          FIXED_AMOUNT: "Fixed: KES {{config.contributionAmount}} per meeting"
+          FIXED_NEGOTIATED: "Negotiated fixed: KES {{config.contributionAmount}} per meeting"
       - { id: total_savings_text, type: text, style: { text_style: titleLarge, color: tertiary }, value: "KES {{accounts.savingsBalance | number}} total" }
 
   - id: activity_feed_section
@@ -181,26 +247,36 @@ states:
   initial_state: loading
   loading:
     components: [top_bar, shimmer_dashboard]
-    description: "Parallel API calls in-flight; shimmer shown"
-  content:
+    description: "Parallel API calls in-flight (group + typeConfig + role + corpus); shimmer shown"
+  content_accumulating:
     components: [top_bar, group_header_card, corpus_card, quick_actions_section, savings_summary_card, activity_feed_section]
-    description: "All data loaded; corpus block banner conditionally visible"
+    description: "ACCUMULATING type (VSLA/SILC/ASCA/SHG etc.); corpus card visible; shareout projection shown"
     demo_data:
+      groupTypeName: "VSLA"
+      viewerRole: "ORGANIZER"
       group:
         name: "Mwangaza Women's Group"
         cycleNumber: 1
         cycleLengthMonths: 12
         meetingFrequency: "Weekly"
-        memberCount: 5
+        memberCount: 20
         overdueLoansCount: 0
+      typeConfig:
+        pool_model: "ACCUMULATING"
+        contribution_model: "SHARE_BASED_VARIABLE"
+        shareout_formula: "PRORATA_SHARES"
+        share_value: 200.0
+        shareMin: 1
+        shareMax: 5
       corpus:
         currentBalance: 47500.00
         openingBalance: 0.00
         totalContributionsThisCycle: 52500.00
         totalLoansOutstanding: 5000.00
       config:
-        contributionMin: 100.00
-        contributionMax: 500.00
+        shareValue: 200.00
+        shareMin: 1
+        shareMax: 5
         loanMultiplier: 3.0
         interestRate: 10.0
         cycleLengthMonths: 12
@@ -210,8 +286,32 @@ states:
         savingsBalance: 52500.00
         loansOutstanding: 5000.00
         activeLoanCount: 1
+      shareOutProjection: 2750.00
       isCorpusInsufficient: false
       isCycleEnd: false
+  content_rotating:
+    components: [top_bar, group_header_card, rotation_card, quick_actions_section, savings_summary_card, activity_feed_section]
+    description: "ROTATING_PAYOUT type (ROSCA); rotation card replaces corpus card; position + next-recipient shown"
+    demo_data:
+      groupTypeName: "ROSCA"
+      viewerRole: "MEMBER"
+      group:
+        name: "Jiunge ROSCA Circle"
+        cycleNumber: 3
+        cycleLengthMonths: 10
+        meetingFrequency: "Monthly"
+        memberCount: 10
+        overdueLoansCount: 0
+      typeConfig:
+        pool_model: "ROTATING_PAYOUT"
+        contribution_model: "FIXED_AMOUNT"
+        payout_order_method: "FIXED_ORDER"
+        contribution_amount: 2000.0
+      corpus:
+        currentBalance: 20000.00
+      rotationPosition: 7
+      nextRecipientName: "Amina Hassan"
+      nextRecipientPosition: 4
   error:
     components: [top_bar, error_state]
     description: "API error; retry option shown"

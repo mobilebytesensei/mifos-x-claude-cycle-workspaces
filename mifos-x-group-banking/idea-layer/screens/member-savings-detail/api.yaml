@@ -3,63 +3,42 @@ schema_version: "4.0"
 feature_id: member-savings-detail
 
 api:
-  - id: get_client
-    function: get_client
-    method: get
-    endpoint: "/clients/{clientId}"
-    description: Fetch member name/photo for the profile header
+  - id: get_member_savings_detail
+    function: get_member_savings_detail
+    method: GET
+    endpoint: "/companion/groups/{groupId}/members/{memberId}/savings"   # companion API
+    description: >
+      Fetch member savings detail including contribution-model-aware fields.
+      For SHARE_BASED_VARIABLE (VSLA/SILC): returns sharesHeld + shareValue (KES total).
+      For FIXED_AMOUNT (ROSCA/SHG): returns savingsBalance + meetingsContributed.
+      Also returns sparkline data and paginated transaction history.
+      Replaces raw Fineract: GET /clients/{id} + GET /clients/{id}/accounts.
     params:
-      clientId: { type: Long, required: true, source: nav_params }
-    response:
-      type: object
-      fields:
-        id: Long
-        displayName: String
-        firstname: String
-        lastname: String
-        imagePresent: Boolean
-    errors:
-      401: Unauthorized
-      403: Forbidden
-      404: Client not found
-      500: Server error
-    cache:
-      ttl: 300
-      strategy: stale-while-revalidate
-      offline: show_cached
-
-  - id: get_client_savings_accounts
-    function: get_client_savings_accounts
-    method: get
-    endpoint: "/clients/{clientId}/accounts"
-    description: Fetch savings account with paginated transaction history
-    params:
-      clientId: { type: Long, required: true, source: nav_params }
+      groupId: { type: String, required: true, source: nav_params }
+      memberId: { type: String, required: true, source: nav_params }
       limit: { type: Int, default: 20 }
       offset: { type: Int, default: 0 }
     response:
       type: object
       fields:
-        totalFilteredRecords: Int
-        savingsAccounts:
-          type: array
-          items:
-            id: Long
-            accountNo: String
-            balance: Double
-            transactions:
-              type: array
-              items:
-                id: Long
-                date: String
-                type: { id: Int, value: String }
-                amount: Double
-                runningBalance: Double
-                reversed: Boolean
+        member:
+          type: object
+          fields:
+            memberId: String
+            displayName: String
+            photoUri: "String?"
+        savingsAccountNo: String
+        savingsBalance: Double       # KES — meaningful for FIXED_AMOUNT; shares-equivalent for SHARE_BASED_VARIABLE
+        sharesHeld: "Int?"           # SHARE_BASED_VARIABLE only
+        shareValue: "Long?"          # KES total value of shares — SHARE_BASED_VARIABLE only
+        sparklineData: "List<SavingsDataPoint>"
+        transactions: "List<SavingsTransaction>"
+        totalTransactions: Int
+        hasNextPage: Boolean
     errors:
       401: Unauthorized
       403: Forbidden
-      404: Client not found
+      404: Member or group not found
       500: Server error
     cache:
       ttl: 120
@@ -71,19 +50,23 @@ api:
 
 dtos:
   Member:
-    id: String
+    memberId: String
     displayName: String
     photoUri: "String?"
 
-  MemberSavingsAccounts:
-    savingsAccountId: Long
+  MemberSavingsDetailResponse:
+    member: Member
     savingsAccountNo: String
     savingsBalance: Double
+    sharesHeld: "Int?"      # SHARE_BASED_VARIABLE only
+    shareValue: "Long?"     # KES total value — SHARE_BASED_VARIABLE only
     sparklineData: "List<SavingsDataPoint>"
     transactions: "List<SavingsTransaction>"
+    totalTransactions: Int
+    hasNextPage: Boolean
 
   SavingsTransaction:
-    id: Long
+    id: String
     date: String
     type: TransactionType
     amount: Double
@@ -107,11 +90,9 @@ cache_strategy:
 
 dependencies:
   repositories:
-    - name: MemberRepository
+    - name: MemberRepository    # companion API /companion/groups/{groupId}/members/{memberId}/savings
       methods:
-        - "getMemberProfile(memberId: String): Flow<Member>"
-        - "getMemberSavingsDetail(memberId: String, limit: Int, offset: Int): Flow<PaginatedResult<SavingsTransaction>>"
-        - "getSavingsSparkline(memberId: String): Flow<List<SavingsDataPoint>>"
+        - "getMemberSavingsDetail(groupId: String, memberId: String, limit: Int, offset: Int): Flow<MemberSavingsDetailResponse>"
   services:
     - NetworkMonitor
   local_db:

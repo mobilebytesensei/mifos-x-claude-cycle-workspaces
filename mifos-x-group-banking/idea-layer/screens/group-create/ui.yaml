@@ -5,15 +5,19 @@ feature_id: group-create
 
 route: /groups/create
 entry_points:
+  - source: group-type-picker
+    trigger: type_selected
+    params: { typeConfig: GroupTypeConfig }
   - source: group-list
-    trigger: fab_tap
-nav_params: {}
+    trigger: fab_tap   # back-compat; group-list FAB now navigates via group-type-picker first
+nav_params:
+  typeConfig: { type: GroupTypeConfig, required: true }   # nav-arg from group-type-picker; holds pool_model, contribution_model, shareout_formula, payout_order_method, share_value, contribution_amount, social_fund_enabled, cycle_model
 
 screens:
   - id: group-create-screen
     title: "New Group"
     type: wizard
-    description: 3-step form wizard for creating a savings group
+    description: "4-step wizard for creating a group whose fields adapt to the group type (GroupTypeConfig) passed from group-type-picker. Step 1 = Identity; Step 2 = Type-adaptive Rules (share_value for VSLA/SHARE_BASED_VARIABLE; contribution_amount for ROSCA/FIXED_AMOUNT/SHG; payout_order for ROSCA; social_fund toggle); Step 3 = Confirm members / invite code; Step 4 = Review + submit via COMP-GRP-001 companion API."
 
 state_model:
   GroupCreateViewModel:
@@ -21,19 +25,37 @@ state_model:
       name: GroupCreateState
       fields:
         currentStep: { type: Int, default: "1" }
-        totalSteps: { type: Int, default: "3" }
+        totalSteps: { type: Int, default: "4" }
+        # -- nav-arg from group-type-picker --
+        typeConfig: { type: "GroupTypeConfig?", default: "null" }   # holds pool_model, contribution_model, shareout_formula, payout_order_method, share_value, contribution_amount, social_fund_enabled, cycle_model
+        groupTypeName: { type: String, default: '""' }              # display label e.g. "VSLA" | "ROSCA"
+        # -- Step 1: Identity --
         groupName: { type: String, default: '""' }
         officeId: { type: "Long?", default: "null" }
         officeName: { type: String, default: '""' }
         currency: { type: String, default: '"KES"' }
         meetingDay: { type: String, default: '""' }
         meetingTime: { type: String, default: '""' }
-        contributionMin: { type: String, default: '""' }
-        contributionMax: { type: String, default: '""' }
+        # -- Step 2: Type-adaptive Rules --
+        # VSLA / SHARE_BASED_VARIABLE
+        shareValue: { type: String, default: '""' }                 # price per share unit
+        shareMin: { type: String, default: '"1"' }                  # min shares per meeting
+        shareMax: { type: String, default: '""' }                   # max shares per meeting
+        # ROSCA / FIXED_AMOUNT / SHG
+        contributionAmount: { type: String, default: '""' }         # fixed contribution per meeting
+        # ROSCA-specific
+        payoutOrderMethod: { type: String, default: '"FIXED_ORDER"' } # FIXED_ORDER | LOTTERY | AUCTION
+        # Shared rules
         loanMultiplier: { type: String, default: '"3"' }
         interestRate: { type: String, default: '"10"' }
         cycleLengthMonths: { type: String, default: '"12"' }
         fineAmount: { type: String, default: '""' }
+        socialFundEnabled: { type: Boolean, default: "false" }      # welfare/emergency pool toggle
+        socialFundPercent: { type: String, default: '"5"' }         # % of corpus to social fund
+        # -- Step 3: Members --
+        maxMembers: { type: String, default: '"30"' }
+        inviteCode: { type: "String?", default: "null" }            # auto-generated on create
+        # -- Submission --
         isSubmitting: { type: Boolean, default: "false" }
         isSubmitSuccess: { type: Boolean, default: "false" }
         officeList: { type: "List<Office>", default: "emptyList()" }
@@ -65,21 +87,29 @@ state_model:
         - { name: OnCurrencyChange, params: { value: String }, trigger: "Select currency" }
         - { name: OnMeetingDaySelect, params: { day: String }, trigger: "Select meeting day" }
         - { name: OnMeetingTimeSelect, params: { time: String }, trigger: "Select meeting time" }
-        - { name: OnContributionMinChange, params: { value: String }, trigger: "Type min contribution" }
-        - { name: OnContributionMaxChange, params: { value: String }, trigger: "Type max contribution" }
+        # Type-adaptive rule actions — which fields appear depends on typeConfig.contribution_model
+        - { name: OnShareValueChange, params: { value: String }, trigger: "Type share value (VSLA)" }
+        - { name: OnShareMinChange, params: { value: String }, trigger: "Type min shares (VSLA)" }
+        - { name: OnShareMaxChange, params: { value: String }, trigger: "Type max shares (VSLA)" }
+        - { name: OnContributionAmountChange, params: { value: String }, trigger: "Type fixed contribution (ROSCA/SHG)" }
+        - { name: OnPayoutOrderChange, params: { method: String }, trigger: "Select payout order method (ROSCA)" }
         - { name: OnLoanMultiplierChange, params: { value: String }, trigger: "Type loan multiplier" }
         - { name: OnInterestRateChange, params: { value: String }, trigger: "Type interest rate" }
         - { name: OnCycleLengthChange, params: { value: String }, trigger: "Type cycle length" }
         - { name: OnFineAmountChange, params: { value: String }, trigger: "Type fine amount" }
+        - { name: OnSocialFundToggle, params: { enabled: Boolean }, trigger: "Toggle social fund" }
+        - { name: OnSocialFundPercentChange, params: { value: String }, trigger: "Type social fund %" }
+        - { name: OnMaxMembersChange, params: { value: String }, trigger: "Type max members (Step 3)" }
         - { name: OnNextStep, trigger: "Tap Next button" }
         - { name: OnPreviousStep, trigger: "Tap Back button" }
         - { name: OnSubmit, trigger: "Tap Submit on review step" }
         - { name: OnBack, trigger: "Tap system back or top-bar back" }
     di:
-      - GroupRepository
+      - GroupRepository      # calls COMP-GRP-001 companion endpoint
       - OfficeRepository
       - SyncQueueRepository
       - NetworkMonitor
+      - SessionManager       # provides userId for group orchestration
 
 forms:
   group_identity_form:
@@ -93,31 +123,53 @@ forms:
 
   group_rules_form:
     step: 2
+    description: "Fields are adaptive: shown/hidden based on typeConfig.contribution_model and typeConfig.pool_model"
     fields:
-      - { id: contribution_min_field, type: text-field, label: "Min Contribution (KES)", keyboard: numeric, required: true }
-      - { id: contribution_max_field, type: text-field, label: "Max Contribution (KES)", keyboard: numeric, required: true }
+      # --- SHARE_BASED_VARIABLE (VSLA, SILC, ASCA) ---
+      - { id: share_value_field, type: text-field, label: "Share Value (KES per share)", keyboard: numeric, required: true, visible: "{{typeConfig.contribution_model == 'SHARE_BASED_VARIABLE'}}" }
+      - { id: share_min_field, type: text-field, label: "Min Shares per Meeting", keyboard: numeric, required: true, visible: "{{typeConfig.contribution_model == 'SHARE_BASED_VARIABLE'}}" }
+      - { id: share_max_field, type: text-field, label: "Max Shares per Meeting", keyboard: numeric, required: true, visible: "{{typeConfig.contribution_model == 'SHARE_BASED_VARIABLE'}}" }
+      # --- FIXED_AMOUNT / FIXED_NEGOTIATED (ROSCA, SHG, JLG, Burial) ---
+      - { id: contribution_amount_field, type: text-field, label: "Fixed Contribution per Meeting (KES)", keyboard: numeric, required: true, visible: "{{typeConfig.contribution_model != 'SHARE_BASED_VARIABLE'}}" }
+      # --- ROTATING_PAYOUT (ROSCA) ---
+      - { id: payout_order_dropdown, type: text-field, variant: dropdown, label: "Payout Order Method", options: ["FIXED_ORDER", "LOTTERY", "AUCTION", "NEED_BASED"], required: true, visible: "{{typeConfig.pool_model == 'ROTATING_PAYOUT'}}" }
+      # --- Shared rules ---
       - { id: loan_multiplier_field, type: text-field, label: "Loan Multiplier (×savings)", keyboard: numeric, required: true }
       - { id: interest_rate_field, type: text-field, label: "Interest Rate (%)", keyboard: numeric, required: true }
       - { id: cycle_length_field, type: text-field, label: "Cycle Length (months)", keyboard: numeric, required: true }
       - { id: fine_amount_field, type: text-field, label: "Late Penalty / Fine (KES)", keyboard: numeric, required: true }
+      # --- Social fund (opt-in) ---
+      - { id: social_fund_toggle, type: switch, label: "Enable Social / Welfare Fund", default: false, visible: "{{typeConfig.social_fund_enabled || true}}" }
+      - { id: social_fund_percent_field, type: text-field, label: "Social Fund % of Corpus", keyboard: numeric, visible: "{{socialFundEnabled}}", default: "5" }
+
+  group_members_form:
+    step: 3
+    fields:
+      - { id: max_members_field, type: text-field, label: "Max Members", keyboard: numeric, required: true, default: "30" }
 
 components:
   - id: top_bar
     type: top-bar
-    title: "New Group"
+    title: "New {{groupTypeName}} Group"
     style: { background: primary, text_color: onPrimary }
     navigation_icon: close
     on_navigation_click: { action: OnBack }
 
+  - id: group_type_banner
+    type: chip
+    label: "{{groupTypeName}}"
+    icon: category_24_regular
+    style: { background: secondaryContainer, text_color: onSecondaryContainer, margin_horizontal: 16dp, margin_top: 8dp }
+
   - id: step_indicator
     type: step-indicator
-    total_steps: 3
+    total_steps: 4
     current_step: "{{currentStep}}"
-    labels: ["Identity", "Rules", "Review"]
+    labels: ["Identity", "Rules", "Members", "Review"]
 
   - id: review_card
     type: card
-    visible_step: 3
+    visible_step: 4
     style: { background: surface, elevation: 2dp, corner_radius: 16dp, padding: 20dp }
     content:
       - id: review_title
@@ -128,6 +180,7 @@ components:
         type: section
         label: "Identity"
         rows:
+          - { label: "Group Type", value: "{{groupTypeName}}" }
           - { label: "Name", value: "{{groupName}}" }
           - { label: "Office", value: "{{officeName}}" }
           - { label: "Currency", value: "{{currency}}" }
@@ -136,11 +189,24 @@ components:
         type: section
         label: "Rules"
         rows:
-          - { label: "Contribution", value: "KES {{contributionMin}} – KES {{contributionMax}}" }
+          # VSLA/SHARE_BASED_VARIABLE rows (visible when applicable)
+          - { label: "Share Value", value: "KES {{shareValue}} / share", visible: "{{typeConfig.contribution_model == 'SHARE_BASED_VARIABLE'}}" }
+          - { label: "Shares per Meeting", value: "{{shareMin}}–{{shareMax}} shares", visible: "{{typeConfig.contribution_model == 'SHARE_BASED_VARIABLE'}}" }
+          # FIXED rows (ROSCA, SHG, etc.)
+          - { label: "Contribution", value: "KES {{contributionAmount}} / meeting", visible: "{{typeConfig.contribution_model != 'SHARE_BASED_VARIABLE'}}" }
+          # ROSCA payout order
+          - { label: "Payout Order", value: "{{payoutOrderMethod}}", visible: "{{typeConfig.pool_model == 'ROTATING_PAYOUT'}}" }
+          # Shared
           - { label: "Loan Multiplier", value: "{{loanMultiplier}}× savings" }
           - { label: "Interest Rate", value: "{{interestRate}}% flat" }
           - { label: "Cycle Length", value: "{{cycleLengthMonths}} months" }
           - { label: "Late Fine", value: "KES {{fineAmount}}" }
+          - { label: "Social Fund", value: "{{socialFundPercent}}% of corpus", visible: "{{socialFundEnabled}}" }
+      - id: review_members_section
+        type: section
+        label: "Members"
+        rows:
+          - { label: "Max Members", value: "{{maxMembers}}" }
       - id: offline_notice_banner
         type: banner
         visible: "{{isOffline}}"
@@ -152,7 +218,7 @@ components:
     type: button
     variant: filled
     label: "Next"
-    visible: "{{currentStep < 3}}"
+    visible: "{{currentStep < 4}}"
     style: { background: primary, text_color: onPrimary, min_touch_target: 56dp, full_width: true }
     on_click: { action: OnNextStep }
 
@@ -168,38 +234,59 @@ components:
     type: button
     variant: filled
     label: "Create Group"
-    visible: "{{currentStep == 3}}"
+    visible: "{{currentStep == 4}}"
     loading: "{{isSubmitting}}"
     style: { background: primary, text_color: onPrimary, min_touch_target: 56dp, full_width: true }
-    on_click: { action: OnSubmit, target: group-list }
+    on_click:
+      action: OnSubmit
+      target: group-dashboard
+      action_contract:
+        effect: call_api
+        description: "Calls COMP-GRP-001 companion endpoint to create + activate group, associateClients, assignRole, and provision group_type_config datatable in one orchestrated back-end transaction"
+        writes_to: [group_type_config, dt_member_role]
+        library_refs: [GroupRepository]
 
 states:
   initial_state: content
   content:
     components:
-      step_1: [top_bar, step_indicator, group_name_field, office_dropdown, currency_dropdown, meeting_day_dropdown, meeting_time_picker, next_button]
-      step_2: [top_bar, step_indicator, contribution_min_field, contribution_max_field, loan_multiplier_field, interest_rate_field, cycle_length_field, fine_amount_field, next_button, back_step_button]
-      step_3: [top_bar, step_indicator, review_card, submit_button, back_step_button]
-    description: "Wizard form; active components depend on currentStep"
+      step_1: [top_bar, group_type_banner, step_indicator, group_name_field, office_dropdown, currency_dropdown, meeting_day_dropdown, meeting_time_picker, next_button]
+      step_2: [top_bar, group_type_banner, step_indicator, share_value_field, share_min_field, share_max_field, contribution_amount_field, payout_order_dropdown, loan_multiplier_field, interest_rate_field, cycle_length_field, fine_amount_field, social_fund_toggle, social_fund_percent_field, next_button, back_step_button]
+      step_3: [top_bar, group_type_banner, step_indicator, max_members_field, next_button, back_step_button]
+      step_4: [top_bar, group_type_banner, step_indicator, review_card, submit_button, back_step_button]
+    description: "4-step wizard; active components depend on currentStep; Step 2 fields are type-adaptive based on typeConfig"
     demo_data:
+      groupTypeName: "VSLA"
+      typeConfig:
+        pool_model: "ACCUMULATING"
+        contribution_model: "SHARE_BASED_VARIABLE"
+        shareout_formula: "PRORATA_SHARES"
+        payout_order_method: "NA"
+        share_value: "200"
+        social_fund_enabled: true
+        cycle_model: "annual"
       groupName: "Mwangaza Women's Group"
       officeName: "Nairobi Head Office"
       currency: "KES"
       meetingDay: "Monday"
       meetingTime: "09:00"
-      contributionMin: "100"
-      contributionMax: "500"
+      shareValue: "200"
+      shareMin: "1"
+      shareMax: "5"
       loanMultiplier: "3"
       interestRate: "10"
       cycleLengthMonths: "12"
       fineAmount: "50"
+      socialFundEnabled: true
+      socialFundPercent: "5"
+      maxMembers: "20"
   submitting:
-    components: [top_bar, step_indicator, review_card, submit_button]
-    description: "Submit button in loading state; form fields disabled"
+    components: [top_bar, group_type_banner, step_indicator, review_card, submit_button]
+    description: "Submit button in loading state; COMP-GRP-001 call in progress"
   success:
-    description: "Navigated away to group-dashboard"
+    description: "Navigated to group-dashboard after COMP-GRP-001 returns groupId"
   error:
-    components: [top_bar, step_indicator, review_card, submit_button, back_step_button]
+    components: [top_bar, group_type_banner, step_indicator, review_card, submit_button, back_step_button]
     description: "Inline error shown; user can retry or edit fields"
 
 i18n:
@@ -207,18 +294,25 @@ i18n:
     screen_title: "New Group"
     step_identity: "Identity"
     step_rules: "Rules"
+    step_members: "Members"
     step_review: "Review"
     field_name: "Group Name"
     field_office: "Office"
     field_currency: "Currency"
     field_meeting_day: "Meeting Day"
     field_meeting_time: "Meeting Time"
-    field_contribution_min: "Min Contribution (KES)"
-    field_contribution_max: "Max Contribution (KES)"
+    field_share_value: "Share Value (KES per share)"
+    field_share_min: "Min Shares per Meeting"
+    field_share_max: "Max Shares per Meeting"
+    field_contribution_amount: "Fixed Contribution per Meeting (KES)"
+    field_payout_order: "Payout Order Method"
     field_loan_multiplier: "Loan Multiplier (×savings)"
     field_interest_rate: "Interest Rate (%)"
     field_cycle_length: "Cycle Length (months)"
     field_fine_amount: "Late Penalty / Fine (KES)"
+    field_social_fund_toggle: "Enable Social / Welfare Fund"
+    field_social_fund_percent: "Social Fund % of Corpus"
+    field_max_members: "Max Members"
     btn_next: "Next"
     btn_back: "Back"
     btn_submit: "Create Group"

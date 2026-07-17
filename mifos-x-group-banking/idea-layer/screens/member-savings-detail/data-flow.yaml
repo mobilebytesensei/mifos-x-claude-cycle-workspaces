@@ -5,61 +5,143 @@ feature_id: member-savings-detail
 entries:
   - screen_id: memberSavingsDetailScreen
     trigger: on_mount
+    description: >
+      Load member savings detail from companion API — single call replaces old get_client + get_client_savings_accounts.
+      get_member_savings_detail returns contribution-model-aware fields:
+        SHARE_BASED_VARIABLE (VSLA/SILC): sharesHeld + shareValue
+        FIXED_AMOUNT (ROSCA/SHG): savingsBalance + meetingsContributed
+      Also returns sparklineData and paginated transaction history (first page).
     endpoints:
-      - { api_id: get_client, transport: rest, method: get }
-      - { api_id: get_client_savings_accounts, transport: rest, method: get }
+      - { api_id: get_member_savings_detail, transport: rest, method: get }
+    tables:
+      - name: member_savings_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: savings_transactions
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: Member, role: response, api_id: get_client }
-      - { name: MemberSavingsAccounts, role: response, api_id: get_client_savings_accounts }
-      - { name: SavingsTransaction, role: response, api_id: get_client_savings_accounts }
+      - { name: MemberSavingsDetailResponse, role: response, api_id: get_member_savings_detail }
+      - { name: SavingsDataPoint, role: response, api_id: get_member_savings_detail }
+      - { name: SavingsTransaction, role: response, api_id: get_member_savings_detail }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: stale_while_revalidate
       ttl_seconds: 120
-      key_template: "member_savings:{memberId}:page:0"
+      key_template: "member_savings:{groupId}:{memberId}:page:0"
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
-      - { error_code: "404", behavior: error_state, message_key: error_not_found }
-      - { error_code: "500", behavior: error_state, message_key: error_server }
-      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_network }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "403", behavior: show_error, message_key: error_forbidden }
+      - { error_code: "404", behavior: show_error, message_key: error_member_not_found }
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      groupId + memberId are nav_params from savings-dashboard member row tap.
+      Contribution model (from group_type_config_cache.contribution_model) drives field display:
+        SHARE_BASED_VARIABLE: sharesHeld + shareValue columns
+        FIXED_AMOUNT: savingsBalance + meetingsContributed rows
+      First page of transactions loaded on mount (limit=20, offset=0).
+      Replaces old: get_client (member profile) + get_client_savings_accounts (raw Fineract).
 
   - screen_id: memberSavingsDetailScreen
     trigger: on_refresh
+    description: Pull-to-refresh — re-fetches member detail with fresh data, resets to first page.
     endpoints:
-      - { api_id: get_client_savings_accounts, transport: rest, method: get }
+      - { api_id: get_member_savings_detail, transport: rest, method: get }
+    tables:
+      - name: member_savings_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: savings_transactions
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: SavingsTransaction, role: response, api_id: get_client_savings_accounts }
+      - { name: MemberSavingsDetailResponse, role: response, api_id: get_member_savings_detail }
+      - { name: SavingsTransaction, role: response, api_id: get_member_savings_detail }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: bypass_and_refresh
-      key_template: "member_savings:{memberId}"
+      ttl_seconds: 120
+      key_template: "member_savings:{groupId}:{memberId}:page:0"
     error_paths:
-      - { error_code: "network.offline", behavior: snackbar, message_key: error_network }
-      - { error_code: "500", behavior: snackbar, message_key: error_server }
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "500", behavior: show_error, message_key: error_server }
+    notes: Resets pagination offset to 0; replaces all cached transaction rows for member.
 
   - screen_id: memberSavingsDetailScreen
     trigger: on_interact
-    interaction: scroll_to_end
+    action: OnScrollToEnd
+    description: User scrolls to end of transaction list — load next page.
     endpoints:
-      - { api_id: get_client_savings_accounts, transport: rest, method: get }
-    params_override:
-      offset: "{{currentOffset + pageSize}}"
+      - { api_id: get_member_savings_detail, transport: rest, method: get }
+    tables:
+      - name: savings_transactions
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: SavingsTransaction, role: response, api_id: get_client_savings_accounts }
+      - { name: SavingsTransaction, role: response, api_id: get_member_savings_detail }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: append_to_existing
-      key_template: "member_savings:{memberId}:page:{page}"
+      ttl_seconds: 120
+      key_template: "member_savings:{groupId}:{memberId}:page:{offset}"
     error_paths:
-      - { error_code: "network.offline", behavior: snackbar, message_key: error_network }
+      - { error_code: "network.offline", behavior: show_error, message_key: error_offline }
+    notes: >
+      Increments offset by page_size=20. Appends new transactions to savings_transactions cache.
+      hasNextPage flag from response controls infinite scroll state.
 
   - screen_id: memberSavingsDetailScreen
     trigger: on_interact
-    interaction: filter_chip_tap
+    action: OnFilterChipTap
+    description: User taps filter chip (ALL / DEPOSITS / WITHDRAWALS) — client-side filter only.
     endpoints: []
+    tables: []
     dtos: []
+    produces_state: Content
     auth_required: false
     cache:
-      strategy: none
-    notes: "Client-side filtering only — no additional API call"
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
     error_paths: []
+    notes: >
+      Client-side filter on savings_transactions cache. TransactionFilter: ALL | DEPOSITS | WITHDRAWALS.
+      No API call — all transactions for current page are already in cache.
+
+tables:
+  - name: member_savings_cache
+    description: >
+      SQLDelight cache of MemberSavingsDetailResponse metadata per member (balance, sharesHeld,
+      shareValue, sparklineData). Contribution-model-aware fields stored with nullable defaults.
+      Keyed by (groupId, memberId). TTL 120s.
+    persistence_contract: sqldelight_entity
+    primary_key: "groupId:memberId"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+  - name: savings_transactions
+    description: >
+      SQLDelight cache of paginated SavingsTransaction rows. Shared table across savings-dashboard,
+      member-savings-detail, and personal-dashboard. Keyed by transactionId.
+      Supports append-on-page-load pattern for infinite scroll.
+    persistence_contract: sqldelight_entity
+    primary_key: "transactionId"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+cache:
+  strategy: stale_while_revalidate
+  ttl_seconds: 120
+  notes: >
+    120s TTL (shorter than group data — individual balances change on contribution day).
+    Pagination pages keyed separately. No legacy api.yaml#cache. Single source: this file.
+
+sync_queue:
+  entries: []
+  notes: >
+    Member savings detail is read-only. No write operations.
+    Contributions are recorded via the meeting record flow.

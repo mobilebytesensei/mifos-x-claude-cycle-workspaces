@@ -3,21 +3,23 @@ sibling: ui
 schema_version: "4.0"
 feature_id: admin-dashboard
 
-route: /admin/dashboard
+route: /dashboard/organizer
 entry_points:
-  - source: login
-    condition: admin_login_success
   - source: app_launch
-    condition: user_authenticated && role == admin
-nav_params: {}
+    condition: "user_authenticated && isOrganizerInAnyGroup"   # unified identity — no admin login type
+nav_params: {}   # organizerName resolved from session; groupIds resolved from dt_member_role
 
 screens:
   - id: admin-dashboard-screen
-    title: "Dashboard"
+    title: "My Groups"
     type: dashboard
     description: >
-      Scrollable admin dashboard with welcome header, KPI row, today's schedule,
-      quick-nav cards, and a recent-activity feed.
+      Organizer-per-group hub surface. The "admin" concept is gone — this screen is reached by
+      any user who holds the organizer (or treasurer/chairperson) role in at least one group,
+      resolved from dt_member_role via companion API. KPIs show "my groups" totals (not
+      all-branch totals). Quick-nav to group-list and optional field-officer tile (v1.1 tier,
+      shown only when fieldOfficerEnabled flag is true). Data from companion API; no raw
+      Fineract /staff or /journal-entries calls.
 
 state_model:
   AdminDashboardViewModel:
@@ -25,12 +27,12 @@ state_model:
       name: AdminDashboardState
       fields:
         isLoading: { type: Boolean, default: "true" }
-        staffName: { type: String, default: '""' }
-        staffId: { type: Long, default: "0L" }
-        totalGroups: { type: Int, default: "0" }
+        organizerName: { type: String, default: '""' }    # replaces staffName — from session.displayName
+        myGroupCount: { type: Int, default: "0" }         # groups where user holds organizer/treasurer/chairperson
         totalMembers: { type: Int, default: "0" }
-        overdueLoansCount: { type: Int, default: "0" }
+        pendingShareOutCount: { type: Int, default: "0" } # replaces overdueLoansCount (pivot away from loans)
         meetingsTodayCount: { type: Int, default: "0" }
+        fieldOfficerEnabled: { type: Boolean, default: "false" }  # v1.1 tier — hidden when false
         todaySchedule: { type: "List<ScheduledMeeting>", default: "emptyList()" }
         recentActivity: { type: "List<ActivityItem>", default: "emptyList()" }
         error: { type: "AdminDashboardError?", default: "null" }
@@ -43,7 +45,7 @@ state_model:
       types:
         - { type: Network, retry: true, message_key: error_network }
         - { type: Server, retry: true, message_key: error_server }
-        - { type: Auth, retry: false, message_key: error_auth, redirect: login }
+        - { type: Auth, retry: false, message_key: error_auth, redirect: group-list }
     events:
       name: AdminDashboardEvent
       members:
@@ -54,12 +56,12 @@ state_model:
       name: AdminDashboardAction
       members:
         - { name: OnViewAllGroups, trigger: "Tap Groups KPI card or 'View All Groups' quick-nav" }
-        - { name: OnViewFieldOfficer, trigger: "Tap Field Officer quick-nav card" }
+        - { name: OnViewFieldOfficer, trigger: "Tap Field Officer quick-nav card (v1.1 tier only)" }
         - { name: OnMeetingGroupClick, params: { groupId: String }, trigger: "Tap a meeting row in Today's Schedule" }
         - { name: OnRefresh, trigger: "Pull to refresh" }
         - { name: Retry, trigger: "Tap retry button on error state" }
     di:
-      - AdminRepository
+      - OrganizerDashboardRepository   # companion API /companion/organizer/dashboard (replaces AdminRepository)
       - GroupRepository
       - SessionManager
       - NetworkMonitor
@@ -92,13 +94,13 @@ components:
       - id: welcome_greeting_text
         type: text
         style: { text_style: headlineSmall, color: onPrimaryContainer }
-        value: "Welcome back, {{staffName}}"
+        value: "Welcome back, {{organizerName}}"    # organizerName from session.displayName
       - id: welcome_subtitle_text
         type: text
         style: { text_style: bodyMedium, color: onPrimaryContainer }
         value: "Here's your overview for today"
     test_context:
-      purpose: "Personalised greeting shown after admin login; staffName injected from session"
+      purpose: "Personalised greeting shown to organizer/treasurer/chairperson; organizerName from unified session"
       interaction_type: static
       data_driven: true
       required_fields: [staffName]
@@ -121,14 +123,14 @@ components:
           - id: kpi_groups_value
             type: text
             style: { text_style: headlineMedium, color: primary }
-            value: "{{totalGroups}}"
+            value: "{{myGroupCount}}"
           - id: kpi_groups_label
             type: text
             style: { text_style: labelSmall, color: onSurfaceVariant }
-            value: "Total Groups"
+            value: "My Groups"    # renamed from "Total Groups" — scoped to organizer role
         on_click: { action: OnViewAllGroups, target: group-list }
         test_context:
-          purpose: "KPI card showing total groups managed; tapping navigates to group list"
+          purpose: "KPI card showing groups where user is organizer/treasurer/chairperson; tapping navigates to group list"
           interaction_type: tap
           data_driven: true
           required_fields: [totalGroups]
@@ -170,20 +172,20 @@ components:
             color: error
             width: 1dp
         content:
-          - id: kpi_overdue_value
+          - id: kpi_pending_shareout_value
             type: text
             style:
               text_style: headlineMedium
               color_normal: primary
               color_nonzero: error
-            value: "{{overdueLoansCount}}"
-          - id: kpi_overdue_label
+            value: "{{pendingShareOutCount}}"
+          - id: kpi_pending_shareout_label
             type: text
             style: { text_style: labelSmall, color: onSurfaceVariant }
-            value: "Overdue Loans"
+            value: "Share-Outs Due"    # replaces "Overdue Loans" — savings-group context
         on_click: { action: OnViewAllGroups, target: group-list }
         test_context:
-          purpose: "KPI card for overdue loans; card border turns error-red when count > 0"
+          purpose: "KPI card for pending share-outs/rotations; card border turns error-red when count > 0"
           interaction_type: tap
           data_driven: true
           required_fields: [overdueLoansCount]
@@ -259,12 +261,13 @@ components:
 
           - id: nav_field_officer_card
             type: card
+            visible: "{{fieldOfficerEnabled}}"    # optional tier — hidden when not enabled (v1.1)
             style:
               background: secondaryContainer
               corner_radius: 12dp
               padding: 16dp
               elevation: 0dp
-              badge: { label: "v1.1", style: { background: secondary, text_color: onSecondary } }
+              badge: { label: "Optional", style: { background: secondary, text_color: onSecondary } }
             content:
               - id: nav_fo_icon
                 type: icon
@@ -280,10 +283,10 @@ components:
                 value: "Officer overview"
             on_click: { action: OnViewFieldOfficer, target: field-officer-dashboard }
             test_context:
-              purpose: "Quick-nav tile to field-officer dashboard; v1.1 badge indicates upcoming feature"
+              purpose: "Optional quick-nav tile to field-officer dashboard; hidden when fieldOfficerEnabled=false"
               interaction_type: tap
-              data_driven: false
-              required_fields: []
+              data_driven: true
+              required_fields: [fieldOfficerEnabled]
 
   - id: todays_schedule_section
     type: card
@@ -397,11 +400,11 @@ states:
     components: [top_bar, welcome_header, kpi_summary_row, quick_nav_section, todays_schedule_section, recent_activity_section]
     description: "All KPI and schedule data loaded; bottom nav visible with home tab selected"
     demo_data:
-      staffName: "Jane Wanjiru"
-      staffId: 1
-      totalGroups: 12
-      totalMembers: 87
-      overdueLoansCount: 3
+      organizerName: "Jane Wanjiru"    # from session.displayName (unified identity)
+      myGroupCount: 3                  # groups where Jane holds organizer/treasurer/chairperson role
+      totalMembers: 42
+      pendingShareOutCount: 1          # share-outs due across my groups
+      fieldOfficerEnabled: false       # optional tier hidden in default state
       meetingsTodayCount: 2
       todaySchedule:
         - groupId: "ctr-001"
@@ -445,12 +448,12 @@ states:
 
 i18n:
   en:
-    screen_title: "Dashboard"
-    welcome_greeting: "Welcome back, {{staffName}}"
+    screen_title: "My Groups"
+    welcome_greeting: "Welcome back, {{organizerName}}"
     welcome_subtitle: "Here's your overview for today"
-    kpi_total_groups: "Total Groups"
+    kpi_my_groups: "My Groups"          # organizer-scoped, not all-branch
     kpi_members: "Members"
-    kpi_overdue_loans: "Overdue Loans"
+    kpi_pending_shareout: "Share-Outs Due"
     kpi_meetings_today: "Meetings Today"
     quick_nav_label: "Quick Navigation"
     nav_all_groups: "All Groups"
@@ -461,8 +464,8 @@ i18n:
     schedule_count_chip: "{{n}} meetings"
     no_meetings_today: "No meetings scheduled for today"
     activity_label: "Recent Activity"
-    empty_title: "No data yet"
-    empty_body: "Your groups and activity will appear here once set up."
+    empty_title: "No groups yet"
+    empty_body: "Groups you organize will appear here."
     empty_cta: "View Groups"
     error_network: "No internet connection. Showing cached data."
     error_server: "Server error. Please try again."

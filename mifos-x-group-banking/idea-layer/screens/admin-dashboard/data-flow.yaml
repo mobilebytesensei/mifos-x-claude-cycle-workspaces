@@ -5,45 +5,120 @@ feature_id: admin-dashboard
 entries:
   - screen_id: adminDashboardScreen
     trigger: on_mount
+    description: >
+      Load organizer dashboard data via a single companion API call.
+      get_organizer_dashboard resolves groups from auth token (no staffId param)
+      and returns KPIs for all groups where the user holds organizer/treasurer/chairperson role.
+      Replaces old 3-call pattern: get_staff_summary + get_todays_schedule + get_recent_activity.
+      Response includes todaySchedule[] and recentActivity[] inline.
     endpoints:
-      - { api_id: get_staff_summary, transport: rest, method: get }
-      - { api_id: get_todays_schedule, transport: rest, method: get }
-      - { api_id: get_recent_activity, transport: rest, method: get }
-    tables: []
+      - { api_id: get_organizer_dashboard, transport: rest, method: get }
+    tables:
+      - name: organizer_dashboard_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: scheduled_meetings_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: activity_feed_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: StaffSummary, role: response, api_id: get_staff_summary }
-      - { name: ScheduledMeeting, role: response, api_id: get_todays_schedule }
-      - { name: ActivityItem, role: response, api_id: get_recent_activity }
+      - { name: OrganizerDashboardSummary, role: response, api_id: get_organizer_dashboard }
+      - { name: ScheduledMeeting, role: response, api_id: get_organizer_dashboard }
+      - { name: ActivityItem, role: response, api_id: get_organizer_dashboard }
     produces_state: Content
     auth_required: true
     cache:
       strategy: stale_while_revalidate
       ttl_seconds: 300
-      key_template: "admin:staff_summary:{staffId}"
+      key_template: "organizer_dashboard:{userId}"
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
-      - { error_code: "403", behavior: show_error, message_key: error_forbidden }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "403", behavior: show_error, message_key: error_not_organizer }
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
       - { error_code: "500", behavior: show_retry, message_key: error_server }
-    notes: All three calls are fired in parallel on mount; UI renders as each resolves.
+    notes: >
+      Single companion endpoint replaces 3 separate calls. Identity resolved server-side from
+      auth token — no staffId or similar Fineract-era staff param.
+      OrganizerDashboardSummary.fieldOfficerEnabled controls visibility of the Field Officer
+      tab/badge (optional enterprise tier flag — hidden by default for community groups).
+      Cache keyed by userId (server resolves group scope from token).
+      403 = user is not an organizer in any group → navigate to personal-dashboard.
 
   - screen_id: adminDashboardScreen
     trigger: on_refresh
+    description: Pull-to-refresh — forces fresh organizer dashboard data from companion API.
     endpoints:
-      - { api_id: get_staff_summary, transport: rest, method: get }
-      - { api_id: get_todays_schedule, transport: rest, method: get }
-      - { api_id: get_recent_activity, transport: rest, method: get }
-    tables: []
+      - { api_id: get_organizer_dashboard, transport: rest, method: get }
+    tables:
+      - name: organizer_dashboard_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: scheduled_meetings_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: activity_feed_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: StaffSummary, role: response, api_id: get_staff_summary }
-      - { name: ScheduledMeeting, role: response, api_id: get_todays_schedule }
-      - { name: ActivityItem, role: response, api_id: get_recent_activity }
+      - { name: OrganizerDashboardSummary, role: response, api_id: get_organizer_dashboard }
+      - { name: ScheduledMeeting, role: response, api_id: get_organizer_dashboard }
+      - { name: ActivityItem, role: response, api_id: get_organizer_dashboard }
     produces_state: Content
     auth_required: true
     cache:
-      strategy: network_first
+      strategy: bypass_and_refresh
       ttl_seconds: 300
-      key_template: "admin:staff_summary:{staffId}"
+      key_template: "organizer_dashboard:{userId}"
     error_paths:
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
-    notes: Pull-to-refresh invalidates all three caches and re-fetches in parallel.
+    notes: >
+      Invalidates all three sub-tables and replaces with fresh companion API response.
+      Useful to see updated meeting status after a group meeting is recorded.
+
+tables:
+  - name: organizer_dashboard_cache
+    description: >
+      SQLDelight cache for OrganizerDashboardSummary KPI fields (myGroupCount, totalMembers,
+      pendingShareOutCount, meetingsTodayCount, fieldOfficerEnabled).
+      Keyed by userId — scope of groups is determined server-side by auth token.
+    persistence_contract: sqldelight_entity
+    primary_key: "userId"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+  - name: scheduled_meetings_cache
+    description: >
+      SQLDelight cache of ScheduledMeeting[] for today's schedule.
+      Rows have groupId, groupName, meetingTime, memberCount, location (optional).
+      Refreshed on mount and pull-to-refresh.
+    persistence_contract: sqldelight_entity
+    primary_key: "groupId:meetingTime"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+  - name: activity_feed_cache
+    description: >
+      SQLDelight cache of ActivityItem[] (recent activity feed). Activity types:
+      MEETING | DEPOSIT | SHARE_OUT | NEW_MEMBER | LOAN. Includes amount, date, memberName, groupName.
+      Short display window — caches last 20 items per userId.
+    persistence_contract: sqldelight_entity
+    primary_key: "id"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+cache:
+  strategy: stale_while_revalidate
+  ttl_seconds: 300
+  notes: >
+    Dashboard KPIs + schedule + activity cached 5 min (stale_while_revalidate).
+    Pull-to-refresh uses bypass_and_refresh. Served stale when offline.
+    No legacy api.yaml#cache — single cache declaration in this data-flow file.
+
+sync_queue:
+  entries: []
+  notes: >
+    Organizer dashboard is read-only. No write operations here.
+    Meeting recording and member management dispatch to dedicated child screens
+    (accessible via FAB on group-dashboard).

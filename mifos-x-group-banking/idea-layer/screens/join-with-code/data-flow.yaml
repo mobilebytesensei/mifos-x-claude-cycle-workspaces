@@ -1,0 +1,158 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: join-with-code
+
+entries:
+  - screen_id: joinWithCodeScreen
+    trigger: on_mount
+    description: >
+      Screen mounts with optional deep-link inviteCode nav param. If inviteCode
+      is present (from a shared link), pre-fill the code field and fire
+      validate_invite_token automatically. If no nav param, show empty input.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Initial
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      No API call on mount. Deep-link inviteCode triggers the validate flow via
+      ViewModel init block reading the nav arg. Empty mount shows input form.
+
+  - screen_id: joinWithCodeScreen
+    trigger: on_action
+    action: OnValidateCodeTap
+    description: >
+      User taps Validate Code (or code was auto-filled from deep-link).
+      Step 1: GET invitation row from dt_companion_invitations datatable.
+      Step 2: if valid, GET group preview using group_id from the invitation row.
+    endpoints:
+      - { api_id: validate_invite_token, transport: rest, method: get }
+      - { api_id: get_group_preview, transport: rest, method: get }
+    tables:
+      - name: pending_invite_cache
+        persistence_contract: sqldelight_entity
+        mutation: write
+    dtos:
+      - { name: InvitationRow, role: response, api_id: validate_invite_token }
+      - { name: GroupPreview, role: response, api_id: get_group_preview }
+    produces_state: Valid
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths:
+      - { error_code: "404", behavior: show_error, produces_state: InvalidCode, message_key: error_invalid_code }
+      - { error_code: "network.offline", behavior: show_error, produces_state: NetworkError, message_key: error_offline }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "500", behavior: show_error, produces_state: NetworkError, message_key: error_server }
+    client_validation:
+      - condition: "invitationRow.expires_at < now()"
+        error_state: ExpiredCode
+        message_key: error_code_expired
+      - condition: "invitationRow.accepted_at != null"
+        error_state: AlreadyUsed
+        message_key: error_code_already_used
+    notes: >
+      validate_invite_token fires first (no-cache — tokens must be checked fresh).
+      Client evaluates expires_at and accepted_at before calling get_group_preview.
+      get_group_preview uses the group_id from the invitation row as its param.
+
+  - screen_id: joinWithCodeScreen
+    trigger: on_action
+    action: OnJoinGroupTap
+    description: >
+      Authenticated user confirms joining. Calls associate_client_to_group then
+      mark_invitation_accepted. Both calls are sequential. Navigation proceeds
+      even if mark_invitation_accepted fails (non-fatal).
+    endpoints:
+      - { api_id: associate_client_to_group, transport: rest, method: post }
+      - { api_id: mark_invitation_accepted, transport: rest, method: put }
+    tables:
+      - name: pending_invite_cache
+        persistence_contract: sqldelight_entity
+        mutation: delete
+      - name: group_memberships_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: AssociateClientsRequest, role: request, api_id: associate_client_to_group }
+      - { name: AssociateClientsResponse, role: response, api_id: associate_client_to_group }
+      - { name: MarkAcceptedRequest, role: request, api_id: mark_invitation_accepted }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths:
+      - { error_code: "400", behavior: show_error, produces_state: AlreadyMember, message_key: error_already_member }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "403", behavior: show_error, message_key: error_group_closed }
+      - { error_code: "network.offline", behavior: show_error, message_key: error_offline }
+      - { error_code: "500", behavior: show_error, message_key: error_server }
+    navigation:
+      - { condition: "associateSuccess", nav_target: group-dashboard, params: [groupId] }
+    notes: >
+      associate_client_to_group must succeed before navigating.
+      mark_invitation_accepted is a best-effort cleanup call — navigation is not
+      blocked if it fails (prevents orphaned invite codes from blocking UX).
+      On unauthenticated join tap: navigate to login-signup with pendingInviteCode arg.
+
+  - screen_id: joinWithCodeScreen
+    trigger: on_action
+    action: OnJoinGroupTap_Unauthenticated
+    description: >
+      User taps Join Group but is not authenticated. Navigate to login-signup
+      with the pending invite code so it can be resumed post-login.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Initial
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    navigation:
+      - { condition: "!isAuthenticated", nav_target: login-signup, params: [pendingInviteCode] }
+
+tables:
+  - name: pending_invite_cache
+    description: >
+      Temporary SQLDelight store for a validated InvitationRow. Written after
+      successful validate_invite_token; deleted after successful association.
+      Allows the app to resume a pending join after biometric / login redirect.
+    persistence_contract: sqldelight_entity
+    primary_key: "token"
+    mutations: [write, delete, read]
+    offline_strategy: session_only
+    source_datatable: dt_companion_invitations
+
+  - name: group_memberships_cache
+    description: >
+      Shared cache of GroupMembership rows. Updated after successful group join so
+      the personal-dashboard can reflect the new group immediately.
+    persistence_contract: sqldelight_entity
+    primary_key: "groupId"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+cache:
+  strategy: no_cache
+  notes: >
+    All validation and write endpoints bypass cache — token freshness is critical.
+    group_memberships_cache is written directly for immediate UI reflection.
+    No legacy api.yaml#cache. Single source: this data-flow file.
+
+sync_queue:
+  entries: []
+  notes: >
+    Join-with-code requires connectivity — tokens must be validated server-side.
+    No offline enqueue. If offline, show error and Retry button.

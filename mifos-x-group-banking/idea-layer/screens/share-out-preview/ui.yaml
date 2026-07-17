@@ -7,15 +7,20 @@ route: /groups/{groupId}/share-out/preview
 entry_points:
   - source: group-dashboard
     label: Share Out (cycle-end action)
+    condition: "viewerRole in [ORGANIZER, TREASURER, CHAIRPERSON]"
 nav_params:
-  groupId: { type: Long, required: true }
-  centerId: { type: Long, required: true }
+  groupId: { type: String, required: true }
+  typeConfig: { type: GroupTypeConfig, required: true }   # drives strategy chip + table shape
 
 screens:
   - id: share-out-preview-screen
     name: ShareOutPreviewScreen
     type: detail
-    description: Read-only distribution summary with per-member payout table and confirm CTA
+    description: >
+      Strategy-adaptive distribution preview. Formula and table columns vary by GroupTypeConfig.shareout_formula:
+      PRORATA_SHARES (VSLA/SILC) shows shares-held breakdown; PRORATA_SAVINGS (ASCA/SHG) shows savings-contribution
+      breakdown; EQUAL splits pool evenly; FIXED_ORDER/LOTTERY/AUCTION (ROSCA/chit) shows rotation position +
+      next-recipient card instead of a per-member payout table. Sourced from companion API (COMP-DIST-001 preview).
 
 state_model:
   ShareOutPreviewViewModel:
@@ -23,28 +28,33 @@ state_model:
       name: ShareOutPreviewState
       fields:
         isLoading: { type: Boolean, default: "true" }
+        typeConfig: { type: "GroupTypeConfig?", default: "null" }       # nav-arg; drives strategy
+        shareoutFormula: { type: String, default: '""' }                # from typeConfig.shareout_formula
+        poolModel: { type: String, default: '""' }                      # ACCUMULATING | ROTATING_PAYOUT
         totalCorpus: { type: Double, default: "0.0" }
         totalProfit: { type: Double, default: "0.0" }
         totalPool: { type: Double, default: "0.0" }
-        memberPayouts: { type: "List<MemberPayout>", default: "emptyList()" }
+        memberPayouts: { type: "List<MemberPayout>", default: "emptyList()" }   # empty for ROTATING_PAYOUT
+        rotationPosition: { type: "Int?", default: "null" }             # ROTATING_PAYOUT: viewer's slot
+        nextRecipientName: { type: "String?", default: "null" }         # ROTATING_PAYOUT: next in queue
+        nextRecipientAmount: { type: "Double?", default: "null" }       # pool payout to next recipient
         error: { type: "ShareOutPreviewError?", default: "null" }
         cycleNumber: { type: Int, default: "0" }
-        groupId: { type: Long, default: "0L" }
-        centerId: { type: Long, default: "0L" }
+        groupId: { type: String, default: '""' }
     screen_state:
       name: ShareOutPreviewScreenState
-      members: [Loading, Content, Error]
+      members: [Loading, ContentAccumulating, ContentRotating, Error]
     errors:
       name: ShareOutPreviewError
       types:
         - { type: Network, retry: true, message_key: error_network }
         - { type: Server, retry: true, message_key: error_server }
         - { type: InsufficientData, retry: false, message_key: error_insufficient_data }
-        - { type: Auth, retry: false, message_key: error_auth, redirect: login }
+        - { type: Auth, retry: false, message_key: error_auth }
     events:
       name: ShareOutPreviewEvent
       members:
-        - { name: NavigateToShareOutExecute, params: "groupId: Long, centerId: Long, totalPool: Double, memberPayouts: List<MemberPayout>" }
+        - { name: NavigateToShareOutExecute, params: "groupId: String, typeConfig: GroupTypeConfig, totalPool: Double, memberPayouts: List<MemberPayout>" }
         - { name: NavigateBack }
         - { name: ShowSnackbar, params: "message: String" }
     actions:
@@ -55,8 +65,7 @@ state_model:
         - { name: Retry, trigger: "Tap retry button on error state" }
         - { name: OnRefresh, trigger: "Pull to refresh" }
     di:
-      - ShareOutRepository
-      - SavingsRepository
+      - ShareOutRepository    # preview call → /companion/groups/{groupId}/shareout/preview (COMP-DIST-001)
       - NetworkMonitor
       - SessionManager
 
@@ -86,16 +95,19 @@ components:
       - { type: divider, style: { margin: "8dp 0dp" } }
       - { type: labeled-value, label: "Total Distribution Pool", value: "KES {{totalPool | number}}", style: { text_style: titleLarge, color: primary, font_weight: bold } }
 
+  # Strategy formula chip — label adapts to GroupTypeConfig.shareout_formula
   - id: distribution_formula_chip
     type: chip
-    label: "Formula: Pro-rata by savings contribution"
+    label: "{{shareoutFormula | formulaLabel}}"   # PRORATA_SHARES→"Pro-rata by shares held" | PRORATA_SAVINGS→"Pro-rata by savings" | EQUAL→"Equal split" | FIXED_ORDER→"Fixed rotation order" | LOTTERY→"Rotation by lottery" | AUCTION→"Chit auction"
     style: { background: tertiaryContainer, text_color: onTertiaryContainer, corner_radius: 16dp, padding: "6dp 12dp" }
 
+  # ACCUMULATING path (VSLA/ASCA/SHG/SILC): per-member payout table
   - id: member_payout_table
     type: data-table
+    visible: "{{poolModel != 'ROTATING_PAYOUT'}}"
     headers:
       - { label: "Member", width: fill }
-      - { label: "Total Savings", width: 104dp }
+      - { label: "Shares / Savings", width: 104dp }    # adapts: shares for PRORATA_SHARES, savings for others
       - { label: "Share %", width: 64dp }
       - { label: "Payout (KES)", width: 104dp }
     rows_source: memberPayouts
@@ -103,13 +115,30 @@ components:
       default: { background: surface, text_color: onSurface }
       highlight_max: { background: "#E8F5E9", text_color: "#1B5E20" }
 
+  # ROTATING_PAYOUT path (ROSCA/chit): rotation-position card instead of member table
+  - id: rotation_preview_card
+    type: card
+    visible: "{{poolModel == 'ROTATING_PAYOUT'}}"
+    style: { background: secondaryContainer, corner_radius: 12dp, elevation: 2dp, padding: 16dp }
+    content:
+      - { type: text, value: "Next Recipient", style: { text_style: labelLarge, color: onSecondaryContainer } }
+      - { type: text, value: "{{nextRecipientName}}", style: { text_style: headlineMedium, color: onSecondaryContainer, font_weight: bold } }
+      - { type: labeled-value, label: "Payout Amount", value: "KES {{nextRecipientAmount | number}}", style: { text_style: titleLarge, color: onSecondaryContainer } }
+      - { type: divider, style: { margin: "8dp 0dp" } }
+      - { type: text, value: "Your position: {{rotationPosition}}", style: { text_style: bodyMedium, color: onSecondaryContainer } }
+
   - id: confirm_button
     type: button
     variant: filled
     label: "Confirm & Proceed to Execute"
-    enabled_when: "memberPayouts.isNotEmpty()"
+    enabled_when: "memberPayouts.isNotEmpty() || poolModel == 'ROTATING_PAYOUT'"
     style: { background: primary, text_color: onPrimary, corner_radius: 24dp, min_touch_target: 56dp, full_width: true }
-    on_click: { action: OnConfirm, target: share-out-execute }
+    on_click:
+      action: OnConfirm
+      target: share-out-execute
+      action_contract:
+        effect: navigate
+        description: "Pass typeConfig + memberPayouts to execute screen for COMP-DIST-001/002 execution"
 
   - id: shimmer_detail
     type: shimmer
@@ -128,21 +157,38 @@ states:
   initial_state: loading
   loading:
     components: [top_bar, shimmer_detail]
-    description: "Fetching corpus, profit, and member savings data; computing distribution"
-  content:
+    description: "Fetching corpus, profit, and member data from companion API; computing distribution"
+  content_accumulating:
     components: [top_bar, cycle_info_banner, fund_summary_card, distribution_formula_chip, member_payout_table, confirm_button]
-    description: "Distribution computed; table shows per-member payouts"
+    description: "ACCUMULATING type (VSLA/ASCA/SHG/SILC): table shows per-member payout with formula chip"
     demo_data:
+      groupId: "grp-001"
+      poolModel: "ACCUMULATING"
+      shareoutFormula: "PRORATA_SHARES"
       cycleNumber: 1
       totalCorpus: 20000
       totalProfit: 4000
       totalPool: 24000
       memberPayouts:
-        - { memberName: "Amina Hassan", totalSavings: 6800, sharePercent: 28.3, payoutAmount: 6792 }
-        - { memberName: "Peter Otieno", totalSavings: 5200, sharePercent: 21.7, payoutAmount: 5208 }
-        - { memberName: "Grace Wanjiku", totalSavings: 4800, sharePercent: 20.0, payoutAmount: 4800 }
-        - { memberName: "John Mwangi", totalSavings: 4400, sharePercent: 18.3, payoutAmount: 4392 }
-        - { memberName: "Mary Akinyi", totalSavings: 2800, sharePercent: 11.7, payoutAmount: 2808 }
+        - { memberName: "Amina Hassan", sharesHeld: 20, sharePercent: 33.3, payoutAmount: 7992 }
+        - { memberName: "Peter Otieno", sharesHeld: 15, sharePercent: 25.0, payoutAmount: 6000 }
+        - { memberName: "Grace Wanjiku", sharesHeld: 12, sharePercent: 20.0, payoutAmount: 4800 }
+        - { memberName: "John Mwangi", sharesHeld: 8, sharePercent: 13.3, payoutAmount: 3192 }
+        - { memberName: "Mary Akinyi", sharesHeld: 5, sharePercent: 8.3, payoutAmount: 2016 }
+  content_rotating:
+    components: [top_bar, cycle_info_banner, fund_summary_card, distribution_formula_chip, rotation_preview_card, confirm_button]
+    description: "ROTATING_PAYOUT type (ROSCA): shows next-recipient card instead of member table"
+    demo_data:
+      groupId: "grp-002"
+      poolModel: "ROTATING_PAYOUT"
+      shareoutFormula: "FIXED_ORDER"
+      cycleNumber: 3
+      totalCorpus: 10000
+      totalProfit: 0
+      totalPool: 10000
+      rotationPosition: 5
+      nextRecipientName: "Grace Wanjiku"
+      nextRecipientAmount: 10000
   error:
     components: [top_bar, error_state]
     description: "API or computation failed; error shown with retry"
@@ -155,11 +201,19 @@ i18n:
     total_corpus: "Total Corpus (Fund)"
     total_profit: "Total Profit (Interest Earned)"
     total_pool: "Total Distribution Pool"
-    formula_label: "Formula: Pro-rata by savings contribution"
+    formula_prorata_shares: "Formula: Pro-rata by shares held"
+    formula_prorata_savings: "Formula: Pro-rata by savings"
+    formula_equal: "Formula: Equal split"
+    formula_fixed_order: "Formula: Fixed rotation order"
+    formula_lottery: "Formula: Rotation by lottery"
+    formula_auction: "Formula: Chit auction"
     col_member: "Member"
-    col_savings: "Total Savings"
+    col_shares_savings: "Shares / Savings"
     col_share: "Share %"
     col_payout: "Payout (KES)"
+    next_recipient_label: "Next Recipient"
+    your_position_label: "Your position: {{n}}"
+    payout_amount_label: "Payout Amount"
     confirm_button: "Confirm & Proceed to Execute"
     error_network: "No internet. Showing cached data."
     error_server: "Server error. Please try again."

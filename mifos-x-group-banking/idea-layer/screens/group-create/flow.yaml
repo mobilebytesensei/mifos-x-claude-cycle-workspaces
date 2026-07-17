@@ -3,49 +3,70 @@ schema_version: "4.0"
 feature_id: group-create
 
 navigates_to:
-  - group-dashboard
-  - group-list
+  - group-dashboard   # on success — nav target after COMP-GRP-001 returns groupId
+  - group-list        # on back
 
 flow_logic:
   on_load:
+    - action: read_typeConfig_from_nav_arg
+      description: "Read GroupTypeConfig passed from group-type-picker; set groupTypeName for display"
     - action: load_offices
       api: get_offices
       on_success: populate_office_dropdown
+
   on_next_step:
     - action: validate_current_step
       step_1_fields: [groupName, officeId, meetingDay, meetingTime]
-      step_2_fields: [contributionMin, contributionMax, loanMultiplier, interestRate, cycleLengthMonths, fineAmount]
+      step_2_fields:
+        shared: [loanMultiplier, interestRate, cycleLengthMonths, fineAmount]
+        if_contribution_model_SHARE_BASED_VARIABLE: [shareValue, shareMin, shareMax]
+        if_contribution_model_FIXED: [contributionAmount]
+        if_pool_model_ROTATING_PAYOUT: [payoutOrderMethod]
+      step_3_fields: [maxMembers]
       on_valid: advance_step
       on_invalid: show_validation_errors
+
   on_previous_step:
     - action: decrement_step
+
   on_submit:
     - action: validate_all
       on_valid:
         - check: network_available
           online:
-            - api: create_center
+            - api: create_group_orchestrate   # COMP-GRP-001 single call
               on_success:
-                - api: create_group_config
-                  on_success: emit NavigateToGroupDashboard
-                  on_error: show_error
+                - action: set_inviteCode_from_response
+                - emit: NavigateToGroupDashboard
+              on_error: show_error
           offline:
             - action: queue_to_sync_queue
+              operation: CREATE_GROUP_ORCHESTRATE
               emit: ShowOfflineSyncDialog
+
   validation_rules:
     groupName: { min_length: 3, max_length: 60, required: true }
-    contributionMin: { type: number, min: 1, required: true }
-    contributionMax: { type: number, min: contributionMin, required: true }
+    officeId: { required: true }
+    meetingDay: { required: true }
+    meetingTime: { required: true }
+    # VSLA / SHARE_BASED_VARIABLE
+    shareValue: { type: number, min: 1, required_when: "typeConfig.contribution_model == 'SHARE_BASED_VARIABLE'" }
+    shareMin: { type: integer, min: 1, required_when: "typeConfig.contribution_model == 'SHARE_BASED_VARIABLE'" }
+    shareMax: { type: integer, min: shareMin, required_when: "typeConfig.contribution_model == 'SHARE_BASED_VARIABLE'" }
+    # FIXED / ROSCA / SHG
+    contributionAmount: { type: number, min: 1, required_when: "typeConfig.contribution_model != 'SHARE_BASED_VARIABLE'" }
+    # Shared
     loanMultiplier: { type: number, min: 1, max: 10, required: true }
     interestRate: { type: number, min: 0, max: 100, required: true }
     cycleLengthMonths: { type: integer, min: 1, max: 60, required: true }
     fineAmount: { type: number, min: 0, required: true }
+    maxMembers: { type: integer, min: 2, max: 200, required: true }
 
 dependencies:
   repositories:
     - name: GroupRepository
       methods:
-        - "createGroup(request: CreateGroupRequest): Result<Group>"
+        - "createGroupOrchestrate(request: CreateGroupOrchestrationRequest): Result<CreateGroupOrchestrationResponse>"
     - name: OfficeRepository
       methods:
         - "getOffices(): Flow<List<Office>>"
@@ -54,3 +75,4 @@ dependencies:
         - "enqueue(item: SyncQueueItem): Unit"
   services:
     - NetworkMonitor
+    - SessionManager

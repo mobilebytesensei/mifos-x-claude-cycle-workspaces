@@ -5,18 +5,27 @@ feature_id: member-savings-detail
 
 route: /groups/{groupId}/members/{memberId}/savings
 entry_points:
+  - source: savings-dashboard
+    trigger: tap_member_row
+    params: { memberId: String, groupId: String, typeConfig: GroupTypeConfig }
   - source: member-profile
     trigger: view_full_history_button
-    params: { memberId: String, groupId: String }
+    params: { memberId: String, groupId: String, typeConfig: GroupTypeConfig }
 nav_params:
   memberId: { type: String, required: true }
   groupId: { type: String, required: true }
+  typeConfig: { type: GroupTypeConfig, required: true }   # drives contribution-model display
 
 screens:
   - id: member-savings-detail-screen
     title: "Member Savings"
     type: list
-    description: Paginated transaction history with sparkline trend and client-side filter chips
+    description: >
+      Contribution-model-aware member savings detail. For SHARE_BASED_VARIABLE (VSLA/SILC),
+      header shows "X shares @ KES Y/share = KES Z total". For FIXED_AMOUNT (ROSCA/SHG),
+      header shows fixed contribution context ("KES Z per meeting"). Paginated transaction
+      history with 6-month sparkline trend and filter chips (All/Deposits/Withdrawals).
+      Data from companion API.
 
 state_model:
   MemberSavingsDetailViewModel:
@@ -25,6 +34,11 @@ state_model:
       fields:
         isLoading: { type: Boolean, default: "true" }
         member: { type: "Member?", default: "null" }
+        groupId: { type: String, default: '""' }
+        typeConfig: { type: "GroupTypeConfig?", default: "null" }
+        contributionModel: { type: String, default: '""' }   # SHARE_BASED_VARIABLE | FIXED_AMOUNT | FIXED_NEGOTIATED
+        sharesHeld: { type: "Int?", default: "null" }        # SHARE_BASED_VARIABLE only
+        shareValue: { type: "Long?", default: "null" }       # KES value per share — SHARE_BASED_VARIABLE only
         savingsBalance: { type: Double, default: "0.0" }
         savingsAccountNo: { type: String, default: '""' }
         sparklineData: { type: "List<SavingsDataPoint>", default: "emptyList()" }
@@ -59,7 +73,7 @@ state_model:
         - { name: Retry, trigger: "Tap Retry on error" }
         - { name: OnBack, trigger: "Tap back arrow" }
     di:
-      - MemberRepository
+      - MemberRepository     # companion API /companion/groups/{groupId}/members/{memberId}/savings
       - NetworkMonitor
 
 components:
@@ -89,14 +103,22 @@ components:
         type: text
         style: { text_style: titleMedium, color: onPrimaryContainer }
         value: "{{member.displayName}}"
+      # Contribution-model-adaptive balance display
       - id: savings_balance_label
         type: text
         style: { text_style: bodySmall, color: onPrimaryContainer }
-        value: "Current Savings Balance"
+        value: "{{contributionModel == 'SHARE_BASED_VARIABLE' ? 'Shares Held' : 'Savings Balance'}}"
       - id: savings_balance_amount
         type: text
         style: { text_style: displaySmall, color: onPrimaryContainer, font_weight: bold }
-        value: "KES {{savingsBalance | number}}"
+        # SHARE_BASED_VARIABLE: "20 shares @ KES 1000/share"
+        # FIXED_AMOUNT / FIXED_NEGOTIATED: "KES 3500"
+        value: "{{contributionModel == 'SHARE_BASED_VARIABLE' ? sharesHeld + ' shares @ KES ' + typeConfig.share_value + '/share' : 'KES ' + (savingsBalance | number)}}"
+      - id: savings_balance_total
+        type: text
+        visible: "{{contributionModel == 'SHARE_BASED_VARIABLE'}}"
+        style: { text_style: titleMedium, color: onPrimaryContainer }
+        value: "= KES {{shareValue | number}} total"
       - id: account_no_text
         type: text
         style: { text_style: bodySmall, color: onPrimaryContainer }
@@ -234,12 +256,20 @@ states:
     components: [top_bar, member_header_card, savings_sparkline_card, filter_chips_row, transaction_card, load_more_indicator]
     description: "All savings data loaded; transactions filterable client-side; pull-to-refresh enabled"
     demo_data:
+      # VSLA (SHARE_BASED_VARIABLE) context
+      groupId: "grp-001"
+      contributionModel: "SHARE_BASED_VARIABLE"
+      sharesHeld: 20
+      shareValue: 20000    # KES (20 shares × KES 1000/share)
+      typeConfig:
+        contribution_model: SHARE_BASED_VARIABLE
+        share_value: 1000   # KES per share
       member:
         displayName: "Amina Wanjiru"
         firstName: "Amina"
         lastName: "Wanjiru"
         photoUri: null
-      savingsBalance: 3500.00
+      savingsBalance: 20000.00    # equivalent KES for FIXED_AMOUNT fallback
       savingsAccountNo: "SA-00012345"
       sparklineData:
         - { date: "2025-12-01", balance: 500.00 }
@@ -284,7 +314,10 @@ states:
 i18n:
   en:
     screen_title: "Member Savings"
-    balance_label: "Current Savings Balance"
+    balance_label_shares: "Shares Held"
+    balance_label_savings: "Savings Balance"
+    shares_at_label: "{{sharesHeld}} shares @ KES {{shareValue}}/share"
+    shares_total_label: "= KES {{total}} total"
     account_no_label: "Account: {{accountNo}}"
     trend_label: "6-Month Trend"
     filter_all: "All"

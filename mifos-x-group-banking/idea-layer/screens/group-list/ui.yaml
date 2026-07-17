@@ -15,7 +15,7 @@ screens:
   - id: group-list-screen
     title: My Groups
     type: list
-    description: Scrollable list of groups with search bar and FAB
+    description: "Scrollable list of all groups the authenticated user belongs to (as organizer or member). Each card shows group name, group-type chip (VSLA/ROSCA/etc.), viewer role badge (organizer/member), cycle, member count, last meeting date, and health indicator. Empty state offers create OR join-with-code CTAs under unified identity."
 
 state_model:
   GroupListViewModel:
@@ -40,20 +40,22 @@ state_model:
     events:
       name: GroupListEvent
       members:
-        - { name: NavigateToGroupDashboard, params: { groupId: String } }
+        - { name: NavigateToGroupDashboard, params: { groupId: String, viewerRole: String } }
         - { name: NavigateToCreateGroup }
+        - { name: NavigateToJoinGroup }    # unified identity: join-with-code flow
         - { name: ShowSnackbar, params: { message: String } }
     actions:
       name: GroupListAction
       members:
-        - { name: OnGroupClick, params: { groupId: String }, trigger: "Tap group card" }
+        - { name: OnGroupClick, params: { groupId: String, viewerRole: String }, trigger: "Tap group card" }
         - { name: OnSearch, params: { query: String }, trigger: "Type in search bar" }
         - { name: OnClearSearch, trigger: "Tap clear icon in search bar" }
-        - { name: OnCreateGroup, trigger: "Tap FAB" }
+        - { name: OnCreateGroup, trigger: "Tap Create Group FAB" }
+        - { name: OnJoinGroup, trigger: "Tap Join Group button (empty state)" }
         - { name: OnRefresh, trigger: "Pull to refresh" }
         - { name: Retry, trigger: "Tap retry button on error state" }
     di:
-      - GroupRepository
+      - GroupRepository      # fetches /companion/groups — includes group_type and viewer role per group
       - NetworkMonitor
       - SessionManager
 
@@ -104,10 +106,23 @@ components:
         type: text
         style: { text_style: titleMedium, color: onSurface }
         value: "{{group.name}}"
-      - id: cycle_chip
-        type: chip
-        style: { background: secondaryContainer, text_color: onSecondaryContainer }
-        label: "Cycle {{group.cycleNumber}}"
+      - id: card_badges_row
+        type: row
+        children:
+          - id: group_type_chip
+            type: chip
+            label: "{{group.groupType}}"     # e.g. VSLA | ROSCA | SHG — from typeConfig.group_type
+            style: { background: tertiaryContainer, text_color: onTertiaryContainer }
+          - id: viewer_role_chip
+            type: chip
+            label: "{{group.viewerRole | lowercase}}"   # organizer | member | treasurer
+            style:
+              ORGANIZER: { background: primaryContainer, text_color: onPrimaryContainer }
+              default: { background: surfaceVariant, text_color: onSurfaceVariant }
+          - id: cycle_chip
+            type: chip
+            style: { background: secondaryContainer, text_color: onSecondaryContainer }
+            label: "Cycle {{group.cycleNumber}}"
       - id: member_count_text
         type: text
         style: { text_style: bodySmall, color: onSurfaceVariant }
@@ -123,12 +138,15 @@ components:
           AMBER: { background: "#FFF9C4", text_color: "#E65100" }
           RED: { background: "#FFCDD2", text_color: "#B71C1C" }
         value: "{{group.healthIndicator}}"
-    on_click: { action: OnGroupClick, params: { groupId: "{{group.id}}" }, target: group-dashboard }
+    on_click:
+      action: OnGroupClick
+      params: { groupId: "{{group.id}}", viewerRole: "{{group.viewerRole}}" }
+      target: group-dashboard
     test_context:
-      purpose: "Displays summary info for a single group; tap navigates to dashboard"
+      purpose: "Displays summary info for a single group including type + viewer role; tap navigates to dashboard"
       interaction_type: tap
       data_driven: true
-      required_fields: [group.name, group.cycleNumber, group.memberCount, group.healthIndicator]
+      required_fields: [group.name, group.groupType, group.viewerRole, group.cycleNumber, group.memberCount, group.healthIndicator]
 
   - id: create_group_fab
     type: fab
@@ -139,9 +157,9 @@ components:
       icon_color: onPrimary
       min_touch_target: 56dp
       position: bottom_end
-    on_click: { action: OnCreateGroup, target: group-create }
+    on_click: { action: OnCreateGroup, target: group-type-picker }    # FAB now navigates to type-picker first
     test_context:
-      purpose: "Navigate to group creation wizard"
+      purpose: "Navigate to group-type-picker → then group-create wizard"
       interaction_type: tap
       data_driven: false
       required_fields: []
@@ -160,9 +178,20 @@ components:
     type: empty-state
     icon: group_off
     title: "No groups yet"
-    body: "Create your first savings group to get started."
-    cta_label: "Create Group"
-    on_click: { action: OnCreateGroup, target: group-create }
+    body: "Create a new savings group or join an existing one with an invite code."
+    children:
+      - id: create_group_cta
+        type: button
+        variant: filled
+        label: "Create Group"
+        style: { background: primary, text_color: onPrimary, min_touch_target: 56dp }
+        on_click: { action: OnCreateGroup, target: group-type-picker }
+      - id: join_group_cta
+        type: button
+        variant: outlined
+        label: "Join with Code"
+        style: { border_color: primary, text_color: primary, min_touch_target: 48dp }
+        on_click: { action: OnJoinGroup, target: group-join }    # group-join screen handles invite code entry
 
   - id: error_state
     type: error-state
@@ -176,27 +205,39 @@ states:
   initial_state: loading
   loading:
     components: [top_bar, search_bar, shimmer_list]
-    description: "Fetching groups from Fineract; shimmer cards displayed"
+    description: "Fetching groups from companion API; shimmer cards displayed"
   content:
     components: [top_bar, search_bar, group_card, create_group_fab]
-    description: "Groups loaded; list is scrollable; FAB visible"
+    description: "Groups loaded with type + role badges; list is scrollable; FAB visible"
     demo_data:
       groups:
         - name: "Mwangaza Women's Group"
+          groupType: "VSLA"
+          viewerRole: "ORGANIZER"
           cycleNumber: 1
-          memberCount: 5
-          lastMeetingDate: "2026-04-28"
+          memberCount: 20
+          lastMeetingDate: "2026-07-14"
           healthIndicator: GREEN
           overdueRate: 0.00
-        - name: "Tumaini Savings Circle"
+        - name: "Jiunge ROSCA Circle"
+          groupType: "ROSCA"
+          viewerRole: "MEMBER"
           cycleNumber: 3
-          memberCount: 12
-          lastMeetingDate: "2026-04-25"
+          memberCount: 10
+          lastMeetingDate: "2026-07-10"
           healthIndicator: AMBER
           overdueRate: 0.12
+        - name: "Pamoja SHG"
+          groupType: "SHG"
+          viewerRole: "TREASURER"
+          cycleNumber: 2
+          memberCount: 15
+          lastMeetingDate: "2026-07-08"
+          healthIndicator: GREEN
+          overdueRate: 0.02
   empty:
     components: [top_bar, search_bar, empty_state, create_group_fab]
-    description: "No groups found; prompt to create first group"
+    description: "No groups found; offer both create + join-with-code CTAs"
   error:
     components: [top_bar, error_state]
     description: "API failed; error message with retry"
@@ -210,8 +251,9 @@ i18n:
     last_met_label: "Last met: {{date}}"
     fab_label: "New Group"
     empty_title: "No groups yet"
-    empty_body: "Create your first savings group to get started."
-    empty_cta: "Create Group"
+    empty_body: "Create a new savings group or join an existing one with an invite code."
+    empty_cta_create: "Create Group"
+    empty_cta_join: "Join with Code"
     error_network: "No internet connection. Showing cached data."
     error_server: "Server error. Please try again."
     error_auth: "Session expired. Please log in again."

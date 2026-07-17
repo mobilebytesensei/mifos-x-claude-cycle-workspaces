@@ -6,15 +6,16 @@ testing:
   coverage_targets:
     ViewModel: "90%+"
     Screen: "80%+"
+    Repository: "85%+"
 
   scenarios:
     - id: TC-PD-001
-      scenario: "Dashboard loads on mount — savings and loan data populated"
+      scenario: "Dashboard loads on mount — get_member_dashboard fires once; MemberDashboardResponse populates state"
       type: ViewModel
       priority: P0
-      given: "clientId=101, selfServiceToken set"
+      given: "auth token present; userId resolved server-side (no clientId or selfServiceToken)"
       when: "Screen mounts"
-      then: "get_client_accounts and get_savings_account called; groupLinkedSavingsBalance=3500.00, individualSavingsBalance=800.00, activeLoan populated"
+      then: "MemberRepository.getDashboard called once; groupLinkedSavingsBalance=3500.00, individualSavingsBalance=800.00, recentTransactions populated"
 
     - id: TC-PD-002
       scenario: "Top bar greeting changes based on time of day"
@@ -25,89 +26,105 @@ testing:
       then: "top_bar title='Good morning, Amina'"
 
     - id: TC-PD-003
-      scenario: "Savings card shows combined total KES 4,300 with breakdown"
+      scenario: "ACCUMULATING group — shareOutProjection card visible; rotationPosition card NOT shown"
       type: Screen
       priority: P0
-      given: "groupLinkedSavingsBalance=3500.00, individualSavingsBalance=800.00"
-      when: "Screen renders savings_summary_card"
-      then: "savings_balance_amount='KES 4,300.00', group_linked_label='Group-linked: KES 3,500.00', individual_label='Individual: KES 800.00'"
+      given: "poolModel=ACCUMULATING, shareOutProjection=9200.00, selectedGroup=Mwangaza Women's Group"
+      when: "Screen renders balance cards"
+      then: "share_out_projection_card shows 'KES 9,200'; rotation_card NOT visible"
 
     - id: TC-PD-004
-      scenario: "Savings card tap navigates to personal-savings"
-      type: ViewModel
+      scenario: "ROTATING_PAYOUT group — rotationPosition card and nextRecipientEta visible; shareOutProjection card NOT shown"
+      type: Screen
       priority: P0
-      given: "Content state"
-      when: "OnSavingsCardClick dispatched"
-      then: "NavigateToSavings event emitted"
+      given: "poolModel=ROTATING_PAYOUT, rotationPosition=3, nextRecipientEta='2026-06-15'"
+      when: "Screen renders balance cards"
+      then: "rotation_card shows position 3 and 'Jun 15 2026'; share_out_projection_card NOT visible"
 
     - id: TC-PD-005
-      scenario: "Active loan card visible when activeLoan is not null"
+      scenario: "Group chip selector renders all groups from myGroups[] and defaults to first group"
       type: Screen
       priority: P0
-      given: "activeLoan.outstandingBalance=3250.00, nextRepaymentDate='2026-05-20'"
-      when: "Screen renders"
-      then: "loan_summary_card visible with outstanding='KES 3,250.00', next repayment shown"
+      given: "myGroups has 2 groups: Mwangaza Women's Group (ACCUMULATING) + Tumaini ROSCA (ROTATING_PAYOUT)"
+      when: "Content state rendered"
+      then: "Two group chips visible; first chip selected by default; balance cards match first group's poolModel"
 
     - id: TC-PD-006
-      scenario: "Active loan card hidden when member has no loans"
-      type: Screen
+      scenario: "OnGroupChipTap changes selectedGroupId and re-fetches get_member_dashboard with new groupId"
+      type: ViewModel
       priority: P0
-      given: "activeLoan=null"
-      when: "Screen renders"
-      then: "loan_summary_card not visible, request_loan_cta shown instead"
+      given: "selectedGroupId='GRP-001'; Tumaini ROSCA chip tapped (groupId='GRP-002')"
+      when: "OnGroupChipTap action with groupId='GRP-002'"
+      then: "MemberRepository.getDashboard called with selectedGroupId='GRP-002'; pool_model changes to ROTATING_PAYOUT; cache key updates"
 
     - id: TC-PD-007
-      scenario: "Loan card tap navigates to personal-loans"
-      type: ViewModel
-      priority: P1
-      given: "activeLoan present"
-      when: "OnLoanCardClick dispatched"
-      then: "NavigateToLoans event emitted"
+      scenario: "Cache key is userId:groupId — switching groups does not return wrong group's cached data"
+      type: Repository
+      priority: P0
+      given: "Two calls: userId='U1':groupId='GRP-001' then userId='U1':groupId='GRP-002'"
+      when: "Second call with different groupId"
+      then: "Cache miss on second call (different key); network request fires; each groupId cached independently"
 
     - id: TC-PD-008
-      scenario: "Recent transactions section shows last 5 transactions"
+      scenario: "Recent transactions section shows last 3 recentTransactions from MemberDashboardResponse"
       type: Screen
       priority: P1
-      given: "recentTransactions has 5 items, latest DEPOSIT=400.00 on 2026-05-06"
-      when: "Screen renders"
-      then: "5 transaction_row items visible, top item shows '2026-05-06 · DEPOSIT · KES 400.00'"
+      given: "recentTransactions has 3 DEPOSIT items"
+      when: "Screen renders recent_transactions_section"
+      then: "3 transaction_row items visible; top item shows date + type + KES amount"
 
     - id: TC-PD-009
-      scenario: "Overdue loan shows warning indicator on loan card"
-      type: Screen
-      priority: P0
-      given: "activeLoan.isOverdue=true"
-      when: "Screen renders loan_summary_card"
-      then: "overdue_icon visible with error tint, outstanding balance in error color"
-
-    - id: TC-PD-010
-      scenario: "Pull-to-refresh reloads all dashboard data"
+      scenario: "Pull-to-refresh fires bypass_and_refresh strategy on get_member_dashboard for selected group"
       type: ViewModel
       priority: P1
-      given: "Content state"
-      when: "OnRefresh dispatched"
-      then: "isRefreshing=true, both API endpoints called, data refreshed, isRefreshing=false"
+      given: "Content state, selectedGroupId='GRP-001'"
+      when: "OnRefreshTap action"
+      then: "isRefreshing=true; cache bypassed; get_member_dashboard re-called with selectedGroupId; isRefreshing=false on completion"
 
-    - id: TC-PD-011
+    - id: TC-PD-010
       scenario: "Unauthorized 401 navigates to login screen"
       type: ViewModel
       priority: P0
-      given: "API returns 401"
+      given: "get_member_dashboard returns 401"
       when: "Screen mounts"
-      then: "DashboardError.Unauthorized set, navigate to login"
+      then: "NavigateBack emitted; user redirected to login"
 
-    - id: TC-PD-012
-      scenario: "Offline with cache shows cached data and offline snackbar"
+    - id: TC-PD-011
+      scenario: "Offline with member_dashboard_cache hit shows cached data and offline banner"
       type: ViewModel
       priority: P1
-      given: "NetworkMonitor.isOnline=false, SQLDelight cache valid"
+      given: "NetworkMonitor.isOnline=false; member_dashboard_cache has entry for userId:groupId"
       when: "Screen mounts"
-      then: "Content state from cache, ShowSnackbar with error_network message"
+      then: "Content state from cache; offline_banner shown"
+
+    - id: TC-PD-012
+      scenario: "Offline with no cache shows Error state with retry CTA"
+      type: ViewModel
+      priority: P1
+      given: "NetworkMonitor.isOnline=false; no cache entry"
+      when: "Screen mounts"
+      then: "Error state shown with Retry CTA"
 
     - id: TC-PD-013
-      scenario: "Loading shimmer shown while data is being fetched"
+      scenario: "Loading shimmer shown while get_member_dashboard is in flight"
       type: Screen
       priority: P1
       given: "isLoading=true"
       when: "Screen renders"
-      then: "Shimmer placeholders visible for savings_summary_card and loan_summary_card"
+      then: "Shimmer placeholders visible for balance cards and group chips"
+
+    - id: TC-PD-014
+      scenario: "MemberRepository.getDashboard maps response to MemberDashboardResponse with pool_model-discriminated fields"
+      type: Repository
+      priority: P0
+      given: "get_member_dashboard returns ACCUMULATING response"
+      when: "Repository processes response"
+      then: "MemberDashboardResponse has shareOutProjection set; rotationPosition=null; poolModel=ACCUMULATING"
+
+    - id: TC-PD-015
+      scenario: "NONE pool_model — only individualSavingsBalance shown; no projection or rotation card"
+      type: Screen
+      priority: P1
+      given: "poolModel=NONE (ASCA/SHG/BURIAL_WELFARE group type)"
+      when: "Content state rendered"
+      then: "individual_savings_card visible; share_out_projection_card NOT visible; rotation_card NOT visible"
