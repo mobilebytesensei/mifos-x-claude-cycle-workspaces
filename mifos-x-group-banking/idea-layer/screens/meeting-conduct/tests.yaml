@@ -10,113 +10,201 @@ testing:
 
   scenarios:
     - id: TC-MCN-001
-      scenario: "Step 0 loads previous meeting record for review"
+      scenario: "LoadMeetingData on mount fetches prev record, members, corpus, and active loans"
       type: ViewModel
       priority: P0
-      given: "centerId=1, meetingNumber=5 (current), so fetch meetingNumber=4"
-      when: "wizard mounts at step 0"
-      then: "GET dt_meeting_record/1?meetingNumber=4 called; MeetingRecordDetail loaded; step 0 renders previous summary"
+      given: "centerId=7, meetingNumber=4 (so previous = 3), online"
+      when: "wizard enters composition (LoadMeetingData)"
+      then: "GET dt_meeting_record/7, GET /centers/7, GET dt_group_corpus/7, GET /loans all fired; groupMembers, openingCorpus, activeLoans populated; content state at step 0"
 
     - id: TC-MCN-002
+      scenario: "Step 0 renders previous meeting summary card from loaded record"
+      type: Screen
+      priority: P1
+      given: "previousMeetingSummary loaded (meetingNumber=3, totalCollected=1850, corpusAtClose=12400, attendanceCount=5)"
+      when: "step 0 renders"
+      then: "prev_meeting_summary_card shows Meeting #3, Total Collected KES 1,850, Closing Corpus KES 12,400, Attendance 5/5; view_full_previous_btn visible"
+
+    - id: TC-MCN-003
       scenario: "Step 0 on first meeting shows placeholder instead of previous record"
       type: Screen
       priority: P1
-      given: "GET dt_meeting_record returns 404 (first meeting)"
+      given: "GET dt_meeting_record returns 404 (first meeting), previousMeetingSummary=null"
       when: "step 0 loads"
-      then: "'First meeting — no previous record' placeholder shown; wizard can still advance"
-
-    - id: TC-MCN-003
-      scenario: "Step 1 loads all 5 group members for attendance checklist"
-      type: ViewModel
-      priority: P0
-      given: "centerId=1"
-      when: "wizard advances to step 1"
-      then: "GET /centers/1 called; CenterDetail loaded; 5 members (Amina, Joseph, Grace, Peter, Mary) shown"
+      then: "no_prev_meeting_placeholder 'First Meeting' shown; view_full_previous_btn hidden; wizard can still advance"
 
     - id: TC-MCN-004
-      scenario: "All members marked present by default — user can toggle absent"
-      type: Screen
-      priority: P1
-      given: "5 members loaded"
-      when: "step 1 renders"
-      then: "all 5 attendance toggles show PRESENT; tapping toggles to ABSENT"
+      scenario: "ViewFullPreviousMeeting navigates to previous-meeting-review"
+      type: ViewModel
+      priority: P2
+      given: "step 0, previousMeetingSummary present, centerId=7"
+      when: "user taps View Full Report (ViewFullPreviousMeeting)"
+      then: "NavigateToPreviousMeetingReview event passes meetingNumber and centerId; wizard state preserved"
 
     - id: TC-MCN-005
-      scenario: "Step 2 shows opening corpus and cash-on-hand from CorpusRecord"
-      type: Screen
-      priority: P1
-      given: "CorpusRecord: corpusBalance=51750, cashOnHand=3500"
-      when: "step 2 renders"
-      then: "KES 51,750 opening corpus and KES 3,500 cash on hand displayed"
+      scenario: "SetAttendance records status and auto-derives late/absent fine"
+      type: ViewModel
+      priority: P0
+      given: "5 members loaded (Amina, Peter, Grace, John, Mary), lateFine=50, absentFine=100"
+      when: "user marks Peter LATE and Mary ABSENT (SetAttendance)"
+      then: "attendanceMap[peter]=LATE, attendanceMap[mary]=ABSENT; totalFinesCollected folds KES 50 + KES 100 = 150; fine_chip shown per member; pure state transition, no I/O"
 
     - id: TC-MCN-006
-      scenario: "Step 3 savings entry — per-member savings input with running total"
-      type: ViewModel
-      priority: P0
-      given: "5 members each with default savings of KES 300"
-      when: "user enters savings per member"
-      then: "running total updates; totalSavingsCollected = sum of all inputs"
+      scenario: "Attendance progress chip reflects recorded/total and cannot advance until complete"
+      type: Screen
+      priority: P1
+      given: "step 1, 3 of 5 members recorded"
+      when: "attendance_progress_chip renders and user taps Next"
+      then: "chip shows '3/5 recorded' with surfaceVariant styling; NextStep guarded — stepValidationError=attendance_incomplete until all 5 recorded"
 
     - id: TC-MCN-007
-      scenario: "Step 4 shows active loans for repayment with expected weekly amount"
-      type: Screen
+      scenario: "NextStep validates current step then advances and saves progress locally"
+      type: ViewModel
       priority: P0
-      given: "3 active LoanDetails for Amina (700), Joseph (600), Grace (500)"
-      when: "step 4 renders"
-      then: "each member's expected repayment pre-filled; editable; overdue indicator on Joseph's"
+      given: "step 1 complete (all 5 attendance recorded)"
+      when: "user taps Next (NextStep)"
+      then: "currentStep increments to 2; wizard progress saved to SQLDelight meeting_wizard_state (SaveProgressLocally); corpus_band becomes visible"
 
     - id: TC-MCN-008
-      scenario: "Step 5 loan voting — vote For/Against/Abstain recorded per member"
+      scenario: "PreviousStep decrements step preserving all entered data"
       type: ViewModel
       priority: P1
-      given: "pending loan application for Peter (8,000 KES); LoanVoteRecord: votesFor=0"
-      when: "user votes FOR Peter's loan"
-      then: "votesFor incremented locally; majority check runs; approve button enabled if quorum met"
+      given: "currentStep=3 with savingsMap and attendanceMap populated"
+      when: "user taps Back (PreviousStep)"
+      then: "currentStep=2; attendanceMap, savingsMap, loanRepayments all preserved; back_footer_btn hidden at step 0"
 
     - id: TC-MCN-009
-      scenario: "Submit sequence: record → attendance → savings → repayments → disbursals → corpus"
-      type: ViewModel
-      priority: P0
-      given: "all wizard steps complete, network online"
-      when: "user taps Submit"
-      then: "API calls made in priority order 1-6; all succeed; navigate to meeting-summary"
-
-    - id: TC-MCN-010
-      scenario: "Offline submit queues entire meeting payload to SyncQueue"
-      type: ViewModel
-      priority: P0
-      given: "network.offline, wizard complete"
-      when: "user taps Submit"
-      then: "SyncQueueEntry created for each operation (CREATE_MEETING_RECORD, CREATE_MEETING_ATTENDANCE, etc.); success message shown; navigate to meeting-summary with in-memory data"
-
-    - id: TC-MCN-011
-      scenario: "Corpus gate blocks loan disbursal if closing corpus would go negative"
-      type: ViewModel
-      priority: P0
-      given: "openingCorpus=51750, proposedDisbursal=60000 (exceeds corpus)"
-      when: "corpus gate check runs before disbursal"
-      then: "error: error_corpus_gate_violation; disbursal blocked; wizard shows warning on step 5"
-
-    - id: TC-MCN-012
-      scenario: "Partial failure queues failed calls while succeeding ones commit"
-      type: ViewModel
-      priority: P1
-      given: "network drops mid-submission after meeting_record posted"
-      when: "attendance POST fails with 5xx"
-      then: "remaining calls queued to SyncQueue with correct priorities; partial state tracked"
-
-    - id: TC-MCN-013
-      scenario: "Wizard step guard — cannot advance past step 1 without members loaded"
+      scenario: "Step 2 renders opening corpus and cash-on-hand from CorpusRecord"
       type: Screen
       priority: P1
-      given: "GET /centers/{centerId} returns 404"
-      when: "user tries to advance from step 1"
-      then: "error banner shown; Next button disabled"
+      given: "openingCorpus=12400, cashOnHand=2000"
+      when: "step 2 renders"
+      then: "corpus_balance_card shows 'KES 12,400' opening corpus; cash_on_hand_card shows 'KES 2,000'"
+
+    - id: TC-MCN-010
+      scenario: "SetSavingsAmount updates savingsMap and recomputes running total"
+      type: ViewModel
+      priority: P0
+      given: "step 3, 5 members, min group savings KES 200"
+      when: "user enters group savings per member (SetSavingsAmount GROUP_LINKED)"
+      then: "savingsMap updated per member; runningSavingsTotal = sum of all entries; running_total_band updates; below-200 entry sets MinContributionNotMet on advance"
+
+    - id: TC-MCN-011
+      scenario: "SetLoanRepayment records repayment and blocks amount exceeding balance"
+      type: ViewModel
+      priority: P0
+      given: "step 4, active loan outstandingBalance=600 for a member"
+      when: "user enters repayment=800 (SetLoanRepayment)"
+      then: "loanRepayments updated, totalRepayments recomputed; RepaymentExceedsBalance validation fires when amount > outstandingBalance and blocks step advance"
+
+    - id: TC-MCN-012
+      scenario: "SetLoanFine only applies to overdue loans, folds into totalFinesCollected"
+      type: ViewModel
+      priority: P1
+      given: "step 4, one loan flagged isOverdue=true"
+      when: "user enters penalty fine on the overdue loan (SetLoanFine)"
+      then: "loanFines updated for that loanId; totalFinesCollected includes the fine; fine_input hidden for non-overdue loans"
+
+    - id: TC-MCN-013
+      scenario: "CastLoanVote records For/Against and updates the local tally"
+      type: ViewModel
+      priority: P1
+      given: "step 5, pending application for Peter (KES 8,000), LoanVoteRecord votesFor=0"
+      when: "3 members vote FOR and 1 votes AGAINST (CastLoanVote)"
+      then: "loanVotes tally = 3 For / 1 Against locally; aggregate posted to dt_loan_vote only on submit"
 
     - id: TC-MCN-014
+      scenario: "ApproveLoanApplication enabled only for chairperson when votes pass"
+      type: ViewModel
+      priority: P0
+      given: "step 5, currentUserRole=CHAIRPERSON, votesFor=3 > votesAgainst=1"
+      when: "chairperson taps Approve (ApproveLoanApplication)"
+      then: "application marked approved in local state; disbursal queued for submit sequence; approve_btn disabled for non-chairpersons or when votesFor <= votesAgainst"
+
+    - id: TC-MCN-015
+      scenario: "Corpus gate blocks disbursal that would drive closing corpus negative"
+      type: ViewModel
+      priority: P0
+      given: "available-to-disburse (openingCorpus+savings+repayments+fines-disbursed)=15000, proposedDisbursal=60000"
+      when: "corpus gate runs before ApproveLoanApplication/disbursal"
+      then: "CorpusInsufficient error shown on step 5; disbursal blocked; corpus_gate_chip reflects remaining corpus"
+
+    - id: TC-MCN-016
+      scenario: "Step 6 reconciliation card computes closing corpus from all step totals"
+      type: Screen
+      priority: P1
+      given: "openingCorpus=12400, runningSavingsTotal=1000, totalRepayments=600, totalFinesCollected=150, totalLoansDisbursed=0"
+      when: "step 6 renders"
+      then: "reconciliation_card shows the arithmetic breakdown and closingCorpus = 12400+1000+600+150-0 = KES 14,150"
+
+    - id: TC-MCN-017
+      scenario: "SubmitMeeting runs ordered submit sequence online then navigates to summary"
+      type: ViewModel
+      priority: P0
+      given: "all steps complete, network online"
+      when: "user taps Submit Meeting (SubmitMeeting)"
+      then: "POSTs fire in priority order 1-6 (record, attendance, savings, repayment, disbursal, corpus PATCH); submit_success state; NavigateToMeetingSummary emitted"
+
+    - id: TC-MCN-018
+      scenario: "Offline SubmitMeeting queues the full payload to sync_queue"
+      type: ViewModel
+      priority: P0
+      given: "cmp-network-monitor offline, wizard complete"
+      when: "user taps Submit Meeting (SubmitMeeting)"
+      then: "SyncQueueEntry created for each operation with correct priorities via SQLDelight; offline_submit_note shown; navigate to meeting-summary with in-memory data; Store5 drains queue on reconnect"
+
+    - id: TC-MCN-019
+      scenario: "Partial failure mid-submit queues remaining calls while committed ones stand"
+      type: ViewModel
+      priority: P1
+      given: "network drops after post_meeting_record succeeds"
+      when: "post_meeting_attendance returns 5xx"
+      then: "remaining operations enqueued to sync_queue with their priorities; partial commit state tracked; submit_error snackbar with Retry"
+
+    - id: TC-MCN-020
+      scenario: "SubmitMeeting Retry from error snackbar re-runs the sequence"
+      type: ViewModel
+      priority: P1
+      given: "submit_error state, submit_error_snackbar visible"
+      when: "user taps Retry (SubmitMeeting)"
+      then: "ordered submit sequence re-invoked; on repeated failure payload enqueued to SQLDelight sync_queue"
+
+    - id: TC-MCN-021
+      scenario: "DismissError clears the step validation snackbar"
+      type: ViewModel
+      priority: P2
+      given: "stepValidationError set (attendance incomplete), step_validation_error_snackbar visible"
+      when: "snackbar auto-dismisses or user swipes (DismissError)"
+      then: "stepValidationError cleared; wizard restored to editable content state"
+
+    - id: TC-MCN-022
+      scenario: "NavigateBack from close button discards the in-progress wizard"
+      type: ViewModel
+      priority: P2
+      given: "content state at step 3 with data entered"
+      when: "user taps close_btn (NavigateBack)"
+      then: "NavigateBack event drives navigation to meeting-calendar; current step not persisted beyond local autosave"
+
+    - id: TC-MCN-023
+      scenario: "Wizard step guard blocks advance past step 1 when members failed to load"
+      type: Screen
+      priority: P1
+      given: "GET /centers/7 returned 404 (members required)"
+      when: "user tries to advance from step 1"
+      then: "error banner 'group members required' shown; next_footer_btn disabled"
+
+    - id: TC-MCN-024
       scenario: "MeetingRepository.postMeetingRecord serializes CreateMeetingRecordRequest"
       type: Repository
       priority: P0
-      given: "all meeting data collected from wizard"
-      when: "postMeetingRecord() called"
-      then: "POST body includes centerId, meetingNumber, actualDate, totalSavings, attendanceCount"
+      given: "all meeting data collected (openingCorpus, closingCorpus, totals, attendanceCount)"
+      when: "createMeetingRecord() called"
+      then: "POST /datatables/dt_meeting_record body includes centerId, meetingNumber, actualDate, totalSavingsCollected, totalRepaymentsReceived, totalLoansDisbursed, totalFinesCollected, attendanceCount, locale='en'"
+
+    - id: TC-MCN-025
+      scenario: "CorpusRepository.updateCorpus PATCHes closing balance last in the sequence"
+      type: Repository
+      priority: P0
+      given: "closingCorpus=14150, centerId=7, meetingNumber=4"
+      when: "updateCorpus() called as the final submit step"
+      then: "PUT /datatables/dt_group_corpus/7 body carries corpusBalance=14150, lastUpdatedMeeting=4, lastUpdatedDate; queued highest-priority on 5xx"

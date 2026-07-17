@@ -10,89 +10,129 @@ testing:
 
   scenarios:
     - id: TC-LRQ-001
-      scenario: "Valid loan request submits online and navigates to personal-dashboard"
+      scenario: "OnSubmitClick online — valid request posts and success dialog appears"
       type: ViewModel
       priority: P0
-      given: "clientId=1003, amount=5000.0, purpose='Maize seeds', durationWeeks=10, online"
-      when: "user taps Submit"
-      then: "POST /datatables/dt_loan_request called; LoanRequestResponse received; navigate to personal-dashboard"
+      given: "clientId=1003, requestedAmount='5000', purpose=FARMING, durationWeeks=10, online, isFormValid=true"
+      when: "user taps Submit Application (OnSubmitClick)"
+      then: "POST /datatables/dt_loan_request fires LoanRequestPayload with status='PENDING'; LoanRequestResponse received; submit_success state — success_dialog visible"
 
     - id: TC-LRQ-002
-      scenario: "Offline submission queues to SyncQueue and shows confirmation"
+      scenario: "OnSubmitClick offline — payload queued to SyncQueue, offline_queued state"
       type: ViewModel
       priority: P0
-      given: "network.offline, form valid"
-      when: "user taps Submit"
-      then: "SyncQueueEntry created with entityType=LOAN_REQUEST; success message: error_offline_queued; navigate to personal-dashboard"
+      given: "cmp-network-monitor reports offline, form valid"
+      when: "user taps Submit Application (OnSubmitClick)"
+      then: "SyncQueueEntry created via SQLDelight with status=PENDING; offline_queued state — success_dialog with offline copy; PENDING entry queued for next organizer meeting"
 
     - id: TC-LRQ-003
-      scenario: "Amount above max loan ceiling shows error"
+      scenario: "OnAmountChange above max ceiling sets requestedAmountError, disables Submit"
       type: ViewModel
       priority: P0
-      given: "requestedAmount=50000.0 (exceeds maxLoanAmount=15000)"
-      when: "user types amount"
-      then: "requestedAmountError=error_max_exceeded; Submit disabled"
+      given: "savingsBalance=5000, loanMultiplier=3.0 so maxLoanAmount=15000"
+      when: "user types requestedAmount='50000' (OnAmountChange)"
+      then: "requestedAmountError=error_max_exceeded; isFormValid=false; submit_button disabled; repaymentEstimate recomputed"
 
     - id: TC-LRQ-004
-      scenario: "Zero or negative amount shows validation error"
+      scenario: "OnAmountChange with zero or negative shows positive-required error"
       type: ViewModel
       priority: P0
-      given: "requestedAmount=0"
-      when: "user enters 0"
-      then: "requestedAmountError=error_must_be_positive; Submit disabled"
+      given: "amount field focused"
+      when: "user enters '0' (OnAmountChange)"
+      then: "requestedAmountError=error_must_be_positive; isFormValid=false; submit_button disabled"
 
     - id: TC-LRQ-005
-      scenario: "Purpose field required — empty purpose disables Submit"
-      type: Screen
+      scenario: "OnPurposeSelected clears purposeError and re-evaluates form validity"
+      type: ViewModel
       priority: P1
-      given: "amount=5000, duration=10, purpose=''"
-      when: "purpose field empty"
-      then: "Submit button disabled; no inline error until first submit attempt"
+      given: "amount=5000 valid, duration=10, purpose=null (purposeError set after submit attempt)"
+      when: "user selects 'School Fees' (OnPurposeSelected SCHOOL_FEES)"
+      then: "state.purpose=SCHOOL_FEES; purposeError cleared; isFormValid recomputed to true; submit_button enabled"
 
     - id: TC-LRQ-006
-      scenario: "Duration weeks > 0 required"
-      type: ViewModel
-      priority: P1
-      given: "durationWeeks=0"
-      when: "form validates"
-      then: "isFormValid=false; Submit disabled"
-
-    - id: TC-LRQ-007
-      scenario: "409 Duplicate pending request shows specific error"
-      type: ViewModel
-      priority: P1
-      given: "client already has PENDING loan request"
-      when: "server returns 409"
-      then: "error: error_duplicate_request_pending; navigation blocked"
-
-    - id: TC-LRQ-008
-      scenario: "Savings balance displayed from session — read-only info field"
-      type: Screen
-      priority: P1
-      given: "savingsBalance=1200.0 in session"
-      when: "screen mounts"
-      then: "KES 1,200 shown in savings balance info field; field not editable"
-
-    - id: TC-LRQ-009
-      scenario: "Repayment estimate recalculates when amount or duration changes"
+      scenario: "OnDurationChanged recomputes repayment estimate via StateFlow"
       type: ViewModel
       priority: P2
-      given: "amount=5000, durationWeeks=10"
-      when: "either field changes"
-      then: "repaymentEstimate = KES 500/week displayed"
+      given: "requestedAmount='5000', durationWeeks=12"
+      when: "user slides duration to 10 (OnDurationChanged 10)"
+      then: "state.durationWeeks=10; repaymentEstimate recomputed and re-emitted via StateFlow; repayment_summary_card totals update; no I/O"
+
+    - id: TC-LRQ-007
+      scenario: "repayment_summary_card hidden until amount valid, then shows principal/interest/total"
+      type: Screen
+      priority: P1
+      given: "requestedAmount blank"
+      when: "user enters a valid amount clearing requestedAmountError"
+      then: "repayment_summary_card becomes visible with Principal, Interest (group rate), and bold Total to repay rows"
+
+    - id: TC-LRQ-008
+      scenario: "OnSuccessDialogDismiss navigates to personal-dashboard"
+      type: ViewModel
+      priority: P0
+      given: "submit_success state, success_dialog visible"
+      when: "user taps OK (OnSuccessDialogDismiss)"
+      then: "success dialog dismissed; NavigateToDashboardAfterSuccess drives navigation to personal-dashboard; submitted request appears PENDING in next organizer agenda"
+
+    - id: TC-LRQ-009
+      scenario: "409 Duplicate pending request shows specific error, blocks navigation"
+      type: ViewModel
+      priority: P1
+      given: "client already has a PENDING loan request, OnSubmitClick fired"
+      when: "server returns 409"
+      then: "submitError set (error_duplicate_request_pending); submit_error state — error_snackbar visible; no navigation"
 
     - id: TC-LRQ-010
-      scenario: "LoanRequestRepository.submitLoanRequest serializes payload correctly"
-      type: Repository
-      priority: P0
-      given: "LoanRequestPayload with all fields"
-      when: "submitLoanRequest() called"
-      then: "JSON body matches dt_loan_request schema; status='PENDING' set automatically"
+      scenario: "401 session expired navigates to login"
+      type: ViewModel
+      priority: P1
+      given: "expired session, OnSubmitClick fired"
+      when: "server returns 401"
+      then: "submitError type=Unauthorized (error_session_expired); navigate to login per data-flow error path"
 
     - id: TC-LRQ-011
-      scenario: "SyncQueueRepository.enqueue stores entry for offline submission"
+      scenario: "OnRetry re-posts after a transient failure"
+      type: ViewModel
+      priority: P1
+      given: "submit_error state after a 503, error_snackbar showing"
+      when: "user taps Retry (OnRetry)"
+      then: "submit_loan_request re-invoked; on repeated offline failure payload re-queued to SyncQueue for background retry"
+
+    - id: TC-LRQ-012
+      scenario: "NavigateBack from top bar discards the unsaved form"
+      type: ViewModel
+      priority: P2
+      given: "content state, form partially filled"
+      when: "user taps back arrow (NavigateBack)"
+      then: "NavigateBack event drives navigation to personal-loans; no persistence or network call; unsaved form discarded"
+
+    - id: TC-LRQ-013
+      scenario: "savings_limit_card shows read-only savings balance and max borrow from session"
+      type: Screen
+      priority: P1
+      given: "savingsBalance=1200.0 from session, loanMultiplier=3.0"
+      when: "screen mounts (content state)"
+      then: "savings_limit_card shows 'KES 1,200' savings balance and 'KES 3,600' maximum you can borrow; fields not editable"
+
+    - id: TC-LRQ-014
+      scenario: "submitting state disables fields and shows spinner"
+      type: Screen
+      priority: P1
+      given: "isSubmitting=true (submit POST in flight)"
+      when: "OnSubmitClick fired and in progress"
+      then: "submit_button disabled; submitting_indicator (circular_progress) shown; form fields disabled"
+
+    - id: TC-LRQ-015
+      scenario: "LoanRequestRepository.submitLoanRequest serializes payload with PENDING status"
       type: Repository
       priority: P0
-      given: "network.offline, LoanRequestPayload ready"
+      given: "LoanRequestPayload with clientId, requested_amount, purpose, duration_weeks, savings_balance_at_request, submitted_at"
+      when: "submitLoanRequest() called"
+      then: "JSON body matches dt_loan_request schema; status='PENDING' set automatically; LoanRequestResponse deserialized"
+
+    - id: TC-LRQ-016
+      scenario: "SyncQueueRepository.enqueue persists offline entry with retryCount=0"
+      type: Repository
+      priority: P0
+      given: "cmp-network-monitor offline, LoanRequestPayload ready"
       when: "enqueue() called"
-      then: "SyncQueueEntry persisted to local DB with retryCount=0, status=PENDING"
+      then: "SyncQueueEntry persisted to local SQLDelight DB with entityType=LOAN_REQUEST, retryCount=0, status=PENDING"

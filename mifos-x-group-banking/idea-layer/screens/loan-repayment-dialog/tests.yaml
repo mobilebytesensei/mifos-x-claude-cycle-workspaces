@@ -10,81 +10,113 @@ testing:
 
   scenarios:
     - id: TC-LRD-001
-      scenario: "Valid M-Pesa repayment with receipt number posts successfully"
+      scenario: "OnSubmit with M-Pesa and receipt number posts repayment, dismisses"
       type: ViewModel
       priority: P0
-      given: "loanId=5001, amount=700.0, paymentMethod=MPESA, receiptNumber='MPE2026050901'"
-      when: "user taps Confirm"
-      then: "POST /loans/5001/transactions?command=repayment called with paymentTypeId=1; dialog dismisses; loan-list refreshes"
+      given: "loanId=5001, amount='700.00', paymentMethod=MPESA, referenceNumber='MPE2026050901', online"
+      when: "user taps Record Repayment (OnSubmit)"
+      then: "POST /loans/5001/transactions?command=repayment fires with transactionAmount=700.0, paymentTypeId=1, receiptNumber='MPE2026050901'; RepaymentRecorded(5001) emitted; loan cache refreshed; dialog dismisses"
 
     - id: TC-LRD-002
-      scenario: "Cash repayment without receipt number posts successfully"
+      scenario: "Cash repayment with null reference posts with paymentTypeId=2"
       type: ViewModel
       priority: P0
-      given: "loanId=5003, amount=500.0, paymentMethod=CASH, receiptNumber=null"
-      when: "user taps Confirm"
-      then: "POST called with paymentTypeId=2, receiptNumber=null; 200 response; success state"
+      given: "loanId=5003, amount='500.00', paymentMethod=CASH, referenceNumber=''"
+      when: "user taps Record Repayment (OnSubmit)"
+      then: "POST fires with transactionAmount=500.0, paymentTypeId=2, receiptNumber=null; 200 response; RepaymentRecorded emitted"
 
     - id: TC-LRD-003
-      scenario: "Amount exceeds outstanding balance shows validation error"
+      scenario: "OnAmountChanged updates amount and clears amountError inline"
       type: ViewModel
       priority: P0
-      given: "outstandingBalance=3000.0, amount=5000.0"
-      when: "user enters amount > outstanding"
-      then: "inline error shown: error_amount_exceeds_outstanding; Confirm disabled"
+      given: "amountError='Amount must be a valid positive number.' present"
+      when: "user types a valid amount (OnAmountChanged '250.00')"
+      then: "state.amount='250.00'; amountError cleared; InputValidator positive-number check passes; no network call"
 
     - id: TC-LRD-004
-      scenario: "Amount of 0 or empty disables Confirm button"
-      type: Screen
-      priority: P1
-      given: "amount field empty or '0'"
-      when: "user clears amount"
-      then: "Confirm button disabled; no error snackbar"
+      scenario: "Amount exceeding outstanding balance surfaces inline validation error"
+      type: ViewModel
+      priority: P0
+      given: "outstandingBalance=3000.0, user enters amount='5000.00'"
+      when: "OnAmountChanged fires validation"
+      then: "amountError=error_amount_invalid/exceeds shown inline; record_repayment_button disabled"
 
     - id: TC-LRD-005
-      scenario: "Payment method selector toggles between MPESA and CASH"
+      scenario: "Blank or zero amount disables Record Repayment without a snackbar"
       type: Screen
       priority: P1
-      given: "dialog open, default MPESA selected"
-      when: "user taps CASH toggle"
-      then: "paymentMethod=CASH; receipt number field hidden (not required for cash)"
+      given: "amount field cleared to '' or '0'"
+      when: "user clears amount"
+      then: "record_repayment_button disabled; no submit error snackbar; amount_field ready for re-entry"
 
     - id: TC-LRD-006
-      scenario: "400 validation error from server shows specific error"
-      type: ViewModel
-      priority: P1
-      given: "server returns 400 (amount exceeds principal)"
-      when: "Confirm tapped"
-      then: "error snackbar: error_amount_exceeds_outstanding; dialog stays open"
-
-    - id: TC-LRD-007
-      scenario: "Loading state disables Confirm while API in flight"
+      scenario: "OnPaymentMethodSelected toggles MPESA and CASH chips"
       type: Screen
       priority: P1
-      given: "API call in progress"
-      when: "Confirm tapped"
-      then: "Confirm button disabled + spinner; Cancel still tappable"
+      given: "dialog open, default paymentMethod=MPESA (chip_mpesa selected)"
+      when: "user taps Cash chip (OnPaymentMethodSelected CASH)"
+      then: "paymentMethod=CASH; chip_cash shows selected styling; chip_mpesa deselected; reference_number_field remains visible (optional)"
+
+    - id: TC-LRD-007
+      scenario: "OnReferenceNumberChanged updates optional receipt code in state"
+      type: ViewModel
+      priority: P2
+      given: "referenceNumber='' , M-Pesa selected"
+      when: "user types 'QJZ7X9A1BK' (OnReferenceNumberChanged)"
+      then: "state.referenceNumber='QJZ7X9A1BK'; value carried verbatim into make_repayment receiptNumber body field; no network call on change"
 
     - id: TC-LRD-008
-      scenario: "Offline prevents submission — shows no-queue message"
+      scenario: "OnDismiss (Cancel) pops dialog discarding entered amount"
       type: ViewModel
-      priority: P1
-      given: "network.offline"
-      when: "user taps Confirm"
-      then: "error_offline_no_queue shown; no POST attempted"
+      priority: P0
+      given: "dialog open with amount='125.00' entered"
+      when: "user taps Cancel (OnDismiss)"
+      then: "Dismiss event emitted; navigates back to parent loan-detail; no repayment recorded; entered amount and reference discarded"
 
     - id: TC-LRD-009
-      scenario: "InputValidator rejects non-numeric amount input"
-      type: UseCase
-      priority: P2
-      given: "amount='abc'"
-      when: "InputValidator.validateAmount() called"
-      then: "validation fails; Confirm disabled"
+      scenario: "400 validation error from server shows amount-exceeds error, dialog stays open"
+      type: ViewModel
+      priority: P1
+      given: "server returns 400 (amount exceeds principal), OnSubmit fired"
+      when: "response arrives"
+      then: "submitError=error_amount_exceeds_outstanding shown in error state; dialog stays open for correction"
 
     - id: TC-LRD-010
-      scenario: "LoanRepository.recordRepayment maps payload and calls Fineract correctly"
+      scenario: "404 Loan not found on submit shows specific error"
+      type: ViewModel
+      priority: P2
+      given: "loanId references an unknown loan, OnSubmit fired"
+      when: "server returns 404"
+      then: "submitError=error_loan_not_found rendered; no RepaymentRecorded emitted"
+
+    - id: TC-LRD-011
+      scenario: "submitting state shows loading on Record Repayment, Cancel still tappable"
+      type: Screen
+      priority: P1
+      given: "isSubmitting=true (repayment POST in flight)"
+      when: "OnSubmit tapped and in progress"
+      then: "record_repayment_button shows spinner and disabled; inputs disabled; cancel_button remains tappable"
+
+    - id: TC-LRD-012
+      scenario: "Offline blocks submission — cmp-network-monitor shows no-queue message"
+      type: ViewModel
+      priority: P1
+      given: "cmp-network-monitor reports offline, form valid"
+      when: "user taps Record Repayment (OnSubmit)"
+      then: "submitError=error_offline_no_queue shown; no POST attempted; idempotent guard means a later retry never double-posts"
+
+    - id: TC-LRD-013
+      scenario: "InputValidator rejects non-numeric amount input"
+      type: ViewModel
+      priority: P2
+      given: "amount='abc'"
+      when: "InputValidator.validateAmount() runs on OnAmountChanged"
+      then: "validation fails; amountError set; record_repayment_button stays disabled"
+
+    - id: TC-LRD-014
+      scenario: "LoanRepository.recordRepayment maps payload and resolves paymentTypeId"
       type: Repository
       priority: P0
       given: "loanId=5001, memberId=1001, amount=700.0, paymentMethod='MPESA', referenceNumber='MPE001'"
       when: "recordRepayment() called"
-      then: "POST body includes transactionAmount=700.0, paymentTypeId=1, receiptNumber='MPE001'"
+      then: "POST body includes transactionAmount=700.0, paymentTypeId=1, receiptNumber='MPE001', locale='en'; Flow emits Unit on 200"

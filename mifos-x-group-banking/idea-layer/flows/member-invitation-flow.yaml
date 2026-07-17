@@ -1,0 +1,122 @@
+schema_version: "1.0"
+id: member-invitation-flow
+name: Member Invitation Flow
+type: happy
+feature_ref: member-invitations
+source_ref: "vsla-best-practices"
+milestone: v1.0.0
+description: >
+  The invite/join path (global self-signup pivot, 2026-07-17; FR-024). An organizer
+  generates a single-use invite link/code for their group from member-invite. The invitee
+  opens the deep-link, enters the code on join-with-code, then self-registers (if new) via
+  the unified login-signup screen. On successful auth the stewardship code auto-associates
+  the invitee to the inviting group with a per-group member role. There is NO client-type
+  selector anywhere in this flow.
+
+entry_point:
+  screen: member-invite
+  condition: organizer_generates_invite
+
+steps:
+  - step: 1
+    screen: member-invite
+    action: >
+      Organizer opens the invite screen for their group; enters an optional phone/email and
+      pre-selects the invitee's per-group role (treasurer / chairperson / secretary / member).
+    transition: member-invite
+    condition: invite_details_entered
+
+  - step: 2
+    screen: member-invite
+    action: >
+      System generates a one-time stewardship code (6-char) + an invitation row in the
+      invitations datatable, and produces a deep-link (app://join?code=XYZ123). Organizer
+      shares it via SMS / share sheet.
+    transition: join-with-code
+    condition: invite_generated_and_shared
+
+  - step: 3
+    screen: join-with-code
+    action: >
+      Invitee taps the deep-link (or opens the app and chooses "Join with Invite Code");
+      join-with-code screen opens with the code pre-filled from the deep-link, or the invitee
+      types the 6-char code manually.
+    transition: login-signup
+    condition: code_entered_and_valid
+
+  - step: 4
+    screen: login-signup
+    action: >
+      Invitee logs in (existing user) or self-signs-up (first-time) via the unified
+      login/signup screen — companion API creates the account if new. No client-type selector.
+    transition: login-signup
+    condition: invitee_authenticated
+
+  - step: 5
+    screen: login-signup
+    action: >
+      App matches the stewardship code → POST /companion/groups/{groupId}/join associates
+      the invitee to the inviting group with the pre-selected per-group member role
+      (dt_member_role). The invitation row is marked accepted / consumed (single-use).
+    transition: personal-dashboard
+    condition: invitee_associated_to_group
+
+  - step: 6
+    screen: personal-dashboard
+    action: >
+      Invitee lands on their personal dashboard scoped to the joined group. The organizer
+      sees the activated member in member-list; the original invite row shows accepted.
+    transition: end
+    condition: membership_active
+
+exit_points:
+  - screen: personal-dashboard
+    outcome: success
+    description: Invitee self-registered and was associated to the inviting group with a per-group member role.
+
+  - screen: join-with-code
+    outcome: failure
+    description: Invalid, expired, or already-consumed code — error shown; invitee can request a new invite.
+
+  - screen: login-signup
+    outcome: abandoned
+    description: Invitee abandons registration after entering the code — invitation row remains pending until expiry.
+
+screens_involved:
+  - member-invite
+  - join-with-code
+  - login-signup
+  - personal-dashboard
+  - member-list
+
+api_calls:
+  - endpoint: /companion/groups/{groupId}/invitations
+    method: POST
+    purpose: Generate a single-use stewardship code + invitation row in the invitations datatable.
+
+  - endpoint: /companion/auth/self-register
+    method: POST
+    purpose: Self-register a first-time invitee via the companion API (creates Fineract client + user).
+
+  - endpoint: /companion/groups/{groupId}/join
+    method: POST
+    purpose: Associate the authenticated invitee to the inviting group with the pre-selected per-group role.
+
+  - endpoint: /datatables/dt_member_role/{clientId}
+    method: POST
+    purpose: Write the invitee's per-group role for the joined group.
+
+offline_capable: false
+offline_notes: >
+  Invite generation, self-registration, and group association all require connectivity via
+  the companion API. The join-with-code screen validates the code format offline but the
+  actual association is blocked with a "Connect to join" prompt when offline.
+
+analytics_events:
+  - invite_started: Organizer opens member-invite for their group
+  - invite_generated: Single-use stewardship code + deep-link generated and shared
+  - join_code_entered: "Invitee enters the code on join-with-code (source: deep_link|manual)"
+  - invitee_authenticated: "Invitee logs in or self-signs-up (mode: login|signup)"
+  - invitee_associated: Stewardship code matched; invitee associated to the inviting group
+  - invitation_accepted: Original invitation row marked accepted / consumed
+  - join_code_invalid: Code was invalid, expired, or already consumed

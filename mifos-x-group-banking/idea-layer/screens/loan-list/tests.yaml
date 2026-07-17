@@ -10,89 +10,145 @@ testing:
 
   scenarios:
     - id: TC-LLT-001
-      scenario: "On mount, fetches group loans and renders content state"
+      scenario: "On mount, the Store5 stream sources cached loans then background-refreshes and Content renders"
       type: ViewModel
       priority: P0
-      given: "groupId=10, network online"
-      when: "screen mounts"
-      then: "GET /groups/10/loans called; LoanSummary list populated; uiState=Content"
+      given: "groupId=10; SQLDelight loans cache present; network online"
+      when: "LoanListScreen enters composition"
+      then: "Store5 stream emits cached loans first then refreshes get_group_loans from the Fineract companion API; filteredLoans populated; LoanListScreenState=Content"
 
     - id: TC-LLT-002
-      scenario: "OVERDUE status chip shown for Joseph's loan with overdueAmount > 0"
+      scenario: "Loan card renders member name, principal, outstanding, status badge and next repayment"
       type: Screen
       priority: P0
-      given: "LoanSummary with overdueAmount=600.0, status=OVERDUE"
-      when: "list renders"
-      then: "OVERDUE chip visible; overdueAmount displayed in red; nextRepaymentDate shows missed date"
+      given: "loan Peter Otieno principal 1500, outstanding 1125, status ACTIVE, next 2026-05-12"
+      when: "loan_card renders"
+      then: "member_name_text='Peter Otieno'; loan_amount_text='KES 1,500'; outstanding_text='Outstanding: KES 1,125'; status_badge ACTIVE; next_repayment_text 'Next: 2026-05-12' visible"
 
     - id: TC-LLT-003
-      scenario: "Filter by ACTIVE status shows only active loans"
-      type: ViewModel
-      priority: P1
-      given: "loans list contains ACTIVE, OVERDUE, CLOSED"
-      when: "user selects ACTIVE filter"
-      then: "client-side filter applied; only ACTIVE loans visible; no extra API call"
-
-    - id: TC-LLT-004
-      scenario: "Pull-to-refresh invalidates cache and refetches"
-      type: ViewModel
-      priority: P1
-      given: "cached loan list present"
-      when: "user triggers pull-to-refresh"
-      then: "cache invalidated; GET /groups/{groupId}/loans called with offset=0; list updated"
-
-    - id: TC-LLT-005
-      scenario: "Tapping a loan card navigates to loan-detail with loanId"
+      scenario: "Status badge maps ACTIVE/OVERDUE/CLOSED/PENDING colors"
       type: Screen
       priority: P0
-      given: "LoanSummary rendered with id=5001"
-      when: "user taps Amina's loan card"
-      then: "navigate to loan-detail with loanId=5001"
+      given: "loans with status ACTIVE, OVERDUE, CLOSED, PENDING"
+      when: "status_badge renders"
+      then: "ACTIVE #C8E6C9/#1B5E20, OVERDUE #FFCDD2/#B71C1C, CLOSED #F5F5F5/#757575, PENDING #FFF9C4/#E65100"
+
+    - id: TC-LLT-004
+      scenario: "Overdue indicator shows on overdue loans with the overdue amount"
+      type: Screen
+      priority: P0
+      given: "loan Grace Wanjiku status OVERDUE, isOverdue=true, overdueAmount=375"
+      when: "loan_card renders"
+      then: "overdue_indicator visible showing 'OVERDUE — KES 375' in error color; hidden when isOverdue=false"
+
+    - id: TC-LLT-005
+      scenario: "Filter chip ACTIVE recomputes filteredLoans from the in-memory list without a network call"
+      type: ViewModel
+      priority: P1
+      given: "loans contain ACTIVE, OVERDUE, CLOSED"
+      when: "chip_active OnFilterChange(ACTIVE) fires"
+      then: "selectedFilter=ACTIVE; filteredLoans contains only ACTIVE loans; transform_state over the Store5-backed list; no Fineract call"
 
     - id: TC-LLT-006
-      scenario: "Empty state shown when group has no loans"
-      type: Screen
+      scenario: "Filter chip OVERDUE shows only overdue loans"
+      type: ViewModel
       priority: P1
-      given: "GET /groups/{groupId}/loans returns totalFilteredRecords=0"
-      when: "screen renders"
-      then: "empty state component visible; no loan cards; apply-loan CTA visible"
+      given: "loans list with one OVERDUE row"
+      when: "chip_overdue OnFilterChange(OVERDUE) fires"
+      then: "selectedFilter=OVERDUE; filteredLoans contains only overdue accounts; no network call"
 
     - id: TC-LLT-007
-      scenario: "Network error shows error state with retry button"
+      scenario: "Filter chip ALL restores the full in-memory loan list"
+      type: ViewModel
+      priority: P1
+      given: "a narrower filter previously applied"
+      when: "chip_all OnFilterChange(ALL) fires"
+      then: "selectedFilter=ALL; filteredLoans equals the full loans list; transform_state only"
+
+    - id: TC-LLT-008
+      scenario: "Tapping a loan card navigates to loan-detail with the tapped loanId"
+      type: Screen
+      priority: P0
+      given: "loan card with id=5001 rendered"
+      when: "OnLoanClick fires"
+      then: "navigate effect to loan-detail with loanId=5001 as route argument"
+
+    - id: TC-LLT-009
+      scenario: "Apply for Loan FAB visible only when canApplyLoan and navigates to loan-apply with groupId"
+      type: Screen
+      priority: P0
+      given: "canApplyLoan=true (authorized chairperson/treasurer), groupId=10"
+      when: "apply_loan_fab OnApplyLoan fires"
+      then: "FAB visible; navigate effect to loan-apply passing groupId=10; FAB hidden when canApplyLoan=false"
+
+    - id: TC-LLT-010
+      scenario: "Empty state shown when no loans match the selected filter"
+      type: Screen
+      priority: P1
+      given: "get_group_loans returns zero rows for the filter"
+      when: "screen renders"
+      then: "empty_state 'No loans yet' / 'No loans match the selected filter.' visible; no loan cards; FAB still shown when canApplyLoan"
+
+    - id: TC-LLT-011
+      scenario: "Loading state shows the shimmer list while cache-then-Fineract fetch runs"
+      type: Screen
+      priority: P1
+      given: "isLoading=true"
+      when: "loading state rendered"
+      then: "shimmer_list (count 5) shown with top_bar and filter_chips_row; loan cards and FAB not yet rendered"
+
+    - id: TC-LLT-012
+      scenario: "Network/500 error shows error state with retry; Retry re-triggers the Store5 stream fresh"
       type: ViewModel
       priority: P1
       given: "server returns 500"
-      when: "on_mount fetch fails"
-      then: "uiState=Error; retry button visible; cached data shown if available"
+      when: "error_state Retry fires"
+      then: "LoanListError type=Server; error_state shown; Retry re-triggers the Store5 stream with fresh=true to re-call get_group_loans; call_api effect asserted; cached data shown if available"
 
-    - id: TC-LLT-008
-      scenario: "Offline shows cached data with stale indicator"
+    - id: TC-LLT-013
+      scenario: "Offline shows cached loans with an offline/stale banner"
       type: ViewModel
       priority: P1
-      given: "network.offline, cached loans present"
+      given: "cmp-network-monitor offline; cached loans present"
       when: "screen mounts"
-      then: "cached LoanSummary list rendered; offline banner shown"
+      then: "cached LoanSummary rows rendered from the Store5 SQLDelight cache; offline banner shown; no hard error state"
 
-    - id: TC-LLT-009
-      scenario: "Pagination loads next 20 loans on scroll to bottom"
-      type: ViewModel
-      priority: P2
-      given: "first page returned 20 items, totalFilteredRecords=35"
-      when: "user scrolls to bottom"
-      then: "GET /groups/{groupId}/loans called with offset=20; appended to list"
-
-    - id: TC-LLT-010
-      scenario: "LoanRepository.getGroupLoans emits list from local DB then refreshes"
-      type: Repository
-      priority: P0
-      given: "local DB has 3 cached LoanSummary, network returns 5"
-      when: "getGroupLoans() called"
-      then: "Flow emits cached 3 first, then 5 after network response"
-
-    - id: TC-LLT-011
-      scenario: "401 redirects to login screen"
+    - id: TC-LLT-014
+      scenario: "401 redirects to login and clears the session"
       type: ViewModel
       priority: P0
       given: "session expired"
-      when: "server returns 401"
-      then: "navigate to login; session cleared"
+      when: "get_group_loans returns 401"
+      then: "LoanListError type=Auth (redirect=login); navigate to login; session cleared"
+
+    - id: TC-LLT-015
+      scenario: "Pull-to-refresh invalidates cache and re-fetches from offset 0"
+      type: ViewModel
+      priority: P1
+      given: "cached loan list present, isRefreshing=false"
+      when: "OnRefresh triggered by pull-to-refresh"
+      then: "isRefreshing toggles true; cache invalidated; get_group_loans re-called with offset=0; list updated; isRefreshing back to false"
+
+    - id: TC-LLT-016
+      scenario: "OnLoadNextPage appends the next page on scroll to list end without clearing current items"
+      type: ViewModel
+      priority: P2
+      given: "first page returned 20 items, more available"
+      when: "OnLoadNextPage fires at list end"
+      then: "get_group_loans called with offset=20; new items appended to existing filteredLoans; no clear of current rows"
+
+    - id: TC-LLT-017
+      scenario: "OnBack pops the loan-list destination returning to the group-dashboard"
+      type: Screen
+      priority: P2
+      given: "Content state entered from group-dashboard"
+      when: "top-bar navigation OnBack fires"
+      then: "navigate effect pops back stack to group-dashboard; no state persisted, no network call"
+
+    - id: TC-LLT-018
+      scenario: "LoanRepository.getGroupLoans emits cached rows from the SQLDelight loans cache then the network refresh"
+      type: Repository
+      priority: P0
+      given: "local DB has 3 cached LoanSummary; network returns 5"
+      when: "getGroupLoans(groupId=10) called"
+      then: "Store5 stream emits the cached 3 first, then the refreshed 5 after the companion API response; cache updated"

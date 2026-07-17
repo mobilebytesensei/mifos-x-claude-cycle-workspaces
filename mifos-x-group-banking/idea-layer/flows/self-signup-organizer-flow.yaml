@@ -1,0 +1,145 @@
+schema_version: "1.0"
+id: self-signup-organizer-flow
+name: Self-Signup Organizer Flow
+type: happy
+feature_ref: self-signup-organizer
+milestone: v1.0.0
+description: >
+  The PRIMARY organizer path (global self-signup pivot, 2026-07-17). Anyone downloads the
+  app, self-signs-up with no back-office officer, creates a group, picks its type from the
+  9 config-driven GroupTypeConfig options, completes the 4-step group-create wizard,
+  invites members via link/code, and runs the group end-to-end as its loan officer of
+  record. Role is earned on group creation, not pre-assigned at signup.
+
+entry_point:
+  screen: login-signup
+  condition: new_user_self_signs_up
+
+steps:
+  - step: 1
+    screen: login-signup
+    action: >
+      New user self-signs-up (SIGNUP mode) → POST /companion/auth/self-register creates a
+      Fineract client + self-service user and a unified session. New user has zero groups.
+    transition: login-signup
+    condition: self_registered
+
+  - step: 2
+    screen: login-signup
+    action: Zero-groups empty state shown; user taps "Create a group"
+    transition: group-type-picker
+    condition: create_group_tapped
+
+  - step: 3
+    screen: group-type-picker
+    action: >
+      User picks the group type from 9 seeded, config-driven GroupTypeConfig options
+      (ROSCA, ASCA, VSLA, SILC, SHG, SACCO/Credit-Union, CBO/Village-Banking,
+      Burial/Welfare-Society, JLG). Selection is written to the group_type_config datatable
+      and adapts the subsequent wizard fields to that type's parameters.
+    transition: group-create
+    condition: group_type_selected
+
+  - step: 4
+    screen: group-create
+    action: "Step 1 — Enter group name and cycle length; wizard fields adapt to the selected GroupTypeConfig"
+    transition: group-create
+    condition: name_and_cycle_valid
+
+  - step: 5
+    screen: group-create
+    action: "Step 2 — Set meeting frequency and contribution rules (fixed vs share-based per type)"
+    transition: group-create
+    condition: meeting_config_valid
+
+  - step: 6
+    screen: group-create
+    action: "Step 3 — Set loan / distribution policies (multiplier, interest; payout_order_method for ROSCA-family types)"
+    transition: group-create
+    condition: policy_valid
+
+  - step: 7
+    screen: group-create
+    action: >
+      Step 4 — Review & Create. The companion API provisions the group and associates the
+      creator as its organizer (loan officer of record) via the service-credential bridge.
+    transition: organizer-dashboard
+    condition: group_created
+
+  - step: 8
+    screen: organizer-dashboard
+    action: >
+      New group's organizer dashboard opens (corpus, members, next meeting, sync status).
+      Organizer taps "Invite Members".
+    transition: member-invite
+    condition: organizer_taps_invite
+
+  - step: 9
+    screen: member-invite
+    action: >
+      Organizer generates an invite link/code (deep-link app://join?code=XYZ + 6-char code,
+      tracked in the invitations datatable) and shares it via SMS / share sheet.
+    transition: organizer-dashboard
+    condition: invite_generated
+
+  - step: 10
+    screen: organizer-dashboard
+    action: >
+      Organizer runs the group end-to-end: schedule + run meetings, collect savings,
+      disburse / approve loans, drive share-out — the full loan-officer capability set.
+    transition: end
+    condition: group_operational
+
+exit_points:
+  - screen: organizer-dashboard
+    outcome: success
+    description: Group created, creator is its organizer, members invited, group operational.
+
+  - screen: group-type-picker
+    outcome: abandoned
+    description: User backs out of type selection before creating a group; returns to zero-groups state.
+
+  - screen: group-create
+    outcome: failure
+    description: Companion API error during group provisioning — inline error shown; draft config preserved.
+
+screens_involved:
+  - login-signup
+  - group-type-picker
+  - group-create
+  - organizer-dashboard
+  - member-invite
+
+api_calls:
+  - endpoint: /companion/auth/self-register
+    method: POST
+    purpose: Self-registration bridge — create a Fineract client + self-service user with no back-office officer.
+
+  - endpoint: /companion/groups
+    method: POST
+    purpose: Provision a new group and associate the creator as its organizer (loan officer of record).
+
+  - endpoint: /datatables/group_type_config/{groupId}
+    method: POST
+    purpose: Persist the selected GroupTypeConfig (pool_model + contribution_model + distribution params) on m_group.
+
+  - endpoint: /companion/groups/{groupId}/invitations
+    method: POST
+    purpose: Generate a single-use invite link/code for the group and record it in the invitations datatable.
+
+offline_capable: false
+offline_notes: >
+  Self-registration and group provisioning require connectivity — both go through the
+  companion API's service-credential bridge to Fineract. The group-type picker and wizard
+  fields render offline, but Review & Create is blocked with a "Connect to create" prompt
+  when offline. Invite generation requires connectivity.
+
+analytics_events:
+  - self_register_completed: New user self-signs-up successfully
+  - create_group_tapped: User taps Create a group from the zero-groups state
+  - group_type_selected: "User picks a group type (type: rosca|asca|vsla|silc|shg|sacco|cbo|welfare|jlg)"
+  - group_create_step_completed: "Each 4-step wizard step advanced (step_number: 1|2|3|4)"
+  - group_created: Companion API provisions the group; creator associated as organizer
+  - organizer_invite_started: Organizer taps Invite Members
+  - invite_generated: Invite link/code generated and shared
+  - group_operational: Organizer begins running the group lifecycle

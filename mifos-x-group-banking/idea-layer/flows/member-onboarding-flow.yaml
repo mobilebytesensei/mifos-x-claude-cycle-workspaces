@@ -3,71 +3,101 @@ id: member-onboarding-flow
 name: Member Onboarding Flow
 type: happy
 feature_ref: member-onboarding
-client_type: admin
 milestone: v1.0.0
 description: >
-  Admin navigates to the member list for a group, taps the FAB to add a new member,
-  captures their name, phone number, photo, and role assignment, then confirms to
-  create a new Fineract Client and assign their dt_member_role. The new member
-  appears immediately in the member list and on the group-dashboard.
+  Two onboarding paths for a group (global self-signup pivot, 2026-07-17). DIRECT path —
+  the organizer adds a member manually on member-add (name, phone, photo, per-group role),
+  which creates a Fineract Client and assigns dt_member_role. INVITE path — the organizer
+  generates an invite link/code on member-invite; the invitee enters it on join-with-code
+  and self-registers via the unified login-signup, then is associated to the group with a
+  per-group role. No admin/end_user client_type is assigned anywhere — capabilities are
+  the invitee's per-group role.
 
 entry_point:
   screen: member-list
-  condition: admin_navigates_from_group_dashboard
+  condition: organizer_navigates_from_group_dashboard
 
 steps:
   - step: 1
     screen: member-list
-    action: View all current members for the group; list loads from GET /groups/{groupId}/clients
+    action: Organizer views all current members for the group; taps Add Member (direct) or Invite Member (invite path)
     transition: member-add
-    condition: admin_taps_add_member_fab
+    condition: organizer_taps_add_member
 
+  # ── DIRECT PATH (organizer enters the member) ──
   - step: 2
     screen: member-add
     action: Optionally capture a photo via camera or gallery using the photo picker area
-    transition: member-add-details
+    transition: member-add
     condition: photo_selected_or_skipped
 
   - step: 3
     screen: member-add
-    action: Enter first name, last name, and phone number; select role from dropdown (chairperson / treasurer / secretary / member)
-    transition: member-add-review
+    action: >
+      Enter first name, last name, and phone number; select the per-group role from the
+      dropdown (chairperson / treasurer / secretary / member). No client-type is chosen.
+    transition: member-add
     condition: required_fields_valid
 
   - step: 4
     screen: member-add
-    action: Tap Save — POST /clients creates the Fineract Client; POST /datatables/dt_member_role assigns the role
+    action: >
+      Tap Save — POST /clients creates the Fineract Client; POST /datatables/dt_member_role
+      assigns the per-group role for this group.
     transition: member-profile
     condition: create_success_or_queued
 
   - step: 5
     screen: member-profile
-    action: New member profile opens; savings history sparkline and loan cards visible; role badge shows assigned role
+    action: New member profile opens; savings sparkline and loan cards visible; per-group role badge shown
     transition: member-savings-detail
-    condition: admin_taps_savings_card
+    condition: organizer_taps_savings_card
 
   - step: 5b
     screen: member-profile
-    action: Admin taps back from member profile
+    action: Organizer taps back from member profile
     transition: member-list
-    condition: admin_taps_back
+    condition: organizer_taps_back
 
   - step: 6
     screen: member-savings-detail
     action: Full savings transaction history for the member; filter by deposits/withdrawals; pagination
-    transition: member-profile
-    condition: admin_taps_back
+    transition: member-list
+    condition: organizer_taps_back
 
+  # ── INVITE PATH (invitee self-registers; see member-invitation-flow) ──
   - step: 7
+    screen: member-invite
+    action: >
+      Alternatively, the organizer generates a single-use invite link/code + role
+      pre-selection (invitations datatable). See member-invitation-flow for the full path.
+    transition: join-with-code
+    condition: organizer_chooses_invite_path
+
+  - step: 8
+    screen: join-with-code
+    action: Invitee enters the 6-char code (or opens the deep-link with it pre-filled)
+    transition: login-signup
+    condition: code_valid
+
+  - step: 9
+    screen: login-signup
+    action: >
+      Invitee self-signs-up (or logs in) via the unified login/signup; the stewardship code
+      auto-associates them to the inviting group with the pre-selected per-group role.
+    transition: member-list
+    condition: invitee_associated
+
+  - step: 10
     screen: member-list
-    action: Member list refreshed — new member appears at top; group member count incremented
+    action: Member list refreshed — the new/activated member appears; group member count incremented
     transition: end
     condition: list_refreshed
 
 exit_points:
   - screen: member-list
     outcome: success
-    description: New member created and visible in the group member list.
+    description: New member created (direct) or self-registered invitee associated (invite) and visible in the list.
 
   - screen: member-add
     outcome: failure
@@ -77,11 +107,18 @@ exit_points:
     outcome: offline_queued
     description: Connectivity absent — member creation queued in SyncQueue; offline banner shown on member-list.
 
+  - screen: join-with-code
+    outcome: failure
+    description: Invalid / expired invite code on the invite path — error shown; invitee can request a new invite.
+
 screens_involved:
   - member-list
   - member-add
   - member-profile
   - member-savings-detail
+  - member-invite
+  - join-with-code
+  - login-signup
 
 api_calls:
   - endpoint: /groups/{groupId}/clients
@@ -90,28 +127,38 @@ api_calls:
 
   - endpoint: /clients
     method: POST
-    purpose: Create a new Fineract Client representing the new group member.
+    purpose: Create a new Fineract Client representing a directly-added group member.
 
   - endpoint: /datatables/dt_member_role/{clientId}
     method: POST
-    purpose: Assign the member's role (chairperson/treasurer/secretary/member) and client_type (admin/end_user).
+    purpose: Assign the member's per-group role (chairperson/treasurer/secretary/member) for this group.
 
   - endpoint: /clients/{clientId}/images
     method: POST
-    purpose: Upload member photo if captured during onboarding.
+    purpose: Upload member photo if captured during direct onboarding.
+
+  - endpoint: /companion/groups/{groupId}/invitations
+    method: POST
+    purpose: Generate a single-use invite code for the invite path (see member-invitation-flow).
+
+  - endpoint: /companion/groups/{groupId}/join
+    method: POST
+    purpose: Associate a self-registered invitee to the group with the pre-selected per-group role.
 
 offline_capable: true
 offline_notes: >
-  Member creation (POST /clients, POST dt_member_role, photo upload) is queued
-  in SyncQueue when offline. The member appears locally in the list with a
-  "pending sync" badge until the queue drains. Photo upload is retried after
-  the client creation sync completes to ensure {clientId} is available.
+  Direct member creation (POST /clients, POST dt_member_role, photo upload) is queued in
+  SyncQueue when offline; the member appears locally with a "pending sync" badge until the
+  queue drains. The invite path requires connectivity — invite generation and invitee
+  association both go through the companion API.
 
 analytics_events:
-  - member_add_started: Admin taps FAB on member-list
-  - member_photo_captured: Admin captures or selects a photo
-  - member_photo_skipped: Admin skips photo step
-  - member_role_selected: "Admin selects a role from the dropdown (role: chairperson|treasurer|secretary|member)"
-  - member_created: POST /clients returns 200 and role assigned
+  - member_add_started: Organizer taps Add Member on member-list
+  - member_photo_captured: Organizer captures or selects a photo
+  - member_photo_skipped: Organizer skips photo step
+  - member_role_selected: "Organizer selects a per-group role (role: chairperson|treasurer|secretary|member)"
+  - member_created: POST /clients returns 200 and per-group role assigned
   - member_creation_queued: Offline — request queued for sync
   - member_profile_viewed: New member profile opened after creation
+  - member_invite_path_chosen: Organizer chooses the invite link/code path instead of direct add
+  - invitee_associated: Self-registered invitee associated to the group via stewardship code

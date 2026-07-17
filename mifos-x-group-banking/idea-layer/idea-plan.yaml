@@ -318,11 +318,10 @@ vision:
       - "< 5 minute onboarding time for new group treasurer"
       - "100% data parity between local cache and Fineract backend after sync"
     target_users:
-      - "[ADMIN] Group treasurers/secretaries managing VSLA/ROSCA/ASCA/SHG ledgers — full write access to group operations"
-      - "[ADMIN] Group chairpersons overseeing meetings and approvals — approval authority + meeting management"
-      - "[ADMIN] Field officers from MFIs supervising community groups — read-only cross-group admin view"
-      - "[ADMIN] NGO program managers monitoring group performance — analytics and reporting admin"
-      - "[END USER] Regular group members contributing savings and requesting loans — see own data + group info based on role"
+      - "Everyone self-signs-up through ONE unified login/signup — there is no separate admin vs end-user app. Capabilities auto-resolve per group after login, based on each person's role within that specific group (dt_member_role)."
+      - "Organizers (primary identity) — anyone who self-signs-up, creates a group, picks its type, invites members, and runs it as its loan officer. Full write access to the groups they organize."
+      - "Group members (treasurer / chairperson / secretary / member) — self-sign-up, join a group via invite link/code, and get the capabilities their per-group role grants (savings, loans, meeting participation, approvals)."
+      - "Field officers / NGO program managers (optional supervisory tier) — the same self-signup identity, additionally granted an optional cross-group supervisory view. This is a demoted, opt-in oversight layer, not a required or co-equal admin persona."
     solution_statement: "CommonPurse provides a Kotlin Multiplatform mobile app that digitizes every step of the community banking lifecycle — from group creation and member onboarding, through meeting-driven savings collection and loan disbursement, to periodic share-out — all working offline-first with automatic sync to Mifos Fineract when connectivity is available."
     value_propositions:
       - "Offline-first: full functionality without internet — sync when connected"
@@ -1594,30 +1593,28 @@ flows:
           - "Conflicts detected → conflict resolution UI"
           - "sync-status updated with results"
 
-      - name: "admin-auth-flow"
+      - name: "unified-auth-flow"
         type: happy
-        feature_ref: "authentication"
+        feature_ref: "unified-auth"
         steps:
-          - "App launch → check for cached token + client_type"
-          - "No token → client-type-selector: 'I manage groups' vs 'I am a member'"
-          - "Select 'I manage groups' → login with Fineract staff credentials"
-          - "Authenticate via /api/v1/authentication → cache token + client_type=admin"
-          - "Read dt_member_role → determine role (treasurer/chairperson/field officer)"
-          - "Set up local PIN for offline access"
-          - "Optional: enable biometric unlock"
-          - "Redirect to group-list (admin navigation)"
+          - "App launch → check for cached token (single unified session — no client_type)"
+          - "No token → single login/signup screen (no client-type selector): existing users log in, new users self-sign-up via companion API (mcp-mifosx)"
+          - "Authenticate via companion API → cache unified session token"
+          - "Post-login role resolution: read dt_member_role across the user's groups → resolve per-group capabilities (organizer vs member)"
+          - "Set up local PIN for offline access; optional biometric unlock"
+          - "Zero-group user → create/join empty state (prompt to create a group or join with a code)"
+          - "Has groups → land in the single shared navigation graph: organizer → organizer-dashboard, member → member view; navigation adapts to the resolved per-group role"
 
-      - name: "end-user-auth-flow"
+      - name: "self-signup-organizer-flow"
         type: happy
-        feature_ref: "authentication"
+        feature_ref: "self-signup-organizer"
         steps:
-          - "App launch → check for cached token + client_type"
-          - "No token → client-type-selector: 'I manage groups' vs 'I am a member'"
-          - "Select 'I am a member' → login with Fineract self-service client credentials"
-          - "Authenticate via /api/v1/self/authentication → cache token + client_type=end_user"
-          - "Fetch own client data: savings, loans, group membership"
-          - "Set up local PIN for offline access"
-          - "Redirect to personal-dashboard (end user navigation)"
+          - "New user self-signs-up via companion API (mcp-mifosx) → unified session created"
+          - "Create-group empty state → 'Create a group'"
+          - "Pick group type (9 config-driven types via 2-axis GroupTypeConfig; writes dt_group_type_config)"
+          - "Companion API provisions the group + associates the creator as organizer (loan officer of record)"
+          - "Invite members via link/code (deep-link app://join?code=XYZ + 6-char code, dt_companion_invitations)"
+          - "Organizer runs the group: schedule meetings, collect savings, disburse/approve loans, drive share-out"
 
       - name: "end-user-loan-request-flow"
         type: happy
@@ -1673,9 +1670,9 @@ flows:
           - "member-invite form: enter phone or email + role pre-selection"
           - "System generates one-time stewardship code (6-char) + invitation row in dt_member_invitation"
           - "Send link via SMS/email (deep-link: app://join?code=XYZ123)"
-          - "Invitee taps link → app launches → client-type-selector pre-set to 'I am a member'"
-          - "Invitee logs in via Fineract self-service auth (creates client if first-time)"
-          - "App matches stewardship code → auto-joins group, role applied"
+          - "Invitee taps link → app launches → join-with-code screen (single unified flow — no client-type selector)"
+          - "Invitee logs in or self-signs-up via the unified login/signup (companion API creates the account if first-time)"
+          - "App matches stewardship code → auto-associates invitee to the group, per-group role applied"
           - "Group admin sees activated member in member-list; original invite row marked accepted"
 
       - name: "loan-guarantee-flow"
@@ -2903,8 +2900,8 @@ technical_decisions:
     mutation_idempotency: "All mutations carry a client-generated UUID (idempotency-key header to Fineract where supported, or stored in custom dt_outbox_log datatable for replay-detection on the server side). Allows safe retry of pending Bookkeeper entries on reconnect without duplicate side effects."
     api_codegen: "Fineract OpenAPI spec → Ktor client + Kotlin DTOs via openapi-generator (kotlin-multiplatform). No raw URL strings in domain code; all endpoints reachable through generated typed client. Avoids the common anti-pattern of stringly-typed mutations (raw URLs or hand-rolled GraphQL strings) scattered across feature modules."
     mcp_integration: "Mifos MCP Server (65 tools) provides programmatic access to all Fineract operations including data table schema design, enabling CI/CD automation and testing."
-    dual_client_architecture: "Two client types with separate auth and navigation graphs. Admin (staff auth → /api/v1/authentication) gets full group management UI. End User (self-service auth → /api/v1/self/authentication) gets personal read-only dashboard with loan request capability. Client type stored locally, determines which Composable navigation graph loads."
-    rbac_strategy: "Two-tier RBAC: (1) Client type = admin vs end_user (determines navigation graph), (2) Admin role = treasurer/chairperson/field_officer/program_manager (determines write permissions within admin UI). Role stored in dt_member_role data table. Enforced at ViewModel level — UI actions hidden/disabled based on permissions."
+    unified_identity_architecture: "ONE unified login/signup and ONE Composable navigation graph for everyone — there is no client-type split and no separate admin vs end-user auth path. All users self-sign-up through the companion API (mcp-mifosx). After login, capabilities are resolved per group from dt_member_role: the same navigation graph adapts its available actions to the signed-in user's role within the currently-selected group (organizer vs member). A user with no group lands on a create/join empty state; an organizer lands on their organizer dashboard; a member lands on their member view — all inside the single shared graph, driven by role resolution, not by a locally-stored client type."
+    rbac_strategy: "Single navigation graph; per-(member, group) role resolved at login from the companion API (mcp-mifosx) and stored in the dt_member_role data table. Roles: organizer (primary — self-signs-up, creates and runs the group as its loan officer) / treasurer / chairperson / secretary / member, plus an optional field-officer supervisory tier. There is NO client-type-vs-role two-tier split — role alone (per group) determines write permissions. Enforced at ViewModel level — UI actions shown/hidden/disabled based on the resolved per-group role."
     dual_savings_model: "Two savings types per member: (1) Group-Linked — mandatory, min/max enforced per meeting, tied to group cycle. (2) Individual — voluntary, flexible deposits/withdrawals. Both tracked as separate Fineract Savings Accounts with different product IDs."
     corpus_tracking: "Real-time fund balance per group. Corpus = sum(inflows) - sum(outflows). Stored in dt_group_corpus on m_center. Mobile app maintains local running balance during meetings. Cash outflows blocked when corpus would go negative."
     companion_api:
@@ -3046,9 +3043,9 @@ release_plan:
     deferred_features:
       - id: in-app-notifications-centre
         defer_to: "1.1.0"
-        reason: "Not in the self-signup → create/join group → run-it critical path; the top-bar bell on admin-dashboard + group-list emits a NotificationsDeferred snackbar until the notifications screen ships."
+        reason: "Not in the self-signup → create/join group → run-it critical path; the top-bar bell on organizer-dashboard + group-list emits a NotificationsDeferred snackbar until the notifications screen ships."
         triggers:
-          - admin-dashboard:OnOpenNotifications
+          - organizer-dashboard:OnOpenNotifications
           - group-list:OnOpenNotifications
     # Today (planning anchor): 2026-05-05. Dates Monday-aligned.
     target_dates:
@@ -3130,7 +3127,8 @@ release_plan:
 
       - version: "1.0.0"
         features:
-          - "authentication"
+          - "unified-auth"
+          - "self-signup-organizer"
           - "end-user-dashboard"
           - "group-management"
           - "member-onboarding"
@@ -3166,7 +3164,7 @@ release_plan:
 
     epic_breakdown:
       - epic_name: "Core Group Infrastructure"
-        features: ["authentication", "end-user-dashboard", "group-management", "member-onboarding"]
+        features: ["unified-auth", "self-signup-organizer", "end-user-dashboard", "group-management", "member-onboarding"]
         milestone_ref: "1.0.0"
 
       - epic_name: "Meeting & Savings Engine"

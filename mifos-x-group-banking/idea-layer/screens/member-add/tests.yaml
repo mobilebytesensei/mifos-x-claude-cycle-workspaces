@@ -6,117 +6,149 @@ testing:
   coverage_targets:
     ViewModel: "90%+"
     Screen: "80%+"
-    UseCase: "85%+"
+    Repository: "85%+"
 
   scenarios:
     - id: TC-MA-001
-      scenario: "Submit valid form online — client created, role assigned, navigates to member-profile"
+      scenario: "Submit valid form online — create_client then assign_member_role chained, navigates to member-profile"
       type: ViewModel
       priority: P0
-      given: "All fields valid: firstName='Grace', lastName='Achieng', phone='+254723456789', role=SECRETARY, network=online"
+      given: "All fields valid: firstName='Grace', lastName='Achieng', phone='+254723456789', selectedRole=SECRETARY, NetworkMonitor.isOnline=true"
       when: "OnSubmit dispatched"
-      then: "create_client called → assign_member_role called → NavigateToMemberProfile event emitted with new memberId"
+      then: "create_client POST /clients called; on resourceId assign_member_role POST /datatables/dt_member_role/{clientId} called with role=SECRETARY; NavigateToMemberProfile event emitted with new memberId and groupId"
 
     - id: TC-MA-002
-      scenario: "Submit with blank first name — inline validation error shown"
+      scenario: "Submit with blank first name — inline validation error, no API call"
       type: ViewModel
       priority: P0
-      given: "firstName is empty, lastName='Wambui', phone='+254745000001'"
+      given: "firstName='', lastName='Wambui', phone='+254745000001'"
       when: "OnSubmit dispatched"
-      then: "validationErrors contains firstName='First name is required.', no API call made"
+      then: "validationErrors contains firstName; MemberAddError.Validation set; create_client NOT called"
 
     - id: TC-MA-003
       scenario: "Submit with invalid Kenyan phone — inline error on phone field"
       type: ViewModel
       priority: P0
-      given: "firstName='John', lastName='Doe', phone='0712' (too short)"
+      given: "firstName='John', lastName='Doe', phone='0712' (too short for Kenyan E.164)"
       when: "OnSubmit dispatched"
-      then: "validationErrors contains phone='Enter a valid Kenyan phone number.'"
+      then: "validationErrors.phone='Enter a valid Kenyan phone number.'; no create_client call"
 
     - id: TC-MA-004
-      scenario: "Submit offline — member queued to sync_queue, offline snackbar shown"
+      scenario: "OnFirstNameChange updates state and clears prior firstName validation error"
+      type: ViewModel
+      priority: P1
+      given: "validationErrors has firstName error from a prior submit"
+      when: "OnFirstNameChange(value='Amina') dispatched"
+      then: "firstName='Amina' in MemberAddState; validationErrors.firstName cleared; pure transform_state, no network call"
+
+    - id: TC-MA-005
+      scenario: "OnPhoneChange re-runs Kenyan E.164 format check on each keystroke"
+      type: ViewModel
+      priority: P1
+      given: "phone_field focused"
+      when: "OnPhoneChange(value='+254712345678') dispatched"
+      then: "phone updated in state; format check passes; validationErrors.phone cleared; no network call"
+
+    - id: TC-MA-006
+      scenario: "Submit offline — chain queued to sync_queue, offline sync dialog shown"
       type: ViewModel
       priority: P0
       given: "NetworkMonitor.isOnline=false, all fields valid"
       when: "OnSubmit dispatched"
-      then: "SyncQueueRepository.enqueue called with CREATE_MEMBER, ShowOfflineSyncDialog event emitted"
-
-    - id: TC-MA-005
-      scenario: "Duplicate phone returns 400 — PhoneAlreadyExists error shown inline"
-      type: ViewModel
-      priority: P1
-      given: "API returns 400 with error_phone_exists code"
-      when: "OnSubmit dispatched"
-      then: "MemberAddError.PhoneAlreadyExists set, no navigation"
-
-    - id: TC-MA-006
-      scenario: "Photo picker bottom sheet opens on photo area tap"
-      type: Screen
-      priority: P1
-      given: "Screen in content state, photoUri=null"
-      when: "User taps photo_picker_area"
-      then: "photo_source_bottom_sheet visible, Camera and Gallery options shown"
+      then: "SyncQueueRepository.enqueue called with CREATE_MEMBER (plus ASSIGN_MEMBER_ROLE / UPLOAD_MEMBER_PHOTO when applicable); ShowOfflineSyncDialog event emitted; no navigation to member-list"
 
     - id: TC-MA-007
-      scenario: "Camera capture sets photoUri and shows preview image"
+      scenario: "Duplicate phone returns 400 — PhoneAlreadyExists error shown inline, no navigation"
+      type: ViewModel
+      priority: P1
+      given: "create_client returns 400 with duplicate-phone code"
+      when: "OnSubmit dispatched"
+      then: "MemberAddError.PhoneAlreadyExists set; error_phone_exists surfaced; assign_member_role NOT called; no navigation"
+
+    - id: TC-MA-008
+      scenario: "OnPhotoPickerOpen reveals photo source bottom sheet"
+      type: Screen
+      priority: P1
+      given: "Content state, photoUri=null"
+      when: "user taps photo_picker_area (OnPhotoPickerOpen)"
+      then: "showPhotoPicker=true; photo_source_bottom_sheet visible with camera_option and gallery_option"
+
+    - id: TC-MA-009
+      scenario: "Camera capture records photo and sets photoUri via filekit-core"
       type: ViewModel
       priority: P1
       given: "showPhotoPicker=true"
-      when: "OnPhotoCaptured with uri='/tmp/photo_001.jpg'"
-      then: "photoUri set, showPhotoPicker=false, photo_preview visible"
+      when: "OnPhotoCaptured(uri='/tmp/photo_001.jpg') dispatched"
+      then: "photoUri='/tmp/photo_001.jpg' stored for later multipart upload_photo POST /clients/{clientId}/images; showPhotoPicker=false; photo_preview visible"
 
-    - id: TC-MA-008
-      scenario: "Photo removed resets photoUri to null"
+    - id: TC-MA-010
+      scenario: "Gallery selection persists chosen file path to photoUri via filekit-core"
+      type: ViewModel
+      priority: P2
+      given: "showPhotoPicker=true"
+      when: "OnPhotoSelected(uri='content://gallery/img_42.jpg') dispatched"
+      then: "photoUri set to the PlatformFile path; showPhotoPicker=false; photo_preview visible"
+
+    - id: TC-MA-011
+      scenario: "OnPhotoRemoved resets photoUri to null (pure state transition)"
       type: ViewModel
       priority: P2
       given: "photoUri='/tmp/photo_001.jpg'"
-      when: "OnPhotoRemoved dispatched"
-      then: "photoUri=null, photo_placeholder_icon visible"
+      when: "OnPhotoRemoved dispatched (tap photo_remove_button)"
+      then: "photoUri=null; photo_placeholder_icon (add_a_photo) visible; no disk write"
 
-    - id: TC-MA-009
-      scenario: "Role dropdown defaults to MEMBER and can be changed to TREASURER"
+    - id: TC-MA-012
+      scenario: "Role dropdown defaults to MEMBER and OnRoleSelected updates selectedRole"
+      type: ViewModel
+      priority: P1
+      given: "Content state, selectedRole=MemberRole.MEMBER default"
+      when: "OnRoleSelected(role=TREASURER) dispatched"
+      then: "selectedRole=TREASURER; pure transform_state; no side effects"
+
+    - id: TC-MA-013
+      scenario: "Save button shows loading state while submitting; fields disabled"
       type: Screen
       priority: P1
-      given: "Screen in content state"
-      when: "User selects TREASURER from role_dropdown"
-      then: "OnRoleSelected dispatched with role=TREASURER, selectedRole updated"
-
-    - id: TC-MA-010
-      scenario: "Save button shows loading state while submitting"
-      type: Screen
-      priority: P1
-      given: "isSubmitting=true"
+      given: "isSubmitting=true (Submitting screen state)"
       when: "Screen renders"
-      then: "save_button shows circular loading indicator, all fields not interactive"
+      then: "save_button shows loading indicator; first_name_field / last_name_field / phone_field / role_dropdown not interactive"
 
-    - id: TC-MA-011
+    - id: TC-MA-014
       scenario: "Offline banner visible when isOffline=true"
       type: Screen
       priority: P1
-      given: "isOffline=true"
-      when: "Screen renders content state"
-      then: "offline_banner is visible with wifi_off icon and sync message"
+      given: "isOffline=true, Content state"
+      when: "Screen renders"
+      then: "offline_banner visible with wifi_off icon and 'added when you reconnect' message"
 
-    - id: TC-MA-012
-      scenario: "Server error 500 shows snackbar with retry option"
+    - id: TC-MA-015
+      scenario: "Server error 500 shows retryable snackbar"
       type: ViewModel
       priority: P1
-      given: "Network online, API returns 500"
+      given: "NetworkMonitor.isOnline=true, create_client returns 500"
       when: "OnSubmit dispatched"
-      then: "MemberAddError.Server set, ShowSnackbar event with error_server message"
+      then: "MemberAddError.Server set (retry=true); ShowSnackbar event with error_server message; no navigation"
 
-    - id: TC-MA-013
-      scenario: "Session expired 401 navigates to login"
+    - id: TC-MA-016
+      scenario: "Session expired 401 redirects to login"
       type: ViewModel
       priority: P0
-      given: "API returns 401"
+      given: "create_client returns 401"
       when: "OnSubmit dispatched"
-      then: "MemberAddError.Auth set, NavigateBack event then redirect to login"
+      then: "MemberAddError.Auth set (retry=false, redirect=login); NavigateBack then login redirect"
 
-    - id: TC-MA-014
-      scenario: "Back tap from form triggers NavigateBack event"
+    - id: TC-MA-017
+      scenario: "OnBack from top bar close discards form and navigates back to member-list"
       type: Screen
       priority: P2
-      given: "Screen in content state"
-      when: "User taps close icon in top_bar"
-      then: "OnBack action dispatched, NavigateBack event emitted"
+      given: "Content state with partially filled form"
+      when: "user taps top_bar close icon (OnBack)"
+      then: "OnBack action dispatched; NavigateBack event emitted; no member created, no data persisted"
+
+    - id: TC-MA-018
+      scenario: "MemberRepository.createMember maps CreateMemberRequest and returns Member"
+      type: Repository
+      priority: P0
+      given: "valid CreateMemberRequest with firstName='Grace', lastName='Achieng', phone='+254723456789', role=SECRETARY, groupId"
+      when: "createMember(request) called with mocked create_client + assign_member_role"
+      then: "Result<Member> success returned with resolved memberId; assignRole and optional uploadPhoto reachable via returned memberId"

@@ -1,94 +1,133 @@
 schema_version: "1.0"
 id: share-out-flow
-name: Share-Out Flow
+name: Distribution / Share-Out Flow
 type: happy
 feature_ref: share-out
-client_type: admin
 milestone: v1.0.0
 description: >
-  At end of savings cycle, admin initiates share-out from group-dashboard; the system
-  computes each member's payout (savings return + proportional profit share); the group
-  reviews the preview screen and confirms; individual withdrawal transactions are disbursed
-  to each member; cycle is closed and a new one begins.
+  The pluggable distribution flow (global self-signup pivot, 2026-07-17; FR-023). The
+  distribution strategy is selected by the group's GroupTypeConfig, not hard-coded to
+  pro-rata. An organizer or chairperson initiates distribution from the organizer
+  dashboard; the app computes the payout client-side per the group's strategy — PRO_RATA
+  share-out (VSLA/SILC/ASCA, end-of-cycle savings + earnings), ROTATION payout (ROSCA
+  family, one member takes the pot per payout_order_method), or AUCTION/BID (chit/hui) —
+  the group reviews the preview and confirms; the companion API executes the resulting
+  Fineract money movements.
 
 entry_point:
-  screen: group-dashboard
-  condition: user_taps_initiate_share_out
+  screen: organizer-dashboard
+  condition: organizer_or_chairperson_taps_distribute
 
 steps:
   - step: 1
-    screen: group-dashboard
-    action: Tap "Initiate Share-Out" at cycle end
+    screen: organizer-dashboard
+    action: >
+      Organizer / chairperson taps "Distribute" (labelled per type: "Share-Out" for
+      accumulating groups, "Payout" for rotating groups). The group's GroupTypeConfig
+      distribution_strategy determines the compute branch.
     transition: share-out-preview
-    condition: admin_authenticated_cycle_end
+    condition: distribution_initiated
 
-  - step: 2
+  # ── BRANCH A: PRO_RATA share-out (VSLA / SILC / ASCA) ──
+  - step: 2a
     screen: share-out-preview
-    action: System fetches total corpus and total profit; computes per-member share pro-rata by savings contribution
+    action: >
+      PRO_RATA branch — fetch total corpus + total profit (loan interest + fees +
+      penalties); compute each member's share = (member_savings / total_savings) × total_pool
+      plus proportional earnings.
     transition: share-out-preview
-    condition: data_loaded
+    condition: strategy_is_pro_rata
+
+  # ── BRANCH B: ROTATION payout (ROSCA family) ──
+  - step: 2b
+    screen: share-out-preview
+    action: >
+      ROTATION branch — determine this period's recipient from payout_order_method
+      (FIXED_ORDER | LOTTERY | AUCTION | NEED_BASED); the recipient takes the pot (sum of
+      this period's contributions, less any agreed fee); no cycle close.
+    transition: share-out-preview
+    condition: strategy_is_rotation
+
+  # ── BRANCH C: AUCTION / BID (chit / hui) ──
+  - step: 2c
+    screen: share-out-preview
+    action: >
+      AUCTION branch — members bid a discount; the winning (lowest-take / highest-discount)
+      bidder receives the pot; the discount is redistributed as dividend to the others.
+    transition: share-out-preview
+    condition: strategy_is_auction
 
   - step: 3
     screen: share-out-preview
-    action: Admin and group review per-member breakdown table (savings return + profit share)
+    action: >
+      The group reviews the per-member breakdown (savings return + earnings for pro-rata;
+      recipient + remaining schedule for rotation; winning bid + dividend split for auction)
+      and confirms.
     transition: share-out-execute
     condition: group_confirms
 
   - step: 4
     screen: share-out-execute
-    action: Confirm final payouts on double-confirmation screen; tap Distribute
-    transition: group-dashboard
+    action: Confirm final payouts on the double-confirmation screen; tap Distribute
+    transition: organizer-dashboard
     condition: distribution_confirmed
 
   - step: 5
     screen: share-out-execute
-    action: System records withdrawal transactions for each member and posts dt_share_out record
-    transition: group-dashboard
+    action: >
+      Distribution computed client-side; the companion API executes the resulting Fineract
+      money movements (withdrawals / disbursals) and posts the distribution record.
+    transition: organizer-dashboard
     condition: transactions_posted
 
   - step: 6
-    screen: group-dashboard
-    action: Cycle closed — historical record saved; new cycle counter started
+    screen: organizer-dashboard
+    action: >
+      For PRO_RATA — cycle closed, historical record saved, new cycle started. For ROTATION /
+      AUCTION — the recipient is marked paid and the rotation advances; cycle continues.
     transition: end
-    condition: cycle_reset
+    condition: distribution_finalized
 
 exit_points:
-  - screen: group-dashboard
+  - screen: organizer-dashboard
     outcome: success
-    description: All member payouts disbursed, cycle closed, new cycle begun.
+    description: Distribution executed per the group's strategy; pro-rata closes the cycle, rotation/auction advances it.
 
   - screen: share-out-execute
     outcome: failure
-    description: Batch withdrawal API error — partial disbursement rolled back; error shown with retry option.
+    description: Companion API money-movement error — partial disbursement rolled back; error shown with retry.
 
 screens_involved:
-  - group-dashboard
+  - organizer-dashboard
   - share-out-preview
   - share-out-execute
 
 api_calls:
-  - endpoint: /centers/{centerId}/accounts
+  - endpoint: /datatables/group_type_config/{groupId}
     method: GET
-    purpose: Fetch group corpus balance and total profit to seed share-out calculation.
+    purpose: Read the group's distribution_strategy + payout_order_method to select the compute branch.
 
-  - endpoint: /datatables/dt_share_out
-    method: POST
-    purpose: Record the share-out event with per-member payout amounts and cycle metadata.
+  - endpoint: /companion/groups/{groupId}/corpus
+    method: GET
+    purpose: Fetch group corpus balance and earnings to seed the distribution calculation.
 
-  - endpoint: /savingsaccounts/{savingsId}/transactions
+  - endpoint: /companion/groups/{groupId}/distribute
     method: POST
-    purpose: Record individual withdrawal transactions for each member's payout (called per member in batch).
+    purpose: Execute the client-computed distribution as Fineract money movements and record the distribution event.
 
-  - endpoint: /api/v1/batches
+  - endpoint: /datatables/rosca_rotation/{groupId}
     method: POST
-    purpose: Submit all withdrawal transactions as a batch for atomicity.
+    purpose: Advance the rotation schedule and record the period recipient (ROTATION branch).
 
 offline_capable: false
-offline_notes: "Share-out is a high-stakes irreversible action; connectivity required. Admin is warned if offline."
+offline_notes: "Distribution is a high-stakes irreversible action; connectivity required. Organizer is warned if offline."
 
 analytics_events:
-  - share_out_initiated: Admin taps Initiate Share-Out on group-dashboard
-  - share_out_preview_viewed: Preview screen loaded with per-member breakdown
-  - share_out_confirmed: Admin taps Distribute on share-out-execute
-  - share_out_success: All batch transactions recorded; cycle closed
-  - share_out_failed: Batch API error; rollback attempted
+  - distribution_initiated: "Organizer/chairperson taps Distribute (strategy: pro_rata|rotation|auction)"
+  - distribution_computed: "Payout computed client-side per strategy (member_count: N)"
+  - distribution_preview_viewed: Preview loaded with per-member breakdown
+  - distribution_confirmed: Organizer taps Distribute on share-out-execute
+  - distribution_success: "Money movements executed (strategy: pro_rata|rotation|auction)"
+  - cycle_closed: PRO_RATA cycle closed and new cycle started
+  - rotation_advanced: ROTATION/AUCTION recipient paid and schedule advanced
+  - distribution_failed: Companion API error; rollback attempted

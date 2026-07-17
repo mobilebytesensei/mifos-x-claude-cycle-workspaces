@@ -10,65 +10,81 @@ testing:
 
   scenarios:
     - id: TC-LMD-001
-      scenario: "Chairperson confirms write-off — POST write-off succeeds"
+      scenario: "OnConfirm posts write-off, emits LoanMarkedDefaulted, dismisses dialog"
       type: ViewModel
       priority: P0
-      given: "loanId=5002 (Joseph's overdue loan), chairperson role"
-      when: "user taps Confirm in dialog"
-      then: "POST /loans/5002/transactions?command=writeoff called with today's date; dialog dismisses; loan-list refreshed"
+      given: "loanId=5002 (Peter Otieno's overdue loan), online, chairperson role"
+      when: "user taps Mark Defaulted (OnConfirm)"
+      then: "LoanRepository.markDefaulted(5002) fires POST /loans/5002/transactions?command=writeoff with today's date; LoanMarkedDefaulted(5002) emitted; Store5/SQLDelight loan cache refreshed; dialog dismisses"
 
     - id: TC-LMD-002
-      scenario: "Dialog shows loan member name and outstanding amount before confirm"
+      scenario: "idle state renders member name and outstanding amount with destructive warning"
       type: Screen
       priority: P0
-      given: "loanId=5002, memberName='Joseph Otieno', outstandingBalance=9600 KES"
-      when: "dialog opens"
-      then: "member name and balance prominently displayed; destructive warning visible"
+      given: "memberName='Peter Otieno', loanAmountKes=1500, isSubmitting=false, submitError=null"
+      when: "dialog opens in idle state"
+      then: "dialog_title 'Mark Loan as Defaulted', warning_icon, and warning_body_text showing 'Peter Otieno' and 'KES 1,500' rendered; submit_error_text hidden"
 
     - id: TC-LMD-003
-      scenario: "Cancel button dismisses dialog without API call"
-      type: Screen
+      scenario: "OnDismiss (Cancel) emits Dismiss with no write and no API call"
+      type: ViewModel
       priority: P0
-      given: "dialog open"
-      when: "user taps Cancel"
-      then: "dialog dismissed; no POST call made; loan-list unchanged"
+      given: "dialog open in idle state"
+      when: "user taps Cancel (OnDismiss)"
+      then: "Dismiss event emitted; no LoanRepository call; m_loan record unchanged; no cache write"
 
     - id: TC-LMD-004
-      scenario: "403 Forbidden shows permission error — only chairperson can write off"
+      scenario: "403 Forbidden — non-chairperson blocked, dialog stays open"
       type: ViewModel
       priority: P0
-      given: "user role = TREASURER (not CHAIRPERSON)"
+      given: "user role = TREASURER (not chairperson), OnConfirm submitted"
       when: "server returns 403"
-      then: "error snackbar: error_chairperson_role_required; dialog stays open"
+      then: "submitError set to error_chairperson_role_required; dialog remains open (error state); no LoanMarkedDefaulted emitted"
 
     - id: TC-LMD-005
-      scenario: "409 Conflict — loan not in eligible state shows specific error"
+      scenario: "404 Loan not found shows specific error"
       type: ViewModel
       priority: P1
-      given: "loan already closed or written off"
-      when: "server returns 409"
-      then: "error snackbar: error_loan_ineligible_state; dialog dismisses"
+      given: "loanId references a deleted or unknown loan, OnConfirm submitted"
+      when: "server returns 404"
+      then: "submitError set to error_loan_not_found; error state rendered; no cache refresh"
 
     - id: TC-LMD-006
-      scenario: "Loading indicator shown while write-off API call in progress"
-      type: Screen
-      priority: P1
-      given: "API call in flight"
-      when: "user tapped Confirm"
-      then: "Confirm button disabled; spinner shown; Cancel still tappable"
-
-    - id: TC-LMD-007
-      scenario: "Offline state prevents write-off — shows no-queue error"
+      scenario: "409 Conflict — loan ineligible for write-off shows state error"
       type: ViewModel
       priority: P1
-      given: "network.offline"
-      when: "user taps Confirm"
-      then: "error: error_offline_no_queue shown; no API call; dialog stays open"
+      given: "loan already closed or already written off"
+      when: "server returns 409"
+      then: "submitError set to error_loan_ineligible_state; error state rendered; dialog stays open for user to cancel"
+
+    - id: TC-LMD-007
+      scenario: "submitting state disables buttons and shows loading on Mark Defaulted"
+      type: Screen
+      priority: P1
+      given: "isSubmitting=true (write-off API call in flight)"
+      when: "OnConfirm has been tapped and is in progress"
+      then: "confirm_defaulted_button shows spinner and is disabled; cancel_button disabled; warning_body_text still visible"
 
     - id: TC-LMD-008
-      scenario: "LoanRepository.markDefaulted calls correct endpoint and returns"
+      scenario: "Offline blocks write-off — cmp-network-monitor gate shows no-queue error"
+      type: ViewModel
+      priority: P1
+      given: "cmp-network-monitor reports offline, dialog open"
+      when: "user taps Mark Defaulted (OnConfirm)"
+      then: "submitError set to error_offline_no_queue; no POST attempted (no offline queue for destructive action); dialog stays open"
+
+    - id: TC-LMD-009
+      scenario: "500 Server error surfaces retryable error, dialog stays open"
+      type: ViewModel
+      priority: P2
+      given: "OnConfirm submitted, backend degraded"
+      when: "server returns 500"
+      then: "submitError set to error_server; error state rendered; user can retry OnConfirm"
+
+    - id: TC-LMD-010
+      scenario: "LoanRepository.markDefaulted calls write-off endpoint and emits Unit"
       type: Repository
       priority: P0
-      given: "mock POST /loans/5002/transactions?command=writeoff returns 200"
+      given: "mock POST /loans/5002/transactions?command=writeoff returns 200 with resourceId"
       when: "markDefaulted(5002) called"
-      then: "Flow emits Unit; no error"
+      then: "Flow emits Unit exactly once; request body carries transactionDate formatted 'dd MMMM yyyy', locale='en'; no error surfaced"

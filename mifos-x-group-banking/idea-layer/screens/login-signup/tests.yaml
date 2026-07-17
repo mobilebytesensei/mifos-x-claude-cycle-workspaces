@@ -10,121 +10,225 @@ testing:
 
   scenarios:
     - id: TC-LS-001
-      scenario: "On mount with biometric available and valid stored token, ViewModel sets isBiometricAvailable=true and emits PromptBiometric event"
+      scenario: "On mount with biometric hardware and a valid stored token, prompts biometric"
       type: ViewModel
       priority: P0
+      given: "SessionStore has a non-expired sessionToken; BiometricManager reports hardware available"
+      when: "ViewModel init runs the mount check"
+      then: "isBiometricAvailable=true; PromptBiometric event emitted; no network call made on mount"
 
     - id: TC-LS-002
-      scenario: "On mount with no stored token, ViewModel shows login form in Content state without prompting biometric"
+      scenario: "On mount with no stored token shows login form in Content state"
       type: ViewModel
       priority: P0
+      given: "SessionStore empty (no token)"
+      when: "ViewModel init runs the mount check"
+      then: "screen state = Content in AuthMode.Login; PromptBiometric NOT emitted; login form fields visible"
 
     - id: TC-LS-003
-      scenario: "Mode toggle from LOGIN to SIGNUP shows signup_name_field and hides forgot_password_link and biometric_unlock_button"
+      scenario: "OnModeToggle LOGIN to SIGNUP shows name field, hides forgot-password and biometric"
       type: Screen
       priority: P0
+      given: "content state, mode=AuthMode.Login, isBiometricAvailable=true"
+      when: "user taps the Sign Up tab (OnModeToggle AuthMode.Signup)"
+      then: "signup_name_field visible; forgot_password_link and biometric_unlock_button hidden; signup_button replaces login_button"
 
     - id: TC-LS-004
-      scenario: "Mode toggle clears existing validation errors from the previous mode"
+      scenario: "OnModeToggle clears validationErrors carried over from the previous mode"
       type: ViewModel
       priority: P1
+      given: "mode=Login with validationErrors[password] set from a failed login attempt"
+      when: "user toggles to Signup (OnModeToggle AuthMode.Signup)"
+      then: "validationErrors reset to emptyMap(); form fields reset for the new mode"
 
     - id: TC-LS-005
-      scenario: "OnLoginTap with blank emailPhone field sets validationErrors[emailPhone] and does not call AuthRepository"
+      scenario: "OnLoginTap with blank emailPhone sets validation error, no repository call"
       type: ViewModel
       priority: P0
+      given: "mode=Login, emailPhone='', password='secret123'"
+      when: "user taps Sign In (OnLoginTap)"
+      then: "validationErrors[emailPhone] set (error_email_phone_invalid); AuthRepository.login NOT called"
 
     - id: TC-LS-006
-      scenario: "OnLoginTap with invalid email format (no @) sets validationErrors[emailPhone] with email_phone_invalid key"
+      scenario: "OnLoginTap with malformed email (no @) sets email/phone validation error"
       type: ViewModel
       priority: P0
+      given: "mode=Login, emailPhone='gracewanjiku.com', password='secret123'"
+      when: "user taps Sign In (OnLoginTap)"
+      then: "validationErrors[emailPhone]=error_email_phone_invalid (fails email and E.164 phone patterns); no network call"
 
     - id: TC-LS-007
-      scenario: "OnLoginTap with password shorter than 8 characters sets validationErrors[password] with error_password_weak key"
+      scenario: "OnLoginTap with password under 8 chars sets weak-password error"
       type: ViewModel
       priority: P0
+      given: "mode=Login, emailPhone='grace@example.com', password='pw12'"
+      when: "user taps Sign In (OnLoginTap)"
+      then: "validationErrors[password]=error_password_weak; AuthRepository.login NOT called"
 
     - id: TC-LS-008
-      scenario: "OnSignupTap with blank name field sets validationErrors[name] with error_name_required key"
+      scenario: "OnSignupTap with blank name sets name-required error"
       type: ViewModel
       priority: P0
+      given: "mode=Signup, name='', emailPhone='new@example.com', password='StrongPass1'"
+      when: "user taps Create Account (OnSignupTap)"
+      then: "validationErrors[name]=error_name_required; AuthRepository.selfRegister NOT called"
 
     - id: TC-LS-009
-      scenario: "Valid login form submission calls AuthRepository.login and sets isSubmitting=true during the call"
+      scenario: "Valid OnLoginTap calls companion_login and sets isSubmitting during the call"
       type: ViewModel
       priority: P0
+      given: "mode=Login, emailPhone='grace@example.com', password='StrongPass1', online"
+      when: "user taps Sign In (OnLoginTap)"
+      then: "AuthRepository.login POSTs LoginRequest to /companion/auth/login; isSubmitting=true while in flight; Loading screen state; sessionToken persisted on success"
 
     - id: TC-LS-010
-      scenario: "Successful login with non-empty groupMemberships list emits NavigateToPersonalDashboard event"
+      scenario: "Login with non-empty groupMemberships navigates to personal-dashboard"
       type: ViewModel
       priority: P0
+      given: "companion_login returns AuthResponse with groupMemberships=[{groupId:g1, role:ORGANIZER}]"
+      when: "login succeeds"
+      then: "group_memberships_cache upserted; NavigateToPersonalDashboard event emitted (per-group role resolved from membership list)"
 
     - id: TC-LS-011
-      scenario: "Successful login with empty groupMemberships list sets screen state to ZeroGroups without navigating away"
+      scenario: "Login with empty groupMemberships routes to ZeroGroups without navigating away"
       type: ViewModel
       priority: P0
+      given: "companion_login returns AuthResponse with groupMemberships=[]"
+      when: "login succeeds"
+      then: "screen state = ZeroGroups; no NavigateToPersonalDashboard; zero-group onboarding buttons shown"
 
     - id: TC-LS-012
-      scenario: "401 response from companion_login sets error to LoginSignupError.InvalidCredentials and re-enables the form"
+      scenario: "401 from companion_login sets InvalidCredentials error and re-enables form"
       type: ViewModel
       priority: P0
+      given: "mode=Login, credentials wrong, OnLoginTap fired"
+      when: "server returns 401"
+      then: "error=LoginSignupError.InvalidCredentials (error_invalid_credentials); Error screen state; isSubmitting=false; form re-enabled for retry"
 
     - id: TC-LS-013
-      scenario: "Valid signup form submission calls AuthRepository.selfRegister and sets screen state to ZeroGroups on success"
+      scenario: "429 rate-limited from companion_login shows retryable server error"
       type: ViewModel
-      priority: P0
+      priority: P1
+      given: "too many failed login attempts, OnLoginTap fired"
+      when: "server returns 429"
+      then: "error surfaced as retryable (error_rate_limited); form re-enabled; sessionToken not written"
 
     - id: TC-LS-014
-      scenario: "409 response from companion_self_register sets error to LoginSignupError.AccountExists with correct message key"
+      scenario: "Valid OnSignupTap calls self-register and sets ZeroGroups on success"
       type: ViewModel
-      priority: P1
+      priority: P0
+      given: "mode=Signup, name='Grace Wanjiku', emailPhone='grace@example.com', password='StrongPass1', online"
+      when: "user taps Create Account (OnSignupTap)"
+      then: "AuthRepository.selfRegister POSTs SelfRegisterRequest to /companion/auth/self-register creating user + linked Fineract client; sessionToken stored; groupMemberships always empty for new user; screen state = ZeroGroups"
 
     - id: TC-LS-015
-      scenario: "Biometric unlock success fetches /companion/auth/me; non-empty groups emits NavigateToPersonalDashboard"
+      scenario: "409 from companion_self_register sets AccountExists error"
       type: ViewModel
-      priority: P0
+      priority: P1
+      given: "mode=Signup, emailPhone already registered, OnSignupTap fired"
+      when: "server returns 409"
+      then: "error=LoginSignupError.AccountExists (error_account_exists); Error state; user directed to sign in"
 
     - id: TC-LS-016
-      scenario: "Biometric hardware failure sets error to LoginSignupError.BiometricFailed and form remains enabled"
+      scenario: "OnBiometricUnlock success fetches companion_me; non-empty groups navigates to dashboard"
       type: ViewModel
-      priority: P1
+      priority: P0
+      given: "stored sessionToken present, biometric hardware success"
+      when: "user taps biometric unlock (OnBiometricUnlock)"
+      then: "GET /companion/auth/me called; group_memberships_cache upserted; non-empty memberships emit NavigateToPersonalDashboard"
 
     - id: TC-LS-017
-      scenario: "In ZeroGroups state, OnCreateGroupTap emits NavigateToGroupTypePicker event"
+      scenario: "OnBiometricUnlock success with empty groups routes to ZeroGroups"
       type: ViewModel
-      priority: P0
+      priority: P1
+      given: "biometric success, companion_me returns empty groupMemberships"
+      when: "biometric refresh completes"
+      then: "screen state = ZeroGroups; no navigation away from auth screen"
 
     - id: TC-LS-018
-      scenario: "In ZeroGroups state, OnJoinWithCodeTap emits NavigateToJoinWithCode event"
+      scenario: "Biometric hardware failure sets BiometricFailed error, form stays enabled"
       type: ViewModel
-      priority: P0
+      priority: P1
+      given: "stored token present, biometric hardware rejects the fingerprint"
+      when: "OnBiometricUnlock fails at the platform prompt"
+      then: "error=LoginSignupError.BiometricFailed (error_biometric_failed); manual login form remains enabled"
 
     - id: TC-LS-019
-      scenario: "ZeroGroups state renders zero_groups_illustration, zero_groups_title, create_group_button, and join_with_code_button"
-      type: Screen
-      priority: P0
+      scenario: "Offline biometric unlock shows offline error and degrades to manual login"
+      type: ViewModel
+      priority: P2
+      given: "network.offline, stored token present, biometric hardware success"
+      when: "OnBiometricUnlock attempts companion_me refresh"
+      then: "companion_me fails with network.offline; error_offline_biometric shown; manual login form available"
 
     - id: TC-LS-020
-      scenario: "error_banner is hidden when error is null and visible when error is non-null"
-      type: Screen
-      priority: P1
+      scenario: "ZeroGroups OnCreateGroupTap navigates to group-type-picker"
+      type: ViewModel
+      priority: P0
+      given: "screen state = ZeroGroups (new organizer, no groups)"
+      when: "user taps Create Your First Group (OnCreateGroupTap)"
+      then: "NavigateToGroupTypePicker event emitted for config-driven group_type selection"
 
     - id: TC-LS-021
-      scenario: "AuthRepository.login correctly maps LoginRequest body to companion_login POST and deserialises AuthResponse"
-      type: Repository
+      scenario: "ZeroGroups OnJoinWithCodeTap navigates to join-with-code"
+      type: ViewModel
       priority: P0
+      given: "screen state = ZeroGroups"
+      when: "user taps Join with Invite Code (OnJoinWithCodeTap)"
+      then: "NavigateToJoinWithCode event emitted so the user can enter an organizer's invite code"
 
     - id: TC-LS-022
-      scenario: "AuthRepository.selfRegister maps SelfRegisterRequest to companion_self_register POST and deserialises AuthResponse"
-      type: Repository
+      scenario: "ZeroGroups state renders illustration, title, and both onboarding buttons"
+      type: Screen
       priority: P0
+      given: "sessionToken set, groupMemberships=[]"
+      when: "zero_groups state renders"
+      then: "zero_groups_illustration, zero_groups_title, create_group_button, and join_with_code_button all visible; login/signup form hidden"
 
     - id: TC-LS-023
-      scenario: "SessionStore.saveToken persists sessionToken and tokenExpiresAt; hasValidToken returns false after expiry"
-      type: Repository
+      scenario: "error_banner hidden when error is null and visible when non-null"
+      type: Screen
       priority: P1
+      given: "content state"
+      when: "error transitions from null to LoginSignupError.InvalidCredentials"
+      then: "error_banner hidden while error==null, shown with localizedMessage once error is set"
 
     - id: TC-LS-024
-      scenario: "companion_me response is cached with 300s TTL; biometric re-auth within TTL does not re-fetch from network"
+      scenario: "OnForgotPassword surfaces the reset-guidance snackbar"
+      type: ViewModel
+      priority: P2
+      given: "mode=Login, forgot_password_link visible"
+      when: "user taps Forgot Password (OnForgotPassword)"
+      then: "ShowSnackbar event emitted directing user to contact their group organizer or use the web portal (MVP reset path)"
+
+    - id: TC-LS-025
+      scenario: "AuthRepository.login maps LoginRequest and deserializes AuthResponse"
+      type: Repository
+      priority: P0
+      given: "emailPhone='grace@example.com', password='StrongPass1'"
+      when: "login() called"
+      then: "POST /companion/auth/login body carries emailPhone + password; AuthResponse (userId, sessionToken, tokenExpiresAt, groupMemberships) deserialized"
+
+    - id: TC-LS-026
+      scenario: "AuthRepository.selfRegister maps SelfRegisterRequest and deserializes AuthResponse"
+      type: Repository
+      priority: P0
+      given: "name='Grace Wanjiku', emailPhone='grace@example.com', password='StrongPass1'"
+      when: "selfRegister() called"
+      then: "POST /companion/auth/self-register body carries name+emailPhone+password; AuthResponse with empty groupMemberships deserialized"
+
+    - id: TC-LS-027
+      scenario: "SessionStore.saveToken persists token; hasValidToken false after expiry"
+      type: Repository
+      priority: P1
+      given: "AuthResponse with sessionToken and tokenExpiresAt in the past"
+      when: "saveToken() persists then hasValidToken() checked"
+      then: "sessionToken + tokenExpiresAt written to local_encrypted_prefs; hasValidToken() returns false because tokenExpiresAt is elapsed"
+
+    - id: TC-LS-028
+      scenario: "companion_me response cached 300s stale-while-revalidate; re-auth within TTL skips network"
       type: Repository
       priority: P2
+      given: "companion_me fetched and cached at t0"
+      when: "biometric re-auth occurs at t0+120s (within 300s TTL)"
+      then: "cached UserProfile served without a network re-fetch (stale-while-revalidate)"

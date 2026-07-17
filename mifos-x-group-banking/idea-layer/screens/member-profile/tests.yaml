@@ -6,116 +6,157 @@ testing:
   coverage_targets:
     ViewModel: "90%+"
     Screen: "80%+"
+    Repository: "85%+"
 
   scenarios:
     - id: TC-MP-001
-      scenario: "Profile loads on mount — header, savings card, and attendance rate shown"
+      scenario: "Profile loads on mount — three parallel GETs populate member, accounts, role, attendance"
       type: ViewModel
       priority: P0
       given: "memberId='client_001', groupId='42'"
       when: "Screen mounts"
-      then: "get_client + get_client_accounts + get_member_role all called; state.member populated; attendanceRate=0.875"
+      then: "get_client + get_client_accounts + get_member_role all called in parallel; state.member populated (Amina Wanjiru), role=TREASURER, attendanceRate=0.93 (14/15)"
 
     - id: TC-MP-002
       scenario: "Member header card shows name, join date, phone, and role chip"
       type: Screen
       priority: P0
-      given: "Content state, member=Amina Wanjiru, role=TREASURER"
-      when: "Screen renders"
-      then: "member_name_text='Amina Wanjiru', role_chip label='TREASURER' with secondary background"
+      given: "Content state, member=Amina Wanjiru joinDate='2026-01-15' phone='+254712345678', role=TREASURER"
+      when: "Screen renders member_header_card"
+      then: "member_name_text='Amina Wanjiru', member_since_text='Member since 15 Jan 2026', member_phone_text='+254712345678', role_chip label='TREASURER' with secondary background"
 
     - id: TC-MP-003
-      scenario: "Savings sparkline renders with 7 data points in correct ascending order"
+      scenario: "Savings sparkline renders 7 ascending data points with latest balance"
       type: Screen
       priority: P1
-      given: "Content state, savingsHistory has 7 monthly entries from Nov-2025 to May-2026"
-      when: "Screen renders"
-      then: "savings_sparkline visible with 7 points, latest balance='KES 3,500.00'"
+      given: "Content state, accounts.savingsHistory has 7 weekly entries ending 2026-03-03 balance=3500.00"
+      when: "Screen renders savings_history_card"
+      then: "savings_sparkline visible with 7 points, line_color=primary, height=80dp; savings_balance_text='KES 3,500.00'"
 
     - id: TC-MP-004
-      scenario: "View Full History button navigates to member-savings-detail"
+      scenario: "View Full History navigates to member-savings-detail"
       type: ViewModel
       priority: P0
-      given: "Content state"
-      when: "OnViewSavings dispatched"
+      given: "Content state, memberId='client_001', groupId='42'"
+      when: "OnViewSavings dispatched (tap view_full_history_button)"
       then: "NavigateToSavingsDetail event emitted with memberId='client_001' and groupId='42'"
 
     - id: TC-MP-005
-      scenario: "Edit Role button only visible for chairperson user"
+      scenario: "Active loan card hidden when member has no active loan"
+      type: Screen
+      priority: P1
+      given: "Content state, accounts.activeLoan=null (Amina demo data)"
+      when: "Screen renders"
+      then: "active_loan_card not visible; savings and attendance cards still shown"
+
+    - id: TC-MP-006
+      scenario: "Active loan in arrears shows error-bordered card with arrears banner"
+      type: Screen
+      priority: P1
+      given: "Content state, accounts.activeLoan.inArrears=true, outstandingBalance=8000, dueDate='2026-03-10'"
+      when: "Screen renders active_loan_card"
+      then: "card border=error 2dp; loan_outstanding_text='KES 8,000 outstanding'; loan_arrears_banner visible with warning icon and due date"
+
+    - id: TC-MP-007
+      scenario: "Edit Role button visible only for chairperson user"
       type: Screen
       priority: P0
       given: "isCurrentUserChairperson=true"
-      when: "Screen renders"
-      then: "edit_role_button visible"
-
-    - id: TC-MP-006
-      scenario: "Edit Role button hidden for non-chairperson users"
-      type: Screen
-      priority: P0
-      given: "isCurrentUserChairperson=false"
-      when: "Screen renders"
-      then: "edit_role_button not visible"
-
-    - id: TC-MP-007
-      scenario: "Tap Edit Role opens role selection bottom sheet"
-      type: ViewModel
-      priority: P1
-      given: "isCurrentUserChairperson=true, isEditingRole=false"
-      when: "OnEditRoleTap dispatched"
-      then: "isEditingRole=true, role bottom sheet visible with CHAIRPERSON, TREASURER, SECRETARY, MEMBER options"
+      when: "Screen renders member_header_card"
+      then: "edit_role_button visible; hidden entirely when isCurrentUserChairperson=false"
 
     - id: TC-MP-008
-      scenario: "Chairperson selects new role and confirms — API called with new role"
+      scenario: "OnEditRoleTap opens role selection bottom sheet seeded with current role"
       type: ViewModel
       priority: P1
-      given: "isEditingRole=true, selectedRole=SECRETARY"
-      when: "OnConfirmRoleChange dispatched"
-      then: "isUpdatingRole=true, update_member_role API called, role updated to SECRETARY, isEditingRole=false"
+      given: "isCurrentUserChairperson=true, isEditingRole=false, role=TREASURER"
+      when: "OnEditRoleTap dispatched"
+      then: "isEditingRole=true; selectedRole seeded to TREASURER; role_edit_bottom_sheet visible with CHAIRPERSON/TREASURER/SECRETARY/MEMBER options"
 
     - id: TC-MP-009
-      scenario: "Role update failure shows error snackbar and keeps original role"
+      scenario: "OnRoleSelected sets selectedRole locally without a network call"
       type: ViewModel
       priority: P1
-      given: "isEditingRole=true, API returns 500"
-      when: "OnConfirmRoleChange dispatched"
-      then: "MemberProfileError.RoleUpdateFailed set, ShowSnackbar with error_role_update, role unchanged"
+      given: "isEditingRole=true, selectedRole=TREASURER"
+      when: "OnRoleSelected(role=SECRETARY) dispatched (tap role_option_secretary)"
+      then: "selectedRole=SECRETARY in state; confirm_role_button becomes active; update_member_role NOT called yet"
 
     - id: TC-MP-010
-      scenario: "Attendance rate card shows 14/16 meetings (87.5%)"
-      type: Screen
+      scenario: "OnConfirmRoleChange calls update_member_role PUT and updates local role on success"
+      type: ViewModel
       priority: P1
-      given: "meetingsAttended=14, totalMeetings=16"
-      when: "Screen renders"
-      then: "attendance section shows '14/16' and '87.5%' rate"
+      given: "isEditingRole=true, selectedRole=SECRETARY, role=TREASURER"
+      when: "OnConfirmRoleChange dispatched"
+      then: "isUpdatingRole=true; update_member_role PUT /datatables/dt_member_role/{clientId} called via MemberRepository.updateMemberRole; role updated to SECRETARY; ShowSnackbar role_updated; isEditingRole=false"
 
     - id: TC-MP-011
+      scenario: "Role update 403 (caller not chairperson) shows error snackbar, role unchanged"
+      type: ViewModel
+      priority: P1
+      given: "isEditingRole=true, selectedRole=SECRETARY, update_member_role returns 403"
+      when: "OnConfirmRoleChange dispatched"
+      then: "MemberProfileError.RoleUpdateFailed set (retry=true); ShowSnackbar error_role_update; role stays TREASURER; isUpdatingRole=false"
+
+    - id: TC-MP-012
+      scenario: "Role update 500 shows retryable error snackbar and keeps original role"
+      type: ViewModel
+      priority: P1
+      given: "isEditingRole=true, update_member_role returns 500"
+      when: "OnConfirmRoleChange dispatched"
+      then: "MemberProfileError.RoleUpdateFailed set; ShowSnackbar error_role_update; role unchanged; isUpdatingRole=false"
+
+    - id: TC-MP-013
+      scenario: "OnDismissRoleEdit closes bottom sheet without persisting"
+      type: ViewModel
+      priority: P2
+      given: "isEditingRole=true, selectedRole=SECRETARY"
+      when: "OnDismissRoleEdit dispatched (dismiss bottom sheet)"
+      then: "isEditingRole=false, selectedRole=null; no update_member_role call"
+
+    - id: TC-MP-014
+      scenario: "Attendance card shows fraction, percent, and rate-colored progress bar"
+      type: Screen
+      priority: P1
+      given: "Content state, meetingsAttended=14, totalMeetings=15, attendanceRate=0.93"
+      when: "Screen renders attendance_card"
+      then: "attendance_fraction_text='14 / 15'; attendance_rate_text='93% attendance rate'; attendance_progress_bar indicator=tertiary (gte_80)"
+
+    - id: TC-MP-015
       scenario: "Network error on mount shows error state with retry"
       type: ViewModel
       priority: P0
       given: "NetworkMonitor.isOnline=false, no cache"
       when: "Screen mounts"
-      then: "MemberProfileError.Network set, error_state visible with retry CTA"
+      then: "MemberProfileError.Network set; error_state visible with cloud_off icon and Retry CTA"
 
-    - id: TC-MP-012
+    - id: TC-MP-016
       scenario: "Member not found (404) shows not-found error state"
       type: ViewModel
       priority: P1
-      given: "API returns 404 for clientId"
+      given: "get_client returns 404 for clientId"
       when: "Screen mounts"
-      then: "MemberProfileError.NotFound set, error state with error_not_found message"
+      then: "MemberProfileError.NotFound set (retry=false); error_state shows error_not_found message"
 
-    - id: TC-MP-013
-      scenario: "Back tap navigates back to member-list"
+    - id: TC-MP-017
+      scenario: "Retry re-triggers the three parallel GETs via cmp-network-monitor"
+      type: ViewModel
+      priority: P1
+      given: "Error state after a failed load"
+      when: "Retry dispatched (tap error_state CTA)"
+      then: "cmp-network-monitor connectivity checked; get_client + get_client_accounts + get_member_role re-issued; screen returns to Loading then Content"
+
+    - id: TC-MP-018
+      scenario: "OnBack navigates to member-list with groupId"
       type: ViewModel
       priority: P2
-      given: "Content state"
-      when: "OnBack dispatched"
+      given: "Content state, groupId='42'"
+      when: "OnBack dispatched (tap top_bar arrow_back)"
       then: "NavigateToMemberList event emitted with groupId='42'"
 
-    - id: TC-MP-014
-      scenario: "Dismiss role edit bottom sheet resets isEditingRole without API call"
-      type: ViewModel
-      priority: P2
-      given: "isEditingRole=true, selectedRole=SECRETARY"
-      when: "OnDismissRoleEdit dispatched"
-      then: "isEditingRole=false, selectedRole=null, no API call made"
+    - id: TC-MP-019
+      scenario: "MemberRepository maps parallel responses into member, accounts, and role streams"
+      type: Repository
+      priority: P0
+      given: "mock get_client + get_client_accounts + get_member_role"
+      when: "getMemberProfile + getMemberAccounts + getMemberRole collected"
+      then: "Member mapped from get_client; MemberAccounts (savingsBalance, savingsHistory, activeLoan) mapped from get_client_accounts; MemberRole mapped from get_member_role array; SQLDelight members + member_accounts upserted"
