@@ -246,3 +246,9 @@ between the KMP app and Fineract. All `/companion/*` paths go through this layer
 - Plan: `idea-layer/idea-plan.yaml` §api_surface
 - MCP capabilities (shared): `../../mcp-mifosx/server-layer/MCP_CAPABILITIES.yaml`
 - Companion API implementation spec: deferred Go build — pending milestone
+
+---
+
+## Companion API — Build & Deploy
+
+The companion `/companion/*` tools are a **contract**; realizing them (what to build in `mcp-mifosx` + how to deploy a self-service Fineract) is specced end-to-end in **[COMPANION_API_BUILD_DEPLOY.md](COMPANION_API_BUILD_DEPLOY.md)** — the actionable plan that unblocks `/device-test` / matrix-green.
