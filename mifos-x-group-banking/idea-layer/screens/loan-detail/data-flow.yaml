@@ -7,7 +7,9 @@ entries:
     trigger: on_mount
     endpoints:
       - { api_id: get_loan_detail, transport: rest, method: get }
-    tables: []
+    tables:
+      - { name: loans, mutation: read }
+      - { name: loan_repayments, mutation: read }
     dtos:
       - { name: LoanDetail, role: response, api_id: get_loan_detail }
       - { name: RepaymentScheduleRow, role: response, api_id: get_loan_detail }
@@ -27,13 +29,16 @@ entries:
       Single call with associations=repaymentSchedule,transactions. Response is split into
       LoanDetail (header + summary), RepaymentScheduleRow array (SCHEDULE tab),
       and RepaymentTransaction array (HISTORY tab). Short TTL (120s) as loan balances
-      change frequently after repayments.
+      change frequently after repayments. Local SQLDelight cache (loans + loan_repayments)
+      is stale-while-revalidate hydrated via Store5 SourceOfTruth per business_logic.
 
   - screen_id: loanDetailScreen
     trigger: on_refresh
     endpoints:
       - { api_id: get_loan_detail, transport: rest, method: get }
-    tables: []
+    tables:
+      - { name: loans, mutation: write }
+      - { name: loan_repayments, mutation: write }
     dtos:
       - { name: LoanDetail, role: response, api_id: get_loan_detail }
       - { name: RepaymentScheduleRow, role: response, api_id: get_loan_detail }
@@ -47,5 +52,110 @@ entries:
     error_paths:
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
     notes: >
-      Pull-to-refresh (or post-repayment back-navigation) triggers a fresh fetch to
-      reflect updated outstanding balance and schedule.
+      Pull-to-refresh (OnRefresh action) triggers a fresh fetch to reflect updated
+      outstanding balance and schedule; the refreshed rows re-populate the local
+      loans and loan_repayments tables via Store5.
+
+  - screen_id: loanDetailScreen
+    trigger: on_action
+    action: OnTabChange
+    endpoints: []
+    tables: []
+    dtos:
+      - { name: LoanDetailTab, role: request }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: "loan_detail:tab:{selectedTab}"
+    error_paths: []
+    notes: >
+      Tab switch (Schedule / Repayment History) is a pure in-ViewModel state transition
+      on LoanDetailState.selectedTab — no network, no persistence. Data for both tabs
+      is already resident from the on_mount fetch.
+
+  - screen_id: loanDetailScreen
+    trigger: on_action
+    action: OnRecordRepayment
+    endpoints:
+      - { api_id: get_loan_detail, transport: rest, method: get }
+    tables:
+      - { name: loans, mutation: write }
+      - { name: loan_repayments, mutation: write }
+    dtos:
+      - { name: LoanDetail, role: response, api_id: get_loan_detail }
+      - { name: RepaymentScheduleRow, role: response, api_id: get_loan_detail }
+      - { name: RepaymentTransaction, role: response, api_id: get_loan_detail }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: network_first
+      ttl_seconds: 120
+      key_template: "loan_detail:{loanId}"
+    error_paths:
+      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "network.offline", behavior: show_retry, message_key: error_offline }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      Record Repayment posts a repayment against the Fineract m_loan account via
+      LoanRepository.recordRepayment (idempotent externalId guards duplicate submits).
+      On success, the fresh LoanDetail + schedule + transaction row are re-cached
+      to Store5 SourceOfTruth (loans + loan_repayments) and re-emitted to state.
+      NOTE: LoanRepository.recordRepayment is declared under api.yaml#dependencies.repositories
+      but has no first-class api[] operation — the mutation is coupled to the
+      companion loan mutation endpoint (out of this feature's local api surface).
+
+  - screen_id: loanDetailScreen
+    trigger: on_action
+    action: OnMarkDefaulted
+    endpoints:
+      - { api_id: get_loan_detail, transport: rest, method: get }
+    tables:
+      - { name: loans, mutation: write }
+    dtos:
+      - { name: LoanDetail, role: response, api_id: get_loan_detail }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: network_first
+      ttl_seconds: 120
+      key_template: "loan_detail:{loanId}"
+    error_paths:
+      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "network.offline", behavior: show_retry, message_key: error_offline }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      Mark Defaulted updates the Fineract m_loan status to defaulted through
+      LoanRepository.markDefaulted (idempotent externalId). On success the loans
+      row is re-cached and the header status badge + action gating refresh from
+      the re-emitted LoanDetailState. NOTE: LoanRepository.markDefaulted has no
+      first-class api[] operation in this feature's api.yaml — declared only
+      under api.yaml#dependencies.repositories.
+
+  - screen_id: loanDetailScreen
+    trigger: on_action
+    action: Retry
+    endpoints:
+      - { api_id: get_loan_detail, transport: rest, method: get }
+    tables:
+      - { name: loans, mutation: write }
+      - { name: loan_repayments, mutation: write }
+    dtos:
+      - { name: LoanDetail, role: response, api_id: get_loan_detail }
+      - { name: RepaymentScheduleRow, role: response, api_id: get_loan_detail }
+      - { name: RepaymentTransaction, role: response, api_id: get_loan_detail }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: network_first
+      ttl_seconds: 120
+      key_template: "loan_detail:{loanId}"
+    error_paths:
+      - { error_code: "network.offline", behavior: show_retry, message_key: error_offline }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      Retry from the error state re-invokes LoanRepository.getLoanDetail with a
+      network-first strategy; cmp-network-monitor distinguishes offline from
+      server failure so the ViewModel can restore Content or re-surface the
+      error state.

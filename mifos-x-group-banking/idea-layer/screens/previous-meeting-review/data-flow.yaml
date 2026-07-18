@@ -5,24 +5,80 @@ feature_id: previous-meeting-review
 entries:
   - screen_id: previousMeetingReviewScreen
     trigger: on_mount
+    description: >
+      Load a read-only recap of the previous closed meeting (FR-019) — summary metrics, savings
+      breakdown per member, loan activity, attendance records, and any unresolved items. Three
+      Fineract datatable calls resolve in parallel: get_meeting_record_detail (savings + loans +
+      corpus), get_meeting_attendance (per-member present/late/absent + fines), and
+      get_pending_loan_votes (unresolved loan-vote items). The three responses are folded into a
+      single PreviousMeetingDetail projection (attendanceRecords + unresolvedItems merged in) and
+      exposed via meetingDetail on PreviousMeetingReviewState. Cache-first via the SQLDelight
+      LocalMeetingDao (stale-while-revalidate, 300s TTL); cmp-network-monitor gates the background
+      refresh so the recap renders offline. Previous-meeting data is immutable after closing, so
+      this entry only reads. Produces the Content state.
     endpoints:
       - { api_id: get_meeting_record_detail, transport: rest, method: get }
       - { api_id: get_meeting_attendance, transport: rest, method: get }
       - { api_id: get_pending_loan_votes, transport: rest, method: get }
+    tables:
+      - name: meeting_records
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: PreviousMeetingDetailResponse, role: response, api_id: get_meeting_record_detail }
       - { name: AttendanceRecord, role: response, api_id: get_meeting_attendance }
       - { name: MemberSavingsSummary, role: response, api_id: get_meeting_record_detail }
       - { name: LoanActivityItem, role: response, api_id: get_meeting_record_detail }
       - { name: UnresolvedItem, role: response, api_id: get_pending_loan_votes }
+      - { name: PreviousMeetingDetail, role: projection, source: local }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: stale_while_revalidate
       ttl_seconds: 300
       key_template: "meeting_review:{meetingId}"
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
       - { error_code: "404", behavior: error_state, message_key: error_not_found }
       - { error_code: "5xx", behavior: fallback_cache, message_key: error_server }
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_network }
-    notes: "Read-only screen — no mutations. Previous meeting data is immutable after closing."
+    notes: >
+      Read-only screen — no mutations. Previous-meeting data is immutable after closing.
+      launchedFrom (conduct vs calendar) is a nav param, not a fetch input — it only toggles the
+      context banner variant (context_conduct_text vs context_calendar_text) and the
+      start_meeting_cta visibility. nextMeetingId / nextMeetingNumber are only populated when
+      launchedFrom==conduct (drives the CTA nav_params). get_pending_loan_votes 404 → empty
+      unresolvedItems (unresolved_alert_card hidden by visible_when).
+
+tables:
+  - name: meeting_records
+    description: >
+      SQLDelight LocalMeetingDao cache of PreviousMeetingDetailResponse (with nested
+      MemberSavingsSummary[], AttendanceRecord[], LoanActivityItem[]) plus resolved UnresolvedItem[],
+      keyed by meetingId. Written on mount; served stale offline. Rows are immutable once the
+      meeting is closed.
+    persistence_contract: sqldelight_entity
+    primary_key: "meetingId"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+cache:
+  strategy: stale_while_revalidate
+  ttl_seconds: 300
+  notes: >
+    Previous-meeting recap cached 5 min (stale_while_revalidate) keyed by meetingId.
+    No pull-to-refresh — closed-meeting data is immutable, so a stale cache read is always correct;
+    the on-mount background revalidate is the only refresh path. Served stale when offline via
+    cmp-network-monitor gate.
+
+sync_queue:
+  entries: []
+  notes: >
+    Previous-meeting review is strictly read-only. All writes for a meeting happen in the
+    meeting-conduct flow while the meeting is open; once closed, the record is immutable.
+
+last_generate:
+  timestamp: "2026-07-18T05:55:00Z"
+  generator: idea-data-flow
+  framework_version: "2.86.0"
+  ui_yaml_hash_at_generate: "sha256:regen-post-ui-2026-07-18"

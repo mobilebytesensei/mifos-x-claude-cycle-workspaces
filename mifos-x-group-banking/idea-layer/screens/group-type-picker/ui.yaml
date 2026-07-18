@@ -56,10 +56,18 @@ state_model:
 business_logic:
   kind: crud
   description: >
-    Fetches all 9 seeded GroupTypeConfig rows from the Companion API on mount.
-    On card tap, marks the type as selected, stores the GroupTypeConfig in
-    navigation state, and navigates to group-create. No local mutation — the
-    config rows are read-only seeds.
+    Fetches all 9 seeded GroupTypeConfig rows from the Companion API (COMP-DT-003,
+    entityId=0) on mount; serves from SQLDelight cache on offline/stale hit. Each
+    config encodes two orthogonal axes: savingsMechanism (ACCUMULATING = corpus grows
+    via interest + retained profit until share-out; ROTATING_PAYOUT = fixed pot rotates
+    one winner per period; NONE = no internal pool) and contributionMode (SHARE_BASED_VARIABLE
+    = members buy a variable number of shares each meeting; FIXED = fixed equal amount
+    per period; MINIMAL = token contribution only). Tapping a card resolves the typeSlug
+    to its full GroupTypeConfig in ViewModel state, packages it as a navigation argument,
+    and pushes the group-create route. group-create reads savingsMechanism, contributionMode,
+    lendingEnabled, hasSocialFund, hasBankLinkage, and welfareOnlyMode from the config to
+    conditionally show corpus, payout-order, welfare-only, and bank-linkage wizard sections.
+    No local mutation: GroupTypeConfig rows are read-only catalogue seeds.
 
 components:
   - id: top_bar
@@ -71,7 +79,12 @@ components:
       action: OnBack
       action_contract:
         effect: navigate
-        description: "Navigate back to group-list without selecting a type, discarding any in-progress wizard state."
+        description: >
+          Emit NavigateBack event; pop the group-type-picker route off the navigation
+          stack and return to group-list. No GroupTypeConfig is persisted — any partial
+          wizard state is discarded. Safe to call from the system back gesture as well.
+        reads_from: []
+        writes_to: []
         library_refs: []
 
   - id: loading_indicator
@@ -91,7 +104,15 @@ components:
       action: OnRetry
       action_contract:
         effect: call_api
-        description: "Retry fetching group type configs from COMP-DT-003 after a transient network or server error."
+        description: >
+          Re-dispatch COMP-DT-003 GET /companion/datatables/group_type_config/0 after a
+          transient network or server error. Transitions screen to Loading state, then
+          upserts returned GroupTypeConfig rows into SQLDelight group_type_config_cache
+          on success and emits Content state. On repeated failure, stays in Error state
+          with an updated error message.
+        reads_from: []
+        writes_to:
+          - group_type_config_cache
         library_refs: []
 
   - id: type_card_vsla
@@ -126,7 +147,17 @@ components:
       target: group-create
       action_contract:
         effect: navigate
-        description: "Select VSLA group type, store its GroupTypeConfig in navigation args, and navigate to the group-create wizard."
+        description: >
+          Select VSLA (Village Savings & Loan Association): savingsMechanism=ACCUMULATING,
+          contributionMode=SHARE_BASED_VARIABLE, lendingEnabled=true, hasSocialFund=true.
+          Members buy a variable number of shares each meeting; corpus accumulates interest
+          and loan profits; lent up to 3× a member's shares at ~10% per cycle; entire corpus
+          shared out pro-rata at year-end. Resolves typeSlug "VSLA" to its GroupTypeConfig
+          in ViewModel state and forwards it as nav_arg to group-create, which enables
+          share-based contribution fields, social-fund setup, and the annual share-out wizard.
+        reads_from:
+          - typeConfigs
+        writes_to: []
         library_refs: []
 
   - id: type_card_rosca
@@ -160,7 +191,17 @@ components:
       target: group-create
       action_contract:
         effect: navigate
-        description: "Select ROSCA group type, store its GroupTypeConfig in navigation args, and navigate to the group-create wizard."
+        description: >
+          Select ROSCA (Rotating Savings & Credit Association): savingsMechanism=ROTATING_PAYOUT,
+          contributionMode=FIXED, lendingEnabled=false. Every member contributes the same fixed
+          amount each period; the entire pot rotates to one member in an agreed or auctioned
+          order (known regionally as susu, tanda, hui, or committee). No internal lending pool —
+          loanMultiplier and interestRate are 0. Forwards GroupTypeConfig to group-create, which
+          enables payout-order management, hides the internal-lending and social-fund sections,
+          and enforces fixed-contribution entry fields.
+        reads_from:
+          - typeConfigs
+        writes_to: []
         library_refs: []
 
   - id: type_card_asca
@@ -195,7 +236,18 @@ components:
       target: group-create
       action_contract:
         effect: navigate
-        description: "Select ASCA group type, store its GroupTypeConfig in navigation args, and navigate to the group-create wizard."
+        description: >
+          Select ASCA (Accumulating Savings & Credit Association): savingsMechanism=ACCUMULATING,
+          contributionMode=FIXED, lendingEnabled=true, hasSocialFund=false. Members contribute a
+          fixed equal amount each meeting; corpus accumulates and is available for internal loans
+          at a set interest rate (~5%) with a 2× multiplier cap; requires explicit bookkeeping of
+          individual loan records and interest accrual. No share-out rotation — corpus persists
+          across cycles unless the group dissolves. Forwards GroupTypeConfig to group-create, which
+          shows fixed-contribution entry, internal-loan configuration, and hides payout-order and
+          social-fund sections.
+        reads_from:
+          - typeConfigs
+        writes_to: []
         library_refs: []
 
   - id: type_card_silc
@@ -230,7 +282,17 @@ components:
       target: group-create
       action_contract:
         effect: navigate
-        description: "Select SILC group type, store its GroupTypeConfig in navigation args, and navigate to the group-create wizard."
+        description: >
+          Select SILC (Savings & Internal Lending Community): savingsMechanism=ACCUMULATING,
+          contributionMode=SHARE_BASED_VARIABLE, lendingEnabled=true, hasSocialFund=true.
+          CRS-promoted VSLA variant — operationally identical to VSLA (share-based variable
+          contributions, 3× loan multiplier, 10% interest, social fund, annual share-out) but
+          tracked separately for donor reporting and CRS field-programme analytics. Forwards
+          GroupTypeConfig to group-create; wizard behaves identically to the VSLA flow with an
+          additional programme-affiliation field for CRS project codes.
+        reads_from:
+          - typeConfigs
+        writes_to: []
         library_refs: []
 
   - id: type_card_shg
@@ -265,7 +327,18 @@ components:
       target: group-create
       action_contract:
         effect: navigate
-        description: "Select SHG group type, store its GroupTypeConfig in navigation args, and navigate to the group-create wizard."
+        description: >
+          Select SHG (Self-Help Group): savingsMechanism=ACCUMULATING, contributionMode=FIXED,
+          lendingEnabled=true, hasBankLinkage=true. Fixed equal contributions accumulate into an
+          internal corpus; members borrow at ~12% per annum with a 2× multiplier cap. Once the
+          group's corpus and track-record meets bank norms, it qualifies for an external bank
+          linkage loan at a 1:1–4:1 leverage ratio, on-lent to members at a margin. Forwards
+          GroupTypeConfig to group-create, which shows the bank-linkage section (linking bank,
+          credit-grade score, leverage ratio) alongside standard fixed-contribution and
+          internal-loan fields.
+        reads_from:
+          - typeConfigs
+        writes_to: []
         library_refs: []
 
   - id: type_card_sacco
@@ -300,7 +373,18 @@ components:
       target: group-create
       action_contract:
         effect: navigate
-        description: "Select SACCO group type, store its GroupTypeConfig in navigation args, and navigate to the group-create wizard."
+        description: >
+          Select SACCO / Credit Union: savingsMechanism=ACCUMULATING, contributionMode=FIXED,
+          lendingEnabled=true, formallyRegistered=true. Members hold share capital in a formally
+          registered co-operative with elected officers and a supervisory board; regulated by a
+          national SACCO regulator or central bank. Loans up to 3× share capital at ~12% p.a.
+          Forwards GroupTypeConfig to group-create, which unlocks the formal-governance section
+          (registration number, regulator, elected-officers roster, share-capital ledger) and
+          enforces officer-election and board-approval workflow steps before the group can
+          accept member savings.
+        reads_from:
+          - typeConfigs
+        writes_to: []
         library_refs: []
 
   - id: type_card_cbo
@@ -335,7 +419,17 @@ components:
       target: group-create
       action_contract:
         effect: navigate
-        description: "Select CBO/Village-Bank group type, store its GroupTypeConfig in navigation args, and navigate to the group-create wizard."
+        description: >
+          Select CBO / Village Bank (FINCA model): savingsMechanism=ACCUMULATING,
+          contributionMode=FIXED, lendingEnabled=true, hasBankLinkage=true, loanMultiplier=1×,
+          interestRate=3%. Members contribute fixed savings; an external MFI provides a bulk
+          loan to the group, on-lent to members alongside the internal savings corpus. Short
+          4-month cycles. Forwards GroupTypeConfig to group-create, which shows the MFI on-lending
+          section (MFI partner, external loan amount, on-lending interest margin), internal savings
+          fields, and enforces a 4-month cycle-length default.
+        reads_from:
+          - typeConfigs
+        writes_to: []
         library_refs: []
 
   - id: type_card_burial
@@ -369,7 +463,18 @@ components:
       target: group-create
       action_contract:
         effect: navigate
-        description: "Select Burial/Welfare Society group type, store its GroupTypeConfig in navigation args, and navigate to the group-create wizard."
+        description: >
+          Select Burial / Welfare Society: savingsMechanism=ACCUMULATING, contributionMode=FIXED,
+          lendingEnabled=false, hasSocialFund=true, welfareOnlyMode=true. The welfare fund is the
+          primary purpose — members contribute fixed periodic amounts; payouts are triggered by
+          declared life events (death, hospitalisation, birth) rather than loans or rotations.
+          Can be nested inside another group (e.g. a VSLA's social fund is operated as a nested
+          Burial Society sub-group). Forwards GroupTypeConfig to group-create, which activates
+          welfare-only mode: hides internal-lending fields, shows benefit-trigger configuration
+          (event types, payout amounts), and optionally enables the nested-group selector.
+        reads_from:
+          - typeConfigs
+        writes_to: []
         library_refs: []
 
   - id: type_card_jlg
@@ -404,7 +509,18 @@ components:
       target: group-create
       action_contract:
         effect: navigate
-        description: "Select JLG group type, store its GroupTypeConfig in navigation args, and navigate to the group-create wizard."
+        description: >
+          Select JLG (Joint Liability Group): savingsMechanism=NONE, contributionMode=MINIMAL,
+          lendingEnabled=false, hasBankLinkage=true. 4–10 members collectively guarantee a single
+          external MFI loan; each member shares liability for the others' repayments. No internal
+          savings corpus, no rotating payout, no internal lending pool — loanMultiplier and
+          interestRate are 0. Forwards GroupTypeConfig to group-create, which shows only the
+          MFI-loan details section (MFI partner, group loan amount, repayment schedule) and the
+          joint-liability agreement workflow, suppressing all corpus, share-out, and social-fund
+          wizard steps.
+        reads_from:
+          - typeConfigs
+        writes_to: []
         library_refs: []
 
 states:

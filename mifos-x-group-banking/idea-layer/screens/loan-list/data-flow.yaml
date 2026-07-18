@@ -2,12 +2,30 @@ sibling: data-flow
 schema_version: "2.1.0"
 feature_id: loan-list
 
+# Regenerated 2026-07-18 to reflect ui.yaml v4.0 (business_logic.kind=crud,
+# state_model.actions = OnLoanClick, OnFilterChange, OnApplyLoan, OnRefresh,
+# Retry, OnLoadNextPage). Store5 + SQLDelight offline-first, paged reads
+# from Fineract /groups/{groupId}/loans.
+
 entries:
   - screen_id: loanListScreen
     trigger: on_mount
-    description: Load paginated group loans on screen entry
+    description: >
+      Load paginated group loans on screen entry. A Store5 stream sources
+      rows from the SQLDelight `loans` cache first (offline-first), then
+      background-refreshes the first page from Fineract via
+      GET /groups/{groupId}/loans (stale-while-revalidate, TTL 180s).
+      cmp-network-monitor gates the network refresh — when offline, the
+      screen renders cached rows only. Pagination uses offset/limit with
+      page_size=20. On success the Store5 SourceOfTruth upserts each
+      LoanSummary row into the SQLDelight `loans` table so subsequent
+      cold-starts render instantly.
     endpoints:
       - { api_id: get_group_loans, transport: rest, method: get }
+    tables:
+      - name: loans
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: LoanSummary, role: response, api_id: get_group_loans }
       - { name: LoanStatus, role: response, api_id: get_group_loans }
@@ -18,17 +36,34 @@ entries:
       ttl_seconds: 180
       key_template: "loan_list:group:{groupId}:offset:{offset}"
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup, message_key: error_auth }
       - { error_code: "403", behavior: show_error, message_key: error_insufficient_permissions }
       - { error_code: "404", behavior: show_empty, message_key: error_group_not_found }
       - { error_code: "500", behavior: show_error_with_retry, message_key: error_server }
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline_cached }
+    notes: >
+      Aligned with ui.yaml business_logic.kind=crud + external_library_refs
+      [SQLDelight, Store5] + library_refs [cmp-network-monitor]. Store5
+      SourceOfTruth is the loans SQLDelight table; the fetcher is the
+      Fineract /groups/{groupId}/loans endpoint. isLoading in the
+      LoanListState field-set is toggled to true while the stream emits
+      its first Loading tick and false once Content lands.
 
   - screen_id: loanListScreen
-    trigger: on_refresh
-    description: Pull-to-refresh — invalidate cache and reload loans
+    trigger: on_action
+    action: OnRefresh
+    description: >
+      Pull-to-refresh — bypass the Store5 cache (fresh=true) and re-call
+      get_group_loans against Fineract to reload page 0. On success the
+      loans SQLDelight cache is upserted and isRefreshing is toggled off.
+      Offline falls back to the cached rows and surfaces
+      error_offline_cached without clearing the existing Content state.
     endpoints:
       - { api_id: get_group_loans, transport: rest, method: get }
+    tables:
+      - name: loans
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: LoanSummary, role: response, api_id: get_group_loans }
     produces_state: Content
@@ -38,28 +73,60 @@ entries:
       ttl_seconds: 180
       key_template: "loan_list:group:{groupId}:offset:0"
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup, message_key: error_auth }
+      - { error_code: "500", behavior: show_error_with_retry, message_key: error_server }
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline_cached }
+    notes: >
+      Mirrors ui.yaml OnRefresh action (state_model.actions row). The
+      isRefreshing state field is toggled by the ViewModel before/after
+      the network call so the SwipeRefresh indicator reflects the live
+      request status.
 
   - screen_id: loanListScreen
-    trigger: on_interact
-    description: Status filter change — client-side filter, no network call
+    trigger: on_action
+    action: OnFilterChange
+    description: >
+      Client-side status filter (ALL | ACTIVE | OVERDUE | CLOSED). Pure
+      state transform on the in-memory Store5-backed loans list —
+      selectedFilter is set to the new value and filteredLoans is
+      recomputed by filtering loans by status. No Fineract call, no cache
+      write. Matches the four chip on_click contracts in ui.yaml
+      (chip_all / chip_active / chip_overdue / chip_closed) each carrying
+      action_contract.effect=transform_state.
     endpoints: []
+    tables: []
     dtos:
       - { name: LoanStatusFilter, role: request, api_id: get_group_loans }
     produces_state: Content
-    auth_required: true
+    auth_required: false
     cache:
       strategy: no_cache
       ttl_seconds: 0
-      key_template: "loan_list:filter:{statusFilter}"
+      key_template: ""
     error_paths: []
+    notes: >
+      Aligned with ui.yaml chip_all / chip_active / chip_overdue /
+      chip_closed on_click.action_contract (effect: transform_state,
+      external_library_refs: [Store5]). selectedFilter drives
+      filteredLoans; the server-side loanStatus query param is only used
+      when the screen is opened from a deep link that pins a filter.
 
   - screen_id: loanListScreen
-    trigger: on_interact
-    description: Pagination — load next page of loans
+    trigger: on_action
+    action: OnLoadNextPage
+    description: >
+      Scroll-to-end pagination — request the next 20-row page from
+      Fineract using offset = current-page-count * 20. New rows are
+      appended to the loans SQLDelight cache and streamed into the
+      in-memory list via the Store5 pagination stream. Halts appending
+      when the response pageItems array is empty (server signals no
+      further pages).
     endpoints:
       - { api_id: get_group_loans, transport: rest, method: get }
+    tables:
+      - name: loans
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: LoanSummary, role: response, api_id: get_group_loans }
     produces_state: Content
@@ -70,3 +137,116 @@ entries:
       key_template: "loan_list:group:{groupId}:offset:{offset}"
     error_paths:
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline_cached }
+      - { error_code: "500", behavior: show_error_with_retry, message_key: error_server }
+    notes: >
+      page_size=20 per api.yaml pagination block. offset is derived from
+      current loans list size / 20. Uses @Transaction on the loans DAO
+      replacePage so page-boundary writes are atomic (S5-PAGE-ATOMIC
+      per RULE-IMPLEMENT-STORE5-001).
+
+  - screen_id: loanListScreen
+    trigger: on_action
+    action: Retry
+    description: >
+      Error-state retry button. Re-triggers the Store5 stream with
+      fresh=true to re-call get_group_loans, clearing the current
+      LoanListError so the screen transitions back to Loading then
+      Content. Same code path as the on_mount entry but forced
+      network_first to bypass any short-TTL cache row that would
+      otherwise mask a still-broken upstream.
+    endpoints:
+      - { api_id: get_group_loans, transport: rest, method: get }
+    tables:
+      - name: loans
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: LoanSummary, role: response, api_id: get_group_loans }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: network_first
+      ttl_seconds: 180
+      key_template: "loan_list:group:{groupId}:offset:0"
+    error_paths:
+      - { error_code: "401", behavior: navigate, nav_target: login-signup, message_key: error_auth }
+      - { error_code: "500", behavior: show_error_with_retry, message_key: error_server }
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline_cached }
+    notes: >
+      Mirrors ui.yaml error_state.on_click.action_contract (effect:
+      call_api, external_library_refs: [Store5]).
+
+  - screen_id: loanListScreen
+    trigger: on_action
+    action: OnLoanClick
+    description: >
+      Tap a loan_card to open its detail. Emits
+      NavigateToLoanDetail(loanId) event which the Route consumes to
+      call NavController.navigate with the tapped loan's id as a route
+      argument. No cache write, no network call — a pure navigation
+      contract.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    navigation:
+      - { condition: "always", nav_target: loan-detail, params: [loanId] }
+    notes: >
+      Aligned with ui.yaml loan_card.on_click.action_contract (effect:
+      navigate, target: loan-detail).
+
+  - screen_id: loanListScreen
+    trigger: on_action
+    action: OnApplyLoan
+    description: >
+      Tap the FAB (visible only when canApplyLoan is true — chairperson
+      or treasurer role). Emits NavigateToLoanApply(groupId) event; the
+      Route consumes it and navigates to loan-apply with the current
+      groupId as a route argument. No cache write, no network call.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    navigation:
+      - { condition: "canApplyLoan", nav_target: loan-apply, params: [groupId] }
+    notes: >
+      Aligned with ui.yaml apply_loan_fab.on_click.action_contract
+      (effect: navigate, target: loan-apply). canApplyLoan is derived
+      from the current SessionManager role (chairperson / treasurer =
+      true, member = false).
+
+tables:
+  - name: loans
+    description: >
+      SQLDelight cache of Fineract Loan account rows returned by
+      GET /groups/{groupId}/loans. Keyed by loan id. Serves as the
+      Store5 SourceOfTruth so the list renders offline-first. Populated
+      by on_mount, OnRefresh, OnLoadNextPage, and Retry. Rows include
+      the LoanSummary projection needed by the UI (memberName,
+      memberPhotoUrl, principalAmount, outstandingBalance, overdueAmount,
+      status, nextRepaymentDate, isOverdue, fineractLoanId).
+    persistence_contract: sqldelight_entity
+    primary_key: "id"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+cache:
+  strategy: stale_while_revalidate
+  notes: >
+    Single source of truth: this data-flow file (SCH-9
+    cache-single-source). TTL 180s per on_mount and OnLoadNextPage
+    entries. OnRefresh + Retry force network_first. OnFilterChange /
+    OnLoanClick / OnApplyLoan are no_cache client-side transforms or
+    navigations.

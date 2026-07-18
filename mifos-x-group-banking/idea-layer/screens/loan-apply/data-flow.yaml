@@ -3,18 +3,22 @@ schema_version: "2.1.0"
 feature_id: loan-apply
 
 entries:
-  - screen_id: loanApplyScreen
+  - screen_id: loan-apply-screen
     trigger: on_mount
     endpoints:
       - { api_id: get_group_members, transport: rest, method: get }
       - { api_id: get_loan_products, transport: rest, method: get }
       - { api_id: get_group_corpus, transport: rest, method: get }
       - { api_id: get_group_config, transport: rest, method: get }
-    tables: []
+    tables:
+      - { name: group_members, mutation: read }
+      - { name: loan_products, mutation: read }
+      - { name: dt_group_config, mutation: read }
     dtos:
       - { name: GroupMember, role: response, api_id: get_group_members }
       - { name: LoanProduct, role: response, api_id: get_loan_products }
       - { name: GroupConfig, role: response, api_id: get_group_config }
+      - { name: GroupCorpus, role: response, api_id: get_group_corpus }
     produces_state: Content
     auth_required: true
     cache:
@@ -24,22 +28,50 @@ entries:
     error_paths:
       - { error_code: "401", behavior: navigate, nav_target: login }
       - { error_code: "404", behavior: show_error, message_key: error_group_not_found }
-      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_network }
       - { error_code: "500", behavior: show_retry, message_key: error_server }
     notes: >
-      Four calls fire in parallel on mount. GroupMember and LoanProduct lists populate
-      Step 1 selectors. GroupCorpus and GroupConfig are used for eligibility computation
-      (maxLoanAmount = member savings balance * loanMultiplier, capped by corpus.currentBalance).
+      Four calls fire in parallel on mount (Loading -> Content transition).
+      GroupMember and LoanProduct populate the member_selector and product_dropdown.
+      GroupCorpus populates corpusBalance for the 10% buffer check driving corpus_warning_banner.
+      GroupConfig supplies loanMultiplier used to compute
+      eligibleAmount = memberSavingsBalance x loanMultiplier for the eligibility_banner.
+      All four served from Store5 SQLDelight cache when offline via cmp-network-monitor.
 
-  - screen_id: loanApplyScreen
+  - screen_id: loan-apply-screen
     trigger: on_interact
+    interaction: on_member_selected
     endpoints:
-      - { api_id: get_loan_template, transport: rest, method: get }
       - { api_id: get_member_savings, transport: rest, method: get }
+      - { api_id: get_loan_template, transport: rest, method: get }
     tables: []
     dtos:
-      - { name: LoanProduct, role: response, api_id: get_loan_template }
-      - { name: GroupMember, role: response, api_id: get_member_savings }
+      - { name: MemberSavings, role: response, api_id: get_member_savings }
+      - { name: LoanTemplate, role: response, api_id: get_loan_template }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 3600
+      key_template: "loan_apply:member:{clientId}"
+    error_paths:
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_network }
+      - { error_code: "404", behavior: show_error, message_key: error_member_not_found }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      OnMemberSelected action fires MemberRepository.getMemberSavingsBalance through Store5 to
+      recompute eligibleAmount and refreshes the eligibility_banner (visible_when selectedMember != null).
+      get_loan_template is dispatched to pre-fill principal, numberOfRepayments and interestRatePerPeriod
+      once a product is selected. Both are served from cache when offline; cmp-network-monitor gates the call.
+
+  - screen_id: loan-apply-screen
+    trigger: on_interact
+    interaction: on_product_selected
+    endpoints:
+      - { api_id: get_loan_template, transport: rest, method: get }
+    tables: []
+    dtos:
+      - { name: LoanTemplate, role: response, api_id: get_loan_template }
     produces_state: Content
     auth_required: true
     cache:
@@ -47,20 +79,62 @@ entries:
       ttl_seconds: 3600
       key_template: "loan_template:{clientId}:{productId}"
     error_paths:
-      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_network }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
     notes: >
-      Triggered when member + product are both selected. get_loan_template pre-fills
-      defaults (principal, repayments, interest). get_member_savings computes eligibility
-      ceiling = savingsBalance * loanMultiplier.
+      OnProductSelected action calls LoanRepository.getLoanTemplate via Store5 to pre-fill
+      principal, repayments and interestRatePerPeriod on the product_dropdown selection.
+      cmp-network-monitor serves the cached template when offline.
 
-  - screen_id: loanApplyScreen
+  - screen_id: loan-apply-screen
     trigger: on_interact
+    interaction: on_amount_changed
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      OnAmountChanged is a pure ViewModel transition (effect: transform_state). Validates
+      requestedAmount <= eligibleAmount (savings x loanMultiplier) and runs the corpus
+      10% buffer check, updating amountError and corpusWarning in LoanApplyState. No I/O.
+
+  - screen_id: loan-apply-screen
+    trigger: on_interact
+    interaction: on_duration_or_purpose_changed
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      OnDurationChanged and OnPurposeChanged are pure ViewModel transitions
+      (effect: transform_state). durationWeeks feeds loanTermFrequency and numberOfRepayments;
+      purpose maps to loanPurposeId on the eventual post_loan body. No I/O.
+
+  - screen_id: loan-apply-screen
+    trigger: on_interact
+    interaction: on_submit
     endpoints:
       - { api_id: post_loan, transport: rest, method: post }
     tables: []
     dtos:
       - { name: LoanApplicationRequest, role: request, api_id: post_loan }
-    produces_state: Content
+      - { name: LoanApplicationResponse, role: response, api_id: post_loan }
+    produces_state: Success
+    emits_events:
+      - { name: NavigateToMeetingConduct, params: { loanId: Long } }
+      - { name: ShowSnackbar, params: { message: String } }
     auth_required: true
     cache:
       strategy: no_cache
@@ -68,9 +142,46 @@ entries:
       key_template: ""
     error_paths:
       - { error_code: "400", behavior: show_field_errors, message_key: error_validation }
+      - { error_code: "401", behavior: navigate, nav_target: login, message_key: error_auth }
       - { error_code: "403", behavior: show_error, message_key: error_forbidden }
-      - { error_code: "network.offline", behavior: show_error, message_key: error_no_offline_submit }
+      - { error_code: "422", behavior: show_error, message_key: error_corpus }
+      - { error_code: "network.offline", behavior: show_error, message_key: error_network }
       - { error_code: "500", behavior: show_retry, message_key: error_server }
+    side_effects:
+      - { kind: analytics, event: loan_apply_submitted }
+      - { kind: invalidate_cache, target: loan_list }
+      - { kind: emit_global_event, target: NavigateToMeetingConduct }
     notes: >
-      Submit fires post_loan. Loan submissions require network — no offline queue (risk management).
-      On success, navigate back to group-dashboard with a success snackbar.
+      OnSubmit action (effect: call_api) builds a LoanApplicationRequest and POSTs it via
+      LoanRepository.submitLoanApplication to Fineract post_loan (creates m_loan pending approval).
+      cmp-network-monitor blocks the submit while offline (maps to LoanApplyError.Network,
+      message_key error_network) since risk policy forbids queued offline submits.
+      On success -> Success state -> ShowSnackbar + NavigateToMeetingConduct(loanId).
+      LoanApplyError variants: Network (retry), Server (retry), AmountExceedsEligibility (no retry),
+      CorpusInsufficient (no retry), Auth (redirect to login).
+
+  - screen_id: loan-apply-screen
+    trigger: on_interact
+    interaction: on_back
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    emits_events:
+      - { name: NavigateBack }
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      OnBack (effect: navigate) pops the loan-apply form off the NavController back stack
+      and returns to loan-list. No form data is persisted on back-navigation.
+
+last_generate:
+  timestamp: "2026-07-18T05:50:00Z"
+  generator: idea-generate-data-flow
+  framework_version: "2.86.0"
+  ui_yaml_at: "2026-07-18T05:44:38Z"
+  entries_count: 7

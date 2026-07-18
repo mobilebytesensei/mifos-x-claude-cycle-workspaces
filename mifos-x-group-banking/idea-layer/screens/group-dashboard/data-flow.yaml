@@ -10,7 +10,7 @@ entries:
       get_group returns Group + embedded GroupTypeConfig (replaces old get_center + get_group_config).
       get_viewer_role resolves authenticated user's role for FAB/button gating.
       get_group_corpus returns balance/rotation state (pool_model-aware).
-      get_group_accounts returns savings + loan summary + shareOutProjection.
+      get_group_accounts returns savings + loan summary + shareOutProjection + recentActivity[].
     endpoints:
       - { api_id: get_group, transport: rest, method: get }
       - { api_id: get_viewer_role, transport: rest, method: get }
@@ -32,12 +32,17 @@ entries:
       - name: group_accounts_cache
         persistence_contract: sqldelight_entity
         mutation: upsert
+      - name: group_activity_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: Group, role: response, api_id: get_group }
       - { name: GroupTypeConfig, role: response, api_id: get_group }
       - { name: ViewerRole, role: response, api_id: get_viewer_role }
       - { name: GroupCorpus, role: response, api_id: get_group_corpus }
       - { name: GroupAccounts, role: response, api_id: get_group_accounts }
+      - { name: ActivityItem, role: response, api_id: get_group_accounts }
+      - { name: GroupConfig, role: client_mapped, api_id: get_group, notes: "Client-side DTO mapped from GroupTypeConfig fields (shareValue→shareValue, shareMin/Max→shareMin/Max, contributionAmount→contributionAmount, loanMultiplier, interestRate, etc.); no separate API call." }
     produces_state: Content
     auth_required: true
     cache:
@@ -53,17 +58,22 @@ entries:
     notes: >
       All 4 calls fire in parallel (concurrent coroutines) on mount.
       get_group embeds GroupTypeConfig — pool_model drives metric card selection:
-        ACCUMULATING → shareOutProjection card + balance metrics
-        ROTATING_PAYOUT → rotationPosition + nextRecipientName card
+        ACCUMULATING → corpus_card (shareout projection + balance/contributions/loans stats)
+        ROTATING_PAYOUT → rotation_card (viewer position + next-recipient chip + pool balance)
       get_group_corpus uses network_first (60s TTL) — balances change frequently.
       group_type_config_cache keyed by groupId, sourced from dt_group_type_config.
+      get_group_accounts returns recentActivity[] as ActivityItem list for activity_feed_section.
+      GroupConfig is a client-side mapping of GroupTypeConfig fields used for contribution-model display
+      in savings_summary_card (config.shareValue, config.shareMin, config.shareMax, config.contributionAmount).
+      Viewer role also drives quick-actions grid: ORGANIZER/CHAIRPERSON/TREASURER see management_actions_grid,
+      MEMBER sees member_actions_grid.
       Replaces old: get_center + get_center_accounts + get_group_config (3 stale calls).
 
   - screen_id: groupDashboardScreen
     trigger: on_refresh
     description: >
-      Pull-to-refresh re-fetches all 4 companion endpoints with bypass_and_refresh.
-      Clears and replaces all cached data.
+      Pull-to-refresh (OnRefresh action) re-fetches all 4 companion endpoints with bypass_and_refresh.
+      Clears and replaces all cached data for group, typeConfig, viewerRole, corpus, and accounts.
     endpoints:
       - { api_id: get_group, transport: rest, method: get }
       - { api_id: get_viewer_role, transport: rest, method: get }
@@ -73,16 +83,28 @@ entries:
       - name: group_cache
         persistence_contract: sqldelight_entity
         mutation: upsert
+      - name: group_type_config_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: viewer_role_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
       - name: group_corpus_cache
         persistence_contract: sqldelight_entity
         mutation: upsert
       - name: group_accounts_cache
         persistence_contract: sqldelight_entity
         mutation: upsert
+      - name: group_activity_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: Group, role: response, api_id: get_group }
+      - { name: GroupTypeConfig, role: response, api_id: get_group }
+      - { name: ViewerRole, role: response, api_id: get_viewer_role }
       - { name: GroupCorpus, role: response, api_id: get_group_corpus }
       - { name: GroupAccounts, role: response, api_id: get_group_accounts }
+      - { name: ActivityItem, role: response, api_id: get_group_accounts }
     produces_state: Content
     auth_required: true
     cache:
@@ -91,13 +113,71 @@ entries:
       key_template: "group_dashboard:{groupId}"
     error_paths:
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
-    notes: Pull-to-refresh invalidates all caches and re-fetches 4 endpoints in parallel.
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      Pull-to-refresh invalidates all caches and re-fetches all 4 endpoints in parallel.
+      viewerRole and typeConfig are included because a role change or group_type_config update
+      may have occurred since last load (e.g. role promotion, group reclassification).
+
+  - screen_id: groupDashboardScreen
+    trigger: on_error_retry
+    description: >
+      Retry action (Retry button in error_state) re-triggers the same parallel 4-call fetch as on_mount,
+      with cache invalidation. Dispatched by the Retry action in GroupDashboardViewModel.
+    endpoints:
+      - { api_id: get_group, transport: rest, method: get }
+      - { api_id: get_viewer_role, transport: rest, method: get }
+      - { api_id: get_group_corpus, transport: rest, method: get }
+      - { api_id: get_group_accounts, transport: rest, method: get }
+    tables:
+      - name: group_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: group_type_config_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: viewer_role_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: group_corpus_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: group_accounts_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: group_activity_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: Group, role: response, api_id: get_group }
+      - { name: GroupTypeConfig, role: response, api_id: get_group }
+      - { name: ViewerRole, role: response, api_id: get_viewer_role }
+      - { name: GroupCorpus, role: response, api_id: get_group_corpus }
+      - { name: GroupAccounts, role: response, api_id: get_group_accounts }
+      - { name: ActivityItem, role: response, api_id: get_group_accounts }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: bypass_and_refresh
+      ttl_seconds: 300
+      key_template: "group_dashboard:{groupId}"
+    error_paths:
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "404", behavior: show_error, message_key: error_group_not_found }
+      - { error_code: "network.offline", behavior: show_error, message_key: error_offline }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      Retry clears the Error screen state and re-enters the Loading state while re-fetching.
+      Dispatched from error_state CTA (Retry button, effect: call_api per action_contract with
+      library_refs: [cmp-network-monitor] for connectivity pre-check).
 
 tables:
   - name: group_cache
     description: >
-      SQLDelight cache for Group metadata (id, name, cycleNumber, status, memberCount).
-      Written on each successful get_group response. Keyed by groupId.
+      SQLDelight cache for Group metadata (id, name, cycleNumber, cycleLengthMonths, meetingFrequency,
+      memberCount, overdueLoansCount, status). Written on each successful get_group response.
+      Keyed by groupId.
     persistence_contract: sqldelight_entity
     primary_key: "groupId"
     mutations: [upsert, read]
@@ -106,7 +186,9 @@ tables:
   - name: group_type_config_cache
     description: >
       Per-group cache of the GroupTypeConfig embedded in the get_group response.
-      pool_model (ACCUMULATING | ROTATING_PAYOUT | NONE) drives metric card selection.
+      pool_model (ACCUMULATING | ROTATING_PAYOUT | NONE) drives metric card selection
+      (corpus_card vs rotation_card) and contribution_model (SHARE_BASED_VARIABLE | FIXED_AMOUNT |
+      FIXED_NEGOTIATED) drives savings_summary_card contribution-text variant.
       Corresponds to dt_group_type_config companion datatable.
     persistence_contract: sqldelight_entity
     primary_key: "groupId"
@@ -117,8 +199,9 @@ tables:
   - name: viewer_role_cache
     description: >
       Authenticated user's role in this group (ORGANIZER | MEMBER | TREASURER | CHAIRPERSON | SECRETARY).
-      Controls FAB visibility, Execute Share-Out button gating, and meeting record access.
-      Invalidated on logout or group membership change.
+      Controls quick_actions_section grid visibility (management_actions_grid vs member_actions_grid),
+      Share-Out button gating (ORGANIZER + TREASURER only, requires isCycleEnd), and Start-Meeting
+      button gating (ORGANIZER + CHAIRPERSON only). Invalidated on logout or group membership change.
     persistence_contract: sqldelight_entity
     primary_key: "groupId:userId"
     mutations: [upsert, read]
@@ -126,8 +209,10 @@ tables:
 
   - name: group_corpus_cache
     description: >
-      Group corpus financial state — currentBalance, contributions, rotation position.
-      Short TTL (60s) reflects financial freshness requirement. Served offline from cache.
+      Group corpus financial state — currentBalance, openingBalance, totalContributionsThisCycle,
+      totalLoansOutstanding, plus ROTATING_PAYOUT fields (rotationPosition, nextRecipientName,
+      nextRecipientPosition). Short TTL (60s) reflects financial freshness requirement.
+      Served offline from cache.
     persistence_contract: sqldelight_entity
     primary_key: "groupId"
     mutations: [upsert, read]
@@ -135,10 +220,21 @@ tables:
 
   - name: group_accounts_cache
     description: >
-      Savings + loan account summary including shareOutProjection (ACCUMULATING) or
-      rotation-relevant fields (ROTATING_PAYOUT). TTL 180s (accounts change less often).
+      Savings + loan account summary (savingsBalance, loansOutstanding, activeLoanCount) including
+      shareOutProjection (ACCUMULATING) or null (ROTATING_PAYOUT). Also carries recentActivity[] list
+      (last 10 ActivityItems from get_group_accounts response). TTL 180s.
     persistence_contract: sqldelight_entity
     primary_key: "groupId"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+  - name: group_activity_cache
+    description: >
+      Recent activity feed for the group (MEETING, DEPOSIT, LOAN, PENALTY, SHARE_OUT, NEW_MEMBER events).
+      Denormalised from get_group_accounts response recentActivity[] array.
+      Max 10 items; keyed by groupId + activityId. Shown in activity_feed_section of the dashboard.
+    persistence_contract: sqldelight_entity
+    primary_key: "groupId:activityId"
     mutations: [upsert, read]
     offline_strategy: serve_stale
 
@@ -154,4 +250,10 @@ sync_queue:
   entries: []
   notes: >
     Group dashboard is read-only. No write operations, no sync-queue entries.
-    Write actions (record meeting, add member) dispatch to dedicated child screens.
+    Write actions (record meeting, add member, disburse loan, share-out) dispatch to
+    dedicated child screens (meeting-calendar, member-list, loan-list, share-out-preview).
+
+last_generate:
+  timestamp: "2026-07-18T12:00:00Z"
+  generator: idea-data-flow
+  framework_version: "2.86.0"

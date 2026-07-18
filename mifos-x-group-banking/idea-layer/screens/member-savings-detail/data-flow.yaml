@@ -68,12 +68,14 @@ entries:
     error_paths:
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
       - { error_code: "500", behavior: show_error, message_key: error_server }
-    notes: Resets pagination offset to 0; replaces all cached transaction rows for member.
+    notes: >
+      Fired by OnRefresh action from state_model.actions. Resets pagination offset to 0;
+      replaces all cached transaction rows for member.
 
   - screen_id: memberSavingsDetailScreen
     trigger: on_interact
-    action: OnScrollToEnd
-    description: User scrolls to end of transaction list — load next page.
+    action: OnLoadMore
+    description: User scrolls to end of transaction list — load next page (offset += 20).
     endpoints:
       - { api_id: get_member_savings_detail, transport: rest, method: get }
     tables:
@@ -91,12 +93,13 @@ entries:
     error_paths:
       - { error_code: "network.offline", behavior: show_error, message_key: error_offline }
     notes: >
+      Fired by OnLoadMore action (state_model.actions.members).
       Increments offset by page_size=20. Appends new transactions to savings_transactions cache.
       hasNextPage flag from response controls infinite scroll state.
 
   - screen_id: memberSavingsDetailScreen
     trigger: on_interact
-    action: OnFilterChipTap
+    action: OnFilterSelected
     description: User taps filter chip (ALL / DEPOSITS / WITHDRAWALS) — client-side filter only.
     endpoints: []
     tables: []
@@ -109,8 +112,59 @@ entries:
       key_template: ""
     error_paths: []
     notes: >
+      Fired by OnFilterSelected action (state_model.actions.members) with TransactionFilter param.
       Client-side filter on savings_transactions cache. TransactionFilter: ALL | DEPOSITS | WITHDRAWALS.
       No API call — all transactions for current page are already in cache.
+
+  - screen_id: memberSavingsDetailScreen
+    trigger: on_interact
+    action: OnTransactionSelected
+    description: User taps a transaction row — expands it in-place to reveal full receipt (id, date, meeting ref, running balance, reversal).
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      Fired by OnTransactionSelected action (state_model.actions.members) with transactionId param.
+      Client-side expand/collapse toggle on savings_transactions cache row. No network call —
+      transaction row is already present in the cached first page (or a subsequent page pulled
+      by OnLoadMore).
+
+  - screen_id: memberSavingsDetailScreen
+    trigger: on_interact
+    action: Retry
+    description: User taps Retry on error state — invalidates cache and re-fetches member savings from companion API after connectivity check.
+    endpoints:
+      - { api_id: get_member_savings_detail, transport: rest, method: get }
+    tables:
+      - name: member_savings_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: savings_transactions
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: MemberSavingsDetailResponse, role: response, api_id: get_member_savings_detail }
+      - { name: SavingsTransaction, role: response, api_id: get_member_savings_detail }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: bypass_and_refresh
+      ttl_seconds: 120
+      key_template: "member_savings:{groupId}:{memberId}:page:0"
+    error_paths:
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      Fired by Retry action (state_model.actions.members) from error_state on_click.
+      Verifies connectivity via cmp-network-monitor first; invalidates SQLDelight savings_transactions
+      cache and resets pagination offset to 0 before issuing GET.
 
 tables:
   - name: member_savings_cache

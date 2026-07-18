@@ -1,6 +1,7 @@
 sibling: tests
 schema_version: "4.0"
 feature_id: share-out-execute
+generated_at: "2026-07-18T00:00:00Z"
 
 testing:
   coverage_targets:
@@ -10,145 +11,73 @@ testing:
 
   scenarios:
     - id: TC-SOE-001
-      scenario: "On mount — nav params populated, ACCUMULATING content state shown with member payout list"
+      scenario: "On mount, share-out plan loads from ShareOutRepository with groupId"
       type: ViewModel
       priority: P0
-      given: "groupId='GRP-001', cycleNumber=1, totalPool=24000, poolModel=ACCUMULATING, 5 memberPayouts passed as nav args"
+      given: "groupId=1; network online"
       when: "ShareOutExecuteScreen enters composition"
-      then: "5 member rows visible, summary card shows 'KES 24,000', execute button disabled (not confirmed)"
+      then: "ShareOutRepository.getShareOutPlan(1) called; per-member distribution list populated; ShareOutExecuteScreenState=Content"
 
     - id: TC-SOE-002
-      scenario: "Execute button remains disabled until confirmation text matches exactly"
-      type: ViewModel
+      scenario: "ACCUMULATING pool uses COMP-DIST-001 and shows prorata per-member amounts"
+      type: Screen
       priority: P0
-      given: "Content state, isConfirmed=false"
-      when: "OnConfirmationTextChanged('SHARE')"
-      then: "isConfirmed=false, execute_button disabled, error_text 'Must type exactly SHARE OUT'"
+      given: "Content state; poolModel=ACCUMULATING; members=[{name:'Ali', payout:8000}, {name:'Zara', payout:6500}]"
+      when: "DistributionList renders"
+      then: "COMP-DIST-001 strategy label shown; per-member rows with prorata KES amounts visible"
 
     - id: TC-SOE-003
-      scenario: "Typing 'SHARE OUT' exactly enables execute button"
-      type: ViewModel
+      scenario: "ROTATING_PAYOUT pool uses COMP-DIST-002 and shows current beneficiary receiving full pool"
+      type: Screen
       priority: P0
-      given: "confirmationText=''"
-      when: "OnConfirmationTextChanged('SHARE OUT')"
-      then: "isConfirmed=true, execute_button enabled"
+      given: "Content state; poolModel=ROTATING_PAYOUT; currentBeneficiary={name:'Peter', payout:50000}"
+      when: "DistributionList renders"
+      then: "COMP-DIST-002 strategy label shown; only 'Peter' shows KES 50,000 payout; others show KES 0"
 
     - id: TC-SOE-004
-      scenario: "ACCUMULATING — OnExecuteAccumulatingTap dispatches post_shareout_execute as single companion API call"
-      type: ViewModel
+      scenario: "First confirm step requires explicit OnConfirmReview before OnExecute is available"
+      type: Screen
       priority: P0
-      given: "isConfirmed=true, poolModel=ACCUMULATING, 5 memberPayouts from nav args"
-      when: "OnExecuteAccumulatingTap action"
-      then: "isExecuting=true, ShareOutRepository.executeShareOut called with ShareOutExecuteRequest{groupId, cycleNumber, memberPayouts[]}; single companion API POST /companion/groups/{groupId}/shareout/execute"
+      given: "Content state; reviewConfirmed=false"
+      when: "ShareOutExecuteScreen renders"
+      then: "Execute button disabled until OnConfirmReview fires; double-confirm pattern enforced"
 
     - id: TC-SOE-005
-      scenario: "ACCUMULATING success — succeededCount and failedCount from response, completion banner shown"
+      scenario: "OnConfirmReview enables Execute button and shows final confirmation dialog"
       type: ViewModel
       priority: P0
-      given: "post_shareout_execute returns ShareOutExecuteResponse{succeededCount:5, failedCount:0, failedMemberIds:[]}"
-      when: "Repository emits success"
-      then: "isCompleted=true, failedPayouts.isEmpty(), completion_banner visible, done_button visible"
+      given: "reviewConfirmed=false"
+      when: "OnConfirmReview fires"
+      then: "reviewConfirmed=true; ShowFinalConfirmDialog event emitted"
 
     - id: TC-SOE-006
-      scenario: "ACCUMULATING partial failure — partial_failure_banner and retry button shown"
+      scenario: "OnExecuteShareOut calls COMP-DIST-001 POST and transitions to per-member execution status"
       type: ViewModel
       priority: P0
-      given: "post_shareout_execute returns ShareOutExecuteResponse{succeededCount:4, failedCount:1, failedMemberIds:['MBR-105']}"
-      when: "Repository emits partial success"
-      then: "succeededCount=4, failedPayouts=['MBR-105'], partial_failure_banner visible, retry_failed_button visible"
+      given: "poolModel=ACCUMULATING; reviewConfirmed=true; network online"
+      when: "OnExecuteShareOut fires"
+      then: "isExecuting=true; POST /companion/groups/1/share-out/execute called; on success per-member executionStatus updated; NavigateToShareOutComplete emitted"
 
     - id: TC-SOE-007
-      scenario: "ROTATING_PAYOUT — OnExecuteRotationTap dispatches post_rotation_payout_execute as single companion API call"
-      type: ViewModel
-      priority: P0
-      given: "isConfirmed=true, poolModel=ROTATING_PAYOUT, recipientMemberId='MBR-103', amount=30000, groupId='GRP-001', cycleNumber=3"
-      when: "OnExecuteRotationTap action"
-      then: "isExecuting=true, ShareOutRepository.executeRotationPayout called with RotationPayoutExecuteRequest{groupId, cycleNumber, recipientMemberId, amount}; single companion API POST /companion/groups/{groupId}/shareout/rotation-execute"
+      scenario: "Per-member execution status rows update in real time during execution"
+      type: Screen
+      priority: P1
+      given: "isExecuting=true; members=[{id:1, status:PENDING}, {id:2, status:COMPLETED}]"
+      when: "ExecutionStatusList renders"
+      then: "member 1 shows PENDING spinner; member 2 shows COMPLETED checkmark"
 
     - id: TC-SOE-008
-      scenario: "ROTATING_PAYOUT success — RotationPayoutExecuteResponse shows new rotation position"
+      scenario: "OnSubmit when offline queues entire share-out to sync_queue"
       type: ViewModel
-      priority: P0
-      given: "post_rotation_payout_execute returns RotationPayoutExecuteResponse{newRotationPosition:4, nextRecipientId:'MBR-201'}"
-      when: "Repository emits success"
-      then: "isCompleted=true, rotation_advance_card shows newRotationPosition=4, nextRecipient resolved"
+      priority: P1
+      given: "cmp-network-monitor offline; reviewConfirmed=true"
+      when: "OnExecuteShareOut fires"
+      then: "sync_queue share-out entry created; ShareOutExecuteScreenState=OfflineQueued; banner shown"
 
     - id: TC-SOE-009
-      scenario: "Offline — share-out queued with HIGH priority, queued_offline_banner shown"
+      scenario: "Server error during execution shows partial-failure state with retry"
       type: ViewModel
       priority: P1
-      given: "isOnline=false, isConfirmed=true, poolModel=ACCUMULATING"
-      when: "OnExecuteAccumulatingTap action"
-      then: "queuedOffline=true, SyncQueueRepository.enqueue called with entityType=SHARE_OUT_EXECUTE, priority=HIGH; queued_offline_banner visible"
-
-    - id: TC-SOE-010
-      scenario: "Offline ROTATING_PAYOUT — rotation payout queued with HIGH priority"
-      type: ViewModel
-      priority: P1
-      given: "isOnline=false, isConfirmed=true, poolModel=ROTATING_PAYOUT"
-      when: "OnExecuteRotationTap action"
-      then: "SyncQueueRepository.enqueue called with entityType=ROTATION_PAYOUT_EXECUTE, priority=HIGH; idempotency_key includes groupId:cycleNumber:recipientId"
-
-    - id: TC-SOE-011
-      scenario: "401 during post_shareout_execute — navigate to login"
-      type: ViewModel
-      priority: P0
-      given: "Executing state, poolModel=ACCUMULATING"
-      when: "post_shareout_execute returns 401"
-      then: "isExecuting=false, NavigateToGroupDashboard NOT emitted, NavigateBack emitted with login redirect"
-
-    - id: TC-SOE-012
-      scenario: "401 during post_rotation_payout_execute — navigate to login"
-      type: ViewModel
-      priority: P1
-      given: "Executing state, poolModel=ROTATING_PAYOUT"
-      when: "post_rotation_payout_execute returns 401"
-      then: "isExecuting=false, NavigateBack emitted with login redirect"
-
-    - id: TC-SOE-013
-      scenario: "Biometric auth — biometric prompt shown, on success isConfirmed=true"
-      type: ViewModel
-      priority: P1
-      given: "Content state, isConfirmed=false"
-      when: "OnBiometricSelected action"
-      then: "ShowBiometricPrompt event emitted; on biometric success isConfirmed=true"
-
-    - id: TC-SOE-014
-      scenario: "Done button navigates to group-dashboard with groupId"
-      type: Screen
-      priority: P0
-      given: "Success state"
-      when: "Done button tapped"
-      then: "OnDone action emitted, nav target is group-dashboard with groupId"
-
-    - id: TC-SOE-015
-      scenario: "MemberExecutionStatus badge shows correct icon per state"
-      type: Screen
-      priority: P1
-      given: "Executing state with mixed member statuses"
-      when: "Member row rendered for each status"
-      then: "PENDING=circle icon, IN_PROGRESS=animated spinner, DONE=checkmark_circle green, FAILED=error_circle red"
-
-    - id: TC-SOE-016
-      scenario: "ROTATING_PAYOUT mount — nav params show single recipient card, not member list"
-      type: Screen
-      priority: P0
-      given: "poolModel=ROTATING_PAYOUT, recipientMemberId='MBR-103', nextRecipientName='Grace Wairimu', amount=30000"
-      when: "ShareOutExecuteScreen enters composition"
-      then: "recipient card shows 'Grace Wairimu' and 'KES 30,000'; member payout list NOT rendered"
-
-    - id: TC-SOE-017
-      scenario: "ShareOutRepository maps ShareOutExecuteRequest to POST /companion/groups/{id}/shareout/execute correctly"
-      type: Repository
-      priority: P0
-      given: "groupId, cycleNumber, memberPayouts[] with string memberId values"
-      when: "ShareOutRepository.executeShareOut called"
-      then: "HTTP POST body contains groupId, cycleNumber, memberPayouts[]; response deserialized to ShareOutExecuteResponse"
-
-    - id: TC-SOE-018
-      scenario: "shareout_execution_log is written after successful execution for idempotency"
-      type: Repository
-      priority: P1
-      given: "post_shareout_execute succeeds"
-      when: "Repository processes success"
-      then: "shareout_execution_log upserted with primary_key groupId:cycleNumber, timestamp written"
+      given: "server returns 500 mid-execution"
+      when: "OnExecuteShareOut fires"
+      then: "isExecuting=false; failedMembers list populated; retry CTA shown"

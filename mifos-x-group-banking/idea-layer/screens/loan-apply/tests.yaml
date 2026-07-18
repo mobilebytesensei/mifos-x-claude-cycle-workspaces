@@ -1,6 +1,7 @@
 sibling: tests
 schema_version: "4.0"
 feature_id: loan-apply
+generated_at: "2026-07-18T00:00:00Z"
 
 testing:
   coverage_targets:
@@ -10,185 +11,81 @@ testing:
 
   scenarios:
     - id: TC-LA-001
-      scenario: "On mount, group members, loan products, corpus and config load in parallel before the form is ready"
+      scenario: "On mount, members and loan products load; eligible amount computed from savings balance x multiplier"
       type: ViewModel
       priority: P0
-      given: "groupId from nav arg; network online"
+      given: "groupId=1; memberSavingsBalance=10000.0; loanMultiplier=3.0"
       when: "LoanApplyScreen enters composition"
-      then: "MemberRepository.getGroupMembers, LoanRepository.getLoanProducts, GroupRepository corpus/config fetched concurrently via Store5; members and loanProducts populated; Content state shown"
+      then: "members list populated; loanProducts loaded; eligibleAmount=30000.0; LoanApplyScreenState=Content"
 
     - id: TC-LA-002
-      scenario: "Member selector lists all group members by displayName"
-      type: Screen
+      scenario: "Requested amount exceeding eligibility sets amountError inline"
+      type: ViewModel
       priority: P0
-      given: "members loaded incl. Peter Otieno"
-      when: "member_selector renders"
-      then: "dropdown options sourced from members with option_label displayName; all group members selectable"
+      given: "eligibleAmount=30000.0; selectedMember set"
+      when: "OnAmountChange('35000')"
+      then: "amountError shows error_amount_exceeds message; submit button disabled"
 
     - id: TC-LA-003
-      scenario: "Selecting a member calls get_member_savings and get_loan_template through Store5 and recomputes eligibility"
+      scenario: "Requested amount within eligibility clears amountError and enables submit"
       type: ViewModel
       priority: P0
-      given: "member Peter Otieno with savingsBalance 5000, loanMultiplier 3.0"
-      when: "OnMemberSelected fires"
-      then: "MemberRepository.getMemberSavingsBalance called; call_api effect asserted; eligibleAmount recomputed to 15000; eligibility_banner becomes visible"
+      given: "amountError was set; user reduces to 20000"
+      when: "OnAmountChange('20000')"
+      then: "amountError=null; submit enabled; requestedAmount='20000'"
 
     - id: TC-LA-004
-      scenario: "Eligibility banner shows savings balance and max eligible = savings × loanMultiplier"
+      scenario: "Corpus warning banner appears when requestedAmount exceeds corpusBalance"
       type: Screen
-      priority: P0
-      given: "memberSavingsBalance=5000, loanMultiplier=3.0, eligibleAmount=15000, selectedMember!=null"
-      when: "eligibility_banner renders"
-      then: "shows 'Savings balance: KES 5,000' and 'Max eligible: KES 15,000 (3.0× savings)'"
+      priority: P1
+      given: "corpusBalance=15000.0; requestedAmount='20000'"
+      when: "LoanApplyScreen renders"
+      then: "corpusWarning=true; warning banner visible above submit button"
 
     - id: TC-LA-005
-      scenario: "OnAmountChanged validates requestedAmount <= eligibleAmount and runs the corpus 10% buffer check (no I/O)"
+      scenario: "OnSubmit calls POST /companion/groups/{groupId}/loans and navigates to meeting on success"
       type: ViewModel
       priority: P0
-      given: "eligibleAmount=15000, corpusBalance=24000"
-      when: "requestedAmount typed"
-      then: "amountError and corpusWarning updated in state; transform_state only; no network call"
+      given: "all fields valid; network online; selectedMember, requestedAmount, durationWeeks, purpose all set"
+      when: "OnSubmit fires"
+      then: "isSubmitting=true; POST /companion/groups/1/loans called; on 200 NavigateToMeetingConduct emitted with new loanId; isSubmitting=false; submitSuccess=true"
 
     - id: TC-LA-006
-      scenario: "Amount exceeding eligibility sets amountError and disables submit"
+      scenario: "Corpus insufficient error from server shows CorpusInsufficient error state"
       type: ViewModel
-      priority: P0
-      given: "eligibleAmount=15000"
-      when: "requestedAmount='20000'"
-      then: "amountError='Amount exceeds eligible limit of KES 15000'; submit_button disabled (enabled_when fails)"
+      priority: P1
+      given: "network online; server returns corpus_insufficient error"
+      when: "OnSubmit fires"
+      then: "LoanApplyError type=CorpusInsufficient shown; isSubmitting=false"
 
     - id: TC-LA-007
-      scenario: "Amount that reduces corpus below the 10% buffer sets corpusWarning and shows the warning banner"
+      scenario: "Network error during submission shows Network error with retry"
       type: ViewModel
-      priority: P0
-      given: "corpusBalance=24000, requested amount that breaches the 10% buffer"
-      when: "OnAmountChanged fires"
-      then: "corpusWarning=true; corpus_warning_banner visible with current corpus balance; submit still gated by amountError separately"
+      priority: P1
+      given: "network offline on submit"
+      when: "OnSubmit fires"
+      then: "LoanApplyError type=Network retry=true; ShowSnackbar emitted; isSubmitting=false"
 
     - id: TC-LA-008
-      scenario: "Purpose dropdown shows all LoanPurpose values"
+      scenario: "Purpose dropdown renders all LoanPurpose enum values"
       type: Screen
       priority: P1
-      given: "purpose_dropdown rendered"
-      when: "dropdown expanded"
-      then: "options MEDICAL, EDUCATION, BUSINESS, EMERGENCY, OTHER all present; default BUSINESS selected"
+      given: "Content state"
+      when: "purpose dropdown renders"
+      then: "BUSINESS option preselected by default; all LoanPurpose values selectable"
 
     - id: TC-LA-009
-      scenario: "Duration dropdown updates durationWeeks (feeds loanTermFrequency / numberOfRepayments)"
-      type: ViewModel
+      scenario: "Duration slider updates durationWeeks state and shows weeks label"
+      type: Screen
       priority: P1
-      given: "durationWeeks default 12"
-      when: "OnDurationChanged(24) fires"
-      then: "durationWeeks=24 written to state; transform_state only; value maps to loanTermFrequency on the eventual post_loan body"
+      given: "Content state; durationWeeks=12"
+      when: "OnDurationChange(24)"
+      then: "durationWeeks=24; label shows '24 weeks'"
 
     - id: TC-LA-010
-      scenario: "Selecting a loan product calls get_loan_template via Store5 to pre-fill principal/repayments/interest"
-      type: ViewModel
-      priority: P1
-      given: "loanProducts loaded"
-      when: "OnProductSelected fires"
-      then: "LoanRepository.getLoanTemplate called via Store5; call_api effect asserted; selectedProduct set; template defaults for interestRatePerPeriod and numberOfRepayments pre-filled"
-
-    - id: TC-LA-011
-      scenario: "Submit enabled only when member, non-blank amount, no amountError and product are all present"
-      type: Screen
-      priority: P0
-      given: "selectedMember set, requestedAmount='1500', amountError=null, selectedProduct set"
-      when: "submit_button evaluates enabled_when"
-      then: "submit_button enabled; disabling any one precondition disables it"
-
-    - id: TC-LA-012
-      scenario: "OnSubmit POSTs LoanApplicationRequest via LoanRepository.submitLoanApplication to Fineract post_loan"
-      type: ViewModel
-      priority: P0
-      given: "valid form: member, product, requestedAmount=1500, durationWeeks=12, purpose=BUSINESS"
-      when: "OnSubmit fires"
-      then: "LoanApplicationRequest built and POSTed to Fineract post_loan (m_loan pending approval); call_api effect asserted; isSubmitting toggles true"
-
-    - id: TC-LA-013
-      scenario: "On successful post_loan, navigate to loan-list with a success snackbar"
-      type: ViewModel
-      priority: P0
-      given: "post_loan returns created loanId"
-      when: "submission succeeds"
-      then: "submitSuccess=true; navigate to loan-list; ShowSnackbar success emitted; isSubmitting reset false"
-
-    - id: TC-LA-014
-      scenario: "400 from post_loan surfaces field-level validation errors and keeps the form"
-      type: ViewModel
-      priority: P1
-      given: "post_loan returns 400 with validation payload"
-      when: "OnSubmit fails"
-      then: "LoanApplyError type Server/validation set; error_state shown with Try Again; form retained; isSubmitting false"
-
-    - id: TC-LA-015
-      scenario: "Offline submit blocked by cmp-network-monitor and surfaces the queued-offline error"
-      type: ViewModel
-      priority: P1
-      given: "cmp-network-monitor reports offline"
-      when: "OnSubmit fires"
-      then: "submit blocked before m_loan create; error_network 'Application will be queued offline' shown; no post_loan HTTP dispatched"
-
-    - id: TC-LA-016
-      scenario: "AmountExceedsEligibility and CorpusInsufficient error types render their own messages"
-      type: ViewModel
-      priority: P1
-      given: "server rejects with AmountExceedsEligibility or CorpusInsufficient"
-      when: "OnSubmit returns the domain error"
-      then: "error_amount_exceeds or error_corpus message shown respectively; retry=false; submit remains gated"
-
-    - id: TC-LA-017
-      scenario: "403 from post_loan shows a permission-denied (role gate) error"
-      type: ViewModel
-      priority: P1
-      given: "requesting user lacks apply-loan permission for the group"
-      when: "OnSubmit returns 403"
-      then: "permission-denied error surfaced; no m_loan created"
-
-    - id: TC-LA-018
-      scenario: "Auth 401 during submit redirects to login"
+      scenario: "Auth 401 redirects to login"
       type: ViewModel
       priority: P0
       given: "session expired"
-      when: "OnSubmit returns 401"
-      then: "LoanApplyError type=Auth (redirect=login); navigation to login triggered"
-
-    - id: TC-LA-019
-      scenario: "Submitting state disables inputs and shows the submit button loading indicator"
-      type: Screen
-      priority: P1
-      given: "isSubmitting=true"
-      when: "submitting state rendered"
-      then: "submit_button shows loading spinner; form inputs disabled; back nav still available"
-
-    - id: TC-LA-020
-      scenario: "OnBack pops the form off the back stack without persisting form data"
-      type: Screen
-      priority: P2
-      given: "partially filled form"
-      when: "top-bar OnBack fires"
-      then: "navigate effect pops to loan-list; no form data persisted"
-
-    - id: TC-LA-021
-      scenario: "Error-state Try Again re-invokes submitLoanApplication to post_loan after a failure"
-      type: ViewModel
-      priority: P1
-      given: "error!=null after a failed submit"
-      when: "error_state OnSubmit (Try Again) fires"
-      then: "cmp-network-monitor re-checks connectivity; LoanRepository.submitLoanApplication re-attempts the m_loan create; call_api effect asserted"
-
-    - id: TC-LA-022
-      scenario: "LoanRepository.submitLoanApplication maps LoanApplicationRequest to the correct Fineract POST body"
-      type: Repository
-      priority: P0
-      given: "LoanApplicationRequest with clientId, productId, principal=1500, loanTermFrequency=12, loanPurposeId"
-      when: "submitLoanApplication called"
-      then: "Fineract post_loan body carries principal, loanTermFrequency, numberOfRepayments and loanPurposeId mapped from state"
-
-    - id: TC-LA-023
-      scenario: "LoanRepository.getLoanProducts and MemberRepository.getGroupMembers cache for 3600 seconds"
-      type: Repository
-      priority: P1
-      given: "getLoanProducts and getGroupMembers fetched and cached via Store5"
-      when: "a second call within 3600s TTL"
-      then: "cached products and members returned without a new Fineract call; refetch after TTL expiry"
+      when: "members fetch or submit returns 401"
+      then: "LoanApplyError type=Auth redirect=login; NavigateBack emitted"

@@ -4,22 +4,166 @@ feature_id: loan-repayment-dialog
 
 entries:
   - screen_id: loanRepaymentDialogScreen
-    trigger: on_interact
-    description: Record a loan repayment transaction via Fineract
-    endpoints:
-      - { api_id: make_repayment, transport: rest, method: post }
+    trigger: on_action
+    action: OnAmountChanged
+    description: >
+      Treasurer edits the amount text field. InputValidator runs a
+      positive-number check inline against the outstanding balance so an
+      invalid entry surfaces in amountError before Record Repayment is
+      enabled. Pure client-side state transition — writes amount and clears
+      amountError on LoanRepaymentDialogState, no network call and no
+      persistence side-effect until submit.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths:
+      - { error_code: "validation.amount_required", behavior: show_error, message_key: error_amount_required }
+      - { error_code: "validation.amount_invalid", behavior: show_error, message_key: error_amount_invalid }
+      - { error_code: "validation.amount_exceeds", behavior: show_error, message_key: error_amount_exceeds }
+    notes: >
+      Mirrors ui.yaml amount_field.on_change.action_contract
+      (effect: transform_state). Clears amountError as the treasurer types
+      so the inline hint disappears once the value becomes valid.
+
+  - screen_id: loanRepaymentDialogScreen
+    trigger: on_action
+    action: OnPaymentMethodSelected
+    description: >
+      Treasurer taps the M-Pesa or Cash chip. Pure in-VM selection that sets
+      paymentMethod on LoanRepaymentDialogState so make_repayment later
+      resolves paymentTypeId (MPESA=1, CASH=2). No network call and no
+      persistence side-effect until submit. Also gates whether
+      referenceNumber is required (M-Pesa carries a receipt code; Cash
+      leaves receiptNumber null).
+    endpoints: []
+    tables: []
     dtos:
       - { name: PaymentMethod, role: request, api_id: make_repayment }
     produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      Mirrors ui.yaml payment_method_chips (chip_mpesa + chip_cash)
+      on_click.action_contract (effect: transform_state). Rural
+      offline-first — Cash used when M-Pesa network unavailable, so the
+      chip choice also biases the treasurer toward whichever rail actually
+      clears in this village.
+
+  - screen_id: loanRepaymentDialogScreen
+    trigger: on_action
+    action: OnReferenceNumberChanged
+    description: >
+      Treasurer types the optional M-Pesa receipt code (e.g. QJZ7X9A1BK).
+      Pure client-side state transition — writes referenceNumber on
+      LoanRepaymentDialogState which is carried verbatim into the
+      make_repayment receiptNumber body field on submit. No network call
+      on change. Skipped when Cash is the selected paymentMethod.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      Mirrors ui.yaml reference_number_field.on_change.action_contract
+      (effect: transform_state). Optional field — receiptNumber is sent as
+      null when Cash is selected or the treasurer leaves it blank.
+
+  - screen_id: loanRepaymentDialogScreen
+    trigger: on_action
+    action: OnSubmit
+    description: >
+      Treasurer taps "Record Repayment". Re-validates the amount then POSTs
+      make_repayment (/loans/{loanId}/transactions?command=repayment) to
+      record the payment against m_loan in Fineract. cmp-network-monitor
+      blocks submission when offline, surfacing error_offline_no_queue
+      into submitError so the error state renders inline. transactionDate
+      is today formatted as "dd MMMM yyyy"; paymentTypeId is resolved from
+      paymentMethod (MPESA=1, CASH=2); receiptNumber is the optional
+      referenceNumber. The idempotent money move guards against
+      double-posting on retry after a timeout. On success emits
+      RepaymentRecorded(loanId) then Dismiss so the parent loan-detail
+      screen refreshes.
+    endpoints:
+      - { api_id: make_repayment, transport: rest, method: post }
+    tables: []
+    dtos:
+      - { name: PaymentMethod, role: request, api_id: make_repayment }
+      - { name: RepaymentTransactionRequest, role: request, api_id: make_repayment }
+      - { name: RepaymentTransactionResponse, role: response, api_id: make_repayment }
+    produces_state: Success
     auth_required: true
     cache:
       strategy: no_cache
       ttl_seconds: 0
       key_template: "loan_repayment:{loanId}"
     error_paths:
-      - { error_code: "400", behavior: show_error, message_key: error_amount_exceeds_outstanding }
-      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "400", behavior: show_error, message_key: error_amount_exceeds }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
       - { error_code: "403", behavior: show_error, message_key: error_insufficient_role }
       - { error_code: "404", behavior: show_error, message_key: error_loan_not_found }
       - { error_code: "500", behavior: show_error, message_key: error_server }
       - { error_code: "network.offline", behavior: show_error, message_key: error_offline_no_queue }
+    notes: >
+      Aligned with ui.yaml record_repayment_button.on_click.action = OnSubmit
+      and its action_contract (effect: call_api, library_refs:
+      [cmp-network-monitor]). Idempotent — Fineract's server-side
+      command=repayment guards against duplicate posts on retry. No offline
+      enqueue: money moves require live confirmation to avoid double-posting
+      when connectivity returns. isSubmitting flips true while the request
+      is in flight; on failure the error state binds submitError to
+      submit_error_text and keeps the dialog open for correction/retry.
+
+  - screen_id: loanRepaymentDialogScreen
+    trigger: on_action
+    action: OnDismiss
+    description: >
+      Treasurer taps Cancel or dismisses the dialog. Emits Dismiss and pops
+      back to the parent loan-detail screen without recording any transaction.
+      Discards the entered amount, paymentMethod, and referenceNumber.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      Mirrors ui.yaml cancel_button.on_click.action_contract
+      (effect: navigate). No confirmation prompt — dialog dismissal is
+      non-destructive because nothing has been persisted yet. Also the
+      implicit outside-tap gesture routes here.
+
+tables: []
+
+cache:
+  strategy: no_cache
+  notes: >
+    Loan repayment is a write/mutation endpoint — no response caching. The
+    money-move is idempotent server-side via Fineract's command=repayment
+    guard; no local sync_queue because offline submission is blocked outright
+    (cmp-network-monitor) to prevent double-posting when connectivity
+    returns. Single source: this data-flow file.
+
+last_generate:
+  timestamp: "2026-07-18T05:50:00Z"
+  generator: idea-data-flow
+  framework_version: "2.86.0"
+  regen_reason: "ui.yaml newer than sibling — refresh data-flow to match current action set"

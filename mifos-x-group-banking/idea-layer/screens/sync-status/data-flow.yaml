@@ -22,14 +22,15 @@ entries:
       - { source: SyncManager, key: last_sync_at, field: lastSyncAt }
       - { source: NetworkMonitor, key: is_online, field: isOnline }
     error_paths:
-      - { error_code: "local.db_read_failed", behavior: show_error_state, message_key: error_not_found }
+      - { error_code: "local.db_read_failed", behavior: show_error_state, message_key: error_db }
 
   - screen_id: syncStatusScreen
     trigger: on_refresh
-    description: Pull to refresh — re-reads local SyncQueue DB
+    description: Pull to refresh — re-reads local SyncQueue DB (OnRefresh action)
     endpoints: []
     dtos:
       - { name: SyncQueueItem, role: response, api_id: local_db }
+      - { name: SyncQueueSummary, role: response, api_id: local_db }
     auth_required: false
     cache:
       strategy: no_cache
@@ -37,15 +38,21 @@ entries:
       key_template: ""
     local_sources:
       - { source: SyncQueueRepository, key: all_operations, dto: SyncQueueItem }
+      - { source: SyncQueueRepository, key: summary, dto: SyncQueueSummary }
+    local_writes:
+      - { target: SyncQueueRepository, key: refresh_queue, triggers: [OnRefresh] }
     error_paths:
-      - { error_code: "local.db_read_failed", behavior: show_snackbar, message_key: error_not_found }
+      - { error_code: "local.db_read_failed", behavior: show_snackbar, message_key: error_db }
 
   - screen_id: syncStatusScreen
     trigger: on_interact
-    description: User taps Sync Now — triggers SyncManager to flush all pending operations online
-    endpoints: []
+    description: User taps Sync Now — SyncManager drains the pending SyncQueue via the Fineract /batches endpoint (Store5 Bookkeeper coordinates the drain; enabled only when NetworkMonitor reports online and !isSyncing)
+    endpoints: [batch_sync]
     dtos:
       - { name: SyncQueueItem, role: request, api_id: sync_manager }
+      - { name: BatchSyncRequest, role: request, api_id: batch_sync }
+      - { name: BatchSyncResponse, role: response, api_id: batch_sync }
+      - { name: SyncResult, role: response, api_id: sync_manager }
     auth_required: true
     cache:
       strategy: no_cache
@@ -54,16 +61,20 @@ entries:
     local_writes:
       - { target: SyncManager, key: trigger_sync, triggers: [OnSyncNow] }
     error_paths:
-      - { error_code: "network.offline", behavior: show_snackbar, message_key: error_offline }
-      - { error_code: "sync.conflict", behavior: show_dialog, message_key: error_sync_conflict }
+      - { error_code: "network.offline", behavior: show_snackbar, message_key: error_sync_failed }
+      - { error_code: "sync.failed", behavior: show_error_state, message_key: error_sync_failed }
+      - { error_code: "sync.conflict", behavior: show_dialog, message_key: conflict_label }
       - { error_code: "401", behavior: navigate, nav_target: login }
 
   - screen_id: syncStatusScreen
     trigger: on_interact
-    description: User taps Retry on individual failed operation
-    endpoints: []
+    description: User taps Retry on individual failed operation — SyncManager re-submits one SyncQueueItem (by itemId) via the Fineract /batches endpoint through the Store5 Bookkeeper drain
+    endpoints: [batch_sync]
     dtos:
       - { name: SyncQueueItem, role: request, api_id: sync_manager }
+      - { name: BatchSyncRequest, role: request, api_id: batch_sync }
+      - { name: BatchSyncResponse, role: response, api_id: batch_sync }
+      - { name: SyncResult, role: response, api_id: sync_manager }
     auth_required: true
     cache:
       strategy: no_cache
@@ -72,4 +83,11 @@ entries:
     local_writes:
       - { target: SyncManager, key: retry_operation, triggers: [OnRetryOperation], params: [itemId] }
     error_paths:
-      - { error_code: "network.offline", behavior: show_snackbar, message_key: error_offline }
+      - { error_code: "network.offline", behavior: show_snackbar, message_key: error_sync_failed }
+      - { error_code: "sync.failed", behavior: show_snackbar, message_key: error_sync_failed }
+      - { error_code: "401", behavior: navigate, nav_target: login }
+
+last_generate:
+  timestamp: "2026-07-18T12:00:00Z"
+  generator: idea-data-flow
+  framework_version: "2.86.0"

@@ -9,8 +9,9 @@ entries:
       Load strategy-aware distribution preview from the companion API via a single call.
       get_shareout_preview returns both ACCUMULATING (memberPayouts[]) and ROTATING_PAYOUT
       (rotationPosition + nextRecipientName + nextRecipientAmount) in one response,
-      with poolModel field to discriminate rendering on the client.
-      Replaces old two-call pattern: get_center_accounts + get_share_out_datatable.
+      with poolModel field to discriminate rendering on the client. Populates the
+      ContentAccumulating or ContentRotating screen_state depending on poolModel.
+      Replaces the legacy two-call pattern: get_center_accounts + get_share_out_datatable.
     endpoints:
       - { api_id: get_shareout_preview, transport: rest, method: get }
     tables:
@@ -34,15 +35,19 @@ entries:
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
       - { error_code: "500", behavior: show_retry, message_key: error_server }
     notes: >
-      Single endpoint replaces two-call pattern. poolModel field in response drives:
-        ACCUMULATING → render member payout table (memberPayouts[])
-        ROTATING_PAYOUT → render rotation card (nextRecipientName, nextRecipientAmount)
+      Single endpoint replaces the two-call pattern. poolModel field in the response drives:
+        ACCUMULATING → render member_payout_table (memberPayouts[]) — ContentAccumulating
+        ROTATING_PAYOUT → render rotation_preview_card (nextRecipientName, nextRecipientAmount) — ContentRotating
       network_first strategy because preview amounts are financial and must be fresh.
       409 = share-out already executed this cycle; show CycleComplete state.
 
   - screen_id: shareOutPreviewScreen
     trigger: on_refresh
-    description: User pulls to refresh — re-fetches preview from companion API fresh.
+    action: OnRefresh
+    description: >
+      User taps the refresh icon in the top-app-bar (OnRefresh action) — re-fetches the
+      strategy-aware distribution preview from the companion API fresh, bypassing the 60s
+      cache; on success replaces the shareout_preview_cache SQLDelight row.
     endpoints:
       - { api_id: get_shareout_preview, transport: rest, method: get }
     tables:
@@ -63,11 +68,40 @@ entries:
 
   - screen_id: shareOutPreviewScreen
     trigger: on_interact
-    action: OnConfirmTap
+    action: Retry
     description: >
-      Organizer confirms the distribution plan. No API call — passes the ShareOutPreview
-      (including poolModel and full memberPayouts or rotationPayout fields) as nav args
-      to share-out-execute.
+      User taps the retry CTA on the error_state after a failed preview. Re-invokes
+      get_shareout_preview against the companion API; clears the ShareOutPreviewError
+      and returns the screen to the Loading state, then renders the ACCUMULATING table
+      or ROTATING_PAYOUT card once corpus, profit, pool and payouts are recomputed.
+    endpoints:
+      - { api_id: get_shareout_preview, transport: rest, method: get }
+    tables:
+      - name: shareout_preview_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: ShareOutPreview, role: response, api_id: get_shareout_preview }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: bypass_and_refresh
+      ttl_seconds: 60
+      key_template: "shareout_preview:{groupId}:cycle:{cycleNumber}"
+    error_paths:
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: Retry from the Error screen_state — bypasses cache and forces a fresh companion API call.
+
+  - screen_id: shareOutPreviewScreen
+    trigger: on_interact
+    action: OnConfirm
+    description: >
+      Organizer confirms the previewed distribution plan and navigates to share-out-execute.
+      No API call — forwards groupId, typeConfig, cycleNumber, totalPool and the
+      pool-model-appropriate payload (memberPayouts[] for ACCUMULATING or the single
+      rotation-recipient fields for ROTATING_PAYOUT) as nav args. The actual
+      COMP-DIST-001/002 execution happens on the next screen after double-confirmation.
     endpoints: []
     tables: []
     dtos:
@@ -80,11 +114,32 @@ entries:
       key_template: ""
     error_paths: []
     navigation:
-      - { condition: "OnConfirm && preview.memberPayouts != null", nav_target: share-out-execute, params: [groupId, cycleNumber, totalPool, memberPayouts] }
-      - { condition: "OnConfirm && preview.nextRecipientAmount != null", nav_target: share-out-execute, params: [groupId, cycleNumber, recipientMemberId, amount, payoutOrderMethod] }
+      - { condition: "OnConfirm && poolModel == 'ACCUMULATING'", nav_target: share-out-execute, params: [groupId, typeConfig, cycleNumber, totalPool, memberPayouts] }
+      - { condition: "OnConfirm && poolModel == 'ROTATING_PAYOUT'", nav_target: share-out-execute, params: [groupId, typeConfig, cycleNumber, totalPool, nextRecipientName, nextRecipientAmount, rotationPosition] }
     notes: >
       Navigation is pool_model-aware: ACCUMULATING sends memberPayouts[];
       ROTATING_PAYOUT sends single-recipient rotation fields.
+
+  - screen_id: shareOutPreviewScreen
+    trigger: on_interact
+    action: OnBack
+    description: >
+      Emit NavigateBack to pop the share-out-preview screen and return to the group
+      dashboard without executing any distribution. Pure navigation — no corpus or
+      payout data is mutated or persisted.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    navigation:
+      - { condition: "OnBack", nav_target: group-dashboard, params: [groupId] }
+    notes: Back navigation from the top-app-bar navigation icon — no side effects.
 
 tables:
   - name: shareout_preview_cache
@@ -102,7 +157,7 @@ cache:
   notes: >
     Financial preview data requires freshness — network_first with 60s TTL.
     No legacy api.yaml#cache. Single source: this data-flow file.
-    Cache bypassed on explicit refresh; served stale when offline.
+    Cache bypassed on explicit refresh or retry; served stale when offline.
 
 sync_queue:
   entries: []

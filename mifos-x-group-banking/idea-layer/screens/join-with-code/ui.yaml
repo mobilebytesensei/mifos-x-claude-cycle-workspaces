@@ -106,8 +106,9 @@ components:
       action: OnCodeChange
       action_contract:
         effect: transform_state
-        description: "Update the inviteCode field in ViewModel state as the user types or pastes the 6-character alphanumeric invite code."
+        description: "Update JoinWithCodeState.inviteCode as the user types or pastes characters. Auto-uppercases input and resets any prior inviteStatus/error so the validate button re-enables only when exactly 6 characters are present."
         library_refs: []
+        writes_to: [JoinWithCodeState.inviteCode, JoinWithCodeState.inviteStatus, JoinWithCodeState.error]
 
   - id: validate_button
     type: button
@@ -120,8 +121,10 @@ components:
       action: OnValidateCode
       action_contract:
         effect: call_api
-        description: "Submit the 6-character invite code to the invitations datatable API to validate the token and fetch the associated group preview details before showing the confirmation card."
-        library_refs: [InvitationRepository]
+        description: "Submit the 6-character invite code to the invitations datatable API (validate_invite_token), evaluate expires_at and accepted_at client-side, then call get_group_preview to populate the group preview card and transition to preview state."
+        library_refs: [InvitationRepository, GroupRepository]
+        writes_to: [pending_invite_cache, JoinWithCodeState.groupPreview, JoinWithCodeState.inviteStatus]
+        reads_from: [JoinWithCodeState.inviteCode]
 
   - id: validating_indicator
     type: loading-indicator
@@ -200,8 +203,10 @@ components:
       action: OnConfirmJoin
       action_contract:
         effect: call_api
-        description: "Confirm joining the group shown in the preview card. If the user is authenticated, calls the associate-clients API immediately. If not yet registered, redirects to login-signup preserving the invite code as a nav param so the flow auto-resumes after registration."
+        description: "Confirm joining the previewed group. Authenticated path: calls associate_client_to_group with the clientId and role from the invitation row, then marks the token accepted and navigates to group-dashboard. Unauthenticated path: persists token to pending_invite_cache and redirects to login-signup with pendingInviteCode param for post-login resume."
         library_refs: [GroupRepository, AuthRepository, InvitationRepository]
+        writes_to: [pending_invite_cache, group_memberships_cache, JoinWithCodeState.isJoining]
+        reads_from: [JoinWithCodeState.groupPreview, pending_invite_cache]
 
   - id: error_card
     type: card
@@ -232,8 +237,10 @@ components:
           action: OnRetry
           action_contract:
             effect: call_api
-            description: "Clear the current error state and re-submit the invite code validation request after a transient network failure."
-            library_refs: [InvitationRepository]
+            description: "Clear the current Network error state and re-dispatch OnValidateCode with the existing inviteCode value — re-calls validate_invite_token and get_group_preview without requiring the user to re-type the code. Transitions back to validating state."
+            library_refs: [InvitationRepository, GroupRepository]
+            writes_to: [JoinWithCodeState.error, JoinWithCodeState.inviteStatus, JoinWithCodeState.groupPreview]
+            reads_from: [JoinWithCodeState.inviteCode]
 
 states:
   initial_state: initial

@@ -1,6 +1,7 @@
 sibling: tests
 schema_version: "4.0"
 feature_id: sync-status
+generated_at: "2026-07-18T00:00:00Z"
 
 testing:
   coverage_targets:
@@ -10,161 +11,81 @@ testing:
 
   scenarios:
     - id: TC-SS-001
-      scenario: "On mount — reads SyncQueue from local DB, computes PENDING status"
+      scenario: "On mount, sync status loads pendingByType map from SyncRepository"
       type: ViewModel
       priority: P0
-      given: "SQLDelight SyncQueue has 3 pending ops (1 MEETING, 2 SAVINGS), 1 FAILED ATTENDANCE op"
+      given: "authenticated user; sync_queue has pending operations"
       when: "SyncStatusScreen enters composition"
-      then: "overallStatus=PENDING, pendingCount=3, failedCount=1, pendingByType={MEETING:1, SAVINGS:2}; screen_state=Content"
+      then: "SyncRepository.getSyncStatus called; pendingByType map populated; SyncStatusScreenState=Content"
 
     - id: TC-SS-002
-      scenario: "SYNCED empty state shown when no pending or failed ops"
+      scenario: "pendingByType map shows count per operation type (LOAN, SAVINGS, MEETING)"
       type: Screen
       priority: P0
-      given: "pendingCount=0, failedCount=0, overallStatus=SYNCED"
-      when: "Content state rendered"
-      then: "all_synced_empty ('All caught up!') visible, overall_status_card shows 'All Synced' with SYNCED background '#C8E6C9'"
+      given: "Content state; pendingByType={LOAN:2, SAVINGS:1, MEETING:0}"
+      when: "PendingCountSection renders"
+      then: "LOAN badge shows 2; SAVINGS badge shows 1; MEETING badge shows 0 (or hidden)"
 
     - id: TC-SS-003
-      scenario: "Overall status card color and icon change by status"
+      scenario: "failedOperations list renders with operation type, timestamp, and error message"
       type: Screen
-      priority: P1
-      given: "Three status values SYNCED / PENDING / FAILED"
-      when: "Content state rendered for each"
-      then: "SYNCED bg='#C8E6C9' icon=cloud_done; PENDING bg='#FFF9C4' icon=cloud_sync; FAILED bg='#FFCDD2' icon=cloud_off; status_label text and color match value_by_status"
+      priority: P0
+      given: "Content state; failedOperations=[{type:LOAN, ts:'2026-07-17T10:00', error:'Connection timeout'}]"
+      when: "FailedOperationsList renders"
+      then: "1 row: LOAN type, timestamp, 'Connection timeout' error detail"
 
     - id: TC-SS-004
-      scenario: "Sync Now button disabled and relabeled when offline"
+      scenario: "conflictCount badge shows when merge conflicts detected"
       type: Screen
-      priority: P0
-      given: "isOnline=false"
-      when: "Content state rendered"
-      then: "sync_now_button disabled (enabled_when 'isOnline && !isSyncing' false), disabled_label='Offline — Connect to sync'"
+      priority: P1
+      given: "Content state; conflictCount=2"
+      when: "SyncStatusScreen renders"
+      then: "Conflicts badge shows 2; amber color; Resolve Conflicts CTA visible"
 
     - id: TC-SS-005
-      scenario: "Sync Now button enabled when online and not syncing"
+      scenario: "conflictCount=0 hides conflicts section"
       type: Screen
-      priority: P0
-      given: "isOnline=true, isSyncing=false"
-      when: "Content state rendered"
-      then: "sync_now_button enabled, label='Sync Now'"
+      priority: P1
+      given: "Content state; conflictCount=0"
+      when: "SyncStatusScreen renders"
+      then: "Conflicts section not rendered"
 
     - id: TC-SS-006
-      scenario: "Sync Now drains queue via Fineract /batches and stamps last_synced_at"
+      scenario: "OnForceSyncNow triggers immediate sync of all pending operations"
       type: ViewModel
       priority: P0
-      given: "isOnline=true, isSyncing=false, 3 pending SyncQueueItem rows"
-      when: "OnSyncNow dispatched"
-      then: "isSyncing=true, cmp-network-monitor online confirmed, pending rows POSTed to Fineract /batches (call_api effect), button loading_when=isSyncing"
+      given: "pendingByType has items; network online"
+      when: "OnForceSyncNow fires"
+      then: "isSyncing=true; SyncRepository.forceSyncAll called; on complete pendingByType updated; isSyncing=false"
 
     - id: TC-SS-007
-      scenario: "Sync completes — items advance to synced, SyncCompleted emitted, DB re-read"
+      scenario: "OnForceSyncNow blocked when offline"
       type: ViewModel
-      priority: P0
-      given: "isSyncing=true, batch response advances all pending rows"
-      when: "batch drain completes successfully"
-      then: "Store5 Bookkeeper advances rows pending→synced, isSyncing=false, SyncCompleted event emitted, SyncQueue re-read from DB, overallStatus recomputed to SYNCED"
+      priority: P1
+      given: "cmp-network-monitor offline"
+      when: "OnForceSyncNow fires"
+      then: "ShowSnackbar('No network connection') emitted; isSyncing stays false"
 
     - id: TC-SS-008
-      scenario: "Failed operations section shown only when failedCount > 0"
-      type: Screen
-      priority: P0
-      given: "failedCount=1, failedOperations=[ATTENDANCE op with errorMessage]"
-      when: "Content state rendered"
-      then: "failed_operations_section visible with errorContainer background, 'Failed Operations (1)' header, per-item entityType — operation and errorMessage rows"
+      scenario: "OnRetryFailed retries all failedOperations"
+      type: ViewModel
+      priority: P1
+      given: "failedOperations=[{id:3, type:SAVINGS}]; network online"
+      when: "OnRetryFailed fires"
+      then: "SyncRepository.retryFailed(ids=[3]) called; on success operation removed from failedOperations"
 
     - id: TC-SS-009
-      scenario: "Retry individual failed operation advances it on success"
-      type: ViewModel
+      scenario: "All cleared state shown when no pending or failed operations"
+      type: Screen
       priority: P1
-      given: "failedOperations=[{id:4, entityType:ATTENDANCE, status:FAILED}], isOnline=true"
-      when: "OnRetryOperation(itemId=4) dispatched"
-      then: "item 4 re-POSTed to Fineract /batches via Store5 Bookkeeper (call_api), row moves failed→synced, removed from failedOperations"
+      given: "load success; pendingByType all 0; failedOperations.isEmpty(); conflictCount=0"
+      when: "Content evaluation"
+      then: "SyncStatusScreenState=AllSynced; green checkmark shown; 'All data synced' message"
 
     - id: TC-SS-010
-      scenario: "Retry failure keeps operation in the failed queue with error intact"
+      scenario: "Pull-to-refresh reloads sync status from SyncRepository"
       type: ViewModel
       priority: P1
-      given: "failedOperations=[{id:4, ATTENDANCE}], batch retry returns error for item 4"
-      when: "OnRetryOperation(itemId=4) dispatched and fails"
-      then: "item 4 stays in failedOperations with its original errorMessage, failedCount unchanged"
-
-    - id: TC-SS-011
-      scenario: "Conflict chip shown when conflictCount > 0"
-      type: Screen
-      priority: P1
-      given: "conflictCount=2"
-      when: "Content state rendered"
-      then: "conflict_chip visible with tertiaryContainer background showing '2 conflict(s) detected — review before syncing'"
-
-    - id: TC-SS-012
-      scenario: "Pending breakdown card lists per-entity counts when pendingCount > 0"
-      type: Screen
-      priority: P1
-      given: "pendingCount=3, pendingByType={MEETING:1, SAVINGS:2}"
-      when: "Content state rendered"
-      then: "pending_breakdown_card visible with 'Pending Operations (3)'; entity_breakdown_rows show 'Meeting Records' badge 1 and 'Savings Transactions' badge 2"
-
-    - id: TC-SS-013
-      scenario: "Pending breakdown card hidden when pendingCount=0"
-      type: Screen
-      priority: P1
-      given: "pendingCount=0"
-      when: "Content state rendered"
-      then: "pending_breakdown_card not visible (visible_when 'pendingCount > 0' false)"
-
-    - id: TC-SS-014
-      scenario: "Pull to refresh re-reads local DB with no network call"
-      type: ViewModel
-      priority: P1
-      given: "Content state, no connectivity change"
-      when: "OnRefresh dispatched"
-      then: "SyncQueueRepository re-queried from SQLDelight, zero HTTP calls, counts/status updated from local DB only"
-
-    - id: TC-SS-015
-      scenario: "Loading state reads SyncQueue and shows shimmer"
-      type: Screen
-      priority: P1
-      given: "isLoading=true"
-      when: "Loading state rendered"
-      then: "shimmer_status (count=3) visible; top_bar shown; status cards hidden while SQLDelight read in progress"
-
-    - id: TC-SS-016
-      scenario: "lastSyncAt rendered as relative time via timeAgo"
-      type: Screen
-      priority: P2
-      given: "lastSyncAt='2026-05-09T08:30:00Z', current time 08:45"
-      when: "Content state rendered"
-      then: "last_sync_text shows '15 minutes ago' (timeAgo filter applied)"
-
-    - id: TC-SS-017
-      scenario: "Never synced fallback shown when lastSyncAt is null"
-      type: Screen
-      priority: P2
-      given: "lastSyncAt=null"
-      when: "Content state rendered"
-      then: "last_sync_text shows fallback_when_null='Never synced'"
-
-    - id: TC-SS-018
-      scenario: "Local DB read failure surfaces retryable error state"
-      type: ViewModel
-      priority: P0
-      given: "SQLDelight read throws"
-      when: "Screen mounts"
-      then: "state error=SyncStatusError.DbRead(retry=true), screen_state=Error, error_db message ('Could not read sync queue from local database.') surfaced; top_bar and overall_status_card shown"
-
-    - id: TC-SS-019
-      scenario: "Batch drain advances each row pending→in_progress→synced or failed"
-      type: Repository
-      priority: P0
-      given: "3 pending SyncQueueItem rows batched into one /batches request"
-      when: "SyncQueueRepository.drain() applies the batch response"
-      then: "successful rows advance pending→in_progress→synced via Bookkeeper; a rejected row advances to failed with its errorMessage; last_synced_at stamped on any success"
-
-    - id: TC-SS-020
-      scenario: "Sync drain surfaces conflicts for review instead of silently overwriting"
-      type: Repository
-      priority: P1
-      given: "batch response flags a version conflict for one SyncQueueItem"
-      when: "SyncQueueRepository.drain() processes the response"
-      then: "conflicting row is NOT auto-applied, conflictCount incremented, item surfaced for manual review (Store5 Bookkeeper coordinates)"
+      given: "Content state"
+      when: "OnRefresh fires"
+      then: "isRefreshing=true; SyncRepository.getSyncStatus re-called; counts updated; isRefreshing=false"

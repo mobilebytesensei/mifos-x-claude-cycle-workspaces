@@ -5,17 +5,28 @@ feature_id: personal-savings
 entries:
   - screen_id: personalSavingsScreen
     trigger: on_mount
+    description: >
+      Load the group-linked savings account's transaction history from
+      /self/savingsaccounts/{groupLinkedSavingsId}/transactions (default GROUP_LINKED tab).
+      Cache-first via Store5 + SQLDelight (stale-while-revalidate, 300s TTL); cmp-network-monitor
+      gates the background revalidation so the balance, contribution-progress card, and transaction
+      history render offline from the last cached rows. Produces the Content state.
     endpoints:
       - { api_id: get_group_linked_transactions, transport: rest, method: get }
+    tables:
+      - name: savings_transactions
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: SavingsTransactionDto, role: response, api_id: get_group_linked_transactions }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: stale_while_revalidate
       ttl_seconds: 300
       key_template: "savings_transactions:{groupLinkedSavingsId}"
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
       - { error_code: "404", behavior: error_state, message_key: error_server }
       - { error_code: "503", behavior: fallback_cache, message_key: error_network }
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_network }
@@ -23,30 +34,104 @@ entries:
   - screen_id: personalSavingsScreen
     trigger: on_interact
     interaction: tab_switch_to_individual
+    action: OnTabSelected
+    description: >
+      OnTabSelected(INDIVIDUAL) — lazy-loads the individual voluntary savings account's transactions
+      from /self/savingsaccounts/{individualSavingsId}/transactions the first time the Individual tab
+      is opened. Only fires when individualSavingsId != null and that tab has not yet loaded; otherwise
+      a pure in-memory tab re-bind. Produces the Content state for the individual tab.
     endpoints:
       - { api_id: get_individual_transactions, transport: rest, method: get }
+    tables:
+      - name: savings_transactions
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: SavingsTransactionDto, role: response, api_id: get_individual_transactions }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: stale_while_revalidate
       ttl_seconds: 300
       key_template: "savings_transactions:{individualSavingsId}"
-    notes: "Only called if individualSavingsId is not null and not yet loaded"
+    notes: "Only called if individualSavingsId is not null and the individual tab has not yet loaded."
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
       - { error_code: "404", behavior: error_state, message_key: error_server }
       - { error_code: "network.offline", behavior: snackbar, message_key: error_network }
 
   - screen_id: personalSavingsScreen
     trigger: on_refresh
+    description: >
+      Pull-to-refresh — bypasses the Store5 cache and re-fetches the active tab's
+      transactions fresh (group-linked or individual, keyed by the active tab's savingsId).
+      Offline pulls surface a snackbar and keep the last cached rows.
     endpoints:
       - { api_id: get_group_linked_transactions, transport: rest, method: get }
+    tables:
+      - name: savings_transactions
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: SavingsTransactionDto, role: response, api_id: get_group_linked_transactions }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: bypass_and_refresh
+      ttl_seconds: 300
       key_template: "savings_transactions:{activeTabSavingsId}"
     error_paths:
       - { error_code: "network.offline", behavior: snackbar, message_key: error_network }
+
+  - screen_id: personalSavingsScreen
+    trigger: on_interact
+    interaction: retry_after_error
+    action: OnRetry
+    description: >
+      OnRetry — user taps the Retry CTA in the error state. Re-fetches the active tab's
+      /self/savingsaccounts/{savingsId}/transactions with a Store5 cache bypass; cmp-network-monitor
+      gates the retry so an offline tap falls back to the last cached SQLDelight rows instead of
+      re-raising the error. Produces the Content state on success, Error on repeated failure.
+    endpoints:
+      - { api_id: get_group_linked_transactions, transport: rest, method: get }
+    tables:
+      - name: savings_transactions
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: SavingsTransactionDto, role: response, api_id: get_group_linked_transactions }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: bypass_and_refresh
+      ttl_seconds: 300
+      key_template: "savings_transactions:{activeTabSavingsId}"
+    error_paths:
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_network }
+      - { error_code: "503", behavior: error_state, message_key: error_server }
+
+tables:
+  - name: savings_transactions
+    description: >
+      Shared SQLDelight cache of SavingsTransactionDto rows keyed by transactionId, partitioned by
+      savingsId (group-linked vs individual). Shared with personal-dashboard and savings-dashboard.
+      Written on mount, individual-tab lazy-load, pull-to-refresh, and retry.
+    persistence_contract: sqldelight_entity
+    primary_key: "transactionId"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+cache:
+  strategy: stale_while_revalidate
+  ttl_seconds: 300
+  notes: >
+    Savings transactions cached 5 min (stale_while_revalidate) per savingsId.
+    Tab switch re-uses per-account cache or lazy-loads if not yet fetched.
+    Pull-to-refresh and Retry both use bypass_and_refresh on the active tab's savingsId. Served stale when offline.
+
+sync_queue:
+  entries: []
+  notes: >
+    Personal savings is read-only — no money moves are initiated here.
+    Deposits/withdrawals are recorded through the group meeting-record flow, not this screen.

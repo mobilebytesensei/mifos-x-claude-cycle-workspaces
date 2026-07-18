@@ -5,16 +5,20 @@ feature_id: group-type-picker
 entries:
   - screen_id: groupTypePickerScreen
     trigger: on_mount
-    description: >
-      Load all 9 seeded GroupTypeConfig rows from the companion API seed catalogue
-      (entityId=0). Cached aggressively — catalogue changes only on server updates.
-      Offline: serve cached catalogue if available.
     endpoints:
       - { api_id: get_group_type_configs, transport: rest, method: get }
     tables:
       - name: group_type_config_cache
-        persistence_contract: sqldelight_entity
         mutation: upsert
+        rls_role: authenticated
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+          ttl_seconds: 86400
+        notes: >
+          SQLDelight cache for the 9 seeded GroupTypeConfig rows returned by
+          COMP-DT-003 (entityId=0). Populated on first successful catalogue fetch;
+          served as offline fallback. Keyed by typeSlug.
     dtos:
       - { name: GroupTypeConfig, role: response, api_id: get_group_type_configs }
     produces_state: Content
@@ -23,61 +27,96 @@ entries:
       strategy: stale_while_revalidate
       ttl_seconds: 86400
       key_template: "group_type_configs:catalogue"
+      shape: flat
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login-signup }
-      - { error_code: "404", behavior: show_error, message_key: error_catalogue_unavailable }
-      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
-      - { error_code: "500", behavior: show_retry, message_key: error_server }
+      - { error_code: "auth.unauthorized",    behavior: navigate,       nav_target: login-signup,   message_key: error_auth }
+      - { error_code: "resource.not_found",   behavior: user_action,    message_key: error_catalogue_unavailable }
+      - { error_code: "network.offline",      behavior: fallback_cache, fallback_dto: GroupTypeConfig, message_key: error_network }
+      - { error_code: "server.internal",      behavior: retry,          message_key: error_server }
     notes: >
-      Returns the global seed catalogue (9 types). entityId=0 is a sentinel used
-      to query the seed rows — not a per-group datatable read.
-      Cache TTL 24h because the catalogue changes only via server deployments.
-      On cache hit, serve immediately; background-revalidate if older than TTL.
+      Load the 9 seeded GroupTypeConfig rows from the Companion seed catalogue
+      (entityId=0). Cached aggressively — catalogue changes only on server
+      deployments. Offline: serve cached catalogue if available. On cache hit,
+      serve immediately; background-revalidate if older than TTL.
 
   - screen_id: groupTypePickerScreen
-    trigger: on_action
-    action: OnTypeCardTap
-    description: >
-      User taps a group-type card. No API call — passes the selected GroupTypeConfig
-      as a nav argument to group-create.
+    trigger: on_interact
+    event: OnTypeCardTap
     endpoints: []
     tables: []
     dtos:
-      - { name: GroupTypeConfig, role: request, api_id: nav_params }
+      - { name: GroupTypeConfig, role: request }
     produces_state: Content
+    emits_events:
+      - NavigateToGroupCreate
     auth_required: false
     cache:
-      strategy: no_cache
+      strategy: cache_only
       ttl_seconds: 0
       key_template: ""
     error_paths: []
-    navigation:
-      - { condition: "typeSelected", nav_target: group-create, params: [typeConfig] }
     notes: >
-      GroupTypeConfig object forwarded to group-create as nav_arg.
-      group-create embeds it in the create_group_orchestrate request body.
+      User taps a group-type card. No API call — resolves the tapped typeSlug to
+      the matching GroupTypeConfig already held in ViewModel state (loaded
+      on_mount) and forwards it as a navigation argument to group-create. The
+      config carries the full pool_model / savingsMechanism / contributionMode
+      axes that drive group-create's wizard fields (cycle length, loan multiplier,
+      welfare-only mode, etc.). group-create embeds it in the create_group
+      orchestration request body so downstream steps can conditionally show
+      corpus, payout-order, welfare-only, and bank-linkage wizard sections.
 
-tables:
-  - name: group_type_config_cache
-    description: >
-      SQLDelight cache for the 9 seeded GroupTypeConfig rows. Populated on first
-      successful catalogue fetch; served as offline fallback. Keyed by typeSlug.
-      Corresponds to dt_group_type_config datatable on the companion API.
-    persistence_contract: sqldelight_entity
-    primary_key: "typeSlug"
-    mutations: [upsert, read]
-    offline_strategy: serve_stale
-    source_datatable: dt_group_type_config
+  - screen_id: groupTypePickerScreen
+    trigger: on_interact
+    event: OnRetry
+    endpoints:
+      - { api_id: get_group_type_configs, transport: rest, method: get }
+    tables:
+      - name: group_type_config_cache
+        mutation: upsert
+        rls_role: authenticated
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+          ttl_seconds: 86400
+        notes: >
+          Retry re-populates the same SQLDelight cache table used by on_mount.
+    dtos:
+      - { name: GroupTypeConfig, role: response, api_id: get_group_type_configs }
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 86400
+      key_template: "group_type_configs:catalogue"
+      shape: flat
+    error_paths:
+      - { error_code: "auth.unauthorized",    behavior: navigate,       nav_target: login-signup,   message_key: error_auth }
+      - { error_code: "resource.not_found",   behavior: user_action,    message_key: error_catalogue_unavailable }
+      - { error_code: "network.offline",      behavior: fallback_cache, fallback_dto: GroupTypeConfig, message_key: error_network }
+      - { error_code: "server.internal",      behavior: retry,          message_key: error_server }
+    notes: >
+      User taps Retry on the error_banner. Re-dispatches the same COMP-DT-003 GET
+      call that failed on mount. Transitions screen back to Loading state, then
+      to Content on success or remains in Error with an updated error message on
+      repeated failure. Identical data path to on_mount — same endpoint, same
+      cache key, same stale-while-revalidate strategy.
 
-cache:
-  strategy: stale_while_revalidate
-  ttl_seconds: 86400
-  notes: >
-    Catalogue is functionally immutable between releases. Single-source: only the
-    companion API /companion/datatables/group_type_config/{entityId} endpoint writes
-    this table. No legacy api.yaml#cache — cache declared here in data-flow exclusively.
+  - screen_id: groupTypePickerScreen
+    trigger: on_interact
+    event: OnBack
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    emits_events:
+      - NavigateBack
+    auth_required: false
+    error_paths: []
+    notes: >
+      User taps the top-bar back arrow or the system back gesture. Pops the
+      group-type-picker route off the navigation stack and returns to group-list.
+      No GroupTypeConfig is persisted — any partial wizard state is discarded.
 
-sync_queue:
-  entries: []
-  notes: >
-    Group-type picker is read-only. No mutations; no sync-queue entries needed.
+last_verify:
+  passed: true
+  timestamp: "2026-07-17T23:12:30Z"

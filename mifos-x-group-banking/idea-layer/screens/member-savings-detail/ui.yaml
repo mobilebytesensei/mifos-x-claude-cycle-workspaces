@@ -68,6 +68,7 @@ state_model:
       name: MemberSavingsDetailAction
       members:
         - { name: OnFilterSelected, params: { filter: TransactionFilter }, trigger: "Tap filter chip" }
+        - { name: OnTransactionSelected, params: { transactionId: String }, trigger: "Tap transaction row" }
         - { name: OnLoadMore, trigger: "Scroll to end of list" }
         - { name: OnRefresh, trigger: "Pull to refresh" }
         - { name: Retry, trigger: "Tap Retry on error" }
@@ -80,23 +81,29 @@ business_logic:
   kind: crud
   description: >
     Fetches contribution-model-aware member savings via the companion API
-    (/companion/groups/{groupId}/members/{memberId}/savings), persists paginated
-    SavingsTransaction rows in SQLDelight for offline-first access, monitors
-    connectivity with cmp-network-monitor to surface cached data when offline,
-    and filters transactions client-side by type without a server round-trip.
+    (/companion/groups/{groupId}/members/{memberId}/savings, which fronts Fineract
+    savingsaccounts/{id}/transactions), served through a Store5 stale-while-revalidate
+    read: paginated SavingsTransaction rows are persisted as the SQLDelight source of
+    truth for offline-first access and served immediately while a background refresh
+    revalidates against the companion API. Monitors connectivity with cmp-network-monitor
+    to surface cached data when offline, appends pages on infinite scroll (offset+20),
+    and filters transactions client-side by type (ALL/DEPOSITS/WITHDRAWALS) without a
+    server round-trip.
   library_refs:
     - cmp-network-monitor
   external_library_refs:
+    - Store5
     - SQLDelight
-  description_hash: "b2e4a1c7f83d0e5a9b6c2d4f71e8a3b0c5d9e2f4a7b1c3d6e8f0a2b4c7d9e1"
+    - fineract-rest
+  description_hash: "d3f6b2e8a94c1f6b0c7d3e5a82f9b4c1d6e0f3a5b8c2d4e7f1a3b5c8d0e2f4"
   description_author: "claude-via-idea-enrich"
-  description_authored_at: "2026-07-17T00:00:00Z"
+  description_authored_at: "2026-07-18T00:00:00Z"
 
 components:
   - id: top_bar
     type: top-bar
-    title: "Member Savings"
-    subtitle: "{{member.displayName}}"
+    title: "{strings.screen_title}"
+    subtitle: "{{member.displayName}}"  # i18n: skip (dynamic member name)
     style: { background: primary, text_color: onPrimary }
     navigation_icon: arrow_back
     on_navigation_click:
@@ -130,22 +137,22 @@ components:
       - id: savings_balance_label
         type: text
         style: { text_style: bodySmall, color: onPrimaryContainer }
-        value: "{{contributionModel == 'SHARE_BASED_VARIABLE' ? 'Shares Held' : 'Savings Balance'}}"
+        value: "{{contributionModel == 'SHARE_BASED_VARIABLE' ? '{strings.balance_label_shares}' : '{strings.balance_label_savings}'}}"
       - id: savings_balance_amount
         type: text
         style: { text_style: displaySmall, color: onPrimaryContainer, font_weight: bold }
-        # SHARE_BASED_VARIABLE: "20 shares @ KES 1000/share"
-        # FIXED_AMOUNT / FIXED_NEGOTIATED: "KES 3500"
-        value: "{{contributionModel == 'SHARE_BASED_VARIABLE' ? sharesHeld + ' shares @ KES ' + typeConfig.share_value + '/share' : 'KES ' + (savingsBalance | number)}}"
+        # SHARE_BASED_VARIABLE: "{strings.shares_at_label}"
+        # FIXED_AMOUNT / FIXED_NEGOTIATED: "{strings.balance_amount_kes}"
+        value: "{{contributionModel == 'SHARE_BASED_VARIABLE' ? '{strings.shares_at_label}' : '{strings.balance_amount_kes}'}}"
       - id: savings_balance_total
         type: text
         visible: "{{contributionModel == 'SHARE_BASED_VARIABLE'}}"
         style: { text_style: titleMedium, color: onPrimaryContainer }
-        value: "= KES {{shareValue | number}} total"
+        value: "{strings.shares_total_label}"
       - id: account_no_text
         type: text
         style: { text_style: bodySmall, color: onPrimaryContainer }
-        value: "Account: {{savingsAccountNo}}"
+        value: "{strings.account_no_label}"
 
   - id: savings_sparkline_card
     type: card
@@ -158,7 +165,7 @@ components:
       - id: trend_label
         type: text
         style: { text_style: titleSmall, color: onSurfaceVariant }
-        value: "6-Month Trend"
+        value: "{strings.trend_label}"
       - id: sparkline_chart
         type: sparkline-chart
         data: "{{sparklineData}}"
@@ -174,7 +181,7 @@ components:
     selection: single
     chips:
       - id: chip_all
-        label: "All"
+        label: "{strings.filter_all}"
         selected: "{{selectedFilter == ALL}}"
         on_click:
           action: OnFilterSelected
@@ -186,7 +193,7 @@ components:
             action_contract_author: "claude-via-idea-enrich"
             action_contract_authored_at: "2026-07-17T00:00:00Z"
       - id: chip_deposits
-        label: "Deposits"
+        label: "{strings.filter_deposits}"
         selected: "{{selectedFilter == DEPOSITS}}"
         on_click:
           action: OnFilterSelected
@@ -198,7 +205,7 @@ components:
             action_contract_author: "claude-via-idea-enrich"
             action_contract_authored_at: "2026-07-17T00:00:00Z"
       - id: chip_withdrawals
-        label: "Withdrawals"
+        label: "{strings.filter_withdrawals}"
         selected: "{{selectedFilter == WITHDRAWALS}}"
         on_click:
           action: OnFilterSelected
@@ -216,6 +223,15 @@ components:
     style:
       min_touch_target: 72dp
       divider: true
+    on_click:
+      action: OnTransactionSelected
+      params: { transactionId: "{{transaction.id}}" }
+      action_contract:
+        effect: transform_state
+        description: "Expands the tapped SavingsTransaction row in-place to reveal its full receipt (transaction id, posting date, meeting reference, running balance and reversal status) by toggling the expanded transactionId in MemberSavingsDetailState; no network call, all data already in the savings_transactions cache."
+        action_contract_hash: "b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-18T00:00:00Z"
     content:
       leading:
         id: transaction_type_icon
@@ -234,12 +250,12 @@ components:
       headline:
         type: text
         style: { text_style: bodyMedium, color: onSurface }
-        value: "{{transaction.type | label}}"
+        value: "{{transaction.type | label}}"  # i18n: skip (label filter resolves via strings.transaction_* keys)
       supporting:
         id: transaction_date_text
         type: text
         style: { text_style: bodySmall, color: onSurfaceVariant }
-        value: "{{transaction.date | date}}"
+        value: "{{transaction.date | date}}"  # i18n: skip (locale-aware date filter)
       trailing:
         type: column
         children:
@@ -253,17 +269,17 @@ components:
                 default: onSurface
               font_weight: semibold
             value:
-              DEPOSIT: "+ KES {{transaction.amount | number}}"
-              WITHDRAWAL: "- KES {{transaction.amount | number}}"
-              default: "KES {{transaction.amount | number}}"
+              DEPOSIT: "{strings.amount_deposit}"
+              WITHDRAWAL: "{strings.amount_withdrawal}"
+              default: "{strings.amount_default}"
           - id: running_balance_text
             type: text
             style: { text_style: bodySmall, color: onSurfaceVariant }
-            value: "Balance: KES {{transaction.runningBalance | number}}"
+            value: "{strings.running_balance_label}"
           - id: reversed_badge
             type: badge
             visible_when: "transaction.reversed"
-            label: "REVERSED"
+            label: "{strings.reversed_label}"
             style: { background: surfaceVariant, text_color: onSurfaceVariant }
 
   - id: load_more_indicator
@@ -283,15 +299,15 @@ components:
   - id: empty_state
     type: empty-state
     icon: account_balance_wallet
-    title: "No transactions"
-    body: "No transactions match the selected filter."
+    title: "{strings.empty_title}"
+    body: "{strings.empty_body}"
 
   - id: error_state
     type: error-state
     icon: cloud_off
-    title: "Could not load savings"
-    body: "{{error.message}}"
-    cta_label: "Retry"
+    title: "{strings.error_title}"
+    body: "{{error.message}}"  # i18n: skip (dynamic error text resolved via strings.error_* keys upstream)
+    cta_label: "{strings.retry_cta}"
     on_click:
       action: Retry
       action_contract:
@@ -373,8 +389,9 @@ i18n:
     balance_label_shares: "Shares Held"
     balance_label_savings: "Savings Balance"
     shares_at_label: "{{sharesHeld}} shares @ KES {{shareValue}}/share"
-    shares_total_label: "= KES {{total}} total"
-    account_no_label: "Account: {{accountNo}}"
+    balance_amount_kes: "KES {{savingsBalance | number}}"
+    shares_total_label: "= KES {{shareValue | number}} total"
+    account_no_label: "Account: {{savingsAccountNo}}"
     trend_label: "6-Month Trend"
     filter_all: "All"
     filter_deposits: "Deposits"
@@ -384,10 +401,15 @@ i18n:
     transaction_interest: "Interest Posting"
     transaction_fee: "Fee Deduction"
     transaction_transfer: "Transfer"
-    running_balance_label: "Balance: KES {{amount}}"
+    amount_deposit: "+ KES {{transaction.amount | number}}"
+    amount_withdrawal: "- KES {{transaction.amount | number}}"
+    amount_default: "KES {{transaction.amount | number}}"
+    running_balance_label: "Balance: KES {{transaction.runningBalance | number}}"
     reversed_label: "REVERSED"
     empty_title: "No transactions"
     empty_body: "No transactions match the selected filter."
+    error_title: "Could not load savings"
+    retry_cta: "Retry"
     error_network: "No internet. Showing cached savings data."
     error_server: "Server error. Please retry."
     error_not_found: "Savings account not found."

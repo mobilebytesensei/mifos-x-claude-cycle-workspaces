@@ -14,23 +14,77 @@ entries:
       - { name: CenterItem, role: response, api_id: get_centers_for_staff }
       - { name: PagedGroupsResponse, role: response, api_id: get_groups_for_staff }
       - { name: GroupItem, role: response, api_id: get_groups_for_staff }
-    produces_state: Content
+      - { name: GroupHealthSummary, role: derived, note: "Client-side derived from GroupItem + computed overdueRate; not a network DTO" }
+    produces_state: Loading
     auth_required: true
     cache:
       strategy: stale_while_revalidate
       ttl_seconds: 300
       key_template: "field_officer:groups:{staffId}"
-    error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
-      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline_banner }
-      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    on_error:
+      error_paths:
+        - { error_code: "401", behavior: navigate, nav_target: login, produces_state: Error }
+        - { error_code: "network.offline", behavior: fallback_cache, message_key: error_network, produces_state: Content }
+        - { error_code: "500", behavior: show_retry, message_key: error_server, produces_state: Error }
+        - { error_code: "no_groups_assigned", behavior: show_empty, message_key: error_no_groups, produces_state: Empty }
     notes: >
-      Both calls fire in parallel. After success, KPIs are aggregated client-side:
-      totalGroupsCount, totalActiveMembers, availableRegions for filter chips.
-      GroupHealthSummary is a client-side derived DTO combining GroupItem + computed overdueRate.
+      LoadDashboard action fires on Screen enters composition. Both get_centers_for_staff and
+      get_groups_for_staff invocations run in parallel over cmp-network-monitor-observed HTTP,
+      keyed on the session-derived staffId. After both resolve, the ViewModel aggregates KPIs
+      client-side: totalGroupsCount = pageItems.size, totalActiveMembers = sum(activeClientCount),
+      totalSavingsThisMonth = sum(totalSavingsBalance), totalLoansOutstanding =
+      sum(totalLoansOutstanding). GroupItem list is mapped to List<GroupHealthSummary>, and
+      healthIndicator is derived per overdueRate thresholds (GREEN < 0.05, AMBER 0.05-0.20,
+      RED >= 0.20). availableRegions is derived from the distinct GroupItem.officeName set.
+      filteredGroups initialises to the full groups list. Produces Content on success with
+      groups.isNotEmpty(); Empty when groups.isEmpty(); Error on network/server failure.
+
+  - screen_id: fieldOfficerDashboardScreen
+    trigger: on_success
+    endpoints: []
+    tables: []
+    dtos:
+      - { name: GroupHealthSummary, role: derived, note: "Produced after on_mount parallel fetch succeeds" }
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 300
+      key_template: "field_officer:groups:{staffId}"
+    on_error: {}
+    notes: >
+      After both get_centers_for_staff and get_groups_for_staff resolve, ViewModel maps the
+      GroupItem list to List<GroupHealthSummary>, computes KPI aggregates (totalGroupsCount,
+      totalActiveMembers, totalSavingsThisMonth, totalLoansOutstanding), extracts
+      availableRegions from distinct officeName values, and transitions state to Content.
+      filteredGroups is initialised to the full groups list and canExport is set to true when
+      userRole is FIELD_OFFICER or PROGRAM_MANAGER.
 
   - screen_id: fieldOfficerDashboardScreen
     trigger: on_interact
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    on_error: {}
+    notes: >
+      OnRegionFilterSelected, OnStatusFilterSelected and OnOverdueFilterSelected mutate the
+      corresponding selectedRegionFilter, selectedStatusFilter and selectedOverdueFilter fields
+      on FieldOfficerDashboardState and re-derive filteredGroups by applying the active filter
+      set to the full groups list. OnClearFilters resets all three selections to null and
+      restores filteredGroups to the full groups list. All interactions are pure ViewModel
+      state transitions with no network call and no persistence; ShowRegionPickerDialog,
+      ShowStatusPickerDialog and ShowOverduePickerDialog are one-shot events consumed by the
+      UI to open the corresponding picker dialogs built from availableRegions,
+      GroupStatusFilter values and OverdueRateFilter values respectively.
+
+  - screen_id: fieldOfficerDashboardScreen
+    trigger: on_export
     endpoints:
       - { api_id: run_report, transport: rest, method: get }
     tables: []
@@ -42,12 +96,18 @@ entries:
       strategy: no_cache
       ttl_seconds: 0
       key_template: ""
-    error_paths:
-      - { error_code: "403", behavior: show_snackbar, message_key: error_report_forbidden }
-      - { error_code: "500", behavior: show_snackbar, message_key: error_report_failed }
+    on_error:
+      error_paths:
+        - { error_code: "403", behavior: show_snackbar, message_key: error_auth, produces_state: Content }
+        - { error_code: "500", behavior: show_snackbar, message_key: error_server, produces_state: Content }
     notes: >
-      Export report is triggered by button tap (role-gated to FIELD_OFFICER / PROGRAM_MANAGER).
-      On success, system share sheet is launched with the CSV file.
+      OnExportReport is triggered from the top-bar export action; role-gated to
+      FIELD_OFFICER and PROGRAM_MANAGER via canExport == true. Sets isExporting = true
+      during the call and clears to false on completion regardless of outcome. Calls the
+      Fineract runreports FieldOfficerGroupReport endpoint with R_staffId and output-type=CSV;
+      on success FileResponse.content (CSV ByteArray) is handed to the OS share sheet via the
+      NavigateToExportReport one-shot event. On failure a ShowSnackbar event is emitted; the
+      screen remains in the Content state.
 
   - screen_id: fieldOfficerDashboardScreen
     trigger: on_refresh
@@ -56,14 +116,55 @@ entries:
       - { api_id: get_groups_for_staff, transport: rest, method: get }
     tables: []
     dtos:
+      - { name: PagedCentersResponse, role: response, api_id: get_centers_for_staff }
+      - { name: CenterItem, role: response, api_id: get_centers_for_staff }
       - { name: PagedGroupsResponse, role: response, api_id: get_groups_for_staff }
       - { name: GroupItem, role: response, api_id: get_groups_for_staff }
+      - { name: GroupHealthSummary, role: derived, note: "Re-derived after refresh fetch" }
     produces_state: Content
     auth_required: true
     cache:
       strategy: network_first
       ttl_seconds: 300
       key_template: "field_officer:groups:{staffId}"
-    error_paths:
-      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline_banner }
-    notes: Pull-to-refresh re-fetches both endpoints, invalidates cache, and re-aggregates KPIs.
+    on_error:
+      error_paths:
+        - { error_code: "network.offline", behavior: fallback_cache, message_key: error_network, produces_state: Content }
+        - { error_code: "500", behavior: show_snackbar, message_key: error_server, produces_state: Content }
+    notes: >
+      OnRefresh (Pull to refresh) invalidates the SQLDelight cache and re-fetches both
+      endpoints in parallel. Sets isRefreshing = true during the call; clears to false on
+      completion. Active filter selections (selectedRegionFilter, selectedStatusFilter,
+      selectedOverdueFilter) are preserved across refresh; filteredGroups is re-derived by
+      applying the current filter set to the refreshed groups list, and KPI aggregates are
+      recomputed from the refreshed GroupItem list.
+
+  - screen_id: fieldOfficerDashboardScreen
+    trigger: on_retry
+    endpoints:
+      - { api_id: get_centers_for_staff, transport: rest, method: get }
+      - { api_id: get_groups_for_staff, transport: rest, method: get }
+    tables: []
+    dtos:
+      - { name: PagedCentersResponse, role: response, api_id: get_centers_for_staff }
+      - { name: CenterItem, role: response, api_id: get_centers_for_staff }
+      - { name: PagedGroupsResponse, role: response, api_id: get_groups_for_staff }
+      - { name: GroupItem, role: response, api_id: get_groups_for_staff }
+      - { name: GroupHealthSummary, role: derived, note: "Re-derived after successful retry" }
+    produces_state: Loading
+    auth_required: true
+    cache:
+      strategy: network_first
+      ttl_seconds: 300
+      key_template: "field_officer:groups:{staffId}"
+    on_error:
+      error_paths:
+        - { error_code: "401", behavior: navigate, nav_target: login, produces_state: Error }
+        - { error_code: "network.offline", behavior: show_retry, message_key: error_network, produces_state: Error }
+        - { error_code: "500", behavior: show_retry, message_key: error_server, produces_state: Error }
+    notes: >
+      OnRetry action from the DashboardErrorState clears the error field, transitions back to
+      Loading, and re-runs the same parallel fetch as on_mount. On success transitions to
+      Content when groups.isNotEmpty() or Empty when groups.isEmpty(). On repeated failure
+      stays in the Error state with the new error code populated on
+      FieldOfficerDashboardError.

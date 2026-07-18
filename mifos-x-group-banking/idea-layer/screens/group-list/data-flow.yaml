@@ -40,7 +40,8 @@ entries:
     trigger: on_refresh
     description: >
       Pull-to-refresh resets pagination and forces a fresh fetch from companion API.
-      Bypasses stale_while_revalidate and overwrites the cache.
+      Bypasses stale_while_revalidate and overwrites the cache. Triggered by OnRefresh action
+      from GroupListAction.
     endpoints:
       - { api_id: get_my_groups, transport: rest, method: get }
     tables:
@@ -57,7 +58,8 @@ entries:
       key_template: "group_list:{userId}:page:0"
     error_paths:
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
-    notes: Resets offset to 0 and invalidates all paginated cache pages.
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: Resets offset to 0 and invalidates all paginated cache pages before the network call.
 
   - screen_id: groupListScreen
     trigger: on_interact
@@ -82,6 +84,101 @@ entries:
     notes: >
       Appends page results to group_list_cache using upsert (duplicate groupId handled by PK).
       hasMore computed from totalFilteredRecords vs current count.
+
+  - screen_id: groupListScreen
+    trigger: on_interact
+    action: OnSearch
+    description: >
+      Client-side transform: filters the in-memory groups list by matching group.name
+      (case-insensitive contains) against the search query string. No API call is issued.
+      OnClearSearch resets the query to "" and restores the full list.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: none
+    error_paths: []
+    notes: >
+      Pure client-side filter over the already-loaded groups list stored in GroupListState.filteredGroups.
+      ViewModel computes filteredGroups = groups.filter { it.name.contains(query, ignoreCase=true) }.
+      Empty filteredGroups after a non-empty query does NOT produce the Empty screen state —
+      the list renders as an empty lazy column so the user can clear and retry without losing data.
+
+  - screen_id: groupListScreen
+    trigger: on_interact
+    action: OnClearSearch
+    description: >
+      Restores the full unfiltered groups list in the ViewModel state and clears the active
+      search query. Pure client-side reset, no API call.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: none
+    error_paths: []
+    notes: >
+      Sets GroupListState.searchQuery = "" and filteredGroups = groups (the full cached list).
+      Bound to search_bar clear_icon on_clear.
+
+  - screen_id: groupListScreen
+    trigger: on_mount
+    action: ZeroGroupsReceived
+    description: >
+      When get_my_groups returns totalFilteredRecords=0 and pageItems is empty, the ViewModel
+      transitions to the Empty screen state, surfacing the "No groups yet" illustration with
+      Create Group and Join with Code CTAs.
+    endpoints:
+      - { api_id: get_my_groups, transport: rest, method: get }
+    tables:
+      - name: group_list_cache
+        persistence_contract: sqldelight_entity
+        mutation: read
+    dtos:
+      - { name: Group, role: response, api_id: get_my_groups }
+    produces_state: Empty
+    auth_required: true
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 300
+      key_template: "group_list:{userId}:page:0"
+    error_paths: []
+    notes: >
+      Empty state is a legitimate API success (HTTP 200 with empty pageItems), not an error.
+      The cache is still populated (zero rows) so offline visits also show the Empty state.
+      Retry is not offered; CTAs are Create Group (→ group-type-picker) and Join with Code (→ join-with-code).
+
+  - screen_id: groupListScreen
+    trigger: on_interact
+    action: Retry
+    description: >
+      Re-triggers the companion API call to /companion/groups/mine via GroupRepository after
+      an error state. Resets the error field and displays the shimmer loader while the response
+      is awaited.
+    endpoints:
+      - { api_id: get_my_groups, transport: rest, method: get }
+    tables:
+      - name: group_list_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: Group, role: response, api_id: get_my_groups }
+    produces_state: Loading
+    auth_required: true
+    cache:
+      strategy: bypass_and_refresh
+      ttl_seconds: 300
+      key_template: "group_list:{userId}:page:0"
+    error_paths:
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      Bound to error_state on_click. Resets GroupListState.error to null and isLoading to true
+      before the request. Successful response transitions back to Content; failure re-populates
+      the error field per the error type mapping in GroupListError.
 
 tables:
   - name: group_list_cache

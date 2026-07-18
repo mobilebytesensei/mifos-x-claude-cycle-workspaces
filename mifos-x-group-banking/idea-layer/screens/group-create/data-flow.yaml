@@ -6,9 +6,17 @@ entries:
   - screen_id: groupCreateScreen
     trigger: on_mount
     description: >
-      Load the GroupTypeConfig forwarded as a nav_arg from group-type-picker.
-      No API call needed — typeConfig is embedded in nav params.
-      The office field uses a companion-hosted office list fetched in the background.
+      Bootstrap the 4-step wizard. The GroupTypeConfig arrives as a nav_arg
+      from group-type-picker (pool_model, contribution_model, shareout_formula,
+      payout_order_method, share_value, contribution_amount,
+      social_fund_enabled, cycle_model) — no API call is needed to obtain it.
+      In parallel, the office dropdown is populated from a companion-hosted
+      office list fetched from /offices (stale-while-revalidate, TTL 1h) and
+      cached in offices_cache so the wizard renders offline. The first office
+      alphabetically is pre-selected as a sensible default. groupTypeName is
+      derived from typeConfig.group_type and used to render the top-bar title
+      and group_type_banner chip (a11y-labeled via ui.yaml accessibility_label
+      strings).
     endpoints:
       - { api_id: get_offices, transport: rest, method: get }
     tables:
@@ -29,18 +37,30 @@ entries:
       - { error_code: "500", behavior: show_retry, message_key: error_server }
     notes: >
       typeConfig arrives from group-type-picker nav_arg — no separate API call.
-      Offices are fetched once (TTL 1h) since they rarely change. Cached offline.
-      Pre-select the first office alphabetically as a sensible default.
+      Offices are fetched once (TTL 1h) since they rarely change. Cached offline
+      via offices_cache. The wizard is fully renderable from local cache when
+      offline; only the final OnSubmit needs connectivity (or offline enqueue).
 
   - screen_id: groupCreateScreen
     trigger: on_action
-    action: OnCreateGroupTap
+    action: OnSubmit
     description: >
-      User submits the group creation form. Single companion API call that orchestrates:
-      (1) createCenter in Fineract, (2) activate group, (3) associateClients (creator),
-      (4) assignRole (ORGANIZER for creator), (5) provision dt_group_type_config row
-      with the GroupTypeConfig from nav_args. Returns the new groupId + an inviteCode.
-      If offline, enqueues to sync_queue for deferred execution.
+      User taps "Create Group" on Step 4 (review + submit). A single COMP-GRP-001
+      companion API call (POST /companion/groups) atomically orchestrates:
+      (1) createCenter in Fineract, (2) activate the group, (3) associateClients
+      (creator becomes a member), (4) assignRole ORGANIZER to the creator, and
+      (5) provision the dt_group_type_config datatable row with the full
+      GroupTypeConfig from the nav_arg (pool_model, contribution_model,
+      shareout_formula, share_value / contribution_amount, payout_order_method,
+      social_fund_enabled, social_fund_percent, loan_multiplier, interest_rate,
+      fine_amount, cycle_length_months, max_members). userId is supplied by
+      SessionManager. Response: new groupId + Fineract centerId +
+      auto-generated 6-character inviteCode. On success both groups_cache and
+      group_type_config_cache rows are written so group-dashboard can render
+      offline; NavigateToGroupDashboard(groupId) is emitted. If offline, the
+      full request is serialised into sync_queue with entity_type
+      CREATE_GROUP_ORCHESTRATE and a name+officeId+userId idempotency key, and
+      the offline_notice_banner is shown on Step 4.
     endpoints:
       - { api_id: create_group_orchestrate, transport: rest, method: post }
     tables:
@@ -56,7 +76,7 @@ entries:
     dtos:
       - { name: CreateGroupOrchestrationRequest, role: request, api_id: create_group_orchestrate }
       - { name: CreateGroupOrchestrationResponse, role: response, api_id: create_group_orchestrate }
-    produces_state: Content
+    produces_state: Success
     auth_required: true
     cache:
       strategy: no_cache
@@ -77,16 +97,106 @@ entries:
     navigation:
       - { condition: "createSuccess", nav_target: group-dashboard, params: [groupId] }
     notes: >
-      Replaces the old two-step create_center + create_group_config calls with a single
-      companion orchestration endpoint (COMP-GRP-001). The typeConfig from nav_arg is
-      embedded in the request body. Both groups_cache and group_type_config_cache are
-      written on success so the group-dashboard can render offline.
+      Aligned with ui.yaml submit_button.on_click.action = OnSubmit and its
+      action_contract (effect: call_api). Replaces the legacy two-step
+      /centers + /datatables/dt_group_config sequence with a single companion
+      orchestration endpoint (COMP-GRP-001). typeConfig from nav_arg is embedded
+      in the request body. Both groups_cache and group_type_config_cache are
+      written on success so group-dashboard renders offline immediately. 409
+      surfaces error_group_name_taken snackbar; 400 populates validationErrors
+      per-field; 5xx is retry-able via error state. All user-visible strings
+      (errors, banner messages) resolve via the {strings.*} keys declared in
+      ui.yaml i18n.en so the wizard is fully translatable.
+
+  - screen_id: groupCreateScreen
+    trigger: on_action
+    action: OnNextStep
+    description: >
+      Client-side validation gate advancing the wizard. Step 1 validates
+      groupName (non-empty, ≤60 chars), officeId (required), meetingDay
+      (required), and meetingTime (required). Step 2 validates contribution
+      fields gated by typeConfig.contribution_model — share_value / shareMin /
+      shareMax for SHARE_BASED_VARIABLE (VSLA, ASCA, SILC); contributionAmount
+      for FIXED_AMOUNT / FIXED_NEGOTIATED (ROSCA, SHG, JLG, Burial); plus
+      payoutOrderMethod when typeConfig.pool_model == ROTATING_PAYOUT (ROSCA).
+      Shared rules (loanMultiplier, interestRate, cycleLengthMonths,
+      fineAmount) are required on Step 2. Step 3 validates maxMembers
+      (integer ≥2). On pass: increments currentStep to reveal the next
+      step's form. On fail: populates validationErrors map (keyed by form
+      field id, e.g. "group_name_field", "share_value_field") and shows
+      inline field-level error messages without any API call. Each field's
+      accessibility_label from ui.yaml is announced by screen readers when
+      focus moves to the error.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths:
+      - { error_code: "validation.step_incomplete", behavior: show_field_errors, message_key: error_validation }
+    notes: >
+      Pure client-side validation — no network call. Mirrors ui.yaml
+      next_button.on_click.action_contract (effect: transform_state; writes_to
+      [currentStep, validationErrors]; reads_from [typeConfig, groupName,
+      officeId, meetingDay, meetingTime, shareValue, shareMin, shareMax,
+      contributionAmount, payoutOrderMethod, maxMembers]).
+
+  - screen_id: groupCreateScreen
+    trigger: on_action
+    action: OnPreviousStep
+    description: >
+      Decrements currentStep by 1, returning to the previous wizard step.
+      No validation is performed on back-navigation and no field values are
+      cleared — all GroupCreateState fields retain their current values so
+      the user can review and modify prior input without loss.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      State-only transition. currentStep floor is 1; ui.yaml gates
+      back_step_button on `visible: "{{currentStep > 1}}"` so Step 1 has no
+      back button.
+
+  - screen_id: groupCreateScreen
+    trigger: on_action
+    action: OnBack
+    description: >
+      User taps top-bar close icon (navigation_icon on top_bar) or system back.
+      Dismisses the wizard and pops the back stack via NavigateBack event.
+      No data is persisted — any partially entered wizard state is discarded.
+      Mirrors ui.yaml top_bar.on_navigation_click.action_contract
+      (effect: navigate).
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      Pure navigation. Emits NavigateBack. Consumers of this screen
+      (group-type-picker, group-list) handle the returned focus.
 
 tables:
   - name: offices_cache
     description: >
-      SQLDelight cache of available Fineract Office rows. Keyed by id.
-      Served offline from cache (TTL 1h). Updated by /offices endpoint on mount.
+      SQLDelight cache of Fineract Office rows returned by GET /offices. Keyed
+      by id. Served offline from cache (TTL 1h). Updated by the on_mount
+      entry via stale-while-revalidate.
     persistence_contract: sqldelight_entity
     primary_key: "id"
     mutations: [upsert, read]
@@ -94,9 +204,11 @@ tables:
 
   - name: groups_cache
     description: >
-      Local record of created group metadata (groupId, name, fineractCenterId).
-      Written immediately after create_group_orchestrate succeeds so the new group
-      appears in the group-list offline without needing a re-fetch.
+      Local record of created group metadata (groupId, name, officeId,
+      fineractCenterId, inviteCode, meetingDay, meetingTime, currency).
+      Written immediately after create_group_orchestrate succeeds so the new
+      group appears in group-list offline without needing a re-fetch and
+      group-dashboard renders from local cache.
     persistence_contract: sqldelight_entity
     primary_key: "groupId"
     mutations: [write, read]
@@ -104,9 +216,13 @@ tables:
 
   - name: group_type_config_cache
     description: >
-      Per-group copy of the GroupTypeConfig used at creation, stored locally in
-      the dt_group_type_config shape. Populated from nav_arg after creation success.
-      Drives metric card selection on group-dashboard when offline.
+      Per-group copy of the GroupTypeConfig used at creation, stored locally
+      in the dt_group_type_config datatable shape (pool_model,
+      contribution_model, shareout_formula, payout_order_method, share_value,
+      contribution_amount, social_fund_enabled, social_fund_percent,
+      cycle_length_months, loan_multiplier, interest_rate, fine_amount,
+      max_members). Populated from nav_arg after creation success. Drives
+      metric card selection on group-dashboard when offline.
     persistence_contract: sqldelight_entity
     primary_key: "groupId"
     mutations: [write, read]
@@ -115,9 +231,11 @@ tables:
 
   - name: sync_queue
     description: >
-      Offline sync queue table (Store5/Bookkeeper pattern). Accepts CREATE_GROUP_ORCHESTRATE
-      payloads when the device is offline. Drained by background sync when connectivity
-      is restored.
+      Offline sync queue table (Store5 / Bookkeeper pattern). Accepts
+      CREATE_GROUP_ORCHESTRATE payloads with an idempotency key when the
+      device is offline. Drained by the background sync worker when
+      connectivity is restored; the companion API's idempotency guard
+      prevents duplicate group creation on repeated drain attempts.
     persistence_contract: sqldelight_entity
     primary_key: "id"
     mutations: [write, read, delete]
@@ -126,9 +244,10 @@ tables:
 cache:
   strategy: no_cache
   notes: >
-    Group creation is a write/mutation endpoint — no response caching.
-    offices_cache uses stale_while_revalidate (TTL 3600s) declared in the on_mount entry.
-    No legacy api.yaml#cache. Single source: this data-flow file.
+    Group creation is a write/mutation endpoint — no response caching. The
+    offices_cache uses stale_while_revalidate (TTL 3600s) declared in the
+    on_mount entry. No legacy api.yaml#cache. Single source: this data-flow
+    file.
 
 sync_queue:
   entries:
@@ -137,5 +256,6 @@ sync_queue:
       priority: NORMAL
       idempotency_key: "name:{name}:officeId:{officeId}:userId:{userId}"
       notes: >
-        Queued when offline. The companion API uses an idempotency key to prevent
-        duplicate group creation if the sync drains multiple times.
+        Queued when the device is offline at Step 4 submit. The COMP-GRP-001
+        companion API uses the idempotency key server-side to prevent
+        duplicate group creation if the sync worker drains multiple times.
