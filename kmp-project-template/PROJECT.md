@@ -1,8 +1,14 @@
 # Project: kmp-project-template
 
-**Created**: 2026-03-27
-**Status**: Active
-**Type**: Multi-platform App (KMP)
+## Metadata
+
+| Field | Value |
+|-------|-------|
+| **Created** | 2026-03-27 |
+| **Status** | Active |
+| **Type** | kmp |
+| **Subtype** | kmp-app |
+| **Source** | source/kmp-project-template/ |
 
 project_type: kmp
 

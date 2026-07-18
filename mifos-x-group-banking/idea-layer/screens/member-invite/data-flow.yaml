@@ -1,0 +1,217 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: member-invite
+
+entries:
+  - screen_id: memberInviteScreen
+    trigger: on_mount
+    description: >
+      Load pending (unaccepted) invite rows for the group from the
+      dt_companion_invitations datatable. Paginated (max 50 at default).
+      Caller must hold ORGANIZER or TREASURER role.
+    endpoints:
+      - { api_id: list_pending_invites, transport: rest, method: get }
+    tables:
+      - name: pending_invites_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: PendingInvite, role: response, api_id: list_pending_invites }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 60
+      key_template: "pending_invites:{groupId}"
+    error_paths:
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "403", behavior: show_error, message_key: error_forbidden }
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      Companion API filters to accepted_at IS NULL rows automatically.
+      Cache TTL 60s — invite list changes infrequently between generate and revoke actions.
+
+  - screen_id: memberInviteScreen
+    trigger: on_action
+    action: OnGenerateInvite
+    description: >
+      Organizer submits a new invite for the given contact + role.
+      POST /companion/datatables/invitations/{groupId} creates a new row in
+      dt_companion_invitations and returns a 6-char token + deep-link URL.
+      After success, reload the pending list.
+    endpoints:
+      - { api_id: create_invite, transport: rest, method: post }
+      - { api_id: list_pending_invites, transport: rest, method: get }
+    tables:
+      - name: pending_invites_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: CreateInviteRequest, role: request, api_id: create_invite }
+      - { name: GeneratedInvite, role: response, api_id: create_invite }
+      - { name: PendingInvite, role: response, api_id: list_pending_invites }
+    produces_state: Generated
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths:
+      - { error_code: "400", behavior: show_field_errors, message_key: error_validation }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "403", behavior: show_error, message_key: error_forbidden }
+      - { error_code: "409", behavior: show_error, message_key: error_active_invite_exists }
+      - { error_code: "network.offline", behavior: show_error, message_key: error_offline }
+      - { error_code: "500", behavior: show_error, message_key: error_server }
+    notes: >
+      create_invite fires first; on success, list_pending_invites is re-fetched
+      (invalidating the 60s cache) so the newly generated invite appears in the list.
+      expires_at is computed client-side as now() + 7 days in ISO-8601.
+      cmp-network-monitor gates connectivity — action is disabled offline.
+
+  - screen_id: memberInviteScreen
+    trigger: on_action
+    action: OnRevokeInvite
+    description: >
+      Organizer revokes a pending invite. Optimistic UI removal followed by
+      DELETE call. On failure, the row is re-inserted with an error banner.
+    endpoints:
+      - { api_id: revoke_invite, transport: rest, method: delete }
+    tables:
+      - name: pending_invites_cache
+        persistence_contract: sqldelight_entity
+        mutation: delete
+    dtos:
+      - { name: PendingInvite, role: request, api_id: revoke_invite }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths:
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "403", behavior: show_error, message_key: error_forbidden }
+      - { error_code: "404", behavior: undo_optimistic, message_key: error_invite_not_found }
+      - { error_code: "500", behavior: undo_optimistic, message_key: error_server }
+    notes: >
+      Optimistic delete: remove from pending_invites_cache immediately for UX snappiness.
+      If revoke_invite returns 404 or 500, the local cache row is restored and an
+      error banner is shown. Corresponds to COMP-DT-005.
+
+  - screen_id: memberInviteScreen
+    trigger: on_action
+    action: OnCopyCode
+    description: >
+      Copy the 6-character invite code to the device clipboard. Local-only side
+      effect via ClipboardManager; no API call, no cache mutation.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Generated
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      Emits ShowSnackbar event to confirm the copy. No error paths — clipboard
+      writes cannot fail at the API layer.
+
+  - screen_id: memberInviteScreen
+    trigger: on_action
+    action: OnCopyLink
+    description: >
+      Copy the full deep-link invite URL to the device clipboard. Local-only via
+      ClipboardManager; no API call, no cache mutation.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Generated
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      Emits ShowSnackbar event to confirm the copy.
+
+  - screen_id: memberInviteScreen
+    trigger: on_action
+    action: OnShareLink
+    description: >
+      Open the native OS share sheet with the invite link + code pre-populated.
+      Emits ShowShareSheet event which platform-specific side dispatches
+      Intent.ACTION_SEND / UIActivityViewController.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Generated
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      Share sheet dismissal is not observed — success is opening the sheet.
+
+  - screen_id: memberInviteScreen
+    trigger: on_action
+    action: OnRetry
+    description: >
+      Retry the last failed API call (list, create, or revoke) after Network
+      or Server error. Re-enters whichever branch above was in flight.
+    endpoints:
+      - { api_id: list_pending_invites, transport: rest, method: get }
+      - { api_id: create_invite, transport: rest, method: post }
+      - { api_id: revoke_invite, transport: rest, method: delete }
+    tables:
+      - name: pending_invites_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: PendingInvite, role: response, api_id: list_pending_invites }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 60
+      key_template: "pending_invites:{groupId}"
+    error_paths:
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      Retry replays the last failed request stored in ViewModel state.
+      cmp-network-monitor precondition applies — offline retry falls back to cache
+      for list_pending_invites; create/revoke error out with error_offline.
+
+tables:
+  - name: pending_invites_cache
+    description: >
+      SQLDelight cache of pending PendingInvite rows per group. Sourced from
+      dt_companion_invitations datatable (accepted_at IS NULL filter).
+      Written on list, insert-on-create, delete-on-revoke.
+    persistence_contract: sqldelight_entity
+    primary_key: "rowId"
+    mutations: [upsert, delete, read]
+    offline_strategy: serve_stale
+    source_datatable: dt_companion_invitations
+
+cache:
+  strategy: stale_while_revalidate
+  ttl_seconds: 60
+  notes: >
+    Pending invite list cached 60s. Write operations (create, revoke) bypass cache
+    and force a reload of the list. No legacy api.yaml#cache. Single source here.
+
+sync_queue:
+  entries: []
+  notes: >
+    Invite generation and revocation require connectivity — tokens must be issued
+    server-side with cryptographic uniqueness. No offline enqueue for these ops.
+    cmp-network-monitor blocks OnGenerateInvite / OnRevokeInvite when offline.

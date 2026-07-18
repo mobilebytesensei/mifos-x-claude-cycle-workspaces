@@ -1,0 +1,60 @@
+feature: offline-sync-engine
+
+entry_points:
+  - type: background
+    description: "DataSyncWorker (worker-kmp CoroutineWorker) triggers on connectivity regain + a periodic schedule; OfflineSubmitSyncer is edge-triggered on NetworkStatus."
+  - type: direct
+    description: "User opens the Sync console (M17 'Sync' tab) and taps 'Sync now' or 'Pull latest'."
+  - type: deep_link
+    description: "A 'N failed' snackbar action or the Needs-Attention badge routes the user into the Sync console."
+
+transitions:
+  # --- outbox drain lifecycle ---
+  - from: idle
+    to: syncing
+    trigger: "connectivity regained OR trigger_sync"
+  - from: content
+    to: syncing
+    trigger: "trigger_sync (Sync now) with N pending commands"
+  - from: no_network
+    to: syncing
+    trigger: "connectivity regained (edge trigger) — queued commands begin draining"
+  - from: syncing
+    to: idle
+    trigger: "outbox drained + delta-pull complete (zero rejects)"
+  - from: syncing
+    to: content
+    trigger: "delta-pull complete but new commands were queued during the drain"
+  - from: syncing
+    to: error
+    trigger: "batch rejected OR delta-pull failed — failed commands routed to needs-attention-inbox"
+  - from: syncing
+    to: no_network
+    trigger: "connectivity lost mid-drain — remaining commands stay PENDING"
+
+  # --- delta-pull only ---
+  - from: idle
+    to: syncing
+    trigger: "trigger_delta_pull (Pull latest)"
+  - from: empty
+    to: syncing
+    trigger: "trigger_delta_pull — first full office/portfolio hydrate on fresh login"
+
+  # --- error recovery ---
+  - from: error
+    to: syncing
+    trigger: "retry_failed (Retry all) — FAILED entries re-queued to RETRYING"
+  - from: error
+    to: needs-attention-inbox
+    trigger: "open_needs_attention (Review failed) — per-command triage"
+
+  # --- steady state ---
+  - from: content
+    to: needs-attention-inbox
+    trigger: "view_command_detail on a FAILED row"
+  - from: idle
+    to: empty
+    trigger: "logout clearAll() then re-login with no queued work + no prior delta"
+
+navigates_to:
+  - needs-attention-inbox

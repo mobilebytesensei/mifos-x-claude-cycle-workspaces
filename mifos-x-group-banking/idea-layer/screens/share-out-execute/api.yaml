@@ -3,100 +3,116 @@ schema_version: "4.0"
 feature_id: share-out-execute
 
 api:
-  - id: post_share_out_record
+  # ACCUMULATING types (VSLA/ASCA/SHG/SILC) — COMP-DIST-001
+  - id: post_shareout_execute
+    function: post_shareout_execute
     method: POST
-    endpoint: "/fineract-provider/api/v1/datatables/dt_share_out/{centerId}"
-    description: Create the cycle share-out record in the dt_share_out datatable
-    auth: BasicAuth
-    path_params:
-      centerId: Long
-    body_ref: CreateShareOutRequest
-    response_ref: DataTableEntryResponse
+    endpoint: "/companion/groups/{groupId}/shareout/execute"   # COMP-DIST-001
+    description: >
+      Execute share-out for ACCUMULATING types. The companion API records the dt_share_out entry
+      and executes per-member savings withdrawals via Fineract in a single transaction.
+      Replaces: POST /datatables/dt_share_out/{centerId} + sequential POST /savingsaccounts/{id}/transactions.
+    params:
+      groupId: { type: String, required: true, source: nav_params }
+    body:
+      cycleNumber: Int
+      totalPool: { type: Double, currency: KES }
+      memberPayouts: "List<MemberPayoutRequest>"
+      shareoutFormula: String   # from typeConfig — sent for server-side audit
+      executedAt: String        # ISO-8601
+    response:
+      type: object
+      fields:
+        shareoutRecordId: String
+        succeededCount: Int
+        failedCount: Int
+        failedMemberIds: "List<String>"
     offline_queue:
       strategy: enqueue_to_sync_queue
       priority: HIGH
-      entity_type: SHARE_OUT
-    error_handling:
-      400: Show validation error snackbar; remain in Executing state
-      403: Forbidden — chairperson role required; navigate back
-      5xx: Queue entire payload to SyncQueue if offline strategy; show error
+      entity_type: SHARE_OUT_EXECUTE
+    errors:
+      400: Validation error — show snackbar; remain in Executing state
+      403: Forbidden — organizer/treasurer/chairperson role required
+      409: Share-out already executed for this cycle
+      500: Server error — queue offline if !isOnline
 
-  - id: post_member_payout
+  # ROTATING_PAYOUT types (ROSCA/chit) — COMP-DIST-002
+  - id: post_rotation_payout_execute
+    function: post_rotation_payout_execute
     method: POST
-    endpoint: "/fineract-provider/api/v1/savingsaccounts/{savingsAccountId}/transactions"
-    description: Post withdrawal transaction for one member's share-out payout (called sequentially per member)
-    auth: BasicAuth
-    path_params:
-      savingsAccountId: Long
-    body_ref: SavingsWithdrawalRequest
-    response_ref: SavingsTransactionResponse
+    endpoint: "/companion/groups/{groupId}/rotation/execute"   # COMP-DIST-002
+    description: >
+      Execute rotation payout for ROTATING_PAYOUT types (ROSCA). Updates rosca_rotation datatable
+      (marks current slot as paid, advances rotation position) and executes the single-recipient
+      savings withdrawal via Fineract.
+    params:
+      groupId: { type: String, required: true, source: nav_params }
+    body:
+      recipientMemberId: String
+      amount: { type: Double, currency: KES }
+      payoutOrderMethod: String    # FIXED_ORDER | LOTTERY | AUCTION
+      executedAt: String
+    response:
+      type: object
+      fields:
+        rotationRecordId: String
+        newRotationPosition: Int
+        nextRecipientId: "String?"
     offline_queue:
       strategy: enqueue_to_sync_queue
       priority: HIGH
-      entity_type: SAVINGS
-      ordered_by: member_index
-    error_handling:
-      400: Member FAILED status; add to failedPayouts; continue with next member
-      403: Forbidden; member FAILED status
-      5xx: Member FAILED status; add to failedPayouts; continue with next member
+      entity_type: ROTATION_PAYOUT_EXECUTE
+    errors:
+      403: Forbidden — organizer/treasurer/chairperson role required
+      409: Rotation payout already executed for this round
+      500: Server error
+
+cache_strategy:
+  default: no-cache   # execute endpoints are write-only; no caching
 
 dtos:
+  MemberPayoutRequest:
+    memberId: String
+    payoutAmount: { type: Double, currency: KES }
+    sharePercent: Double
+
   MemberPayout:
-    fields:
-      - { name: memberId, type: Long }
-      - { name: memberName, type: String }
-      - { name: memberInitials, type: String }
-      - { name: totalSavings, type: Double, currency: KES }
-      - { name: sharePercent, type: Double }
-      - { name: payoutAmount, type: Double, currency: KES }
-      - { name: savingsAccountId, type: Long }
+    memberId: String
+    memberName: String
+    memberInitials: String
+    sharesHeld: "Int?"           # PRORATA_SHARES
+    totalSavings: "Double?"      # PRORATA_SAVINGS
+    sharePercent: Double
+    payoutAmount: { type: Double, currency: KES }
 
   MemberExecutionStatus:
     values: [PENDING, IN_PROGRESS, DONE, FAILED, QUEUED]
     descriptions:
       PENDING: Not yet started
-      IN_PROGRESS: Withdrawal POST in flight
-      DONE: Withdrawal succeeded
-      FAILED: Withdrawal failed — will appear in failedPayouts
+      IN_PROGRESS: Companion API call in flight
+      DONE: Payout succeeded
+      FAILED: Payout failed — will appear in failedPayouts
       QUEUED: Enqueued to SyncQueue for offline execution
 
-  CreateShareOutRequest:
-    fields:
-      - { name: cycle_number, type: Int }
-      - { name: total_pool, type: Double }
-      - { name: executed_at, type: String, format: "dd MMMM yyyy" }
-      - { name: status, type: String, default: "completed" }
-      - { name: locale, type: String, default: "en" }
-      - { name: dateFormat, type: String, default: "dd MMMM yyyy" }
+  ShareOutExecuteResponse:
+    shareoutRecordId: String
+    succeededCount: Int
+    failedCount: Int
+    failedMemberIds: "List<String>"
 
-  SavingsWithdrawalRequest:
-    fields:
-      - { name: transactionDate, type: String }
-      - { name: transactionAmount, type: Double }
-      - { name: paymentTypeId, type: Int, default: 1, note: "1=Cash" }
-      - { name: note, type: String, example: "Share-out payout — Cycle {{cycleNumber}}" }
-      - { name: locale, type: String, default: "en" }
-      - { name: dateFormat, type: String, default: "dd MMMM yyyy" }
-
-  SavingsTransactionResponse:
-    fields:
-      - { name: officeId, type: Long }
-      - { name: savingsId, type: Long }
-      - { name: resourceId, type: Long }
-
-  DataTableEntryResponse:
-    fields:
-      - { name: resourceId, type: Long }
-      - { name: resourceIdentifier, type: String }
+  RotationPayoutExecuteResponse:
+    rotationRecordId: String
+    newRotationPosition: Int
+    nextRecipientId: "String?"
 
   SyncQueueItem:
-    fields:
-      - { name: id, type: Long }
-      - { name: entityType, type: String }
-      - { name: operation, type: String }
-      - { name: payloadJson, type: String }
-      - { name: status, type: SyncStatus }
-      - { name: priority, type: Int }
+    id: Long
+    entityType: String
+    operation: String
+    payloadJson: String
+    status: SyncStatus
+    priority: Int
 
   SyncStatus:
     values: [PENDING, IN_PROGRESS, SYNCED, FAILED]
@@ -105,8 +121,8 @@ dependencies:
   repositories:
     - name: ShareOutRepository
       methods:
-        - "recordShareOut(centerId: Long, cycleNumber: Int, totalPool: Double, executedAt: String): Flow<Long>"
-        - "executeMemberPayout(savingsAccountId: Long, amount: Double, cycleNumber: Int, note: String): Flow<Unit>"
+        - "executeShareOut(groupId: String, request: ShareOutExecuteRequest): Flow<ShareOutExecuteResponse>"   # COMP-DIST-001
+        - "executeRotationPayout(groupId: String, request: RotationPayoutRequest): Flow<RotationPayoutExecuteResponse>"   # COMP-DIST-002
     - name: SyncQueueRepository
       methods:
         - "enqueue(entityType: String, operation: String, payloadJson: String, priority: Int): Flow<Unit>"

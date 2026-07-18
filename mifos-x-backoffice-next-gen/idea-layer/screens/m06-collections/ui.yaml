@@ -1,0 +1,275 @@
+screen_id: m06-collections
+name: "M06 · Collections (field operations)"
+status: designed
+archetype: master_detail
+initial_state: loading
+
+# ─────────────────────────────────────────────────────────────────────────
+# M06 · Collections — meeting-based collection sheets for group/center
+# lending, the core field-officer offline workflow. Flow: pick the meeting
+# context (center/group + meeting date, options from GET /v1/collectionsheet
+# ?command=generate — resolved through dynamic-template-forms) → the sheet is
+# generated (center → its groups → each group's clients → per-client loan
+# repayment + savings deposit dues) → the officer captures the amounts
+# collected per client row inline (productive / JLG / individual collections)
+# → the whole captured sheet is submitted as ONE atomic batch through the
+# offline-sync-engine outbox (POST /v1/collectionsheet?command=save, or
+# /v1/centers|groups/{id}?command=saveCollectionSheet, replayed via POST
+# /v1/batches enclosingTransaction with a durable idempotency key → exactly
+# once, zero double-post) → PDF receipts per client. Every mutating control
+# renders VISIBLE / DISABLED (reason) / HIDDEN purely from the
+# permission-capability-engine resolution of the user's READ_COLLECTIONSHEET /
+# SAVECOLLECTIONSHEET_CENTER / SAVECOLLECTIONSHEET_GROUP / REPAYMENT_LOAN /
+# DEPOSIT_SAVINGSACCOUNT codes — no role branching. Center/group context is a
+# read-only cross-link into m03-groups-centers; a loan row deep-links read-only
+# into m04-loan-portfolio.
+# ─────────────────────────────────────────────────────────────────────────
+
+# ── States (map 1:1 to Store5 ScreenState over the CACHE_FIRST_SWR read,
+#    plus the mutation/outbox states for the batch submit) ────────────────
+states:
+  loading:
+    description: "Generating or resolving the collection sheet for the selected center/group + meeting date — CACHE_FIRST_SWR serves any previously-generated cached sheet instantly while the sheet regenerates in the background so a 30-member sheet renders under 1s."
+    is_default: true
+  content:
+    description: "The collection sheet is rendered: the center header (or group), each group's clients as rows with the per-client loan repayment due + savings deposit due, and an editable amount-collected field per row. A running captured-vs-expected total is shown. Capture and Submit controls render only for the permissions the user holds."
+  empty:
+    description: "No dues are outstanding for the selected center/group meeting (nothing to collect) — an informational 'nothing due for this meeting' message is shown instead of a sheet, with the option to pick another center/group or meeting date."
+  no-network:
+    description: "Offline — the last-generated collection sheet is served from the Room cache with a persistent 'offline · cached sheet' banner; the officer keeps capturing amounts and the submit enqueues to the outbox for replay when connectivity returns."
+  error:
+    description: "Collection-sheet generation failed and no cached sheet exists (or the server returned a 4xx/5xx). An error message with a Retry CTA is shown; a 403 triggers the permission-drift refresh in permission-capability-engine rather than a crash."
+  submitting:
+    description: "The captured sheet is being submitted as one atomic batch — while online the POST /v1/batches enclosingTransaction call is in flight; while offline the sheet is being written to the durable outbox. A progress indicator and a disabled sheet prevent double taps."
+  queued-offline:
+    description: "The captured sheet was enqueued to the offline outbox with a durable idempotency key (submitted while offline, or accepted-for-later while online) — a 'queued · will sync when online' confirmation is shown; the sheet replays exactly-once and any rejected row surfaces in needs-attention-inbox."
+
+# ── Business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-5) ──────────
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  description: "Generates a meeting collection sheet (per-client loan repayment + savings deposit dues) via a store5 SourceOfTruth over androidx.room (CACHE_FIRST_SWR) so the sheet renders offline. Captures amounts per row as an in-ViewModel draft, serializes it with kotlinx.serialization, and enqueues to the durable outbox for exactly-once POST /v1/batches replay. Gated by core/permissions."
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "org.mobilenativefoundation.store.store5"
+    - "androidx.room"
+    - "kotlinx.serialization"
+    - "Fineract POST /v1/collectionsheet (command=generate|save) + /v1/batches (enclosingTransaction)"
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T11:20:00Z"
+  required_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/permissions
+    - core-base/store
+    - core-base/network
+
+# ── Shell (reached as a permission-gated nav root; also opened from the
+#    m01-dashboard today's-route tile. must_have/P2 field-ops module —
+#    surfaced when the user holds READ_COLLECTIONSHEET) ───────────────────
+shell:
+  bottom_navigation_visible: false
+  top_app_bar_visible: true
+  fab_visible: false
+  snackbar_visible: true
+
+# ── Components ──────────────────────────────────────────────────────────
+components:
+  - id: header
+    type: header
+    label: "{strings.m06_title}"
+    testTag: "m06-collections_header"
+    visible_states: [loading, content, empty, no-network, error, submitting, queued-offline]
+
+  - id: sheet_context_picker
+    type: button
+    label: "{strings.m06_pick_meeting}"
+    testTag: "m06-collections_context_picker"
+    variant: text
+    visible_states: [content, empty, no-network]
+    gated_permission: READ_COLLECTIONSHEET
+    on_click:
+      action: pick_sheet_context
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/collectionsheet?command=generate (template-driven context)"
+        reads_from:
+          - table: cached_templates
+        writes_to:
+          - table: collection_sheets
+        produces_state: loading
+        invalidates:
+          - selectedSheetContext
+        description: "Open the dynamic-template-forms picker (center/group, staff, and meeting-date option lists from the collection-sheet generate template) and, on confirm, generate the sheet for the chosen context: issue POST /v1/collectionsheet?command=generate and hydrate the Room cache so the per-client dues render. Requires READ_COLLECTIONSHEET; the context list is scoped to the officer's staffId/office."
+        action_contract_hash: "sha256:m06-pick-context"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: content_area
+    type: content_area
+    label: "Collection sheet — center/group header, per-group client rows with loan-repayment + savings-deposit dues, editable amount-collected fields, and a captured-vs-expected running total"
+    testTag: "m06-collections_content"
+    empty_label: "{strings.m06_empty}"
+
+  - id: sheet_member_row
+    type: list_item
+    label: "One client row on the sheet: client display name + external id, loan repayment due, savings deposit due, and the editable amount-collected fields"
+    testTag: "m06-collections_item"
+    visible_states: [content, no-network]
+    on_click:
+      action: open_loan_detail
+      target: m04-loan-portfolio
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Deep-link (read-only) into the client's loan detail in m04-loan-portfolio for context on the repayment being collected — the outstanding schedule, arrears, and prior transactions — without leaving the collections capture flow. The sheet row itself is never mutated by this navigation; amount capture happens through the inline capture field."
+        action_contract_hash: "sha256:m06-open-loan"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: capture_amount_field
+    type: text_field
+    label: "{strings.m06_amount_collected}"
+    testTag: "m06-collections_capture_field"
+    visible_states: [content, no-network]
+    gated_permission: SAVECOLLECTIONSHEET_CENTER
+    validation:
+      type: currency
+      min: 0
+      rule: "amount collected must be >= 0 and <= the sum of the row's loan-repayment + savings-deposit dues; blank = nothing collected this meeting"
+    on_click:
+      action: capture_member_collection
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs:
+          - "kotlinx.serialization (the in-ViewModel sheet draft it mutates is the @Serializable outbox payload)"
+        description: "Record the amount collected for the tapped client row (split into loan-repayment and savings-deposit components) into the in-ViewModel sheet draft, updating the row's captured flag and the sheet's running captured-vs-expected total. A pure state change that marks the sheet dirty and enables Submit; nothing posts until the whole sheet is submitted. Requires the save permission; disabled otherwise."
+        action_contract_hash: "sha256:m06-capture-row"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: sheet_total_summary
+    type: card
+    label: "{strings.m06_total_summary}"
+    testTag: "m06-collections_total"
+    visible_states: [content, no-network, submitting, queued-offline]
+    on_click:
+      action: none
+      action_contract:
+        effect: none
+        library_refs: []
+        description: "A read-only summary card showing the sheet's total expected dues, total amount captured so far, the number of client rows captured versus outstanding, and the meeting context (center/group + date). Non-interactive — displays the running collection progress only; no navigation and no state change on this surface."
+        action_contract_hash: "sha256:m06-total-summary"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: submit_sheet_button
+    type: button
+    label: "{strings.m06_submit_sheet}"
+    testTag: "m06-collections_submit"
+    variant: primary
+    visible_states: [content, no-network]
+    enabled_states: [content, no-network]
+    gated_permission: SAVECOLLECTIONSHEET_CENTER
+    on_click:
+      action: submit_collection_sheet
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/collectionsheet?command=save + POST /v1/batches (enclosingTransaction)"
+        reads_from:
+          - table: collection_sheets
+        writes_to:
+          - table: framework_submit_drafts
+        produces_state: submitting
+        invalidates:
+          - sheetDraftDirty
+          - collectionSheetStatus
+        description: "Assemble the captured sheet into a saveCollectionSheet command body (bulkRepaymentTransactions[] + bulkDisbursementTransactions[] with dateFormat + locale) and enqueue it to the durable offline outbox as ONE atomic batch (POST /v1/batches enclosingTransaction) with a durable idempotency key, so collections post exactly-once offline and a retry never double-posts. Needs SAVECOLLECTIONSHEET_CENTER."
+        action_contract_hash: "sha256:m06-submit-sheet"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: view_receipts_button
+    type: button
+    label: "{strings.m06_view_receipts}"
+    testTag: "m06-collections_receipts"
+    variant: text
+    visible_states: [queued-offline]
+    enabled_states: [queued-offline]
+    on_click:
+      action: generate_receipts
+      action_contract:
+        effect: persist_file
+        library_refs:
+          - cmp-file-utils
+        external_library_refs:
+          - "org.apache.pdfbox (PDFBox-style receipt rendering)"
+        reads_from:
+          - table: collection_sheets
+        writes_to:
+          - table: generated_receipts
+        produces_state: queued-offline
+        invalidates:
+          - receiptsGenerated
+        description: "Render a PDF transaction receipt per captured client (loan repayment + savings deposit acknowledgement with amount, meeting date, and reference) from the submitted sheet and write the files to durable local storage so the officer can hand receipts to members offline. The receipt files are regenerated deterministically and never mutate the collection record."
+        action_contract_hash: "sha256:m06-receipts"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: review_needs_attention_button
+    type: button
+    label: "{strings.m06_review_failed}"
+    testTag: "m06-collections_review_failed"
+    variant: text
+    visible_states: [queued-offline, error]
+    enabled_states: [queued-offline, error]
+    on_click:
+      action: open_needs_attention
+      target: needs-attention-inbox
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Navigate to needs-attention-inbox to triage any collection-sheet row the server rejected on replay (e.g. a repayment against a closed loan) — Retry / Edit / Discard per row — while the accepted rows stay posted. A pure cross-link into the shared failed-replay triage surface; no collection record is mutated by this navigation."
+        action_contract_hash: "sha256:m06-open-needs-attention"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: retry_button
+    type: button
+    label: "{strings.m06_retry}"
+    testTag: "m06-collections_retry"
+    variant: text
+    visible_states: [error, no-network]
+    enabled_states: [error, no-network]
+    on_click:
+      action: retry_generate
+      state: loading
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/collectionsheet?command=generate"
+        reads_from:
+          - table: collection_sheets
+        produces_state: loading
+        invalidates:
+          - sheetFetchedAt
+        description: "Re-issue the POST /v1/collectionsheet?command=generate for the current center/group + meeting context through the Store5 SourceOfTruth to rebuild the sheet after a generation failure, refreshing the Room cache and the FetchedAt watermark, then transition back to content when the dues resolve. On a 403 this routes into the permission-drift refresh instead of retrying blind."
+        action_contract_hash: "sha256:m06-retry"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"

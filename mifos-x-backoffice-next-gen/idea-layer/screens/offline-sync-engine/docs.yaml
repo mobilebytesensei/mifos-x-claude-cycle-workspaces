@@ -1,0 +1,150 @@
+feature: offline-sync-engine
+status: approved
+schema_version: v2
+cluster: foundation
+module: foundation
+priority: must_have
+new_infra: true
+is_primary_flow: false
+has_ui: true
+has_api: true
+has_server: false
+capabilities:
+  - has_ui
+  - has_api
+  - has_offline_cache
+  - has_data_migration
+  - has_flow
+  - requires_auth
+requires_features:
+  - needs-attention-inbox
+  - permission-capability-engine
+provides_to:
+  - m02-clients
+  - m04-loan-portfolio
+  - m05-savings-deposits-shares
+  - m06-collections
+  - m11-tellers-cash
+contracts:
+  apis:
+    - id: replay_batch
+      method: POST
+      path: /v1/batches
+      idempotency: durable
+      note: AllOrNothing == enclosingTransaction=true; Idempotency-Key header per outbox entry.
+    - id: delta_changelist
+      method: GET
+      path: /v1/audits
+      note: changeListSync delta feed scoped by officeId + makerDateTimeFrom watermark.
+  tables:
+    - name: draft_outbox
+      backend: room
+      version: 11
+      keys:
+        - formKey
+        - uniqueKey
+      durable_columns:
+        - idempotency_key
+        - action
+        - entity
+        - payload
+        - status
+        - created_at
+        - server_error
+      note: framework_submit_drafts / DraftEntity — local system-of-record until replayed.
+    - name: fetched_at
+      backend: room
+      note: FetchedAtEntity — per-cache freshness watermark for CACHE_FIRST_SWR.
+  dtos:
+    - name: BatchRequest
+      role: request
+    - name: BatchResponse
+      role: response
+    - name: AuditEntry
+      role: response
+libraries:
+  cmp_modules:
+    - cmp-network-monitor
+  core_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core-base/store
+    - core-base/network
+  external:
+    - org.mobilenativefoundation.store.store5
+    - androidx.room (Room 3)
+    - kotlinx.serialization
+  training_surfaces:
+    - training-layer/instructions/stream-first/latest/CORE_STORE.md
+    - training-layer/instructions/stream-first/latest/CORE_DATA.md
+    - training-layer/instructions/stream-first/latest/CORE_DATABASE.md
+    - training-layer/instructions/stream-first/latest/CORE_BASE_STORE.md
+vm_actions:
+  - action: OnSyncNowClick
+    maps_to_on_click: trigger_sync
+    handler: >-
+      Drain PENDING outbox via OfflineSubmitSyncer → BatchSubmitHandler.AllOrNothing(POST /v1/batches); mark
+      SUBMITTED/FAILED; then delta-pull.
+  - action: OnPullLatestClick
+    maps_to_on_click: trigger_delta_pull
+    handler: Synchronizer.changeListSync over GET /v1/audits scoped to office/portfolio; advance FetchedAt watermark.
+  - action: OnRetryAllClick
+    maps_to_on_click: retry_failed
+    handler: Re-queue FAILED → RETRYING; re-drain reusing original idempotency keys (no double-post).
+  - action: OnReviewFailedClick
+    maps_to_on_click: open_needs_attention
+    handler: sendEvent(NavigateToNeedsAttention).
+  - action: OnCommandRowClick
+    maps_to_on_click: view_command_detail
+    handler: sendEvent(NavigateToCommandDetail(id)); FAILED → needs-attention deep-link.
+  - action: Internal.ReceiveOutbox
+    handler: Fold RoomSubmitOutbox observe() Flow into ScreenState (idle/content/empty/error).
+  - action: Internal.ReceiveNetworkStatus
+    handler: On regain → auto-trigger drain; on loss → no_network state.
+error_cases:
+  - code: batch.rejected
+    ux: Command → needs-attention-inbox with the Fineract server error; error state; 'Review failed' CTA.
+  - code: batch.partial_failure
+    ux: 'Independent mode: succeeded rows commit, failed rows route to needs-attention; notify-once snackbar.'
+  - code: network.offline
+    ux: no_network state; 'N queued · will sync when online' banner; commands stay PENDING (never dropped).
+  - code: auth.session_expired
+    ux: Route to permission-capability-engine re-auth; on success replay revalidates permission.
+  - code: delta_pull.failed
+    ux: Retry with backoff; cached reads still served (CACHE_FIRST_SWR).
+test_fixtures:
+  - outbox with 1 PENDING REPAYMENT_LOAN → replay exactly once → Fineract shows 1 posting
+  - outbox with a server-rejected SAVECOLLECTIONSHEET_CENTER → lands in needs-attention with server_error
+  - kill+restore app with queued commands → idempotency keys + payloads survive (Room v11)
+  - delta-pull → only officeId=3 working set hydrated
+acceptance_refs:
+  - >-
+    Every offline mutation queued with a DURABLE idempotency_key (Room v11) + (action,entity); replay exactly-once (zero
+    double-post)
+  - >-
+    Delta-pull hydrates the user's office/portfolio working set via changeListSync adapters; rejected replay ->
+    Needs-Attention
+plan_ref: idea-plan.yaml#features[offline-sync-engine]
+summary: >-
+  Offline outbox + batch replay + durable idempotency + per-entity delta. DraftSubmitHandler + RoomSubmitOutbox +
+  OfflineSubmitSyncer; commands replayed via POST /batches (AllOrNothing == enclosingTransaction). Per-domain offline
+  policy (field-ops queued; admin/accounting online-only).
+approve_hash: "sha256:8cd2f92a6690cec7a5b05b76acc97f7f7c97e32d767d58626a204530498ba736"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T00:00:00Z'
+enriched_by: /idea-feature-enrich
+status_history:
+  - from: enriched
+    to: designed
+    at: '2026-07-17T10:12:10.431Z'
+    by: /idea-feature-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

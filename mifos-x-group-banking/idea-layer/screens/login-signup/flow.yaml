@@ -1,0 +1,134 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: login-signup
+
+navigates_to:
+  - personal-dashboard
+  - group-list
+  - group-create
+  - group-type-picker
+  - join-with-code
+
+flow_logic:
+  on_load:
+    - action: check_biometric_availability
+      check: BiometricManager.isAvailable()
+      on_available:
+        - action: set_state
+          field: isBiometricAvailable
+          value: true
+        - action: check_stored_session
+          check: SessionStore.hasValidToken()
+          on_valid:
+            - action: prompt_biometric
+              emit: PromptBiometric
+          on_invalid:
+            - action: noop
+              comment: "Show standard login form"
+
+  on_login:
+    - action: validate_login_form
+      fields: [emailPhone, password]
+      on_invalid: show_validation_errors
+      on_valid:
+        - action: set_state
+          field: isSubmitting
+          value: true
+        - api: companion_login
+          on_success:
+            - action: store_session
+              store: SessionStore.saveToken(response.sessionToken, response.tokenExpiresAt)
+            - action: inspect_group_memberships
+              check: "response.groupMemberships.isNotEmpty()"
+              non_empty:
+                - emit: NavigateToPersonalDashboard
+              empty:
+                - action: set_screen_state
+                  state: ZeroGroups
+          on_error:
+            - action: set_error
+              field: error
+              value: LoginSignupError.from(httpError)
+            - action: set_state
+              field: isSubmitting
+              value: false
+
+  on_signup:
+    - action: validate_signup_form
+      fields: [name, emailPhone, password]
+      on_invalid: show_validation_errors
+      on_valid:
+        - action: set_state
+          field: isSubmitting
+          value: true
+        - api: companion_self_register
+          on_success:
+            - action: store_session
+              store: SessionStore.saveToken(response.sessionToken, response.tokenExpiresAt)
+            - action: set_screen_state
+              state: ZeroGroups
+              comment: "New registrations always have empty group list"
+          on_error:
+            - action: set_error
+              field: error
+              value: LoginSignupError.from(httpError)
+            - action: set_state
+              field: isSubmitting
+              value: false
+
+  on_biometric_unlock:
+    - action: invoke_biometric_prompt
+      on_success:
+        - api: companion_me
+          on_success:
+            - action: store_session
+              store: SessionStore.refreshFromProfile(response)
+            - action: inspect_group_memberships
+              check: "response.groupMemberships.isNotEmpty()"
+              non_empty:
+                - emit: NavigateToPersonalDashboard
+              empty:
+                - action: set_screen_state
+                  state: ZeroGroups
+          on_error:
+            - action: set_error
+              field: error
+              value: LoginSignupError.BiometricFailed
+      on_failure:
+        - action: set_error
+          field: error
+          value: LoginSignupError.BiometricFailed
+
+  on_create_group_tap:
+    - emit: NavigateToGroupTypePicker
+
+  on_join_with_code_tap:
+    - emit: NavigateToJoinWithCode
+
+  on_forgot_password:
+    - emit: ShowSnackbar
+      message_key: forgot_password_snackbar
+
+  validation_rules:
+    name: { min_length: 2, max_length: 80, required: true, mode: signup }
+    emailPhone: { required: true, pattern: email_or_e164_phone }
+    password: { required: true, min_length: 8, max_length: 64 }
+
+dependencies:
+  repositories:
+    - name: AuthRepository
+      methods:
+        - "login(request: LoginRequest): Result<AuthResponse>"
+        - "selfRegister(request: SelfRegisterRequest): Result<AuthResponse>"
+        - "fetchMe(): Result<UserProfile>"
+  services:
+    - name: BiometricManager
+      methods:
+        - "isAvailable(): Boolean"
+        - "authenticate(): Flow<BiometricResult>"
+    - name: SessionStore
+      methods:
+        - "hasValidToken(): Boolean"
+        - "saveToken(token: String, expiresAt: String): Unit"
+        - "refreshFromProfile(profile: UserProfile): Unit"
+    - NetworkMonitor

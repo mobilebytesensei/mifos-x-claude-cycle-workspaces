@@ -1,0 +1,83 @@
+schema_version: v1.0.0
+feature: m11-tellers-cash
+scenarios:
+  - id: content_teller_list_and_cash_position
+    description: "The module resolves the teller list with each teller's vault cash position and renders the permission-gated command bar"
+    preconditions: ["user holds READ_TELLER", "teller sources reachable", "capability map available"]
+    actions: ["open Tellers & Cash", "wait for load"]
+    assertions:
+      - "state transitions loading -> content"
+      - "each teller renders office + vault cash balance + status chip"
+      - "opening a teller shows its cashiers (allocated cash) and the transaction ledger"
+      - "only controls whose {ACTION}_{ENTITY} permission the user holds are present"
+    priority: high
+
+  - id: teller_management_gated
+    description: "A user with READ_TELLER but no cash/management permission sees the read surface with every mutating control HIDDEN (fail-closed)"
+    preconditions: ["user holds READ_TELLER but NOT CREATE_TELLER / ALLOCATECASHIER_TELLER / ALLOCATECASHTOCASHIER_TELLER / SETTLECASHFROMCASHIER_TELLER"]
+    actions: ["open Tellers & Cash", "open a teller detail"]
+    assertions:
+      - "the teller list + vault cash position + cashier list + ledger are visible"
+      - "the New-teller FAB, Assign-cashier, Allocate-cash and Settle-cash controls are HIDDEN"
+      - "no role name is branched on — visibility is 100% data from the PermissionSet"
+    priority: high
+
+  - id: allocate_cash_queues_exactly_once
+    description: "A cash allocation issued offline is written to the durable outbox and replays exactly once (no double-move) even across an app kill/retry"
+    preconditions: ["user holds ALLOCATECASHTOCASHIER_TELLER", "network unavailable", "a cashier is selected"]
+    actions: ["allocate cash to the cashier", "kill and relaunch the app", "restore connectivity", "force a retry"]
+    assertions:
+      - "the allocate command is written to draft_outbox with a durable idempotency_key + (action=ALLOCATECASHTOCASHIER, entity=TELLER)"
+      - "state is queued_offline with a 'N queued · will sync when online' banner"
+      - "the queued command + idempotency key survive the app kill (Room durable)"
+      - "on reconnect the allocation posts EXACTLY once — the vault is debited once and the cashier credited once"
+    priority: high
+
+  - id: settle_cash_gated_and_guarded
+    description: "Settle is hidden without permission, and a settle exceeding the cashier's allocated cash is refused client-side then server-authoritative"
+    preconditions: ["user WITHOUT SETTLECASHFROMCASHIER_TELLER opens the teller, then a user WITH it attempts an over-settle"]
+    actions: ["open teller detail as the un-permissioned user", "as the permissioned user, settle more than the cashier's allocated cash"]
+    assertions:
+      - "for the un-permissioned user the Settle-cash control is HIDDEN"
+      - "for the permissioned user the client-side guard blocks the over-settle before enqueue"
+      - "if the server still rejects (409), the command lands in needs-attention-inbox with the Fineract error"
+    priority: high
+
+  - id: create_teller_from_template_form
+    description: "New-teller opens the dynamic-template-forms create form sourced from GET /v1/tellers/template and enqueues a durable create command"
+    preconditions: ["user holds CREATE_TELLER", "tellers/template reachable or cached"]
+    actions: ["tap New teller", "fill office + name + status from the template option lists", "submit"]
+    assertions:
+      - "the form fields + office option list come from the server template, not hardcoded"
+      - "submit assembles a create-teller command JsonObject and enqueues it through the durable outbox"
+      - "online -> submitting -> content with the new teller; offline -> queued_offline"
+    priority: medium
+
+  - id: assign_cashier_date_range
+    description: "Assign-cashier binds a staff member to the teller for a date range; the date_range filter re-projects assignments over cached rows"
+    preconditions: ["user holds ALLOCATECASHIER_TELLER", "cashiers/template reachable or cached"]
+    actions: ["assign a staff member as cashier with a start/end date", "change the date_range filter"]
+    assertions:
+      - "the assign command (staffId + startDate + endDate + isFullDay) is enqueued through the durable outbox"
+      - "changing the date range re-projects the cashier list over already-cached rows with no network call"
+    priority: medium
+
+  - id: offline_shows_cached_cash_position
+    description: "Offline, the teller list + cash position + ledger show last cached values with an offline banner"
+    preconditions: ["tellers/cashiers/ledger previously cached in tellers_cash", "network unavailable"]
+    actions: ["open Tellers & Cash offline"]
+    assertions:
+      - "state is no_network"
+      - "the offline banner is visible"
+      - "each teller shows its cached vault cash position and ledger; queued movements show a pending-sync marker"
+    priority: medium
+
+  - id: error_command_rejected_routes_to_needs_attention
+    description: "A server-rejected cash command surfaces the Fineract error and offers Review-failed into needs-attention-inbox"
+    preconditions: ["a queued allocate/settle command is rejected on replay (400/409)"]
+    actions: ["let the outbox replay", "tap Review failed"]
+    assertions:
+      - "state is error with the Fineract server error surfaced"
+      - "open_needs_attention navigates to needs-attention-inbox where the command is triaged (Retry / Edit / Discard)"
+      - "the rejected cash movement never silently disappears and never double-moves cash"
+    priority: medium

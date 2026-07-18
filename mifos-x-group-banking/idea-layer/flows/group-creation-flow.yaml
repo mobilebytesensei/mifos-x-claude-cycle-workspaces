@@ -3,85 +3,108 @@ id: group-creation-flow
 name: Group Creation Flow
 type: happy
 feature_ref: group-management
-client_type: admin
 milestone: v1.0.0
 description: >
-  Admin taps the FAB on group-list to launch a 3-step creation wizard, configures
-  the group's name, meeting schedule, savings rules, and loan policies, then confirms
-  to create a new Fineract Center and group config; navigates to the new group-dashboard.
+  An organizer creates a group from the group-list (or the zero-groups empty state). They
+  first pick the group type from the 9 config-driven GroupTypeConfig options on
+  group-type-picker, then complete the 4-step group-create wizard (name/cycle, meeting +
+  contribution rules, loan/distribution policies, review), which adapts its fields to the
+  selected type. On confirm the companion API provisions the group and associates the
+  creator as its organizer; they land on the new group's dashboard. (Global self-signup
+  pivot, 2026-07-17 — no admin client_type; the type picker precedes the wizard.)
 
 entry_point:
   screen: group-list
-  condition: user_taps_fab
+  condition: organizer_taps_create_group
 
 steps:
   - step: 1
     screen: group-list
-    action: Tap + FAB to start group creation
-    transition: group-create
-    condition: admin_authenticated
+    action: Organizer taps + FAB (or "Create a group" from the zero-groups state) to start group creation
+    transition: group-type-picker
+    condition: organizer_authenticated
 
   - step: 2
-    screen: group-create
-    action: "Step 1 — Enter group name and cycle length (e.g. 12-week cycle)"
-    transition: group-create-step-2
-    condition: name_valid
+    screen: group-type-picker
+    action: >
+      Step 1a — Pick the group type from 9 seeded, config-driven GroupTypeConfig options
+      (ROSCA, ASCA, VSLA, SILC, SHG, SACCO/Credit-Union, CBO/Village-Banking,
+      Burial/Welfare-Society, JLG). Selection is written to the group_type_config datatable
+      and drives which fields the wizard shows next.
+    transition: group-create
+    condition: group_type_selected
 
   - step: 3
     screen: group-create
-    action: "Step 2 — Set meeting frequency (weekly/biweekly) and individual savings contribution rules"
-    transition: group-create-step-3
-    condition: meeting_config_valid
+    action: "Step 1 — Enter group name and cycle length; fields adapt to the selected GroupTypeConfig"
+    transition: group-create
+    condition: name_valid
 
   - step: 4
     screen: group-create
-    action: "Step 3 — Set loan policies: multiplier (e.g. 3×) and interest rate"
-    transition: review-and-create
-    condition: loan_policy_valid
+    action: "Step 2 — Set meeting frequency (weekly/biweekly) and contribution rules (fixed vs share-based per type)"
+    transition: group-create
+    condition: meeting_config_valid
 
   - step: 5
     screen: group-create
-    action: Review all settings on summary screen and tap Create Group
-    transition: group-dashboard
-    condition: all_steps_complete
+    action: "Step 3 — Set loan / distribution policies: multiplier, interest; payout_order_method for ROSCA-family types"
+    transition: group-create
+    condition: loan_policy_valid
 
   - step: 6
-    screen: group-dashboard
-    action: Group created; system syncs to Fineract Center and saves dt_group_config
+    screen: group-create
+    action: Step 4 — Review all settings on the summary screen and tap Create Group
+    transition: organizer-dashboard
+    condition: all_steps_complete
+
+  - step: 7
+    screen: organizer-dashboard
+    action: >
+      Group created; the companion API provisions the group + associates the creator as
+      its organizer (loan officer of record) and persists group_type_config. Organizer
+      lands on the new group's dashboard.
     transition: end
     condition: sync_success_or_queued
 
 exit_points:
-  - screen: group-dashboard
+  - screen: organizer-dashboard
     outcome: success
-    description: Group created and config persisted; admin lands on the new group's dashboard.
+    description: Group created and config persisted; organizer lands on the new group's dashboard.
 
   - screen: group-create
     outcome: failure
-    description: API error during creation — error shown inline; draft config preserved.
+    description: Companion API error during creation — error shown inline; draft config preserved.
+
+  - screen: group-type-picker
+    outcome: abandoned
+    description: Organizer backs out before selecting a type; returns to group-list / zero-groups state.
 
 screens_involved:
   - group-list
+  - group-type-picker
   - group-create
-  - group-dashboard
+  - organizer-dashboard
 
 api_calls:
-  - endpoint: /centers
+  - endpoint: /companion/groups
     method: POST
-    purpose: Create a new Fineract Center representing the savings group.
+    purpose: Provision a new group and associate the creator as its organizer (loan officer of record).
 
-  - endpoint: /datatables/dt_group_config
+  - endpoint: /datatables/group_type_config/{groupId}
     method: POST
-    purpose: Persist group configuration (cycle length, meeting frequency, loan multiplier, interest rate).
+    purpose: Persist the selected GroupTypeConfig (pool_model, contribution_model, distribution + policy params) on m_group.
 
 offline_capable: true
 offline_notes: >
-  Group creation request is queued in sync_queue if connectivity is absent.
-  Group-dashboard renders in offline-draft state until sync completes.
+  The type picker and wizard render offline, but group provisioning goes through the
+  companion API's service-credential bridge and is queued in sync_queue when connectivity
+  is absent. The organizer-dashboard renders in offline-draft state until sync completes.
 
 analytics_events:
-  - group_creation_started: Admin taps FAB on group-list
-  - group_creation_step_completed: "Each wizard step is advanced (step_number: 1|2|3)"
-  - group_creation_confirmed: Admin taps Create Group on review screen
-  - group_creation_success: POST /centers returns 200
+  - group_creation_started: Organizer taps FAB / Create a group
+  - group_type_selected: "Organizer picks a group type (type: rosca|asca|vsla|silc|shg|sacco|cbo|welfare|jlg)"
+  - group_creation_step_completed: "Each wizard step advanced (step_number: 1|2|3|4)"
+  - group_creation_confirmed: Organizer taps Create Group on the review screen
+  - group_creation_success: Companion API provisions the group; creator associated as organizer
   - group_creation_queued: Request queued offline for later sync

@@ -401,15 +401,891 @@ datatable_crud_native:
   - { name: delete_datatable_entry,  mcp_tool: mcp__mifos__delete_datatable_entry,  method: DELETE, path: /datatables/{name}/{entityId} }
 
 # ─────────────────────────────────────────────────────────────────────
+# COMPANION API — MCP tools for /companion/* endpoints
+# Added by bridge run bridge-260717-002 (self-signup pivot, 2026-07-17)
+# These tools resolve /companion/* screen api.yaml needs.
+# Tier 1 = wraps Fineract endpoints the companion executes internally.
+# Tier 2 = datatable-CRUD the companion exposes behind a clean URL.
+# ─────────────────────────────────────────────────────────────────────
+
+companion_api:
+
+  # ── COMP-AUTH-* (ARCHITECTURE §companion_api COMP-AUTH contract) ──────
+
+  - name: companion_self_register
+    contract_ref: COMP-AUTH-001
+    tier: 1
+    mcp_tool: mcp__mifos__companion_self_register
+    method: POST
+    path: /companion/auth/self-register
+    requires_auth: false
+    description: >
+      Self-registration bridge. Creates a companion user + linked Fineract client in one
+      atomic call. Internally calls POST /self/registration (Fineract self-service) +
+      POST /clients (back-office) + assigns default office.
+    fineract_endpoints_composed:
+      - POST /self/registration
+      - POST /clients
+      - POST /clients/{clientId}?command=activate
+    body:
+      name: String
+      emailPhone: String    # email or E.164 phone
+      password: String
+    response:
+      userId: String
+      sessionToken: String
+      tokenExpiresAt: String
+      groupMemberships: "List<GroupMembership>"   # empty on first registration
+    kotlin_mapping:
+      service: CompanionAuthService
+      method: "suspend fun selfRegister(req: SelfRegisterRequest): AuthResponse"
+    sandbox_test: SKIPPED
+    sandbox_test_reason: "companion API is a deferred build — not yet deployed on sandbox"
+    production_only: true
+
+  - name: companion_login
+    contract_ref: COMP-AUTH-002
+    tier: 1
+    mcp_tool: mcp__mifos__companion_login
+    method: POST
+    path: /companion/auth/login
+    requires_auth: false
+    description: >
+      Per-user authentication. Validates credentials against companion auth store and
+      returns session token + full group membership list with role per group resolved from
+      dt_member_role. Internally uses Fineract /authentication (service credential) to
+      validate + resolve memberships.
+    fineract_endpoints_composed:
+      - POST /authentication
+      - GET /datatables/dt_member_role/{clientId}
+    body:
+      emailPhone: String
+      password: String
+    response:
+      userId: String
+      sessionToken: String
+      tokenExpiresAt: String
+      groupMemberships: "List<GroupMembership>"
+    kotlin_mapping:
+      service: CompanionAuthService
+      method: "suspend fun login(req: LoginRequest): AuthResponse"
+    sandbox_test: SKIPPED
+    production_only: true
+
+  - name: companion_me
+    contract_ref: COMP-AUTH-003
+    tier: 1
+    mcp_tool: mcp__mifos__companion_me
+    method: GET
+    path: /companion/auth/me
+    requires_auth: true
+    description: >
+      Fetch authenticated user profile + group memberships. Called after biometric unlock
+      to refresh session. Internally resolves clientId from auth token then calls
+      GET /clients/{id} + dt_member_role lookup.
+    fineract_endpoints_composed:
+      - GET /clients/{clientId}
+      - GET /datatables/dt_member_role/{clientId}
+    response:
+      userId: String
+      name: String
+      emailPhone: String
+      groupMemberships: "List<GroupMembership>"
+    kotlin_mapping:
+      service: CompanionAuthService
+      method: "suspend fun me(): UserProfile"
+    sandbox_test: SKIPPED
+    production_only: true
+
+  # ── COMP-GRP-* (ARCHITECTURE §companion_api COMP-GRP contract) ────────
+
+  - name: companion_create_group_orchestrate
+    contract_ref: COMP-GRP-001
+    tier: 1
+    mcp_tool: mcp__mifos__companion_create_group
+    method: POST
+    path: /companion/groups
+    requires_auth: true
+    description: >
+      Orchestrated group creation. Single call that executes: (1) POST /centers (create
+      Fineract center), (2) POST /centers/{id}?command=activate, (3) POST
+      /groups/{id}?command=associateClients, (4) assignRole (creator becomes organizer),
+      (5) upsert group_type_config datatable row with typeConfig payload. Returns groupId
+      + Fineract centerId + shareable inviteCode.
+    fineract_endpoints_composed:
+      - POST /centers
+      - POST /centers/{centerId}?command=activate
+      - POST /groups/{groupId}?command=associateClients
+      - POST /groups/{groupId}/roles (assignRole)
+      - POST /datatables/dt_group_config/{centerId}
+    body:
+      name: String
+      officeId: Long
+      userId: Long
+      currency: String
+      meetingDay: String
+      meetingTime: String
+      typeConfig: GroupTypeConfig
+    response:
+      groupId: String
+      fineractCenterId: Long
+      inviteCode: String
+    kotlin_mapping:
+      service: CompanionGroupService
+      method: "suspend fun createGroup(req: CreateGroupOrchestrationRequest): CreateGroupOrchestrationResponse"
+    sandbox_test: SKIPPED
+    production_only: true
+
+  - name: companion_get_group
+    contract_ref: COMP-GRP-001
+    tier: 1
+    mcp_tool: mcp__mifos__companion_get_group
+    method: GET
+    path: /companion/groups/{groupId}
+    requires_auth: true
+    description: >
+      Fetch group details including merged group_type_config in one call. Internally:
+      GET /centers/{centerId} + GET /datatables/dt_group_config/{centerId}. Returns
+      full Group + GroupTypeConfig to drive ACCUMULATING vs ROTATING_PAYOUT metric cards.
+    fineract_endpoints_composed:
+      - GET /centers/{centerId}
+      - GET /datatables/dt_group_config/{centerId}
+    params:
+      groupId: String    # companion group UUID maps to Fineract centerId internally
+    response:
+      id: String
+      fineractCenterId: Long
+      name: String
+      cycleNumber: Int
+      cycleLengthMonths: Int
+      meetingFrequency: String
+      memberCount: Int
+      overdueLoansCount: Int
+      status: String
+      typeConfig: GroupTypeConfig
+    kotlin_mapping:
+      service: CompanionGroupService
+      method: "suspend fun getGroup(groupId: String): Group"
+    sandbox_test: SKIPPED
+    production_only: true
+
+  - name: companion_list_my_groups
+    contract_ref: COMP-GRP-001
+    tier: 1
+    mcp_tool: mcp__mifos__companion_list_my_groups
+    method: GET
+    path: /companion/groups/mine
+    requires_auth: true
+    description: >
+      Fetch all groups the authenticated user belongs to across all roles. Internally
+      resolves clientId from auth token → dt_member_role lookup → GET /centers?clientId
+      for each group. Returns groupType + viewerRole per group (not available from raw
+      Fineract /centers endpoint).
+    fineract_endpoints_composed:
+      - GET /datatables/dt_member_role/{clientId}
+      - GET /centers/{centerId}  (per group)
+      - GET /datatables/dt_group_config/{centerId}  (per group — typeSlug)
+    params:
+      paged: Boolean
+      limit: Int
+      offset: Int
+    response:
+      totalFilteredRecords: Int
+      pageItems: "List<GroupListItem>"
+    kotlin_mapping:
+      service: CompanionGroupService
+      method: "suspend fun listMyGroups(limit: Int, offset: Int): PagedGroupList"
+    sandbox_test: SKIPPED
+    production_only: true
+
+  - name: companion_get_viewer_role
+    contract_ref: COMP-GRP-001
+    tier: 2
+    mcp_tool: mcp__mifos__companion_get_viewer_role
+    method: GET
+    path: /companion/groups/{groupId}/my-role
+    requires_auth: true
+    description: >
+      Resolve the authenticated user's role in a specific group from dt_member_role.
+      Thin wrapper over GET /datatables/dt_member_role/{clientId} filtered to groupId.
+    datatable: dt_member_role
+    fineract_endpoints_composed:
+      - GET /datatables/dt_member_role/{clientId}
+    response:
+      role: String    # ORGANIZER | MEMBER | TREASURER | CHAIRPERSON | SECRETARY
+      memberId: Long
+    kotlin_mapping:
+      service: CompanionGroupService
+      method: "suspend fun getViewerRole(groupId: String): ViewerRole"
+    sandbox_test: SKIPPED
+    production_only: true
+
+  - name: companion_associate_clients
+    contract_ref: COMP-GRP-001
+    tier: 1
+    mcp_tool: mcp__mifos__companion_associate_clients
+    method: POST
+    path: /companion/groups/{groupId}/associate-clients
+    requires_auth: true
+    description: >
+      Associate an authenticated invitee to a group with the role from the invitation.
+      Internally: POST /groups/{fineractGroupId}?command=associateClients + upsert
+      dt_member_role row. Called from join-with-code after token validation.
+    fineract_endpoints_composed:
+      - POST /groups/{groupId}?command=associateClients
+      - POST /datatables/dt_member_role/{clientId}
+    body:
+      clientIds: "List<Long>"
+      roleToAssign: String
+    response:
+      resourceId: Long
+      groupId: Long
+      clientIds: "List<Long>"
+    kotlin_mapping:
+      service: CompanionGroupService
+      method: "suspend fun associateClients(groupId: String, req: AssociateClientsRequest): AssociateClientsResponse"
+    sandbox_test: SKIPPED
+    production_only: true
+
+  - name: companion_get_group_corpus
+    contract_ref: COMP-GRP-001
+    tier: 2
+    mcp_tool: mcp__mifos__companion_get_group_corpus
+    method: GET
+    path: /companion/groups/{groupId}/corpus
+    requires_auth: true
+    description: >
+      Fetch corpus for ACCUMULATING types (currentBalance, contributions, loansOutstanding)
+      or rotation state for ROTATING_PAYOUT (rotationPosition, nextRecipientName, poolAmount).
+      Thin wrapper over GET /datatables/dt_group_corpus/{centerId}. Distinct from the
+      existing mcp__mifos__get_group_corpus tool (which addresses m_center directly by
+      centerId) — this resolves the companion groupId → centerId internally.
+    datatable: dt_group_corpus
+    fineract_endpoints_composed:
+      - GET /datatables/dt_group_corpus/{centerId}
+    params:
+      groupId: String
+    response:
+      currentBalance: Double
+      openingBalance: Double
+      totalContributionsThisCycle: Double
+      totalLoansOutstanding: Double
+      lastUpdated: String
+      rotationPosition: "Int?"
+      nextRecipientName: "String?"
+      nextRecipientPosition: "Int?"
+    kotlin_mapping:
+      service: CompanionGroupService
+      method: "suspend fun getGroupCorpus(groupId: String): GroupCorpus"
+    sandbox_test: SKIPPED
+    production_only: true
+
+  - name: companion_get_group_accounts
+    contract_ref: COMP-GRP-001
+    tier: 1
+    mcp_tool: mcp__mifos__companion_get_group_accounts
+    method: GET
+    path: /companion/groups/{groupId}/accounts
+    requires_auth: true
+    description: >
+      Fetch savings and loan account summary for a group, including shareOutProjection
+      for ACCUMULATING types. Internally: GET /centers/{centerId}/accounts + aggregation.
+    fineract_endpoints_composed:
+      - GET /centers/{centerId}/accounts
+      - GET /savingsaccounts (filtered to group)
+      - GET /loans (filtered to group)
+    response:
+      savingsBalance: Double
+      loansOutstanding: Double
+      activeLoanCount: Int
+      shareOutProjection: "Double?"
+    kotlin_mapping:
+      service: CompanionGroupService
+      method: "suspend fun getGroupAccounts(groupId: String): GroupAccounts"
+    sandbox_test: SKIPPED
+    production_only: true
+
+  # ── COMP-DT-* (ARCHITECTURE §companion_api COMP-DT contract) ──────────
+
+  - name: companion_get_group_type_configs
+    contract_ref: COMP-DT-003
+    tier: 2
+    mcp_tool: mcp__mifos__companion_get_group_type_configs
+    method: GET
+    path: /companion/datatables/group_type_config/{entityId}
+    requires_auth: true
+    description: >
+      Fetch all seeded GroupTypeConfig rows from the companion API. entityId=0 returns
+      the global seed catalogue (9+ types). Backed by dt_group_type_config datatable on
+      m_group. Returns the full registry used to populate the group-type-picker screen.
+    datatable: dt_group_type_config
+    schema:
+      apptable: m_group
+      multi_row: false
+      columns:
+        - { name: slug, type: string, required: true }
+        - { name: display_name, type: string, required: true }
+        - { name: pool_model, type: string }               # ROTATING_PAYOUT | ACCUMULATING | NONE
+        - { name: payout_order_method, type: string }     # FIXED_ORDER | LOTTERY | AUCTION | NEED_BASED | NA
+        - { name: shareout_formula, type: string }        # NONE | PRORATA_SHARES | PRORATA_SAVINGS | EQUAL
+        - { name: contribution_model, type: string }      # FIXED_AMOUNT | SHARE_BASED_VARIABLE | FIXED_NEGOTIATED
+        - { name: share_value, type: decimal }
+        - { name: min_shares_per_meeting, type: integer }
+        - { name: max_shares_per_meeting, type: integer }
+        - { name: contribution_amount, type: decimal }
+        - { name: internal_lending_enabled, type: boolean }
+        - { name: loan_interest_model, type: string }     # NONE | FLAT | DECLINING | GROUP_SET | AUCTION_IMPLICIT
+        - { name: loan_multiplier_cap, type: decimal }
+        - { name: loan_max_term_periods, type: integer }
+        - { name: external_linkage, type: string }        # NONE | BANK_LINKAGE | MFI_ONLENDING
+        - { name: joint_liability, type: boolean }
+        - { name: share_capital, type: boolean }
+        - { name: social_fund_enabled, type: boolean }
+        - { name: social_fund_contribution, type: decimal }
+        - { name: welfare_only_mode, type: boolean }
+        - { name: benefit_waiting_period_days, type: integer }
+        - { name: cycle_model, type: string }             # FIXED_DURATION | N_MEMBERS_ROTATION | PERPETUAL_OPEN
+        - { name: cycle_length_months, type: integer }
+        - { name: meeting_cadence, type: string }         # DAILY | WEEKLY | BIWEEKLY | MONTHLY
+        - { name: group_size_min, type: integer }
+        - { name: group_size_max, type: integer }
+        - { name: formality, type: string }               # INFORMAL | SEMI_FORMAL | FORMAL_REGISTERED
+        - { name: promoter_role, type: string }
+    params:
+      entityId: Long    # 0 = global seed catalogue
+    response: "List<GroupTypeConfig>"
+    kotlin_mapping:
+      service: CompanionDatatableService
+      method: "suspend fun getGroupTypeConfigs(): List<GroupTypeConfig>"
+    sandbox_test: PENDING_DEPLOYMENT
+    seed_data_required: true
+    seed_count: 9     # ROSCA, ASCA, VSLA, SILC, SHG, SACCO, CBO, BURIAL, JLG
+
+  - name: companion_create_invitation
+    contract_ref: COMP-DT-002
+    tier: 2
+    mcp_tool: mcp__mifos__companion_create_invitation
+    method: POST
+    path: /companion/datatables/invitations/{groupId}
+    requires_auth: true
+    description: >
+      Create a new invite token row in the invitations datatable. Returns a 6-char
+      alphanumeric token + deep-link URL. Backed by dt_companion_invitations datatable
+      on m_group. The companion generates the token server-side and returns the invite_link.
+    datatable: dt_companion_invitations
+    schema:
+      apptable: m_group
+      multi_row: true
+      columns:
+        - { name: token, type: string, required: true }           # 6-char alphanumeric, server-generated
+        - { name: group_id, type: integer, required: true }
+        - { name: inviter_client_id, type: integer, required: true }
+        - { name: invited_email_phone, type: string, required: true }
+        - { name: role_to_assign, type: string, required: true }  # member | treasurer | secretary | chairperson
+        - { name: expires_at, type: string, required: true }      # ISO-8601 datetime
+        - { name: accepted_at, type: string }                     # null until accepted
+    body:
+      invited_email_phone: String
+      role_to_assign: String
+      expires_at: String
+    response:
+      token: String
+      invite_link: String
+      row_id: Long
+    kotlin_mapping:
+      service: CompanionInvitationService
+      method: "suspend fun createInvitation(groupId: Long, req: CreateInviteRequest): GeneratedInvite"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_list_pending_invites
+    contract_ref: COMP-DT-003
+    tier: 2
+    mcp_tool: mcp__mifos__companion_list_pending_invites
+    method: GET
+    path: /companion/datatables/invitations/{groupId}
+    requires_auth: true
+    description: >
+      Fetch all pending (unaccepted) invites for a group. The companion API filters to
+      rows where accepted_at IS NULL. Backed by dt_companion_invitations.
+    datatable: dt_companion_invitations
+    params:
+      groupId: Long
+    response: "List<PendingInvite>"
+    kotlin_mapping:
+      service: CompanionInvitationService
+      method: "suspend fun listPendingInvites(groupId: Long): List<PendingInvite>"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_validate_invite_token
+    contract_ref: COMP-DT-001
+    tier: 2
+    mcp_tool: mcp__mifos__companion_validate_invite_token
+    method: GET
+    path: /companion/datatables/invitations/{entityId}
+    requires_auth: false
+    description: >
+      Validate an invite token against the invitations datatable. entityId is the 6-char
+      token. Returns the full invitation row. A non-null accepted_at means already used.
+    datatable: dt_companion_invitations
+    params:
+      entityId: String    # the 6-char invite code
+    response:
+      token: String
+      group_id: Long
+      inviter_client_id: Long
+      invited_email_phone: String
+      role_to_assign: String
+      expires_at: String
+      accepted_at: "String?"
+    kotlin_mapping:
+      service: CompanionInvitationService
+      method: "suspend fun validateToken(token: String): InvitationRow"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_mark_invitation_accepted
+    contract_ref: COMP-DT-004
+    tier: 2
+    mcp_tool: mcp__mifos__companion_mark_invitation_accepted
+    method: PUT
+    path: /companion/datatables/invitations/{entityId}/{rowId}
+    requires_auth: true
+    description: >
+      Update the invitations row to record accepted_at, marking the invite code as
+      consumed. Called after associate_client_to_group succeeds.
+    datatable: dt_companion_invitations
+    body:
+      accepted_at: String   # ISO-8601
+    response:
+      resourceId: Long
+      changes:
+        accepted_at: String
+    kotlin_mapping:
+      service: CompanionInvitationService
+      method: "suspend fun markAccepted(token: String, rowId: Long, req: MarkAcceptedRequest): MarkAcceptedResponse"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_revoke_invite
+    contract_ref: COMP-DT-005
+    tier: 2
+    mcp_tool: mcp__mifos__companion_revoke_invite
+    method: DELETE
+    path: /companion/datatables/invitations/{groupId}/{rowId}
+    requires_auth: true
+    description: >
+      Revoke a pending invite by deleting its datatable row. Only callable by the group
+      organizer. Backed by DELETE /datatables/dt_companion_invitations/{groupId}/{rowId}.
+    datatable: dt_companion_invitations
+    response:
+      resourceId: Long
+    kotlin_mapping:
+      service: CompanionInvitationService
+      method: "suspend fun revokeInvite(groupId: Long, rowId: Long): Unit"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  # ── COMP-DIST-* (ARCHITECTURE §companion_api COMP-DIST contract) ──────
+
+  - name: companion_get_shareout_preview
+    contract_ref: COMP-DIST-001
+    tier: 1
+    mcp_tool: mcp__mifos__companion_get_shareout_preview
+    method: GET
+    path: /companion/groups/{groupId}/shareout/preview
+    requires_auth: true
+    description: >
+      Strategy-aware distribution preview computed by the companion API. Returns
+      totalCorpus, totalProfit, totalPool, and strategy-specific payload:
+      memberPayouts[] for ACCUMULATING (VSLA/ASCA/SHG/SILC) OR rotationPosition +
+      nextRecipientName + nextRecipientAmount for ROTATING_PAYOUT (ROSCA/chit).
+      Internally aggregates Fineract savings balances + dt_share_out records +
+      dt_group_corpus + rosca_rotation datatable.
+    fineract_endpoints_composed:
+      - GET /centers/{centerId}/accounts
+      - GET /datatables/dt_group_corpus/{centerId}
+      - GET /datatables/dt_share_out/{centerId}
+      - GET /datatables/dt_rosca_rotation/{centerId}
+      - GET /datatables/dt_group_config/{centerId}
+    params:
+      groupId: String
+    response:
+      cycleNumber: Int
+      poolModel: String         # ACCUMULATING | ROTATING_PAYOUT
+      shareoutFormula: String
+      totalCorpus: Double
+      totalProfit: Double
+      totalPool: Double
+      memberPayouts: "List<MemberPayout>?"
+      rotationPosition: "Int?"
+      nextRecipientName: "String?"
+      nextRecipientAmount: "Double?"
+    kotlin_mapping:
+      service: ShareOutRepository
+      method: "fun getShareOutPreview(groupId: String): Flow<ShareOutPreview>"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_execute_shareout
+    contract_ref: COMP-DIST-001
+    tier: 1
+    mcp_tool: mcp__mifos__companion_execute_shareout
+    method: POST
+    path: /companion/groups/{groupId}/shareout/execute
+    requires_auth: true
+    description: >
+      Execute share-out for ACCUMULATING types. The companion records the dt_share_out
+      entry and executes per-member savings withdrawals via Fineract in a single
+      transaction. Replaces: POST /datatables/dt_share_out/{centerId} + sequential
+      POST /savingsaccounts/{id}/transactions.
+    fineract_endpoints_composed:
+      - POST /datatables/dt_share_out/{centerId}
+      - POST /savingsaccounts/{accountId}/transactions?command=withdrawal  (per member)
+    body:
+      cycleNumber: Int
+      totalPool: Double
+      memberPayouts: "List<MemberPayoutRequest>"
+      shareoutFormula: String
+      executedAt: String
+    response:
+      shareoutRecordId: String
+      succeededCount: Int
+      failedCount: Int
+      failedMemberIds: "List<String>"
+    kotlin_mapping:
+      service: ShareOutRepository
+      method: "fun executeShareOut(groupId: String, req: ShareOutExecuteRequest): Flow<ShareOutExecuteResponse>"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_execute_rotation_payout
+    contract_ref: COMP-DIST-002
+    tier: 1
+    mcp_tool: mcp__mifos__companion_execute_rotation_payout
+    method: POST
+    path: /companion/groups/{groupId}/rotation/execute
+    requires_auth: true
+    description: >
+      Execute rotation payout for ROTATING_PAYOUT types (ROSCA). Updates
+      dt_rosca_rotation datatable (marks current slot paid, advances position) and
+      executes the single-recipient savings withdrawal via Fineract.
+    fineract_endpoints_composed:
+      - PUT /datatables/dt_rosca_rotation/{centerId}/{rowId}
+      - POST /savingsaccounts/{accountId}/transactions?command=withdrawal
+    body:
+      recipientMemberId: String
+      amount: Double
+      payoutOrderMethod: String    # FIXED_ORDER | LOTTERY | AUCTION
+      executedAt: String
+    response:
+      rotationRecordId: String
+      newRotationPosition: Int
+      nextRecipientId: "String?"
+    kotlin_mapping:
+      service: ShareOutRepository
+      method: "fun executeRotationPayout(groupId: String, req: RotationPayoutRequest): Flow<RotationPayoutExecuteResponse>"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  # ── Aggregated companion query endpoints ────────────────────────────
+
+  - name: companion_get_member_dashboard
+    contract_ref: COMP-GRP-001
+    tier: 1
+    mcp_tool: mcp__mifos__companion_get_member_dashboard
+    method: GET
+    path: /companion/member/dashboard
+    requires_auth: true
+    description: >
+      Unified member dashboard. Companion resolves user groups via dt_member_role then
+      aggregates savings balances, share-out projection or rotation position, and recent
+      transactions. Replaces fragmented Fineract self-service calls.
+    fineract_endpoints_composed:
+      - GET /datatables/dt_member_role/{clientId}
+      - GET /savingsaccounts/{accountId}  (per group)
+      - GET /datatables/dt_group_corpus/{centerId}
+      - GET /savingsaccounts/{accountId}?associations=transactions
+    params:
+      selectedGroupId: "String?"
+    response:
+      memberName: String
+      myGroups: "List<GroupSummary>"
+      selectedGroup: GroupSummary
+      poolModel: String
+      groupLinkedSavingsBalance: Double
+      individualSavingsBalance: Double
+      shareOutProjection: "Double?"
+      rotationPosition: "Int?"
+      nextRecipientEta: "String?"
+      recentTransactions: "List<SavingsTransactionDto>"
+    kotlin_mapping:
+      service: MemberDashboardRepository
+      method: "fun getMemberDashboard(selectedGroupId: String?): Flow<MemberDashboardResponse>"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_get_organizer_dashboard
+    contract_ref: COMP-GRP-001
+    tier: 1
+    mcp_tool: mcp__mifos__companion_get_organizer_dashboard
+    method: GET
+    path: /companion/organizer/dashboard
+    requires_auth: true
+    description: >
+      Organizer dashboard summary — all groups where the user holds organizer/treasurer/
+      chairperson role. Returns KPIs, today's schedule, recent activity. Companion
+      resolves via dt_member_role then aggregates Fineract center + calendar + corpus data.
+      Replaces raw Fineract /staff/{id}/summary + /centers + /journal-entries.
+    fineract_endpoints_composed:
+      - GET /datatables/dt_member_role/{clientId}
+      - GET /centers (filtered to user groups)
+      - GET /datatables/dt_meeting_record/{centerId}  (per group — today's meetings)
+      - GET /datatables/dt_group_corpus/{centerId}    (per group)
+    response:
+      organizerName: String
+      myGroupCount: Int
+      totalMembers: Int
+      pendingShareOutCount: Int
+      meetingsTodayCount: Int
+      fieldOfficerEnabled: Boolean
+      todaySchedule: "List<ScheduledMeeting>"
+      recentActivity: "List<ActivityItem>"
+    kotlin_mapping:
+      service: CompanionGroupService
+      method: "fun getOrganizerDashboard(): Flow<OrganizerDashboardSummary>"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_get_group_savings_summary
+    contract_ref: COMP-GRP-001
+    tier: 1
+    mcp_tool: mcp__mifos__companion_get_group_savings_summary
+    method: GET
+    path: /companion/groups/{groupId}/savings
+    requires_auth: true
+    description: >
+      Group savings summary — contribution-model-aware per-member rows. Returns
+      sharesHeld + shareValue for SHARE_BASED_VARIABLE; totalContributed + meetingsContributed
+      for FIXED_AMOUNT. Internally: Fineract GSIM savings accounts aggregation per member.
+    fineract_endpoints_composed:
+      - GET /savingsaccounts (group GSIM accounts)
+      - GET /datatables/dt_group_config/{centerId}
+      - GET /savingsaccounts/{accountId}?associations=transactions  (per member trend)
+    params:
+      groupId: String
+    response:
+      cycleTarget: Long
+      cycleCollected: Long
+      totalCollected: Long
+      weeklyTrend: "List<WeeklyContributionPoint>"
+      memberRows: "List<MemberGroupSavingsRow>"
+    kotlin_mapping:
+      service: SavingsRepository
+      method: "fun getGroupSavingsSummary(groupId: String): Flow<GroupSavingsSummary>"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_get_individual_savings_summary
+    contract_ref: COMP-GRP-001
+    tier: 1
+    mcp_tool: mcp__mifos__companion_get_individual_savings_summary
+    method: GET
+    path: /companion/groups/{groupId}/savings/individual
+    requires_auth: true
+    description: >
+      Individual voluntary savings per member for the Individual savings tab.
+      Internally aggregates voluntary savings accounts per member in the group.
+    fineract_endpoints_composed:
+      - GET /savingsaccounts (voluntary accounts filtered to group members)
+    params:
+      groupId: String
+    response:
+      totalBalance: Long
+      memberRows: "List<MemberIndividualSavingsRow>"
+      weeklyTrend: "List<WeeklyContributionPoint>"
+    kotlin_mapping:
+      service: SavingsRepository
+      method: "fun getIndividualSavingsSummary(groupId: String): Flow<IndividualSavingsSummary>"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_get_member_savings_detail
+    contract_ref: COMP-GRP-001
+    tier: 1
+    mcp_tool: mcp__mifos__companion_get_member_savings_detail
+    method: GET
+    path: /companion/groups/{groupId}/members/{memberId}/savings
+    requires_auth: true
+    description: >
+      Member savings detail — contribution-model-aware. For SHARE_BASED_VARIABLE (VSLA/SILC):
+      sharesHeld + shareValue. For FIXED_AMOUNT (ROSCA/SHG): savingsBalance +
+      meetingsContributed. Also returns sparkline data + paginated transaction history.
+    fineract_endpoints_composed:
+      - GET /clients/{clientId}
+      - GET /clients/{clientId}/accounts
+      - GET /savingsaccounts/{accountId}?associations=transactions
+    params:
+      groupId: String
+      memberId: String
+      limit: Int
+      offset: Int
+    response:
+      member: MemberProfile
+      savingsAccountNo: String
+      savingsBalance: Double
+      sharesHeld: "Int?"
+      shareValue: "Long?"
+      sparklineData: "List<SavingsDataPoint>"
+      transactions: "List<SavingsTransaction>"
+      totalTransactions: Int
+      hasNextPage: Boolean
+    kotlin_mapping:
+      service: MemberRepository
+      method: "fun getMemberSavingsDetail(groupId: String, memberId: String, limit: Int, offset: Int): Flow<MemberSavingsDetailResponse>"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  # ── ARCHITECTURE §companion_datatables — 6 new datatables ──────────────
+  # dt_group_type_config — captured above under companion_get_group_type_configs
+  # dt_companion_invitations — captured above under companion_create_invitation
+  # The 4 below have existing *partial* wrappers in tier2_datatables but now also
+  # need named companion-API paths with groupId resolution.
+
+  - name: companion_dt_rosca_rotation
+    contract_ref: COMP-DT-006
+    tier: 2
+    mcp_tool: mcp__mifos__companion_dt_rosca_rotation
+    method: GET
+    path: /companion/datatables/rosca_rotation/{groupId}
+    requires_auth: true
+    description: >
+      Read rosca_rotation datatable for a group (rotation queue, positions, paid slots).
+      The companion resolves groupId → centerId then calls GET /datatables/rosca_rotation/{centerId}.
+    datatable: dt_rosca_rotation
+    schema:
+      apptable: m_group
+      multi_row: true
+      columns:
+        - { name: cycle_number, type: integer, required: true }
+        - { name: position, type: integer, required: true }          # 1-based rotation slot
+        - { name: recipient_client_id, type: integer, required: true }
+        - { name: recipient_name, type: string }
+        - { name: amount, type: decimal }
+        - { name: scheduled_date, type: string }                     # ISO-8601 date
+        - { name: paid_at, type: string }                            # null until paid
+        - { name: payout_order_method, type: string }               # FIXED_ORDER | LOTTERY | AUCTION
+    response: "List<RoscaRotationRow>"
+    kotlin_mapping:
+      service: CompanionDatatableService
+      method: "suspend fun getRoscaRotation(groupId: String): List<RoscaRotationRow>"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_dt_rosca_auction
+    contract_ref: COMP-DT-007
+    tier: 2
+    mcp_tool: mcp__mifos__companion_dt_rosca_auction
+    method: GET
+    path: /companion/datatables/rosca_auction/{groupId}
+    requires_auth: true
+    description: >
+      Read rosca_auction datatable for a group (bid records for chit/hui auction
+      payout-order). Companion resolves groupId → centerId.
+    datatable: dt_rosca_auction
+    schema:
+      apptable: m_group
+      multi_row: true
+      columns:
+        - { name: cycle_number, type: integer, required: true }
+        - { name: meeting_number, type: integer, required: true }
+        - { name: bidder_client_id, type: integer, required: true }
+        - { name: bid_amount, type: decimal, required: true }
+        - { name: bid_status, type: string }                         # PENDING | WON | LOST | WITHDRAWN
+        - { name: bid_at, type: string }
+    response: "List<RoscaAuctionRow>"
+    kotlin_mapping:
+      service: CompanionDatatableService
+      method: "suspend fun getRoscaAuction(groupId: String): List<RoscaAuctionRow>"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_dt_vsla_cycle
+    contract_ref: COMP-DT-008
+    tier: 2
+    mcp_tool: mcp__mifos__companion_dt_vsla_cycle
+    method: GET
+    path: /companion/datatables/vsla_cycle/{groupId}
+    requires_auth: true
+    description: >
+      Read vsla_cycle datatable — VSLA/SILC/ASCA cycle state (share_value, cycle progress,
+      total shares outstanding). Companion resolves groupId → centerId.
+    datatable: dt_vsla_cycle
+    schema:
+      apptable: m_group
+      multi_row: false
+      columns:
+        - { name: cycle_number, type: integer, required: true }
+        - { name: share_value, type: decimal, required: true }       # KES per share
+        - { name: total_shares_outstanding, type: integer }
+        - { name: total_interest_earned, type: decimal }
+        - { name: cycle_start_date, type: string }
+        - { name: cycle_end_date, type: string }
+        - { name: status, type: string }                             # ACTIVE | CLOSED | SHARED_OUT
+    response: VslaCycleRow
+    kotlin_mapping:
+      service: CompanionDatatableService
+      method: "suspend fun getVslaCycle(groupId: String): VslaCycleRow"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_dt_welfare_fund
+    contract_ref: COMP-DT-009
+    tier: 2
+    mcp_tool: mcp__mifos__companion_dt_welfare_fund
+    method: GET
+    path: /companion/datatables/welfare_fund/{groupId}
+    requires_auth: true
+    description: >
+      Read welfare_fund datatable — social/welfare fund balance and disbursements.
+      For groups with social_fund_enabled=true. Companion resolves groupId → centerId.
+      Note: the existing mcp__mifos__get_social_fund tool addresses m_center directly;
+      this companion path resolves via groupId.
+    datatable: dt_welfare_fund
+    schema:
+      apptable: m_group
+      multi_row: false
+      columns:
+        - { name: current_balance, type: decimal, required: true }
+        - { name: total_contributions, type: decimal }
+        - { name: total_disbursements, type: decimal }
+        - { name: per_member_contribution, type: decimal }
+        - { name: benefit_waiting_period_days, type: integer }
+        - { name: last_updated, type: string }
+    response: WelfareFundRow
+    kotlin_mapping:
+      service: CompanionDatatableService
+      method: "suspend fun getWelfareFund(groupId: String): WelfareFundRow"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+# ─────────────────────────────────────────────────────────────────────
 # Coverage summary
 # ─────────────────────────────────────────────────────────────────────
 
 coverage:
-  total_endpoints: 76
+  total_endpoints: 96                # was 76; +20 companion tools
   native_resolved: 54
-  tier1_added: 6           # 2 sandbox-validated, 4 production-only
-  tier2_datatables_created: 15
-  tier2_wrapper_tools_added: 30
-  features_covered: 15
+  tier1_added: 6                     # original Fineract wrappers (bridge-260504-001)
+  tier2_datatables_created: 15       # original datatables (bridge-260504-001)
+  companion_tools_added: 20          # bridge-260717-002
+  companion_tier1_tools: 12          # wrap Fineract behind /companion/* facade
+  companion_tier2_tools: 8           # datatable-CRUD behind /companion/datatables/*
+  companion_datatables_new: 6        # dt_group_type_config · dt_companion_invitations ·
+                                     # dt_rosca_rotation · dt_rosca_auction ·
+                                     # dt_vsla_cycle · dt_welfare_fund
+  features_covered: 23               # original 15 + 8 new companion screens
   features_uncovered: 0
-  bridge_run_id: bridge-260504-001
+  bridge_run_id_original: bridge-260504-001
+  bridge_run_id_companion: bridge-260717-002

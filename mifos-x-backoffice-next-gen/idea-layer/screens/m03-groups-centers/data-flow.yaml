@@ -1,0 +1,149 @@
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: m03-groups-centers
+
+# Reads: office-scoped centers + groups + group/center detail through a Store5
+# SourceOfTruth over Room (CACHE_FIRST_SWR) so lists and attendance sheets are
+# offline-readable. Writes: every mutating command (attendance, activate,
+# assignStaff, associateClients, create) is enqueued to the durable offline
+# outbox (framework_submit_drafts) for exactly-once POST /v1/batches replay —
+# never posted straight to a domain table. Create/edit templates are cached
+# so the dynamic-template-forms create form renders offline.
+
+entries:
+  # ── 1. Office-scoped centers + groups list (on mount) ──────────────────
+  - screen_id: m03-groups-centers
+    trigger: on_mount
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_centers
+        transport: rest
+      - api_id: list_groups
+        transport: rest
+    tables:
+      - name: groups_centers
+        mutation: upsert
+        persistence_contract:
+          is_durable: false
+          storage_backend: local_db
+        persistence_note: >-
+          CACHE_FIRST_SWR read cache of centers + groups (entity_type
+          discriminates center|group; office_id, staff_id, status,
+          member_count, next_meeting_at, payload_json). Revalidated by the
+          shared delta-pull; not the local system-of-record (Fineract is SoT).
+    cache:
+      strategy: cache_first
+      ttl_seconds: 7200
+      key_template: "fineract:groups-centers:{officeId}"
+      shape: list
+    privacy_constraint:
+      scope: user_synced
+      notes: "Scoped to the signed-in user's office/hierarchy; encrypted at rest (SQLCipher)."
+    error_paths:
+      - error_code: group_list_failed
+        behavior: retry
+        message_key: m03_error_list_failed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m03_showing_cached
+
+  # ── 2. Group/center detail (members, GLIM loans, calendar) ─────────────
+  - screen_id: m03-groups-centers
+    trigger: on_navigate
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: get_group_detail
+        transport: rest
+      - api_id: list_meetings
+        transport: rest
+    tables:
+      - name: groups_centers
+        mutation: upsert
+        persistence_contract:
+          is_durable: false
+          storage_backend: local_db
+        persistence_note: "Detail associations (associated clients/members, group loans/GLIM, meeting calendar) folded into the same row's payload_json for offline detail rendering."
+    error_paths:
+      - error_code: group_list_failed
+        behavior: retry
+        message_key: m03_error_list_failed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m03_showing_cached
+
+  # ── 3. Create form template (rendered by dynamic-template-forms) ───────
+  - screen_id: m03-groups-centers
+    trigger: on_navigate
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: group_center_template
+        transport: rest
+    tables:
+      - name: cached_templates
+        mutation: upsert
+        persistence_contract:
+          is_durable: false
+          storage_backend: local_db
+        persistence_note: "GET /v1/groups|centers/template payload cached per entity so the dynamic-template-forms create/staff-picker forms render offline (CACHE_FIRST_SWR reference data)."
+    error_paths:
+      - error_code: template_fetch_failed
+        behavior: retry
+        message_key: m03_error_list_failed
+
+  # ── 4. Mutating commands → durable offline outbox ──────────────────────
+  - screen_id: m03-groups-centers
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: save_attendance
+        transport: rest
+      - api_id: activate_group_center
+        transport: rest
+      - api_id: assign_staff
+        transport: rest
+      - api_id: manage_members
+        transport: rest
+      - api_id: create_group
+        transport: rest
+    tables:
+      - name: framework_submit_drafts
+        mutation: write
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          saveOrUpdateAttendance / activate / assignStaff / associateClients /
+          create enqueued as DraftEntity rows with a DURABLE idempotency_key +
+          (action, entity); status PENDING → RETRYING → SUBMITTED | FAILED;
+          drained exactly-once via POST /v1/batches by offline-sync-engine; a
+          FAILED row surfaces in needs-attention-inbox with the server error.
+    privacy_constraint:
+      scope: user_synced
+      notes: "Command payloads scoped to the signed-in officer; encrypted at rest (SQLCipher)."
+    side_effects:
+      - kind: invalidate_cache
+        target: "groups_centers read cache for the mutated group/center — revalidated by the follow-on delta-pull"
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer drain on connectivity regain"
+    error_paths:
+      - error_code: command_rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: m03_command_rejected
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m03_will_sync_when_online
+      - error_code: permission_drift_403
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: m03_access_changed
+
+cache:
+  strategy: cache_first_swr
+  note: "Centers/groups/members/meetings are read-mostly working-set data — serve stale from Room instantly, revalidate via the shared delta-pull FetchedAtEntity TTL."
+
+demo_source: demo-data.yaml

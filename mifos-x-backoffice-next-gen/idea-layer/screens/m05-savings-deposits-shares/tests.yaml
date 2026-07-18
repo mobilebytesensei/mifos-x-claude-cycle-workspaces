@@ -1,0 +1,116 @@
+schema_version: v1.0.0
+feature: m05-savings-deposits-shares
+scenarios:
+  - id: list_loads_grouped_by_type
+    preconditions: ["user holds READ_SAVINGSACCOUNT + READ_SHAREACCOUNT", "network available"]
+    actions: ["open the M05 module root"]
+    assertions:
+      - "loading state shows first"
+      - "content state lists savings/FD/RD/share accounts grouped by type with balance + status chips"
+    priority: high
+
+  - id: empty_scope_offers_open
+    preconditions: ["a client with no deposit accounts is selected"]
+    actions: ["open M05 scoped to that client"]
+    assertions:
+      - "empty state renders"
+      - "an 'Open an account' CTA is shown (gated on CREATE_SAVINGSACCOUNT)"
+    priority: medium
+
+  - id: deposit_gated_offline
+    preconditions: ["user holds READ_SAVINGSACCOUNT + DEPOSIT_SAVINGSACCOUNT but not WITHDRAWAL_SAVINGSACCOUNT", "network unavailable"]
+    actions: ["open an active savings account offline"]
+    assertions:
+      - "deposit control enabled (VISIBLE-enabled)"
+      - "withdrawal control HIDDEN (fail-closed for a missing command grant)"
+    priority: high
+
+  - id: deposit_queues_exactly_once
+    preconditions: ["user holds DEPOSIT_SAVINGSACCOUNT", "network unavailable"]
+    actions: ["record a deposit", "app is killed and restarted before reconnect", "network restored"]
+    assertions:
+      - "the deposit is written to draft_outbox with a durable idempotency_key (Room v11)"
+      - "queued_offline state shows 'N queued · will sync when online'"
+      - "on reconnect the command replays via POST /v1/batches and posts EXACTLY ONCE (zero double-post)"
+    priority: high
+
+  - id: withdrawal_insufficient_balance
+    preconditions: ["user holds WITHDRAWAL_SAVINGSACCOUNT", "withdrawal amount exceeds available balance"]
+    actions: ["record a withdrawal above the available balance"]
+    assertions:
+      - "inline validation blocks submit (insufficient_balance)"
+      - "no outbox row is written"
+    priority: medium
+
+  - id: approve_then_activate_lifecycle
+    preconditions: ["user holds APPROVE_SAVINGSACCOUNT + ACTIVATE_SAVINGSACCOUNT", "a submitted-pending savings account"]
+    actions: ["approve the account", "then activate it"]
+    assertions:
+      - "approve command enqueued (submitting) then account status → approved"
+      - "activate control becomes enabled and, on activate, status → active + balance ready"
+    priority: high
+
+  - id: maker_checker_deposit_pending_approval
+    preconditions: ["a maker-checker tenant where DEPOSIT_SAVINGSACCOUNT is maker-checkerable", "user holds DEPOSIT_SAVINGSACCOUNT"]
+    actions: ["record a deposit online"]
+    assertions:
+      - "server returns 2xx with commandId + empty changes"
+      - "pending_approval state renders 'Submitted for approval' (not error, not success)"
+      - "the account balance is NOT optimistically mutated; a badge routes to M15"
+    priority: high
+
+  - id: post_interest_capitalizes
+    preconditions: ["user holds POSTINTEREST_SAVINGSACCOUNT", "an active interest-bearing savings account"]
+    actions: ["post interest as-on today"]
+    assertions:
+      - "postInterestAsOn command enqueued (with dateFormat + locale)"
+      - "an interest-posting ledger row appears and balance invalidated"
+    priority: medium
+
+  - id: fixed_deposit_premature_close
+    preconditions: ["user holds PREMATURECLOSE_FIXEDDEPOSITACCOUNT", "an active fixed deposit"]
+    actions: ["preview premature amount", "confirm premature close"]
+    assertions:
+      - "calculatePrematureAmount preview shown before the command"
+      - "prematureClose command enqueued through the outbox; status → premature-closed on replay"
+    priority: medium
+
+  - id: share_redeem_exactly_once
+    preconditions: ["user holds REDEEMSHARES_SHAREACCOUNT", "network flaky (submit then retry)"]
+    actions: ["redeem shares", "force a retry of the same redemption"]
+    assertions:
+      - "the redemption reuses its original durable idempotency key"
+      - "REDEEMSHARES_SHAREACCOUNT is applied EXACTLY ONCE (no double redemption)"
+    priority: high
+
+  - id: transfer_and_si_gated
+    preconditions: ["user lacks CREATE_ACCOUNTTRANSFER"]
+    actions: ["open an account detail"]
+    assertions:
+      - "the transfer control is HIDDEN"
+      - "the standing-instruction control follows CREATE_STANDINGINSTRUCTION independently"
+    priority: medium
+
+  - id: rejected_command_routes_to_needs_attention
+    preconditions: ["a deposit command is rejected by the server (400 validation)"]
+    actions: ["record a deposit that the server rejects", "tap 'Review failed'"]
+    assertions:
+      - "error state surfaces the Fineract server error"
+      - "navigating opens needs-attention-inbox with the rejected command for Retry / Edit / Discard"
+    priority: high
+
+  - id: permission_drift_on_command
+    preconditions: ["a command returns 403 NoAuthorization (grant revoked mid-session)"]
+    actions: ["issue a command that now 403s"]
+    assertions:
+      - "the app routes to permission-capability-engine and calls refreshPermissions()"
+      - "the now-hidden control is pruned and a 'your access has changed' toast shows; no crash, no silent post"
+    priority: high
+
+  - id: offline_no_cache_shows_no_network
+    preconditions: ["offline with no cached account data for the requested scope"]
+    actions: ["open M05 in a cold offline scope"]
+    assertions:
+      - "no_network state renders (captive-portal aware)"
+      - "Retry re-attempts on reconnect"
+    priority: medium

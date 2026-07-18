@@ -1,0 +1,177 @@
+feature: m01-dashboard
+status: approved
+approve_hash: "sha256:7442b88fbbba077721cab7032da002bdba19cb448597bb2a8ba4b84878b53914"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+cluster: back-office-module
+module: m01-dashboard
+priority: must_have
+new_infra: false
+is_primary_flow: true
+has_ui: true
+has_api: true
+has_server: false
+capabilities: []
+requires_features:
+  - permission-capability-engine
+acceptance_refs:
+  - >-
+    Home tiles = the intersection of the dashboard tile set and the user's permissions; one failing tile never blanks
+    the rest
+plan_ref: idea-plan.yaml#features[m01-dashboard]
+permissions_gate: >-
+  renders tiles the user can view (IndependentCardLayout); field-officer sees today's route, manager sees portfolio
+  KPIs, accountant sees pending journals
+summary: >-
+  M01 · Role-adaptive Dashboard — the canonical "same binary renders per permission" home surface. Permission-filtered
+  KPI cards (portfolio at risk, active clients, collections due, pending approvals), quick-action tiles (new client,
+  take repayment), and a recent-activity feed. Every tile is resolved through core/permissions' PermissionEvaluator so
+  it is present only if the user holds its gating permission; each hydrates independently CACHE_FIRST_SWR so one failing
+  tile never blanks the rest.
+metadata:
+  category: permission-gated-feature
+  implementation_ready: true
+  impl_ready_at: '2026-07-17T03:20:00Z'
+  impl_ready_schema: v2
+contracts:
+  - capability: resolve_tile_roster
+    platform_spec: >-
+      PermissionEvaluator.observe(tileId):Flow<CapabilityState> per fixed tile; VISIBLE tiles form the roster;
+      unmapped/denied → HIDDEN (fail closed); ALL_FUNCTIONS_READ never yields a mutating quick-action tile
+    permission: none
+    error_cases:
+      - tile_roster_resolve_failed
+      - retained_permission_set_absent
+  - capability: hydrate_kpi_tiles
+    platform_spec: >-
+      GET /v1/runreports/{reportName} (R_officeId) → StoreFactory.createStore + Room SourceOfTruth +
+      asScreenStream(CACHE_FIRST_SWR) per tile_id; ReportResult → headline KPI value
+    permission: REPORTING_SUPER_USER
+    error_cases:
+      - tile_load_failed
+      - report_unavailable
+  - capability: hydrate_collections_tile
+    platform_spec: >-
+      GET /v1/collectionsheet?staffId&transactionDate → cached CollectionSheet summary (due amount + count) for the
+      field officer's route
+    permission: READ_COLLECTIONSHEET
+    error_cases:
+      - tile_load_failed
+  - capability: hydrate_approvals_tile
+    platform_spec: >-
+      GET /v1/makercheckers?makerCheckerable → pending-approval count self-scoped to entries the user can approve;
+      present iff hasAnyChecker
+    permission: CHECKER_SUPER_USER
+    error_cases:
+      - tile_load_failed
+  - capability: hydrate_activity_feed
+    platform_spec: >-
+      GET /v1/notifications (poll + mark-read) → recent-activity rows with entity deep-links; no special permission
+      required
+    permission: none
+    error_cases:
+      - tile_load_failed
+libraries:
+  - capability: hydrate_kpi_tiles
+    library: ktorfit
+    version: 2.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: hydrate_kpi_tiles
+    library: kotlinx-serialization
+    version: 1.7.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: hydrate_kpi_tiles
+    library: kotlinx-coroutines
+    version: 1.9.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: resolve_tile_roster
+    library: multiplatform-settings
+    version: 1.2.x
+    targets:
+      - android
+      - ios
+      - desktop
+vm_actions:
+  - name: LoadDashboard
+    signature: private fun loadDashboard()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Success(tiles) | Empty | PartialTileError(tiles, failedTileIds) | NoNetwork(cachedTiles)
+      - uiState=Error
+    side_effects:
+      - PermissionEvaluator.resolveTileRoster()
+      - 'per permitted tile: StoreFactory.stream(tileId).collect { … }'
+    error_handling:
+      TileRosterResolveFailed: uiState=Error; retain encrypted set; offer Retry
+      SingleTileFailure: uiState=PartialTileError; isolate to that card; keep the rest
+      Offline: uiState=NoNetwork; emit cached tile values; show offline banner
+  - name: RetryFailedTile
+    signature: 'private fun retryFailedTile(tileId: String)'
+    state_mutations:
+      - tile[tileId]=Loading
+      - tile[tileId]=Success | still-error
+    side_effects:
+      - DashboardTileRepository.refetch(tileId)
+    error_handling:
+      TileStillFailing: keep inline error placeholder on that card only
+  - name: RetryDashboard
+    signature: private fun retryDashboard()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Success | Error
+    side_effects:
+      - PermissionEvaluator.resolveTileRoster()
+    error_handling:
+      RetainedSetAbsent: route to re-authenticate
+  - name: OpenTileTarget
+    signature: 'private fun onOpenTileTarget(tileId: String)'
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateTo(tile.target))
+    error_handling: {}
+  - name: ViewAccess
+    signature: private fun onViewAccess()
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToAccessPermissions)
+    error_handling: {}
+error_cases:
+  - tile_roster_resolve_failed
+  - retained_permission_set_absent
+  - tile_load_failed
+  - report_unavailable
+test_fixtures:
+  source: screens/m01-dashboard/tests.yaml
+  scenario_count: 7
+  priority_distribution:
+    high: 4
+    medium: 3
+    low: 0
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T03:20:00Z'
+enriched_by: /idea-feature-enrich
+status_history:
+  - from: designed
+    to: design_partial
+    at: '2026-07-17T10:22:18.586Z'
+    by: /idea-feature-stitch
+  - from: design_partial
+    to: designed
+    at: '2026-07-17T10:28:08.615Z'
+    by: /idea-feature-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

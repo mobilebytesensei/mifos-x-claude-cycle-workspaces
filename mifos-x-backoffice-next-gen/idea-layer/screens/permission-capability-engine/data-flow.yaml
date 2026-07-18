@@ -1,0 +1,58 @@
+feature: permission-capability-engine
+entries:
+  - trigger: on_login
+    source: api.authenticate
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: login-tenant
+      error_code: auth_error
+    persistence_contract:
+      store: encrypted_prefs
+      keys: [permissions_raw, permission_fingerprint, capability_map_version]
+      note: >-
+        PermissionSet{codes, allFunctions, allRead, checkerSuper, reportingSuper,
+        fingerprint:sha256(sorted(codes))} persisted encrypted (Keystore/Keychain-wrapped)
+        so the offline app evaluates identically to the last online session. Raw list
+        stored verbatim — never lowercase, split, or expand umbrellas.
+
+  - trigger: on_mount
+    source: local.retained_permission_set
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: capability_bootstrap_failed
+    note: >-
+      Cold-start / settings re-entry re-resolves the capability surface from the retained
+      encrypted PermissionSet without a network call; a missing retained set routes to refresh.
+
+  - trigger: on_403_drift
+    source: api.get_role_permissions
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: permission_refresh_failed
+    note: >-
+      A 403 with a NoAuthorization body is treated as capability drift, not a hard failure:
+      re-fetch permissions (password-less role fallback), compare the fingerprint, atomically
+      swap on change, re-resolve the map, prune now-hidden backstack, notify once. Never crash;
+      never trust cache over server.
+
+# Reads consumed by the refresh_permissions action_contract (ui.yaml reads_from).
+reads:
+  - name: role_permissions
+    source: api.get_role_permissions
+    cache: none
+    note: "Password-less role-permission union used to rebuild the PermissionSet on refresh/drift."
+
+cache:
+  strategy: encrypted-persist
+  note: >-
+    Not a Store5 read-cache — the PermissionSet + fingerprint live in the encrypted local store,
+    keyed by permission_fingerprint. CapabilityMap (capability-map.json) is bundled in
+    commonMain/composeResources, superseded by signed remote config (monotonic version + checksum).

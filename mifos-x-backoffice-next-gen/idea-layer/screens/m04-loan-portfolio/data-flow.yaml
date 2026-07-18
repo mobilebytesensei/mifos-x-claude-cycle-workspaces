@@ -1,0 +1,296 @@
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: m04-loan-portfolio
+
+# Loan reads hydrate a CACHE_FIRST_SWR Store5 SourceOfTruth over the Room `loans` table (readable
+# offline). Every mutating loan command/transaction is queued into the durable `draft_outbox`
+# (idempotency_key + (action,entity)) and replayed EXACTLY ONCE by the offline-sync-engine over
+# POST /v1/batches — money is never double-posted. Application/disburse/reschedule/charge forms carry
+# a JsonObject template payload straight through the outbox unchanged (dynamic-template-forms).
+
+entries:
+  # ── 1. Loan list — mount (paged CACHE_FIRST_SWR) ──────────────────────
+  - screen_id: m04-loan-portfolio
+    trigger: on_mount
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_loans
+        transport: rest
+    tables:
+      - name: loans
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          LoanAccountEntity keyed by loanId (+ clientId, productId, status, principal, outstanding,
+          parDays, payload_json for the 360° associations). Store<PageKey,List<Loan>> over Room;
+          offset/limit ≙ Fineract paging. validator.markFresh() after every write starts the TTL.
+    dtos:
+      - name: LoanAccountDto
+        role: response
+        api_id: list_loans
+    cache:
+      strategy: cache_first
+      ttl_seconds: 900
+      key_template: "fineract:loans:office:{officeId}:page:{page}"
+      shape: paged
+    privacy_constraint:
+      scope: user_synced
+      notes: "Loan rows scoped to the signed-in officer's office/portfolio (staffId one filter); encrypted at rest (SQLCipher)."
+    error_paths:
+      - error_code: loan_list_failed
+        behavior: fallback_cache
+        message_key: m04_error_title
+      - error_code: auth.session_expired
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: sync_reauth_required
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m04_error_title
+
+  # ── 2. Loan 360° detail — mount (associations=all) ────────────────────
+  - screen_id: m04-loan-portfolio
+    trigger: on_mount
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: get_loan_detail
+        transport: rest
+      - api_id: get_loan_charges
+        transport: rest
+    tables:
+      - name: loans
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: "The detail (schedule/transactions/charges/guarantors/collateral) is stored in payload_json so the full 360° renders offline from cache."
+    dtos:
+      - name: LoanAccountDto
+        role: response
+        api_id: get_loan_detail
+      - name: LoanChargeDto
+        role: response
+        api_id: get_loan_charges
+    cache:
+      strategy: cache_first
+      ttl_seconds: 900
+      key_template: "fineract:loan:{loanId}"
+      shape: flat
+    error_paths:
+      - error_code: loan_detail_failed
+        behavior: fallback_cache
+        message_key: m04_error_title
+
+  # ── 3. Live schedule preview — application interaction (no persistence) ─
+  - screen_id: m04-loan-portfolio
+    trigger: on_interact
+    produces_state: schedule-preview
+    auth_required: true
+    endpoints:
+      - api_id: calculate_schedule
+        transport: rest
+      - api_id: get_loan_template
+        transport: rest
+    tables:
+      - name: loan_templates
+        mutation: read
+    dtos:
+      - name: CalculateScheduleRequest
+        role: request
+        api_id: calculate_schedule
+      - name: LoanScheduleDto
+        role: response
+        api_id: calculate_schedule
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 3600
+      key_template: "fineract:loantemplate:product:{productId}"
+      shape: flat
+    side_effects:
+      - kind: analytics
+        target: "loan_schedule_recalculated (principal/term/rate deltas) — no PII"
+    error_paths:
+      - error_code: schedule_calc_failed
+        behavior: fallback_cache
+        message_key: m04_schedule_preview
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m04_schedule_preview
+
+  # ── 4. Loan lifecycle command — queued exactly-once (approve/reject/disburse/undo) ──
+  - screen_id: m04-loan-portfolio
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: loan_lifecycle_command
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          RoomSubmitOutbox entry (framework_submit_drafts, Room v11): durable idempotency_key +
+          (action,entity) composite key + JsonObject payload. Replayed EXACTLY ONCE by
+          offline-sync-engine over POST /v1/batches so approve/disburse never double-apply. Maker-checker
+          aware — a queued commandId with empty changes lands PENDING_APPROVAL, not optimistically applied.
+      - name: loans
+        mutation: read
+    dtos:
+      - name: LoanCommandRequest
+        role: request
+        api_id: loan_lifecycle_command
+      - name: CommandProcessingResultDto
+        role: response
+        api_id: loan_lifecycle_command
+    privacy_constraint:
+      scope: user_synced
+      notes: "Lifecycle command payloads are scoped to the signed-in officer; encrypted at rest."
+    side_effects:
+      - kind: invalidate_cache
+        target: "the loan's cached detail (status/timeline) — revalidated by the follow-on delta-pull"
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer drain for this outbox entry"
+    error_paths:
+      - error_code: command.rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: sync_batch_rejected
+      - error_code: command.pending_approval
+        behavior: user_action
+        message_key: m04_approve
+      - error_code: permission.drift_403
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: sync_reauth_required
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: sync_will_retry_when_online
+
+  # ── 5. Loan servicing transaction — queued exactly-once (repayment/waive/writeoff/foreclosure) ──
+  - screen_id: m04-loan-portfolio
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: loan_transaction
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          The financial-correctness keystone. Every repayment/prepayment/waive/writeoff/foreclosure is
+          a DraftSubmitHandler + RoomSubmitOutbox entry with a DURABLE idempotency_key generated at
+          draft-save and reused on every retry — a field repayment posts EXACTLY ONCE across network
+          flaps, crash, and reinstall-restore (zero double-post). Backdated posting requires *INPAST_LOAN.
+      - name: loans
+        mutation: read
+    dtos:
+      - name: LoanTransactionRequest
+        role: request
+        api_id: loan_transaction
+      - name: CommandProcessingResultDto
+        role: response
+        api_id: loan_transaction
+    privacy_constraint:
+      scope: user_synced
+      notes: "Money-movement payloads (amount, payment type, receipt) scoped to the signed-in officer; encrypted at rest (SQLCipher)."
+    side_effects:
+      - kind: invalidate_cache
+        target: "loanBalance + repaymentSchedule + transactions for the loan — revalidated on next sync"
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer drain for this outbox entry"
+    error_paths:
+      - error_code: transaction.rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: sync_batch_rejected
+      - error_code: transaction.backdate_forbidden
+        behavior: user_action
+        message_key: m04_record_repayment
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: sync_will_retry_when_online
+
+  # ── 6. Charge / reschedule / add-charge / application submit — queued exactly-once ──
+  - screen_id: m04-loan-portfolio
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: loan_charge_command
+        transport: rest
+      - api_id: add_loan_charge
+        transport: rest
+      - api_id: create_reschedule
+        transport: rest
+      - api_id: submit_loan_application
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Charge pay/waive/add, reschedule request, and loan application submit all carry their
+          dynamic-template-forms JsonObject payload straight into the outbox unchanged and replay
+          exactly-once. Application submit uses a client-generated externalId so the loan can be
+          addressed before the server assigns an id (offline-first).
+      - name: loans
+        mutation: read
+    dtos:
+      - name: LoanChargeCommandRequest
+        role: request
+        api_id: loan_charge_command
+      - name: RescheduleRequest
+        role: request
+        api_id: create_reschedule
+      - name: LoanApplicationRequest
+        role: request
+        api_id: submit_loan_application
+      - name: CommandProcessingResultDto
+        role: response
+        api_id: create_reschedule
+    side_effects:
+      - kind: invalidate_cache
+        target: "charges + repaymentSchedule + loanBalance — revalidated on next sync"
+    error_paths:
+      - error_code: command.rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: sync_batch_rejected
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: sync_will_retry_when_online
+
+  # ── 7. Periodic freshness re-check (CACHE_FIRST_SWR revalidate) ────────
+  - screen_id: m04-loan-portfolio
+    trigger: on_timer
+    interval_seconds: 900
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_loans
+        transport: rest
+    tables:
+      - name: loans
+        mutation: read
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 900
+      key_template: "fineract:loans:office:{officeId}:page:{page}"
+      shape: paged
+    error_paths:
+      - error_code: network.offline
+        behavior: silent
+        message_key: m04_error_title

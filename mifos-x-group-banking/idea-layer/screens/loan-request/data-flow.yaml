@@ -5,8 +5,20 @@ feature_id: loan-request
 entries:
   - screen_id: loanRequestScreen
     trigger: on_mount
-    description: Mount — load session data (savingsBalance, clientId) from SessionManager, no API call
+    description: >
+      Bootstrap the loan-request form. clientId, savingsBalance, and loanMultiplier
+      arrive as nav_params from personal-dashboard (user_taps_request_loan_cta)
+      or personal-loans (user_taps_fab) — no API call is required to obtain
+      them. SessionManager supplies the auth context. Local computation derives
+      maxLoanAmount = savingsBalance × loanMultiplier and seeds the initial
+      LoanRequestState fields (clientId, savingsBalance, loanMultiplier,
+      maxLoanAmount, durationWeeks default 12). The form is fully renderable
+      offline because no server round-trip is required until submit.
+      ConnectivityManager is polled once to prime isOfflineMode so the
+      offline_mode_banner and success_dialog copy select the correct variant
+      on first render.
     endpoints: []
+    tables: []
     dtos: []
     produces_state: Content
     auth_required: true
@@ -15,39 +27,253 @@ entries:
       ttl_seconds: 0
       key_template: "loan_request:session"
     error_paths:
-      - { error_code: "session.expired", behavior: navigate, nav_target: login }
+      - { error_code: "session.expired", behavior: navigate, nav_target: login-signup, message_key: error_session_expired }
+    notes: >
+      Pure state-hydration entry — no network call. nav_params (clientId,
+      savingsBalance, loanMultiplier) drive maxLoanAmount and initial slider
+      bounds (4..52 weeks, default 12). Session expiry from SessionManager
+      routes to login-signup; everything else renders offline-first.
 
   - screen_id: loanRequestScreen
-    trigger: on_interact
-    description: Online submission — POST loan request to dt_loan_request datatable
+    trigger: on_action
+    action: OnAmountChange
+    description: >
+      Client-side transform on every keystroke in amount_field. Updates
+      state.requestedAmount, re-validates against maxLoanAmount (savingsBalance
+      × loanMultiplier) with a floor of KES 500, computes repaymentEstimate
+      from requestedAmount / durationWeeks, and recomputes isFormValid.
+      Populates requestedAmountError on out-of-range input (below floor,
+      above ceiling, non-numeric). No API call is performed and no persistence
+      is written — pure StateFlow re-emission.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths:
+      - { error_code: "validation.amount_below_min", behavior: show_field_error, message_key: error_validation }
+      - { error_code: "validation.amount_above_max", behavior: show_field_error, message_key: error_validation }
+      - { error_code: "validation.amount_not_numeric", behavior: show_field_error, message_key: error_validation }
+    notes: >
+      Mirrors ui.yaml amount_field.on_change.action_contract (effect:
+      transform_state; writes_to [requestedAmount, requestedAmountError,
+      repaymentEstimate, isFormValid]; reads_from [savingsBalance,
+      loanMultiplier, durationWeeks]). No I/O.
+
+  - screen_id: loanRequestScreen
+    trigger: on_action
+    action: OnPurposeSelected
+    description: >
+      Sets state.purpose from the LoanPurpose dropdown (SCHOOL_FEES, MEDICAL,
+      BUSINESS, FARMING, HOME_IMPROVEMENT, EMERGENCY, OTHER), clears
+      purposeError, and recomputes isFormValid. Pure client-side state
+      transition — no API call and no persistence.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      Mirrors ui.yaml purpose_dropdown.on_change.action_contract (effect:
+      transform_state; writes_to [purpose, purposeError, isFormValid];
+      reads_from []). No I/O.
+
+  - screen_id: loanRequestScreen
+    trigger: on_action
+    action: OnDurationChanged
+    description: >
+      Updates state.durationWeeks from the repayment-duration slider (4..52
+      weeks, 12 steps), recomputes repaymentEstimate = requestedAmount /
+      durationWeeks, and refreshes the repayment_summary_card values
+      (principal, interest, total). No API call; no persistence.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      Mirrors ui.yaml duration_selector.on_change.action_contract (effect:
+      transform_state; writes_to [durationWeeks, repaymentEstimate];
+      reads_from [requestedAmount]). No I/O.
+
+  - screen_id: loanRequestScreen
+    trigger: on_action
+    action: OnSubmitClick
+    description: >
+      User taps "Submit Application" on the loan-request form. Final
+      client-side validation runs (amount within [500, maxLoanAmount],
+      purpose selected, durationWeeks in [4, 52]); on pass, LoanRequestPayload
+      is assembled from state (clientId from nav_params, requestedAmount,
+      purpose, durationWeeks, savingsBalance_at_request from session,
+      submittedAt as ISO-8601 now, status "PENDING") and POSTed to
+      /datatables/dt_loan_request via Ktor. On 2xx the LoanRequestResponse
+      (resourceId + resourceExternalId) is captured, screen state transitions
+      to SubmitSuccess, and the success_dialog is shown. When
+      ConnectivityManager reports offline OR the endpoint returns 503, the
+      payload is serialised into sync_queue with entity_type LOAN_REQUEST and
+      an idempotency key on clientId + submittedAt so the background sync
+      worker can drain without producing duplicate PENDING rows at the next
+      meeting; the screen transitions to OfflineQueued and the success_dialog
+      renders the offline copy variant.
     endpoints:
       - { api_id: submit_loan_request, transport: rest, method: post }
+    tables:
+      - name: sync_queue
+        persistence_contract: sqldelight_entity
+        mutation: write
     dtos:
       - { name: LoanRequestPayload, role: request, api_id: submit_loan_request }
       - { name: LoanRequestResponse, role: response, api_id: submit_loan_request }
-    produces_state: Content
+      - { name: SyncQueueEntry, role: request, api_id: submit_loan_request }
+    produces_state: Success
     auth_required: true
     cache:
       strategy: no_cache
       ttl_seconds: 0
       key_template: "loan_request:submit:{clientId}"
     error_paths:
-      - { error_code: "400", behavior: show_error, message_key: error_validation }
-      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "400", behavior: show_field_errors, message_key: error_validation }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup, message_key: error_session_expired }
       - { error_code: "409", behavior: show_error, message_key: error_duplicate_request_pending }
-      - { error_code: "503", behavior: queue_sync, message_key: error_offline_queued }
-      - { error_code: "network.offline", behavior: queue_sync, message_key: error_offline_queued }
+      - { error_code: "503", behavior: enqueue_sync, message_key: error_network_queued }
+      - { error_code: "network.offline", behavior: enqueue_sync, message_key: error_network_queued }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    offline_behavior:
+      strategy: enqueue_to_sync_queue
+      priority: NORMAL
+      entity_type: LOAN_REQUEST
+      show_state: OfflineQueued
+    navigation:
+      - { condition: "submitSuccess && successDialogDismissed", nav_target: personal-dashboard, params: [] }
+    notes: >
+      Aligned with ui.yaml submit_button.on_click.action = OnSubmitClick and
+      its action_contract (effect: call_api; library_refs [cmp-network-monitor];
+      external_library_refs [Ktor, SQLDelight]). 400 populates field-level
+      requestedAmountError / purposeError from server response; 401 routes
+      to login-signup; 409 signals an already-PENDING request for this
+      client at the current meeting cycle and surfaces
+      error_duplicate_request_pending snackbar; 503 and network.offline both
+      branch to the SQLDelight sync_queue enqueue path (SyncQueueEntry).
+      SubmitSuccess dialog dismiss emits NavigateToDashboardAfterSuccess.
 
   - screen_id: loanRequestScreen
-    trigger: on_background_sync
-    description: Offline mode — enqueue LoanRequestPayload to SyncQueue for later submission
-    endpoints: []
+    trigger: on_action
+    action: OnRetry
+    description: >
+      User taps "Retry" on the error snackbar after a prior failed submit.
+      The pending LoanRequestPayload (unchanged since the failure) is
+      re-POSTed to /datatables/dt_loan_request via Ktor. Retry counter
+      increments locally; the same offline-fallback path re-enqueues to
+      sync_queue via SQLDelight when the retry itself times out or reports
+      offline. All other outcomes converge with OnSubmitClick's state
+      transitions.
+    endpoints:
+      - { api_id: submit_loan_request, transport: rest, method: post }
+    tables:
+      - name: sync_queue
+        persistence_contract: sqldelight_entity
+        mutation: write
     dtos:
+      - { name: LoanRequestPayload, role: request, api_id: submit_loan_request }
+      - { name: LoanRequestResponse, role: response, api_id: submit_loan_request }
       - { name: SyncQueueEntry, role: request, api_id: submit_loan_request }
-    produces_state: Content
+    produces_state: Success
     auth_required: true
     cache:
       strategy: no_cache
       ttl_seconds: 0
-      key_template: "loan_request:sync_queue"
+      key_template: "loan_request:submit:{clientId}"
+    error_paths:
+      - { error_code: "400", behavior: show_field_errors, message_key: error_validation }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup, message_key: error_session_expired }
+      - { error_code: "409", behavior: show_error, message_key: error_duplicate_request_pending }
+      - { error_code: "503", behavior: enqueue_sync, message_key: error_network_queued }
+      - { error_code: "network.offline", behavior: enqueue_sync, message_key: error_network_queued }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    offline_behavior:
+      strategy: enqueue_to_sync_queue
+      priority: NORMAL
+      entity_type: LOAN_REQUEST
+      show_state: OfflineQueued
+    notes: >
+      Mirrors ui.yaml error_snackbar.on_click.action = OnRetry and its
+      action_contract (effect: call_api). Identical wiring to OnSubmitClick
+      except no client-side validation gate (validation succeeded on the
+      original submit; only transport failed).
+
+  - screen_id: loanRequestScreen
+    trigger: on_action
+    action: OnSuccessDialogDismiss
+    description: >
+      User taps "OK" on the success_dialog. Sets successDialogVisible = false
+      and emits NavigateToDashboardAfterSuccess so the ViewModel routes back
+      to personal-dashboard where the submitted loan appears as PENDING in
+      the group meeting agenda card. No API call, no persistence — pure
+      navigate.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
     error_paths: []
+    navigation:
+      - { condition: "always", nav_target: personal-dashboard, params: [] }
+    notes: >
+      Mirrors ui.yaml success_dialog.on_click.action = OnSuccessDialogDismiss
+      and its action_contract (effect: navigate). No I/O.
+
+tables:
+  - name: sync_queue
+    description: >
+      Offline sync queue table (Store5 / Bookkeeper pattern) shared across
+      write-side features on this project. Accepts LOAN_REQUEST payloads
+      with an idempotency key when the device is offline or the server
+      returns 503. Drained by the background sync worker when connectivity
+      is restored; the dt_loan_request datatable's idempotency guard
+      (clientId + submittedAt) prevents duplicate PENDING rows on repeated
+      drain attempts.
+    persistence_contract: sqldelight_entity
+    primary_key: "id"
+    mutations: [write, read, delete]
+    offline_strategy: drain_on_connect
+
+cache:
+  strategy: no_cache
+  notes: >
+    Loan-request submission is a pure write/mutation endpoint — no response
+    caching. All reads (savingsBalance, clientId, loanMultiplier) arrive via
+    nav_params or SessionManager and are held transiently in
+    LoanRequestState; nothing on this screen is a candidate for
+    stale_while_revalidate. Single source of cache truth: this data-flow
+    file. No legacy api.yaml#cache is consulted.
+
+sync_queue:
+  entries:
+    - entity_type: LOAN_REQUEST
+      table: sync_queue
+      priority: NORMAL
+      idempotency_key: "clientId:{clientId}:submittedAt:{submittedAt}"
+      notes: >
+        Queued when the device is offline at submit OR when the server
+        returns 503. The dt_loan_request datatable uses the (clientId,
+        submittedAt) idempotency key server-side (409 on duplicate) to
+        prevent duplicate PENDING rows when the sync worker drains multiple
+        times.

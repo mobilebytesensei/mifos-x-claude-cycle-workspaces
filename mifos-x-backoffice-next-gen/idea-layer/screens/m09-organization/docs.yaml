@@ -1,0 +1,292 @@
+feature: m09-organization
+status: approved
+cluster: back-office-module
+module: m09-organization
+priority: should_have
+new_infra: false
+is_primary_flow: false
+has_ui: true
+has_api: true
+has_server: false
+offline_policy: online-only
+capabilities:
+  - has_ui
+  - has_api
+  - has_offline_cache
+  - has_form_input
+  - requires_auth
+requires_features:
+  - permission-capability-engine
+  - offline-sync-engine
+  - dynamic-template-forms
+  - needs-attention-inbox
+permissions_gate: >-
+  *_OFFICE, *_STAFF, *_CURRENCY, *_HOLIDAY (+ACTIVATE_), *_WORKINGDAYS, *_FUND, *_PAYMENTTYPE, *_CODE/_CODEVALUE,
+  BULKREASSIGN_LOAN
+acceptance_refs:
+  - Org structure + reference-data admin; also feeds offline dropdown vocabularies for all forms
+plan_ref: idea-plan.yaml#features[m09-organization]
+summary: >-
+  M09 · Organization — the reference-data control plane: offices (hierarchy), staff/employees, currencies, holidays,
+  working days, funds, payment types, codes + code-values, and bulk loan-officer reassignment. Two roles in one module:
+  (1) ADMIN — each create/edit entry-point gated by its exact {ACTION}_{ENTITY} permission, ONLINE-ONLY + maker-checker
+  aware (config drift must never deferred-sync); (2) VOCABULARY — the READ side is cached CACHE_FIRST_SWR and is the
+  offline dropdown backbone every dynamic-template-form consumes (offices, loan officers, currencies, payment types,
+  funds, codes). All forms render from the Fineract entity template (dynamic-template-forms); writes funnel through the
+  offline-sync-engine outbox (online-only drain); rejected commands route to needs-attention-inbox.
+metadata:
+  category: back-office-domain
+  implementation_ready: true
+  impl_ready_at: '2026-07-17T00:00:00Z'
+  impl_ready_schema: v2
+contracts:
+  - capability: org_reference_read
+    platform_spec: >-
+      Per-entity CACHE_FIRST_SWR Store<Unit,List<T>> over Room (OrgReferenceEntity keyed by (entity_type, entity_id));
+      GET /v1/{offices,staff,currencies,holidays,workingdays,funds,paymenttypes,codes}; renders all ScreenState variants
+      via ScreenContent; the offline dropdown vocabulary source for dynamic-template-forms
+    permission: READ_OFFICE
+    error_cases:
+      - org_read_failed
+      - org_offline_no_cache
+  - capability: office_hierarchy_read
+    platform_spec: GET /v1/offices → indented hierarchy tree built from parent_id / hierarchy path; offline via cache
+    permission: READ_OFFICE
+    error_cases:
+      - org_read_failed
+  - capability: code_values_read
+    platform_spec: >-
+      GET /v1/codes + GET /v1/codes/{codeId}/codevalues → the dropdown option vocabulary (LoanPurpose, Gender,
+      ClientType, …) consumed by every dynamic form; CACHE_FIRST_SWR
+    permission: READ_CODE
+    error_cases:
+      - org_read_failed
+  - capability: reference_create_command
+    platform_spec: >-
+      POST /v1/{offices,staff,holidays,funds,paymenttypes} + POST /v1/codes/{id}/codevalues + POST
+      /v1/holidays/{id}?command=activate — form from GET /{entity}/template via dynamic-template-forms; queued through
+      RoomSubmitOutbox with a durable idempotency key; ONLINE-ONLY drain (config must not deferred-sync); maker-checker
+      aware (queued commandId+empty changes → PENDING_APPROVAL)
+    permission: CREATE_OFFICE
+    error_cases:
+      - command_rejected
+      - command_pending_approval
+      - permission_drift_403
+      - edit_offline_blocked
+  - capability: reference_update_command
+    platform_spec: >-
+      PUT /v1/offices/{id} + PUT /v1/currencies (selected ISO codes) + PUT /v1/workingdays (RRULE + reschedule
+      behaviour) — queued, durable-idempotent, ONLINE-ONLY, maker-checker aware
+    permission: UPDATE_CURRENCY
+    error_cases:
+      - command_rejected
+      - edit_offline_blocked
+  - capability: bulk_loan_reassignment
+    platform_spec: >-
+      POST /v1/loans/loanreassignment — form from GET /v1/loans/loanreassignment/template; moves every active loan from
+      a from-officer to a to-officer for an office in one transaction; queued, durable-idempotent, ONLINE-ONLY,
+      maker-checker aware
+    permission: BULKREASSIGN_LOAN
+    error_cases:
+      - reassignment_rejected
+      - edit_offline_blocked
+libraries:
+  - capability: org_reference_read
+    library: openMF Fineract Client KMP SDK
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: org_reference_read
+    library: org.mobilenativefoundation.store.store5
+    version: 5.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: org_reference_read
+    library: androidx.room
+    version: 3.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: reference_create_command
+    library: kotlinx-serialization
+    version: 1.7.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: reference_create_command
+    library: cmp-network-monitor
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+vm_actions:
+  - name: LoadReferenceData
+    signature: private fun loadReferenceData()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Success(collections) | Empty | Error
+    side_effects:
+      - >-
+        OrgReferenceRepository.streamAll(CACHE_FIRST_SWR) —
+        offices/staff/currencies/holidays/workingdays/funds/paymenttypes/codes
+    error_handling:
+      NetworkError: uiState=Error; keep last cached reference data (dropdowns stay populated); offer Retry
+      Unauthorized403: route to permission-capability-engine (drift protocol)
+  - name: SelectEntityTab
+    signature: 'private fun onSelectEntityTab(tab: OrgEntityTab)'
+    state_mutations:
+      - selectedTab=<tab>
+      - uiState=Success | Empty
+    side_effects: []
+    error_handling: {}
+  - name: OpenOfficeDetail
+    signature: 'private fun onOpenOfficeDetail(officeId: String)'
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToOfficeDetail(officeId))
+    error_handling: {}
+  - name: OpenCodeDetail
+    signature: 'private fun onOpenCodeDetail(codeId: String)'
+    state_mutations: []
+    side_effects:
+      - OrgReferenceRepository.streamCodeValues(codeId, CACHE_FIRST_SWR)
+    error_handling: {}
+  - name: CreateOffice
+    signature: 'private fun createOffice(payload: OrgCommandPayload)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - OrgOutboxRepository.enqueue(CREATE_OFFICE, payload, idempotencyKey) — online-only drain
+    error_handling:
+      Offline: block; disabled with 'connect to edit configuration' reason (reference edits online-only)
+      CommandRejected: route entry to needs-attention-inbox; uiState=Error
+      Queued: uiState=Submitting → 'Submitted for approval' (maker-checker)
+  - name: CreateStaff
+    signature: 'private fun createStaff(payload: OrgCommandPayload)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - OrgOutboxRepository.enqueue(CREATE_STAFF, payload, idempotencyKey)
+    error_handling:
+      Offline: block; online-only
+      CommandRejected: route to needs-attention-inbox
+  - name: ConfigureCurrencies
+    signature: 'private fun configureCurrencies(selected: List<String>)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - OrgOutboxRepository.enqueue(UPDATE_CURRENCY, payload, idempotencyKey)
+    error_handling:
+      Offline: block; online-only
+      CommandRejected: route to needs-attention-inbox
+  - name: CreateHoliday
+    signature: 'private fun createHoliday(payload: OrgCommandPayload)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - OrgOutboxRepository.enqueue(CREATE_HOLIDAY, payload, idempotencyKey)
+    error_handling:
+      Offline: block; online-only
+      CommandRejected: route to needs-attention-inbox
+  - name: ActivateHoliday
+    signature: 'private fun activateHoliday(holidayId: String)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - OrgOutboxRepository.enqueue(ACTIVATE_HOLIDAY, holidayId, idempotencyKey)
+    error_handling:
+      CommandRejected: route to needs-attention-inbox
+  - name: EditWorkingDays
+    signature: 'private fun editWorkingDays(payload: OrgCommandPayload)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - OrgOutboxRepository.enqueue(UPDATE_WORKINGDAYS, payload, idempotencyKey)
+    error_handling:
+      Offline: block; online-only
+  - name: CreateFund
+    signature: 'private fun createFund(payload: OrgCommandPayload)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - OrgOutboxRepository.enqueue(CREATE_FUND, payload, idempotencyKey)
+    error_handling:
+      CommandRejected: route to needs-attention-inbox
+  - name: CreatePaymentType
+    signature: 'private fun createPaymentType(payload: OrgCommandPayload)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - OrgOutboxRepository.enqueue(CREATE_PAYMENTTYPE, payload, idempotencyKey)
+    error_handling:
+      CommandRejected: route to needs-attention-inbox
+  - name: AddCodeValue
+    signature: 'private fun addCodeValue(codeId: String, payload: OrgCommandPayload)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - OrgOutboxRepository.enqueue(CREATE_CODEVALUE, codeId, payload, idempotencyKey)
+    error_handling:
+      Offline: block; online-only
+      CommandRejected: route to needs-attention-inbox
+  - name: BulkReassignLoans
+    signature: 'private fun bulkReassignLoans(payload: LoanReassignmentPayload)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - OrgOutboxRepository.enqueue(BULKREASSIGN_LOAN, payload, idempotencyKey) — durable key prevents double-reassign
+    error_handling:
+      Offline: block; online-only
+      CommandRejected: route to needs-attention-inbox
+  - name: RetryLoad
+    signature: private fun onRetryLoad()
+    state_mutations:
+      - uiState=Loading
+    side_effects:
+      - OrgReferenceRepository.streamAll.refreshFresh()
+    error_handling:
+      Unauthorized403: route to permission-capability-engine
+error_cases:
+  - org_read_failed
+  - org_offline_no_cache
+  - command_rejected
+  - command_pending_approval
+  - permission_drift_403
+  - edit_offline_blocked
+  - reassignment_rejected
+test_fixtures:
+  source: screens/m09-organization/tests.yaml
+  scenario_count: 10
+  priority_distribution:
+    high: 5
+    medium: 4
+    low: 1
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T00:00:00Z'
+enriched_by: /idea-feature-enrich
+approve_hash: "sha256:e09f7179eeed4553ba467467ccc7017ed0a914aafefc4f8f960c63a2bea7d1fc"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+status_history:
+  - from: designed
+    to: design_partial
+    at: '2026-07-17T20:57:28.206Z'
+    by: /idea-feature-stitch
+  - from: design_partial
+    to: designed
+    at: '2026-07-17T22:44:07.096Z'
+    by: /idea-feature-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

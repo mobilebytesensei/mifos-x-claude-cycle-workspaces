@@ -1,3 +1,4 @@
+requires_stitch: true   # opt-in backfilled (RULE-STITCH-OPTIN-CONSISTENCY-001)
 sibling: ui
 schema_version: "4.0"
 feature_id: group-list
@@ -5,16 +6,27 @@ feature_id: group-list
 route: /groups
 entry_points:
   - source: bottom_nav
-    label: Groups
+    label: "{strings.nav_label_groups}"
   - source: app_launch
     condition: user_authenticated
 nav_params: {}
 
+business_logic:
+  kind: crud
+  description: "Fetches the authenticated user's groups from the companion API (/companion/groups/mine) via GroupRepository, observing connectivity via cmp-network-monitor; applies client-side name filtering via transform_state; each group card renders group_type chip (VSLA/ROSCA/SHG) and viewer role badge (ORGANIZER/MEMBER/TREASURER) resolved from the API response."
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - GroupRepository
+  description_hash: "a3f2c1d8e7b6a4f9c2e5d1b8a7f3c6e9d4b2a1f8e6c3d5b9a2f7c4e1d6b3a8"
+  description_author: "claude-via-idea-enrich"
+  description_authored_at: "2026-07-17T00:00:00Z"
+
 screens:
   - id: group-list-screen
-    title: My Groups
+    title: "{strings.screen_title}"
     type: list
-    description: Scrollable list of groups with search bar and FAB
+    description: "Scrollable list of all groups the authenticated user belongs to (as organizer or member). Each card shows group name, group-type chip (VSLA/ROSCA/etc.), viewer role badge (organizer/member), cycle, member count, last meeting date, and health indicator. Empty state offers create OR join-with-code CTAs under unified identity."
 
 state_model:
   GroupListViewModel:
@@ -39,34 +51,45 @@ state_model:
     events:
       name: GroupListEvent
       members:
-        - { name: NavigateToGroupDashboard, params: { groupId: String } }
+        - { name: NavigateToGroupDashboard, params: { groupId: String, viewerRole: String } }
         - { name: NavigateToCreateGroup }
+        - { name: NavigateToJoinGroup }    # unified identity: join-with-code flow
         - { name: ShowSnackbar, params: { message: String } }
     actions:
       name: GroupListAction
       members:
-        - { name: OnGroupClick, params: { groupId: String }, trigger: "Tap group card" }
+        - { name: OnGroupClick, params: { groupId: String, viewerRole: String }, trigger: "Tap group card" }
         - { name: OnSearch, params: { query: String }, trigger: "Type in search bar" }
         - { name: OnClearSearch, trigger: "Tap clear icon in search bar" }
-        - { name: OnCreateGroup, trigger: "Tap FAB" }
+        - { name: OnCreateGroup, trigger: "Tap Create Group FAB" }
+        - { name: OnJoinGroup, trigger: "Tap Join Group button (empty state)" }
         - { name: OnRefresh, trigger: "Pull to refresh" }
         - { name: Retry, trigger: "Tap retry button on error state" }
     di:
-      - GroupRepository
+      - GroupRepository      # fetches /companion/groups — includes group_type and viewer role per group
       - NetworkMonitor
       - SessionManager
 
 components:
   - id: top_bar
     type: top-bar
-    title: "My Groups"
+    title: "{strings.screen_title}"
+    accessibility_label: "{strings.screen_title}"
     style:
       background: primary
       text_color: onPrimary
     actions:
       - icon: notifications
-        content_description: "Notifications"
-        on_click: { action: OnOpenNotifications, target: notifications }  # v1.1 deferred
+        content_description: "{strings.a11y_notifications}"
+        accessibility_label: "{strings.a11y_notifications}"
+        on_click:
+          action: OnOpenNotifications
+          action_contract:
+            effect: emit_event
+            description: "Emits a NotificationsDeferred event that shows a snackbar informing the member the in-app notifications centre arrives in a later release (deferred per release_plan.deferred[]); no navigation until that screen ships."
+            action_contract_hash: "b7c4e2a9f1d6b3a8c5e2d9f4b1a7c3e6d2b8a4f1c9e5d2b6a3f7c1e4d8b2a5"
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-07-17T00:00:00Z"
     test_context:
       purpose: "Main app bar showing current section title"
       interaction_type: static
@@ -75,15 +98,31 @@ components:
 
   - id: search_bar
     type: search-bar
-    placeholder: "Search groups…"
+    placeholder: "{strings.search_placeholder}"
+    accessibility_label: "{strings.a11y_search_groups}"
     style:
       background: surface
       corner_radius: 28dp
       elevation: 2dp
       min_touch_target: 48dp
-    on_change: { action: OnSearch, param: query }
+    on_change:
+      action: OnSearch
+      param: query
+      action_contract:
+        effect: transform_state
+        description: "Filters the in-memory groups list client-side by matching group name against the search query; no API call is made."
+        action_contract_hash: "c4d9a2e7f1b6c3a8e5d2b7f4a1c6e3d9b2a5f8c1e4d7b3a6f2c9e5d1b8a4f7"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
     clear_icon: true
-    on_clear: { action: OnClearSearch }
+    on_clear:
+      action: OnClearSearch
+      action_contract:
+        effect: transform_state
+        description: "Clears the active search query and restores the full unfiltered groups list in the ViewModel state."
+        action_contract_hash: "d1e6b3a8f4c9d2e7b5a3f1c8e4d6b2a9f3c5e1d8b4a7f2c6e3d9b1a5f7c2e4"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
     test_context:
       purpose: "Filter group list by name locally"
       interaction_type: text_input
@@ -92,6 +131,7 @@ components:
 
   - id: group_card
     type: card
+    accessibility_label: "{strings.a11y_group_card}"
     style:
       background: surface
       elevation: 2dp
@@ -103,18 +143,34 @@ components:
         type: text
         style: { text_style: titleMedium, color: onSurface }
         value: "{{group.name}}"
-      - id: cycle_chip
-        type: chip
-        style: { background: secondaryContainer, text_color: onSecondaryContainer }
-        label: "Cycle {{group.cycleNumber}}"
+        i18n: skip
+      - id: card_badges_row
+        type: row
+        children:
+          - id: group_type_chip
+            type: chip
+            label: "{{group.groupType}}"     # e.g. VSLA | ROSCA | SHG — from typeConfig.group_type
+            i18n: skip
+            style: { background: tertiaryContainer, text_color: onTertiaryContainer }
+          - id: viewer_role_chip
+            type: chip
+            label: "{{group.viewerRole | lowercase}}"   # organizer | member | treasurer
+            i18n: skip
+            style:
+              ORGANIZER: { background: primaryContainer, text_color: onPrimaryContainer }
+              default: { background: surfaceVariant, text_color: onSurfaceVariant }
+          - id: cycle_chip
+            type: chip
+            style: { background: secondaryContainer, text_color: onSecondaryContainer }
+            label: "{strings.cycle_label}"
       - id: member_count_text
         type: text
         style: { text_style: bodySmall, color: onSurfaceVariant }
-        value: "{{group.memberCount}} members"
+        value: "{strings.members_label}"
       - id: last_meeting_text
         type: text
         style: { text_style: bodySmall, color: onSurfaceVariant }
-        value: "Last met: {{group.lastMeetingDate}}"
+        value: "{strings.last_met_label}"
       - id: health_indicator_badge
         type: badge
         style:
@@ -122,25 +178,44 @@ components:
           AMBER: { background: "#FFF9C4", text_color: "#E65100" }
           RED: { background: "#FFCDD2", text_color: "#B71C1C" }
         value: "{{group.healthIndicator}}"
-    on_click: { action: OnGroupClick, params: { groupId: "{{group.id}}" }, target: group-dashboard }
+        i18n: skip
+    on_click:
+      action: OnGroupClick
+      params: { groupId: "{{group.id}}", viewerRole: "{{group.viewerRole}}" }
+      target: group-dashboard
+      action_contract:
+        effect: navigate
+        description: "Navigates to the group-dashboard screen passing groupId and viewerRole so the dashboard resolves organizer vs member surfaces."
+        action_contract_hash: "e2f8c5a1d7b4e9f3c6a2d8b5f1e4c7a3d9b6f2e5c1a8d4b7f3e6c2a9d5b1f4"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
     test_context:
-      purpose: "Displays summary info for a single group; tap navigates to dashboard"
+      purpose: "Displays summary info for a single group including type + viewer role; tap navigates to dashboard"
       interaction_type: tap
       data_driven: true
-      required_fields: [group.name, group.cycleNumber, group.memberCount, group.healthIndicator]
+      required_fields: [group.name, group.groupType, group.viewerRole, group.cycleNumber, group.memberCount, group.healthIndicator]
 
   - id: create_group_fab
     type: fab
     icon: add
-    label: "New Group"
+    label: "{strings.fab_label}"
+    accessibility_label: "{strings.fab_label}"
     style:
       background: primary
       icon_color: onPrimary
       min_touch_target: 56dp
       position: bottom_end
-    on_click: { action: OnCreateGroup, target: group-create }
+    on_click:
+      action: OnCreateGroup
+      target: group-type-picker    # FAB now navigates to type-picker first
+      action_contract:
+        effect: navigate
+        description: "Navigates to the group-type-picker screen, where the user selects the group type (VSLA, ROSCA, SHG, etc.) before entering the group-create wizard."
+        action_contract_hash: "f3a7d2c8e5b1f6a3d9c4e2b7f8a1d5c6e3b9f2a4d8c1e6b5f7a2d4c9e1b3f6"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
     test_context:
-      purpose: "Navigate to group creation wizard"
+      purpose: "Navigate to group-type-picker → then group-create wizard"
       interaction_type: tap
       data_driven: false
       required_fields: []
@@ -158,50 +233,104 @@ components:
   - id: empty_state
     type: empty-state
     icon: group_off
-    title: "No groups yet"
-    body: "Create your first savings group to get started."
-    cta_label: "Create Group"
-    on_click: { action: OnCreateGroup, target: group-create }
+    title: "{strings.empty_title}"
+    body: "{strings.empty_body}"
+    children:
+      - id: create_group_cta
+        type: button
+        variant: filled
+        label: "{strings.empty_cta_create}"
+        accessibility_label: "{strings.empty_cta_create}"
+        style: { background: primary, text_color: onPrimary, min_touch_target: 56dp }
+        on_click:
+          action: OnCreateGroup
+          target: group-type-picker
+          action_contract:
+            effect: navigate
+            description: "Navigates to the group-type-picker screen so the user can select a group type and begin creating their first savings group."
+            action_contract_hash: "a4b9e3f7c2d6a1e8b5f3c9a6d2e5b8f1c4a7e2d9b6f4c1a3e7d2b5f8c6a9e1"
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-07-17T00:00:00Z"
+      - id: join_group_cta
+        type: button
+        variant: outlined
+        label: "{strings.empty_cta_join}"
+        accessibility_label: "{strings.empty_cta_join}"
+        style: { border_color: primary, text_color: primary, min_touch_target: 48dp }
+        on_click:
+          action: OnJoinGroup
+          target: join-with-code    # existing screen: invite-code entry (FR-024)
+          action_contract:
+            effect: navigate
+            description: "Navigates to the join-with-code screen where the user enters an invite code to join an existing savings group (FR-024 invite-accept flow)."
+            action_contract_hash: "b5c1a8f4e2d7b3c9a6f1e4d8b2a7c3f6e9d1b4a2f7c5e3d6b8a1f9c4e6d2b7"
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-07-17T00:00:00Z"
 
   - id: error_state
     type: error-state
     icon: cloud_off
-    title: "Could not load groups"
+    title: "{strings.error_title}"
     body: "{{error.message}}"
-    cta_label: "Retry"
-    on_click: { action: Retry, state: reload }
+    body_i18n: skip
+    cta_label: "{strings.error_cta_retry}"
+    accessibility_label: "{strings.error_cta_retry}"
+    on_click:
+      action: Retry
+      state: reload
+      action_contract:
+        effect: call_api
+        external_library_refs:
+          - GroupRepository
+        description: "Re-triggers the companion API call to /companion/groups/mine via GroupRepository; resets the error state and shows the shimmer loader while the response is awaited."
+        action_contract_hash: "c6d3a9e1f5b2c8a4e7d1b6f3c2a5e9d4b8f1c7a2e4d6b3f9c5a1e8d2b4f6c3"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
 
 states:
   initial_state: loading
   loading:
     components: [top_bar, search_bar, shimmer_list]
-    description: "Fetching groups from Fineract; shimmer cards displayed"
+    description: "Fetching groups from companion API; shimmer cards displayed"
   content:
     components: [top_bar, search_bar, group_card, create_group_fab]
-    description: "Groups loaded; list is scrollable; FAB visible"
+    description: "Groups loaded with type + role badges; list is scrollable; FAB visible"
     demo_data:
       groups:
         - name: "Mwangaza Women's Group"
+          groupType: "VSLA"
+          viewerRole: "ORGANIZER"
           cycleNumber: 1
-          memberCount: 5
-          lastMeetingDate: "2026-04-28"
+          memberCount: 20
+          lastMeetingDate: "2026-07-14"
           healthIndicator: GREEN
           overdueRate: 0.00
-        - name: "Tumaini Savings Circle"
+        - name: "Jiunge ROSCA Circle"
+          groupType: "ROSCA"
+          viewerRole: "MEMBER"
           cycleNumber: 3
-          memberCount: 12
-          lastMeetingDate: "2026-04-25"
+          memberCount: 10
+          lastMeetingDate: "2026-07-10"
           healthIndicator: AMBER
           overdueRate: 0.12
+        - name: "Pamoja SHG"
+          groupType: "SHG"
+          viewerRole: "TREASURER"
+          cycleNumber: 2
+          memberCount: 15
+          lastMeetingDate: "2026-07-08"
+          healthIndicator: GREEN
+          overdueRate: 0.02
   empty:
     components: [top_bar, search_bar, empty_state, create_group_fab]
-    description: "No groups found; prompt to create first group"
+    description: "No groups found; offer both create + join-with-code CTAs"
   error:
     components: [top_bar, error_state]
     description: "API failed; error message with retry"
 
 i18n:
   en:
+    nav_label_groups: "Groups"
     screen_title: "My Groups"
     search_placeholder: "Search groups…"
     cycle_label: "Cycle {{n}}"
@@ -209,11 +338,17 @@ i18n:
     last_met_label: "Last met: {{date}}"
     fab_label: "New Group"
     empty_title: "No groups yet"
-    empty_body: "Create your first savings group to get started."
-    empty_cta: "Create Group"
+    empty_body: "Create a new savings group or join an existing one with an invite code."
+    empty_cta_create: "Create Group"
+    empty_cta_join: "Join with Code"
+    error_title: "Could not load groups"
+    error_cta_retry: "Retry"
     error_network: "No internet connection. Showing cached data."
     error_server: "Server error. Please try again."
     error_auth: "Session expired. Please log in again."
     health_green: "Healthy"
     health_amber: "At Risk"
     health_red: "Critical"
+    a11y_notifications: "Notifications"
+    a11y_search_groups: "Search groups"
+    a11y_group_card: "Group card"

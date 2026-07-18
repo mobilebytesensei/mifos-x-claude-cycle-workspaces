@@ -5,39 +5,140 @@ feature_id: personal-dashboard
 entries:
   - screen_id: personalDashboardScreen
     trigger: on_mount
+    description: >
+      Load member dashboard via single companion API call.
+      get_member_dashboard resolves identity from auth token (no clientId or selfServiceToken).
+      Returns: myGroups[], selectedGroup summary, pool_model-discriminated balance fields,
+      and recentTransactions[]. Replaces old SelfService 2-call: get_client_accounts + get_savings_account.
+      selectedGroupId may be null on first load (companion defaults to first group).
     endpoints:
-      - { api_id: get_client_accounts, transport: rest, method: get }
-      - { api_id: get_savings_account, transport: rest, method: get }
+      - { api_id: get_member_dashboard, transport: rest, method: get }
+    tables:
+      - name: member_dashboard_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: savings_transactions
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: ClientAccountsResponse, role: response, api_id: get_client_accounts }
-      - { name: SavingsAccountSummaryDto, role: response, api_id: get_client_accounts }
-      - { name: LoanAccountSummaryDto, role: response, api_id: get_client_accounts }
-      - { name: SavingsAccountDetailDto, role: response, api_id: get_savings_account }
-      - { name: LoanSummary, role: response, api_id: get_client_accounts }
-      - { name: SavingsTransactionDto, role: response, api_id: get_savings_account }
+      - { name: MemberDashboardResponse, role: response, api_id: get_member_dashboard }
+      - { name: GroupSummary, role: response, api_id: get_member_dashboard }
+      - { name: SavingsTransactionDto, role: response, api_id: get_member_dashboard }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: stale_while_revalidate
       ttl_seconds: 300
-      key_template: "personal_dashboard:{clientId}"
+      key_template: "member_dashboard:{userId}:group:{selectedGroupId}"
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
-      - { error_code: "404", behavior: error_state, message_key: error_server }
-      - { error_code: "503", behavior: fallback_cache, message_key: error_network }
-      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_network }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "404", behavior: show_error, message_key: error_not_in_group }
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      Response.poolModel (from selectedGroup.typeConfig) drives balance card display:
+        ACCUMULATING: groupLinkedSavingsBalance + shareOutProjection card visible
+        ROTATING_PAYOUT: groupLinkedSavingsBalance + rotationPosition + nextRecipientEta
+        NONE: only individualSavingsBalance visible (no group pool card)
+      myGroups[] populates the group selector chip row for group switching.
+      First mount: selectedGroupId=null → companion returns first group alphabetically.
+      Empty myGroups[] → ZeroGroups state (same as login-signup ZeroGroups).
+
+  - screen_id: personalDashboardScreen
+    trigger: on_action
+    action: OnSelectGroup
+    description: >
+      User taps a different group chip (OnSelectGroup, params: { groupId }).
+      Re-fetches member dashboard via MemberDashboardRepository for the tapped selectedGroupId,
+      re-projecting the pool-model card (ACCUMULATING share-out vs ROTATING_PAYOUT rotation position).
+      Replaces the member_dashboard_cache row for the user/group pair.
+    endpoints:
+      - { api_id: get_member_dashboard, transport: rest, method: get }
+    tables:
+      - name: member_dashboard_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: savings_transactions
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: MemberDashboardResponse, role: response, api_id: get_member_dashboard }
+      - { name: SavingsTransactionDto, role: response, api_id: get_member_dashboard }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 300
+      key_template: "member_dashboard:{userId}:group:{selectedGroupId}"
+    error_paths:
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+    notes: >
+      selectedGroupId nav state updates ViewModel; triggers new companion API call.
+      Each group result cached separately by selectedGroupId in the key template.
 
   - screen_id: personalDashboardScreen
     trigger: on_refresh
+    description: Pull-to-refresh — forces fresh member dashboard data for current group.
     endpoints:
-      - { api_id: get_client_accounts, transport: rest, method: get }
-      - { api_id: get_savings_account, transport: rest, method: get }
+      - { api_id: get_member_dashboard, transport: rest, method: get }
+    tables:
+      - name: member_dashboard_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: savings_transactions
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: ClientAccountsResponse, role: response, api_id: get_client_accounts }
-      - { name: SavingsAccountDetailDto, role: response, api_id: get_savings_account }
+      - { name: MemberDashboardResponse, role: response, api_id: get_member_dashboard }
+      - { name: SavingsTransactionDto, role: response, api_id: get_member_dashboard }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: bypass_and_refresh
-      key_template: "personal_dashboard:{clientId}"
+      ttl_seconds: 300
+      key_template: "member_dashboard:{userId}:group:{selectedGroupId}"
     error_paths:
-      - { error_code: "network.offline", behavior: snackbar, message_key: error_network }
-      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+    notes: Bypasses stale_while_revalidate; replaces cache with fresh response for current group.
+
+tables:
+  - name: member_dashboard_cache
+    description: >
+      SQLDelight cache of MemberDashboardResponse per (userId, selectedGroupId).
+      Stores memberName, selectedGroup summary, poolModel, balance fields, and pagination metadata.
+      Keyed by (userId, selectedGroupId) — separate rows for each group chip selection.
+    persistence_contract: sqldelight_entity
+    primary_key: "userId:groupId"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+  - name: savings_transactions
+    description: >
+      Shared SQLDelight cache of SavingsTransactionDto rows for recent activity display.
+      Shared across personal-dashboard, savings-dashboard, and member-savings-detail.
+      Keyed by transactionId. Written on mount and group chip switch.
+    persistence_contract: sqldelight_entity
+    primary_key: "transactionId"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+cache:
+  strategy: stale_while_revalidate
+  ttl_seconds: 300
+  notes: >
+    Member dashboard cached 5 min per group (stale_while_revalidate).
+    Group chip switch re-uses per-group cache or re-fetches if stale.
+    Pull-to-refresh uses bypass_and_refresh. Served stale when offline (use_sqldelight).
+    No legacy api.yaml#cache — single cache declaration in this data-flow file.
+
+sync_queue:
+  entries: []
+  notes: >
+    Personal dashboard is read-only. No write operations.
+    Contribution recording is handled by group-specific child flows.
+
+last_generate:
+  timestamp: "2026-07-18T00:00:01Z"
+  generator: idea-data-flow
+  framework_version: "2.86.0"

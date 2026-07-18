@@ -5,54 +5,162 @@ feature_id: share-out-preview
 entries:
   - screen_id: shareOutPreviewScreen
     trigger: on_mount
-    description: Fetch center accounts and share-out datatable to compute distribution
+    description: >
+      Load strategy-aware distribution preview from the companion API via a single call.
+      get_shareout_preview returns both ACCUMULATING (memberPayouts[]) and ROTATING_PAYOUT
+      (rotationPosition + nextRecipientName + nextRecipientAmount) in one response,
+      with poolModel field to discriminate rendering on the client. Populates the
+      ContentAccumulating or ContentRotating screen_state depending on poolModel.
+      Replaces the legacy two-call pattern: get_center_accounts + get_share_out_datatable.
     endpoints:
-      - { api_id: get_center_accounts, transport: rest, method: get }
-      - { api_id: get_share_out_datatable, transport: rest, method: get }
+      - { api_id: get_shareout_preview, transport: rest, method: get }
+    tables:
+      - name: shareout_preview_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: CenterAccountsResponse, role: response, api_id: get_center_accounts }
-      - { name: ShareOutRecordList, role: response, api_id: get_share_out_datatable }
-      - { name: MemberPayout, role: response, api_id: get_center_accounts }
-      - { name: MemberSavingsSummary, role: response, api_id: get_center_accounts }
+      - { name: ShareOutPreview, role: response, api_id: get_shareout_preview }
+      - { name: MemberPayout, role: response, api_id: get_shareout_preview }
+    produces_state: Content
     auth_required: true
     cache:
-      strategy: stale_while_revalidate
+      strategy: network_first
       ttl_seconds: 60
-      key_template: "share-out-preview:center:{centerId}:cycle:{cycleNumber}"
+      key_template: "shareout_preview:{groupId}:cycle:{cycleNumber}"
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
-      - { error_code: "404", behavior: show_empty_state, message_key: error_not_found }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "403", behavior: show_error, message_key: error_forbidden }
+      - { error_code: "404", behavior: show_error, message_key: error_group_not_found }
+      - { error_code: "409", behavior: show_error, message_key: error_shareout_already_done }
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
-      - { error_code: "5xx", behavior: show_error_state, message_key: error_server_unavailable }
-      - { error_code: "insufficient_data", behavior: show_error_state, message_key: error_not_found }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      Single endpoint replaces the two-call pattern. poolModel field in the response drives:
+        ACCUMULATING → render member_payout_table (memberPayouts[]) — ContentAccumulating
+        ROTATING_PAYOUT → render rotation_preview_card (nextRecipientName, nextRecipientAmount) — ContentRotating
+      network_first strategy because preview amounts are financial and must be fresh.
+      409 = share-out already executed this cycle; show CycleComplete state.
 
   - screen_id: shareOutPreviewScreen
     trigger: on_refresh
-    description: User pulls to refresh or taps refresh icon — re-fetches all data fresh
+    action: OnRefresh
+    description: >
+      User taps the refresh icon in the top-app-bar (OnRefresh action) — re-fetches the
+      strategy-aware distribution preview from the companion API fresh, bypassing the 60s
+      cache; on success replaces the shareout_preview_cache SQLDelight row.
     endpoints:
-      - { api_id: get_center_accounts, transport: rest, method: get }
-      - { api_id: get_share_out_datatable, transport: rest, method: get }
+      - { api_id: get_shareout_preview, transport: rest, method: get }
+    tables:
+      - name: shareout_preview_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: CenterAccountsResponse, role: response, api_id: get_center_accounts }
+      - { name: ShareOutPreview, role: response, api_id: get_shareout_preview }
+    produces_state: Content
     auth_required: true
     cache:
-      strategy: no_cache
-      ttl_seconds: 0
-      key_template: ""
+      strategy: bypass_and_refresh
+      ttl_seconds: 60
+      key_template: "shareout_preview:{groupId}:cycle:{cycleNumber}"
     error_paths:
-      - { error_code: "network.offline", behavior: show_snackbar, message_key: error_offline }
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+    notes: Explicitly bypasses cache; replaces shareout_preview_cache with fresh data.
 
   - screen_id: shareOutPreviewScreen
     trigger: on_interact
-    description: User confirms — passes computed payouts as nav args to share-out-execute
-    endpoints: []
+    action: Retry
+    description: >
+      User taps the retry CTA on the error_state after a failed preview. Re-invokes
+      get_shareout_preview against the companion API; clears the ShareOutPreviewError
+      and returns the screen to the Loading state, then renders the ACCUMULATING table
+      or ROTATING_PAYOUT card once corpus, profit, pool and payouts are recomputed.
+    endpoints:
+      - { api_id: get_shareout_preview, transport: rest, method: get }
+    tables:
+      - name: shareout_preview_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: MemberPayout, role: request, api_id: nav_params }
-    auth_required: false
+      - { name: ShareOutPreview, role: response, api_id: get_shareout_preview }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: bypass_and_refresh
+      ttl_seconds: 60
+      key_template: "shareout_preview:{groupId}:cycle:{cycleNumber}"
+    error_paths:
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: Retry from the Error screen_state — bypasses cache and forces a fresh companion API call.
+
+  - screen_id: shareOutPreviewScreen
+    trigger: on_interact
+    action: OnConfirm
+    description: >
+      Organizer confirms the previewed distribution plan and navigates to share-out-execute.
+      No API call — forwards groupId, typeConfig, cycleNumber, totalPool and the
+      pool-model-appropriate payload (memberPayouts[] for ACCUMULATING or the single
+      rotation-recipient fields for ROTATING_PAYOUT) as nav args. The actual
+      COMP-DIST-001/002 execution happens on the next screen after double-confirmation.
+    endpoints: []
+    tables: []
+    dtos:
+      - { name: ShareOutPreview, role: request, api_id: nav_params }
+    produces_state: Content
+    auth_required: true
     cache:
       strategy: no_cache
       ttl_seconds: 0
       key_template: ""
     error_paths: []
     navigation:
-      - { condition: "OnConfirm && memberPayouts.isNotEmpty()", nav_target: share-out-execute, params: [groupId, centerId, cycleNumber, totalPool, memberPayouts] }
+      - { condition: "OnConfirm && poolModel == 'ACCUMULATING'", nav_target: share-out-execute, params: [groupId, typeConfig, cycleNumber, totalPool, memberPayouts] }
+      - { condition: "OnConfirm && poolModel == 'ROTATING_PAYOUT'", nav_target: share-out-execute, params: [groupId, typeConfig, cycleNumber, totalPool, nextRecipientName, nextRecipientAmount, rotationPosition] }
+    notes: >
+      Navigation is pool_model-aware: ACCUMULATING sends memberPayouts[];
+      ROTATING_PAYOUT sends single-recipient rotation fields.
+
+  - screen_id: shareOutPreviewScreen
+    trigger: on_interact
+    action: OnBack
+    description: >
+      Emit NavigateBack to pop the share-out-preview screen and return to the group
+      dashboard without executing any distribution. Pure navigation — no corpus or
+      payout data is mutated or persisted.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    navigation:
+      - { condition: "OnBack", nav_target: group-dashboard, params: [groupId] }
+    notes: Back navigation from the top-app-bar navigation icon — no side effects.
+
+tables:
+  - name: shareout_preview_cache
+    description: >
+      SQLDelight cache of the ShareOutPreview response. Serves offline fallback display
+      of the distribution plan. Short TTL (60s, network_first). Keyed by groupId + cycleNumber.
+    persistence_contract: sqldelight_entity
+    primary_key: "groupId:cycleNumber"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+cache:
+  strategy: network_first
+  ttl_seconds: 60
+  notes: >
+    Financial preview data requires freshness — network_first with 60s TTL.
+    No legacy api.yaml#cache. Single source: this data-flow file.
+    Cache bypassed on explicit refresh or retry; served stale when offline.
+
+sync_queue:
+  entries: []
+  notes: >
+    Share-out preview is read-only. Writes happen in share-out-execute.
+    No sync-queue entries needed here.

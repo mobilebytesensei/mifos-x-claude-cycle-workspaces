@@ -1,0 +1,391 @@
+requires_stitch: true   # opt-in backfilled (RULE-STITCH-OPTIN-CONSISTENCY-001)
+sibling: ui
+schema_version: "4.0"
+feature_id: member-invite
+
+route: /groups/{groupId}/invite
+entry_points:
+  - source: member-list
+    trigger: invite_fab_tap
+  - source: group-dashboard
+    trigger: invite_member_action
+nav_params:
+  groupId: { type: String, required: true }
+
+screens:
+  - id: member-invite-screen
+    title: "{strings.screen_title}"
+    type: form
+    description: >
+      Two-panel screen: Create Invite panel (enter phone/email + role, generate code) and
+      Pending Invites panel (list of unaccepted invites with revoke action).
+
+state_model:
+  MemberInviteViewModel:
+    state:
+      name: MemberInviteState
+      fields:
+        groupId: { type: String, default: '""' }
+        emailPhone: { type: String, default: '""' }
+        selectedRole: { type: String, default: '"member"' }
+        pendingInvites: { type: "List<PendingInvite>", default: "emptyList()" }
+        isGenerating: { type: Boolean, default: "false" }
+        generatedCode: { type: "String?", default: "null" }
+        generatedLink: { type: "String?", default: "null" }
+        isLoadingPending: { type: Boolean, default: "false" }
+        error: { type: "MemberInviteError?", default: "null" }
+    screen_state:
+      name: MemberInviteScreenState
+      members: [Content, Generating, Generated, Loading, Error]
+    errors:
+      name: MemberInviteError
+      types:
+        - { type: Validation, retry: false, message_key: error_validation }
+        - { type: Network, retry: true, message_key: error_network }
+        - { type: Server, retry: true, message_key: error_server }
+        - { type: Auth, retry: false, message_key: error_auth, redirect: login }
+        - { type: RevokeFailure, retry: true, message_key: error_revoke }
+    events:
+      name: MemberInviteEvent
+      members:
+        - { name: NavigateBack }
+        - { name: ShowSnackbar, params: { message: String } }
+        - { name: ShowShareSheet, params: { link: String, code: String } }
+    actions:
+      name: MemberInviteAction
+      members:
+        - { name: OnEmailPhoneChange, params: { value: String }, trigger: "Type phone or email in input field" }
+        - { name: OnRoleSelect, params: { role: String }, trigger: "Select role from dropdown" }
+        - { name: OnGenerateInvite, trigger: "Tap Generate Code button" }
+        - { name: OnCopyCode, trigger: "Tap Copy Code button on generated code card" }
+        - { name: OnCopyLink, trigger: "Tap Copy Link button on generated code card" }
+        - { name: OnShareLink, trigger: "Tap Share button on generated code card" }
+        - { name: OnRevokeInvite, params: { inviteId: Long }, trigger: "Tap Revoke on a pending invite row" }
+        - { name: OnBack, trigger: "Tap system back or top-bar back arrow" }
+        - { name: OnRetry, trigger: "Tap Retry button on error state" }
+    di:
+      - InvitationRepository
+      - ClipboardManager
+
+forms:
+  create_invite_form:
+    fields:
+      - id: email_phone_field
+        type: text-field
+        label: "{strings.field_email_phone}"
+        placeholder: "{strings.placeholder_email_phone}"
+        required: true
+        keyboard: email
+        max_length: 100
+      - id: role_dropdown
+        type: text-field
+        variant: dropdown
+        label: "{strings.field_role}"
+        default: "member"
+        options:
+          - { value: "member", label: "{strings.role_member}" }
+          - { value: "treasurer", label: "{strings.role_treasurer}" }
+          - { value: "secretary", label: "{strings.role_secretary}" }
+          - { value: "chairperson", label: "{strings.role_chairperson}" }
+
+components:
+  - id: top_bar
+    type: top-bar
+    title: "{strings.screen_title}"
+    style: { background: primary, text_color: onPrimary }
+    navigation_icon: arrow_back
+    accessibility_label: "{strings.a11y_back}"
+    on_navigation_click:
+      action: OnBack
+      action_contract:
+        effect: navigate
+        description: "Navigate back to the previous screen (member-list or group-dashboard) discarding any unsent invite form state."
+
+  - id: create_invite_section_header
+    type: text
+    value: "{strings.section_create_invite}"
+    style: { text_style: titleSmall, color: primary, padding_top: 16dp, padding_bottom: 8dp }
+
+  - id: email_phone_field
+    type: text-field
+    label: "{strings.field_email_phone}"
+    placeholder: "{strings.placeholder_email_phone}"
+    keyboard: email
+    required: true
+    value: "{{emailPhone}}"
+    accessibility_label: "{strings.a11y_email_phone_field}"
+    on_change:
+      action: OnEmailPhoneChange
+      action_contract:
+        effect: transform_state
+        description: "Update the emailPhone field in ViewModel state as the user types; no API call fired until Generate Code is tapped."
+
+  - id: role_dropdown
+    type: text-field
+    variant: dropdown
+    label: "{strings.field_role}"
+    value: "{{selectedRole}}"
+    accessibility_label: "{strings.a11y_role_dropdown}"
+    options:
+      - { value: "member", label: "{strings.role_member}" }
+      - { value: "treasurer", label: "{strings.role_treasurer}" }
+      - { value: "secretary", label: "{strings.role_secretary}" }
+      - { value: "chairperson", label: "{strings.role_chairperson}" }
+    on_change:
+      action: OnRoleSelect
+      action_contract:
+        effect: transform_state
+        description: "Update the selectedRole field in ViewModel state when the organizer picks a role; options are member, treasurer, secretary, chairperson."
+
+  - id: generate_button
+    type: button
+    variant: filled
+    label: "{strings.btn_generate}"
+    loading: "{{isGenerating}}"
+    enabled: "{{emailPhone.isNotBlank()}}"
+    style: { background: primary, text_color: onPrimary, min_touch_target: 56dp, full_width: true }
+    accessibility_label: "{strings.a11y_generate}"
+    on_click:
+      action: OnGenerateInvite
+      target: member-invite
+      action_contract:
+        effect: call_api
+        library_refs: ["core/network", "cmp-network-monitor"]
+        external_library_refs: ["fineract-rest"]
+        description: "POST to the Fineract companion invitations datatable (COMP-DT-002) to create a single-use invite token for the entered phone/email and selected role, returning a 6-char alphanumeric code and a mifos.app deep-link URL; expires_at is computed client-side as now()+7 days ISO-8601."
+
+  - id: generated_code_card
+    type: card
+    visible: "{{generatedCode != null}}"
+    style: { background: secondaryContainer, elevation: 2dp, corner_radius: 16dp, padding: 20dp }
+    content:
+      - id: generated_code_label
+        type: text
+        value: "{strings.label_invite_code}"
+        style: { text_style: labelMedium, color: onSecondaryContainer }
+      - id: generated_code_value
+        type: text
+        value: "{{generatedCode}}"
+        style: { text_style: displaySmall, color: onSecondaryContainer, font_family: monospace, letter_spacing: 4sp }
+      - id: generated_link_label
+        type: text
+        value: "{strings.label_invite_link}"
+        style: { text_style: labelMedium, color: onSecondaryContainer, padding_top: 12dp }
+      - id: generated_link_value
+        type: text
+        value: "{{generatedLink}}"
+        style: { text_style: bodySmall, color: secondary, max_lines: 2, ellipsize: end }
+      - id: code_actions_row
+        type: row
+        style: { padding_top: 16dp, gap: 8dp }
+        children:
+          - id: copy_code_button
+            type: button
+            variant: outlined
+            label: "{strings.btn_copy_code}"
+            icon: content_copy
+            style: { text_color: primary, border_color: primary }
+            accessibility_label: "{strings.a11y_copy_code}"
+            on_click:
+              action: OnCopyCode
+              action_contract:
+                effect: copy_clipboard
+                description: "Copy the 6-character invite code to the device clipboard so the organizer can paste it into SMS or WhatsApp."
+          - id: copy_link_button
+            type: button
+            variant: outlined
+            label: "{strings.btn_copy_link}"
+            icon: link
+            style: { text_color: primary, border_color: primary }
+            accessibility_label: "{strings.a11y_copy_link}"
+            on_click:
+              action: OnCopyLink
+              action_contract:
+                effect: copy_clipboard
+                description: "Copy the full deep-link invite URL to the device clipboard for sharing via any messaging channel."
+          - id: share_button
+            type: button
+            variant: filled
+            label: "{strings.btn_share}"
+            icon: share
+            style: { background: primary, text_color: onPrimary }
+            accessibility_label: "{strings.a11y_share}"
+            on_click:
+              action: OnShareLink
+              action_contract:
+                effect: share_external
+                description: "Open the native OS share sheet with the invite link and code pre-populated so the organizer can share via WhatsApp, SMS, or email."
+
+  - id: divider
+    type: divider
+    style: { padding_vertical: 16dp }
+
+  - id: pending_invites_section_header
+    type: text
+    value: "{strings.section_pending_invites}"
+    style: { text_style: titleSmall, color: primary, padding_bottom: 8dp }
+
+  - id: pending_invites_loading_indicator
+    type: loading-indicator
+    visible: "{{isLoadingPending}}"
+    style: { alignment: center, padding: 24dp }
+
+  - id: pending_invites_empty_state
+    type: text
+    value: "{strings.empty_pending_invites}"
+    visible: "{{!isLoadingPending && pendingInvites.isEmpty()}}"
+    style: { text_style: bodyMedium, color: outline, alignment: center, padding: 24dp }
+
+  - id: pending_invites_list
+    type: list
+    data_source: "{{pendingInvites}}"
+    visible: "{{!isLoadingPending && pendingInvites.isNotEmpty()}}"
+    item_template:
+      id: pending_invite_row
+      type: list-item
+      components:
+        - id: invite_contact
+          type: text
+          value: "{{item.invitedEmailPhone}}"
+          style: { text_style: bodyMedium, color: onSurface }
+        - id: invite_role_chip
+          type: chip
+          label: "{{item.roleToAssign}}"
+          style: { background: primaryContainer, text_color: onPrimaryContainer }
+        - id: invite_expires
+          type: text
+          value: "{strings.label_expires} {{item.expiresAt}}"
+          style: { text_style: labelSmall, color: outline }
+        - id: revoke_button
+          type: button
+          variant: text
+          label: "{strings.btn_revoke}"
+          icon: cancel
+          style: { text_color: error }
+          accessibility_label: "{strings.a11y_revoke}"
+          on_click:
+            action: OnRevokeInvite
+            action_contract:
+              effect: delete
+              library_refs: ["core/network", "cmp-network-monitor"]
+              external_library_refs: ["fineract-rest"]
+              description: "DELETE to the Fineract companion invitations datatable (COMP-DT-005) to revoke a pending invite by rowId, optimistically removing the row from the local pendingInvites list first; on 404/500 the row is re-inserted and an error banner shown."
+
+  - id: error_banner
+    type: banner
+    visible: "{{error != null}}"
+    icon: error_outline
+    message: "{{error.message}}"
+    style: { background: errorContainer, text_color: onErrorContainer }
+    actions:
+      - id: retry_action
+        label: "{strings.btn_retry}"
+        accessibility_label: "{strings.a11y_retry}"
+        on_click:
+          action: OnRetry
+          action_contract:
+            effect: call_api
+            library_refs: ["core/network", "cmp-network-monitor"]
+            external_library_refs: ["fineract-rest"]
+            description: "Retry the last failed Fineract companion-API call — either loading pending invites (COMP-DT-003), generating a token (COMP-DT-002), or revoking an invite (COMP-DT-005) — after a network or server error."
+
+business_logic:
+  kind: crud
+  library_refs: ["core/network", "cmp-network-monitor"]
+  external_library_refs: ["fineract-rest"]
+  description: >
+    Organizer enters a phone/email and optional role, taps Generate Code which calls
+    the Fineract companion invitations datatable (COMP-DT-002) to create a single-use
+    invite token backed by the self-signup token store. The screen shows the 6-char code and
+    deep-link URL with Copy and Share affordances. Simultaneously fetches and displays
+    pending (unaccepted) invites on load via COMP-DT-003; Revoke calls COMP-DT-005 and
+    removes the row optimistically, restoring it on 404/500. cmp-network-monitor gates the
+    connectivity precondition — invite generation requires connectivity, no offline queueing.
+
+states:
+  initial_state: loading
+  loading:
+    components: [top_bar, create_invite_section_header, email_phone_field, role_dropdown, generate_button, divider, pending_invites_section_header, pending_invites_loading_indicator]
+    description: "Screen initialises; fetching pending invites via COMP-DT-003"
+    demo_data:
+      isLoadingPending: true
+      emailPhone: ""
+      selectedRole: "member"
+
+  content:
+    components: [top_bar, create_invite_section_header, email_phone_field, role_dropdown, generate_button, divider, pending_invites_section_header, pending_invites_list]
+    description: "Idle state showing the create invite form and the list of pending invites"
+    demo_data:
+      emailPhone: ""
+      selectedRole: "member"
+      isLoadingPending: false
+      pendingInvites:
+        - id: 1
+          invitedEmailPhone: "+254712345678"
+          roleToAssign: "treasurer"
+          expiresAt: "2026-07-23"
+        - id: 2
+          invitedEmailPhone: "amina.omondi@email.com"
+          roleToAssign: "member"
+          expiresAt: "2026-07-24"
+
+  generating:
+    components: [top_bar, create_invite_section_header, email_phone_field, role_dropdown, generate_button, divider, pending_invites_section_header, pending_invites_list]
+    description: "Generate Code button shows loading spinner while COMP-DT-002 is in-flight"
+    demo_data:
+      isGenerating: true
+      emailPhone: "+254798765432"
+      selectedRole: "secretary"
+
+  generated:
+    components: [top_bar, create_invite_section_header, email_phone_field, role_dropdown, generate_button, generated_code_card, divider, pending_invites_section_header, pending_invites_list]
+    description: "Code card visible showing the 6-char code and shareable link with Copy/Share buttons"
+    demo_data:
+      emailPhone: "+254798765432"
+      selectedRole: "secretary"
+      isGenerating: false
+      generatedCode: "K7X2P9"
+      generatedLink: "https://mifos.app/join?token=K7X2P9&group=42"
+
+  error:
+    components: [top_bar, create_invite_section_header, email_phone_field, role_dropdown, generate_button, error_banner, divider, pending_invites_section_header, pending_invites_list]
+    description: "Error banner visible with Retry option; form remains editable"
+    demo_data:
+      error: { type: Network, message: "{strings.error_network}" }
+
+i18n:
+  en:
+    screen_title: "Invite Member"
+    section_create_invite: "Send Invite"
+    section_pending_invites: "Pending Invites"
+    field_email_phone: "Phone or Email"
+    placeholder_email_phone: "e.g. +254712345678 or name@email.com"
+    field_role: "Role"
+    role_member: "Member"
+    role_treasurer: "Treasurer"
+    role_secretary: "Secretary"
+    role_chairperson: "Chairperson"
+    btn_generate: "Generate Code"
+    btn_copy_code: "Copy Code"
+    btn_copy_link: "Copy Link"
+    btn_share: "Share"
+    btn_revoke: "Revoke"
+    btn_retry: "Retry"
+    label_invite_code: "Invite Code"
+    label_invite_link: "Join Link"
+    label_expires: "Expires"
+    empty_pending_invites: "No pending invites. Generate a code above to invite members."
+    error_validation: "Please enter a valid phone number or email address."
+    error_network: "No internet connection. Please check your network and try again."
+    error_server: "Server error. Please try again."
+    error_auth: "Session expired. Please log in again."
+    error_revoke: "Failed to revoke invite. Please try again."
+    a11y_back: "Navigate back"
+    a11y_email_phone_field: "Phone number or email address input"
+    a11y_role_dropdown: "Select member role"
+    a11y_generate: "Generate invite code"
+    a11y_copy_code: "Copy invite code to clipboard"
+    a11y_copy_link: "Copy invite link to clipboard"
+    a11y_share: "Share invite via other apps"
+    a11y_revoke: "Revoke pending invite"
+    a11y_retry: "Retry failed request"

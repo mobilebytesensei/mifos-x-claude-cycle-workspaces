@@ -5,12 +5,16 @@ feature_id: meeting-summary
 entries:
   - screen_id: meetingSummaryScreen
     trigger: on_mount
-    description: Render from in-memory state passed from meeting-conduct wizard (preferred path)
+    description: >
+      LoadSummary action — preferred path. Render from in-memory MeetingRecordDetail
+      passed via nav_params from the meeting-conduct wizard (post-submit hand-off).
+      No network, no cache read. Sets MeetingSummaryScreenState.Content immediately.
     endpoints: []
     dtos:
       - { name: MeetingRecordDetail, role: response, api_id: get_meeting_record }
       - { name: SavingsBreakdownItem, role: response, api_id: get_meeting_record }
       - { name: LoanSummaryItem, role: response, api_id: get_meeting_record }
+      - { name: MeetingSummaryData, role: state, api_id: get_meeting_record }
     produces_state: Content
     auth_required: true
     cache:
@@ -21,13 +25,19 @@ entries:
 
   - screen_id: meetingSummaryScreen
     trigger: on_mount
-    description: Deep-link / direct entry — fetch meeting record from dt_meeting_record API
+    description: >
+      LoadSummary action — deep-link / direct entry from meeting-calendar tap on a
+      completed meeting. Fetches dt_meeting_record over REST, gated by
+      cmp-network-monitor; Store5 stale-while-revalidate cache backed by SQLDelight,
+      keyed by (centerId, meetingNumber). Emits Loading → Content, or Error with
+      cache fallback when available.
     endpoints:
       - { api_id: get_meeting_record, transport: rest, method: get }
     dtos:
       - { name: MeetingRecordDetail, role: response, api_id: get_meeting_record }
       - { name: SavingsBreakdownItem, role: response, api_id: get_meeting_record }
       - { name: LoanSummaryItem, role: response, api_id: get_meeting_record }
+      - { name: MeetingSummaryData, role: state, api_id: get_meeting_record }
     produces_state: Content
     auth_required: true
     cache:
@@ -38,3 +48,40 @@ entries:
       - { error_code: "404", behavior: fallback_cache, message_key: error_meeting_record_not_found }
       - { error_code: "5xx", behavior: show_error, message_key: error_server }
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline_cached }
+
+  - screen_id: meetingSummaryScreen
+    trigger: on_action
+    description: >
+      ShareMeetingReport action — generates a text/PDF report from the loaded
+      MeetingRecordDetail (totals, savings breakdown, opening/closing corpus) and
+      opens the OS share-sheet via kmpToolkit ShareSheet. Toggles state.isSharing
+      while composing. No cash-in / cash-out; no copy retained after dismissal.
+    endpoints: []
+    dtos:
+      - { name: MeetingRecordDetail, role: request, api_id: get_meeting_record }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: "meeting_summary:share:{meetingId}"
+    error_paths:
+      - { error_code: "share.cancelled", behavior: silent, message_key: null }
+      - { error_code: "share.export_failed", behavior: show_snackbar, message_key: error_share_export_failed }
+
+  - screen_id: meetingSummaryScreen
+    trigger: on_action
+    description: >
+      NavigateDone action — read-only screen so no persistence, no money movement,
+      no corpus reconciliation runs on back or Done. Pops via NavController back to
+      meeting-calendar preserving centerId + meetingNumber in the destination
+      back-stack entry.
+    endpoints: []
+    dtos: []
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: "meeting_summary:nav_done:{meetingId}"
+    error_paths: []

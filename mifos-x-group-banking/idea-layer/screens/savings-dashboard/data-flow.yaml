@@ -5,55 +5,195 @@ feature_id: savings-dashboard
 entries:
   - screen_id: savingsDashboardScreen
     trigger: on_mount
-    description: Load group and individual savings data for the center
+    description: >
+      Load group and individual savings summaries from companion API.
+      get_group_savings_summary returns contribution-model-aware per-member rows:
+        SHARE_BASED_VARIABLE (VSLA/SILC): sharesHeld + shareValue
+        FIXED_AMOUNT (ROSCA/SHG): totalContributed + meetingsContributed
+      get_individual_savings_summary returns voluntary individual savings per member.
+      Both calls run in parallel on mount.
+      Replaces old: get_group_savings_transactions + get_client_savings_accounts + get_individual_savings_transactions (3 raw Fineract calls).
     endpoints:
-      - { api_id: get_group_savings_transactions, transport: rest, method: get }
-      - { api_id: get_client_savings_accounts, transport: rest, method: get }
-      - { api_id: get_individual_savings_transactions, transport: rest, method: get }
+      - { api_id: get_group_savings_summary, transport: rest, method: get }
+      - { api_id: get_individual_savings_summary, transport: rest, method: get }
+    tables:
+      - name: group_savings_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: individual_savings_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: savings_transactions
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: SavingsTransactionListResponse, role: response, api_id: get_group_savings_transactions }
-      - { name: SavingsTransaction, role: response, api_id: get_group_savings_transactions }
-      - { name: ClientAccountsResponse, role: response, api_id: get_client_savings_accounts }
-      - { name: SavingsTransactionListResponse, role: response, api_id: get_individual_savings_transactions }
+      - { name: GroupSavingsSummary, role: response, api_id: get_group_savings_summary }
+      - { name: MemberGroupSavingsRow, role: response, api_id: get_group_savings_summary }
+      - { name: WeeklyContributionPoint, role: response, api_id: get_group_savings_summary }
+      - { name: IndividualSavingsSummary, role: response, api_id: get_individual_savings_summary }
+      - { name: MemberIndividualSavingsRow, role: response, api_id: get_individual_savings_summary }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: stale_while_revalidate
       ttl_seconds: 300
-      key_template: "savings:center:{centerId}"
+      key_template: "savings_dashboard:{groupId}"
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
-      - { error_code: "404", behavior: show_empty_state, message_key: error_not_found }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "404", behavior: show_error, message_key: error_group_not_found }
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
-      - { error_code: "5xx", behavior: fallback_cache, message_key: error_server_unavailable }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    notes: >
+      Both endpoints called in parallel on mount. Contribution model (from typeConfig cached in
+      group_type_config_cache) selects which MemberGroupSavingsRow fields to display:
+        SHARE_BASED_VARIABLE: sharesHeld + shareValue columns
+        FIXED_AMOUNT: totalContributed + meetingsContributed columns
+      Group tab loaded first by default; Individual tab lazy-loads on tab switch.
 
   - screen_id: savingsDashboardScreen
     trigger: on_refresh
-    description: Pull-to-refresh — re-fetches all savings data fresh
+    description: Pull-to-refresh — re-fetches both savings summaries fresh from companion API.
     endpoints:
-      - { api_id: get_group_savings_transactions, transport: rest, method: get }
-      - { api_id: get_client_savings_accounts, transport: rest, method: get }
-      - { api_id: get_individual_savings_transactions, transport: rest, method: get }
+      - { api_id: get_group_savings_summary, transport: rest, method: get }
+      - { api_id: get_individual_savings_summary, transport: rest, method: get }
+    tables:
+      - name: group_savings_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: individual_savings_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
-      - { name: SavingsTransactionListResponse, role: response, api_id: get_group_savings_transactions }
+      - { name: GroupSavingsSummary, role: response, api_id: get_group_savings_summary }
+      - { name: IndividualSavingsSummary, role: response, api_id: get_individual_savings_summary }
+    produces_state: Content
     auth_required: true
     cache:
-      strategy: no_cache
-      ttl_seconds: 0
-      key_template: "savings:center:{centerId}"
+      strategy: bypass_and_refresh
+      ttl_seconds: 300
+      key_template: "savings_dashboard:{groupId}"
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
-      - { error_code: "network.offline", behavior: show_snackbar, message_key: error_offline }
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+    notes: Invalidates both group and individual savings caches; re-fetches in parallel.
 
   - screen_id: savingsDashboardScreen
     trigger: on_interact
-    description: User taps member row — navigate to member savings detail
+    action: OpenMemberDetail
+    description: >
+      User taps a member row (in either group or individual tab) — navigate to
+      member-savings-detail screen. Mirrors ui.yaml group_member_savings_row and
+      individual_member_row on_click action_contract (effect: navigate). Passes
+      memberId + groupId; individual tab additionally passes savings_type=INDIVIDUAL
+      so the detail screen loads voluntary savings history for that member.
     endpoints: []
+    tables: []
     dtos: []
-    auth_required: false
+    produces_state: Content
+    auth_required: true
     cache:
       strategy: no_cache
       ttl_seconds: 0
       key_template: ""
     error_paths: []
     navigation:
-      - { condition: "memberRowTapped", nav_target: member-savings-detail, params: [memberId, savingsType] }
+      - { condition: "memberRowTapped", nav_target: member-savings-detail, params: [groupId, memberId, savings_type] }
+
+  - screen_id: savingsDashboardScreen
+    trigger: on_interact
+    action: SelectTab
+    description: >
+      User taps a tab (GROUP or INDIVIDUAL) — updates selectedTab in SavingsDashboardState,
+      switching the visible tab-content pane. No network call; individual-tab data was already
+      fetched in parallel on mount (see on_mount trigger above). Pure client-side transform_state.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: "Mirrors ui.yaml tab_row on_click action_contract (effect: transform_state)."
+
+  - screen_id: savingsDashboardScreen
+    trigger: on_interact
+    action: RefreshDashboard
+    description: >
+      Retry button in error_banner — checks connectivity via cmp-network-monitor before
+      re-fetching group and individual savings summaries from the companion API. Updates
+      lastSyncAt on success and clears the error state; shows an offline snackbar when
+      the device has no connection. Mirrors ui.yaml error_banner.action on_click
+      action_contract (effect: call_api, library_refs: [cmp-network-monitor]).
+    endpoints:
+      - { api_id: get_group_savings_summary, transport: rest, method: get }
+      - { api_id: get_individual_savings_summary, transport: rest, method: get }
+    tables:
+      - name: group_savings_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+      - name: individual_savings_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: GroupSavingsSummary, role: response, api_id: get_group_savings_summary }
+      - { name: IndividualSavingsSummary, role: response, api_id: get_individual_savings_summary }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: bypass_and_refresh
+      ttl_seconds: 300
+      key_template: "savings_dashboard:{groupId}"
+    error_paths:
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+    notes: Connectivity-gated retry — no network call when offline.
+
+tables:
+  - name: group_savings_cache
+    description: >
+      SQLDelight cache of GroupSavingsSummary + MemberGroupSavingsRow[] per group.
+      Contribution-model-aware: includes both SHARE_BASED_VARIABLE and FIXED_AMOUNT fields
+      (null for non-applicable). TTL 300s.
+    persistence_contract: sqldelight_entity
+    primary_key: "groupId"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+  - name: individual_savings_cache
+    description: >
+      SQLDelight cache of IndividualSavingsSummary + MemberIndividualSavingsRow[] per group.
+      Represents voluntary savings separate from mandatory group contributions. TTL 300s.
+    persistence_contract: sqldelight_entity
+    primary_key: "groupId"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+  - name: savings_transactions
+    description: >
+      SQLDelight cache of individual savings transaction rows used for the weekly trend sparkline.
+      Written when group/individual summary response includes transaction history.
+      Shared with member-savings-detail and personal-dashboard screens.
+    persistence_contract: sqldelight_entity
+    primary_key: "transactionId"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+cache:
+  strategy: stale_while_revalidate
+  ttl_seconds: 300
+  notes: >
+    Both savings summaries cached 5 min (stale_while_revalidate).
+    Pull-to-refresh uses bypass_and_refresh. Served stale when offline.
+    No legacy api.yaml#cache — cache declared exclusively in this data-flow file.
+
+sync_queue:
+  entries: []
+  notes: >
+    Savings dashboard is read-only. No write operations. Contributions are recorded
+    via the meeting record flow (child of group-dashboard), not this screen.
+
+last_generate:
+  timestamp: "2026-07-18T12:00:00Z"
+  generator: idea-data-flow
+  framework_version: "2.86.0"

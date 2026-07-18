@@ -1,0 +1,324 @@
+screen_id: m11-tellers-cash
+name: "M11 · Tellers & Cash Management"
+status: designed
+archetype: master_detail
+cluster: back-office-module
+module: m11-tellers-cash
+initial_state: loading
+description: >-
+  The teller & cash-management back-office module: a list of tellers with their vault cash
+  position, a per-teller detail listing the cashiers assigned to that teller for a date range,
+  and each cashier's allocated cash + teller-transaction ledger. The teller persona works here —
+  create a teller, assign a cashier to a teller for a date range, allocate cash from the vault to
+  a cashier, and settle cash from a cashier back to the vault. Reads ride CACHE_FIRST_SWR Store5
+  (tellers + cashiers + cash position render instantly offline); every CASH MOVEMENT (allocate /
+  settle) and every management command (create teller / assign cashier) flows through the durable
+  outbox (offline-sync-engine) with an exactly-once idempotency key — a killed-mid-submit
+  allocation posts once, never twice — and every control renders through PermissionEvaluator.Gated
+  so each button is VISIBLE-enabled / VISIBLE-disabled / HIDDEN by the exact {ACTION}_{ENTITY} code
+  the user holds (READ_TELLER, CREATE_TELLER, ALLOCATECASHIER_TELLER, ALLOCATECASHTOCASHIER_TELLER,
+  SETTLECASHFROMCASHIER_TELLER).
+
+# ── States (Store5 ScreenState + the command-submit lifecycle) ───────────
+states:
+  loading:
+    description: "Fetching the teller list, or a selected teller's cashiers + cash position (no cache yet). Store5 Loading — a shimmer skeleton for the teller list / cashier rows."
+    is_default: true
+  content:
+    description: >-
+      Teller list (each teller: office · vault cash balance · active-cashier count · status chip)
+      OR a selected teller detail (vault cash header, the cashiers assigned to this teller for the
+      chosen date range with their allocated cash, the teller-transaction ledger, and the
+      permission-gated command bar). Store5 Content — served instantly from cache, revalidated in
+      the background per FreshnessBands.
+  empty:
+    description: "No tellers in the current office scope (or a teller with no cashiers assigned for the selected date range). Empty state offers 'New teller' when CREATE_TELLER is held, otherwise a plain 'No tellers in your office scope' message."
+  submitting:
+    description: >-
+      A command (create teller / assign cashier / allocate cash / settle cash) is being posted
+      ONLINE — the command bar is disabled and a per-command progress indicator shows
+      PENDING → SUBMITTED. On maker-checker tenants a 2xx-with-commandId lands in pending_approval
+      instead of optimistically mutating the cash position.
+  queued_offline:
+    description: >-
+      Offline (or a transient failure): the command was written to the durable RoomSubmitOutbox with
+      its idempotency key and will replay exactly-once on reconnect. A persistent 'N queued · will
+      sync when online' banner shows; the optimistic vault/cashier cash figure is marked pending-sync
+      so the teller sees the intended movement without risking a double-post.
+  pending_approval:
+    description: >-
+      A maker-checker tenant queued the command (2xx with commandId, empty changes) — a third,
+      non-error 'Submitted for approval' state; the cash position is NOT optimistically mutated and
+      the row shows a 'pending approval' badge routing to M15 (Approvals).
+  error:
+    description: >-
+      Teller list/detail fetch failed with no cache, OR a command was rejected by the server
+      (400 validation / 409 optimistic-lock / 403 permission-drift — e.g. settling more than the
+      cashier's allocated cash). Rejected commands surface the Fineract server error and a
+      'Review failed' CTA into needs-attention-inbox; a Retry CTA re-drains the list fetch.
+  no_network:
+    description: "Offline with no cached teller/cashier data for the requested scope; captive-portal aware; cached reads (if any) are still served under an offline banner."
+
+# ── Business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-5) ──────────
+business_logic:
+  kind: composite
+  processing_kind: batch
+  description: >-
+    Folds CACHE_FIRST_SWR Store5 streams (tellers + vault cash, cashiers-for-date-range, ledger) into a
+    master-detail ScreenState and drives the money-sensitive teller/cash commands (create teller,
+    assign cashier, allocate, settle). Each mutation is enqueued to the durable outbox and replayed
+    exactly-once via offline-sync-engine so cash never double-moves; every control is permission-gated.
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "org.mobilenativefoundation.store.store5"
+    - "androidx.room"
+    - "kotlinx.serialization"
+    - "Fineract GET /v1/tellers"
+    - "Fineract POST /v1/tellers/{id}/cashiers/{cashierId}/allocate"
+    - "Fineract POST /v1/tellers/{id}/cashiers/{cashierId}/settle"
+  required_modules:
+    - core/model
+    - core/network
+    - core/database
+    - core/store
+    - core/data
+    - core-base/store
+    - core-base/network
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T11:30:00Z"
+
+# ── Shell (module root; permission-gated at the cash_mgmt group) ────────
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  fab_visible: true            # "New teller" FAB — HIDDEN unless CREATE_TELLER
+  snackbar_visible: true
+
+# ── Components ──────────────────────────────────────────────────────────
+components:
+  - id: m11_header
+    type: header
+    label: "{strings.m11_title}"
+    testTag: "m11-tellers-cash_header"
+    visible_states: [loading, content, empty, no_network, error]
+
+  - id: offline_banner
+    type: banner
+    label: "{strings.m11_offline_banner}"
+    testTag: "m11-tellers-cash_offline_banner"
+    visible_states: [no_network, queued_offline]
+    description: "A persistent banner shown while offline or with queued cash movements; the teller list + cash position render their last cached values and any queued allocate/settle commands show a 'N queued · will sync when online' count. Communicates that cash figures may be optimistic and will reconcile on the next sync."
+
+  - id: teller_content
+    type: content_area
+    label: "{strings.m11_content_label}"
+    testTag: "m11-tellers-cash_content"
+    empty_label: "{strings.m11_empty}"
+    label_states:
+      content: "Teller list (office · vault cash balance · active-cashier count · status chip) or the selected teller detail — vault cash header, cashiers assigned for the date range with allocated cash, the teller-transaction ledger, and the permission-gated command bar"
+
+  - id: date_range_filter
+    type: chip
+    label: "{strings.m11_date_range}"
+    testTag: "m11-tellers-cash_date_range"
+    visible_states: [content, empty]
+    on_click:
+      action: change_cashier_date_range
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+        reads_from:
+          - table: tellers_cash
+        produces_state: content
+        description: "Change the date range that scopes which cashier assignments are shown for the selected teller — a pure in-ViewModel re-projection over the already-folded Store5 cashier stream (assignments carry startDate/endDate), no refetch and no network call, works fully offline over cached rows."
+
+  - id: teller_row
+    type: list_item
+    label: "{strings.m11_teller_row}"
+    testTag: "m11-tellers-cash_teller_item"
+    visible_states: [content]
+    on_click:
+      action: open_teller_detail
+      target: m11-tellers-cash
+      action_contract:
+        effect: navigate
+        reads_from:
+          - table: tellers_cash
+        produces_state: content
+        description: "Open the teller detail (vault cash header, the cashiers assigned for the current date range with their allocated cash, and the teller-transaction ledger). The command bar renders only the controls whose {ACTION}_{ENTITY} permission the user holds; a read-only teller still shows its cash position and ledger."
+
+  - id: new_teller_button
+    type: fab
+    label: "{strings.m11_new_teller}"
+    testTag: "m11-tellers-cash_new_teller"
+    variant: primary
+    gated_permission: CREATE_TELLER
+    visible_states: [content, empty]
+    on_click:
+      action: create_teller_form
+      target: dynamic-template-forms
+      action_contract:
+        effect: navigate
+        library_refs:
+          - dynamic-template-forms
+        description: "Launch the create-teller form rendered by dynamic-template-forms from GET /v1/tellers/template — office option list, name, description, status, and start/end date defaults come from the server payload, never hardcoded. HIDDEN entirely (onDenied HIDE) unless the user holds CREATE_TELLER."
+
+  - id: edit_teller_button
+    type: button
+    label: "{strings.m11_edit_teller}"
+    testTag: "m11-tellers-cash_edit_teller"
+    variant: secondary
+    gated_permission: UPDATE_TELLER
+    visible_states: [content]
+    on_click:
+      action: edit_teller_form
+      target: dynamic-template-forms
+      action_contract:
+        effect: navigate
+        library_refs:
+          - dynamic-template-forms
+        description: "Open the edit-teller form (dynamic-template-forms) pre-filled from the teller's current values plus the GET template; submit enqueues an update-teller command (PUT /v1/tellers/{id}) through the durable outbox. Gated on UPDATE_TELLER; disabled-with-reason for users without it."
+
+  - id: assign_cashier_button
+    type: button
+    label: "{strings.m11_assign_cashier}"
+    testTag: "m11-tellers-cash_assign_cashier"
+    variant: primary
+    gated_permission: ALLOCATECASHIER_TELLER
+    visible_states: [content]           # teller detail only
+    on_click:
+      action: assign_cashier
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/tellers/{tellerId}/cashiers"
+        reads_from:
+          - table: tellers_cash
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - cashierAssignments
+        description: "Assign a staff member as a cashier to this teller for a date range — the form (dynamic-template-forms) sources staff options from GET /cashiers/template, then the command JsonObject (staffId + startDate + endDate + isFullDay) is enqueued to the durable outbox and replayed exactly-once (POST /tellers/{id}/cashiers). Gated on ALLOCATECASHIER_TELLER; re-checked at replay."
+
+  - id: allocate_cash_button
+    type: button
+    label: "{strings.m11_allocate_cash}"
+    testTag: "m11-tellers-cash_allocate"
+    variant: primary
+    gated_permission: ALLOCATECASHTOCASHIER_TELLER
+    visible_states: [content]           # a selected active cashier row
+    on_click:
+      action: allocate_cash_to_cashier
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/tellers/{tellerId}/cashiers/{cashierId}/allocate"
+        reads_from:
+          - table: tellers_cash
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - cashierCashPosition
+          - vaultCashBalance
+          - tellerTransactions
+        description: "Allocate cash from the teller vault to the selected cashier — assemble the transaction JsonObject (txnAmount, txnDate, currencyCode) and enqueue to the durable outbox with an idempotency key so it posts exactly-once even if the app is killed mid-submit (POST /cashiers/{id}/allocate). Optimistically decrements the vault, pending-sync until replayed. Gated on ALLOCATECASHTOCASHIER_TELLER."
+
+  - id: settle_cash_button
+    type: button
+    label: "{strings.m11_settle_cash}"
+    testTag: "m11-tellers-cash_settle"
+    variant: secondary
+    gated_permission: SETTLECASHFROMCASHIER_TELLER
+    visible_states: [content]           # a selected active cashier row
+    on_click:
+      action: settle_cash_from_cashier
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/tellers/{tellerId}/cashiers/{cashierId}/settle"
+        reads_from:
+          - table: tellers_cash
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - cashierCashPosition
+          - vaultCashBalance
+          - tellerTransactions
+        description: "Settle cash from the selected cashier back to the teller vault (POST /cashiers/{id}/settle with txnAmount + txnDate + currencyCode) — same durable-outbox exactly-once path as allocate, gated by SETTLECASHFROMCASHIER_TELLER. A client-side guard refuses settling more than the cashier's allocated cash; the server stays the final authority (409 → Needs-Attention)."
+
+  - id: view_ledger_button
+    type: button
+    label: "{strings.m11_view_ledger}"
+    testTag: "m11-tellers-cash_view_ledger"
+    variant: text
+    gated_permission: READ_TELLER
+    visible_states: [content]
+    on_click:
+      action: view_teller_transactions
+      action_contract:
+        effect: call_api
+        library_refs:
+          - offline-sync-engine
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract GET /v1/tellers/{tellerId}/transactions"
+        reads_from:
+          - table: tellers_cash
+        produces_state: content
+        description: "Load the full teller-transaction ledger for the selected teller (GET /v1/tellers/{tellerId}/transactions) — allocate/settle cash movements and cash-in/cash-out entries with running totals — served CACHE_FIRST_SWR so the ledger renders instantly offline and background-revalidates when stale. Read-only; gated by READ_TELLER."
+
+  - id: review_failed_button
+    type: button
+    label: "{strings.m11_review_failed}"
+    testTag: "m11-tellers-cash_review_failed"
+    variant: text
+    visible_states: [error]
+    on_click:
+      action: open_needs_attention
+      target: needs-attention-inbox
+      action_contract:
+        effect: navigate
+        description: "Navigate to needs-attention-inbox where a rejected allocate/settle/assign-cashier command is triaged (Retry / Edit / Discard) with the Fineract server error and explicit conflict resolution — a rejected cash movement never silently disappears and never double-moves cash."
+
+  - id: retry_button
+    type: button
+    label: "{strings.m11_retry}"
+    testTag: "m11-tellers-cash_retry"
+    variant: text
+    visible_states: [error, no_network]
+    on_click:
+      action: retry_load
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+        reads_from:
+          - table: tellers_cash
+        produces_state: loading
+        description: "Re-run the failed teller list/detail fetch — calls stream.refreshFresh() to force a fresh Store5 fetch past the cache (the streamFresh cold-start dual path), returning to loading then content/error."

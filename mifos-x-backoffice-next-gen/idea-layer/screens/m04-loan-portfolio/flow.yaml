@@ -1,0 +1,81 @@
+feature: m04-loan-portfolio
+
+entry_points:
+  - type: nav_root
+    description: "Loans module root (M04) — a nav root gated on the loan permission group; renders only if the user holds READ_LOAN (or an umbrella). Field-officer/CSR see it read-only; loan-officer sees origination; supervisor sees approve/disburse."
+  - type: from_client_360
+    description: "Opened from a client's loan account inside client-detail-360 (the client-onboarding-to-loan flow) — deep-links straight to the loan's 360° detail."
+  - type: deep_link
+    description: "A checker-inbox approval, a Needs-Attention row, or a notification routes into a specific loan's detail; the NavController re-checks READ_LOAN before rendering."
+
+transitions:
+  # ── read path ──
+  - from: loading
+    to: content
+    trigger: "loan list / 360° detail loaded (CACHE_FIRST_SWR content)"
+  - from: loading
+    to: empty
+    trigger: "loan list loaded with zero rows for this office/portfolio"
+  - from: loading
+    to: error
+    trigger: "loan list / detail fetch failed (server / network / 403 drift)"
+  - from: content
+    to: loading
+    trigger: "open a loan row → fetch 360° detail, OR retry/refresh the list"
+  - from: content
+    to: empty
+    trigger: "search / filter yields zero matching loans"
+  - from: empty
+    to: loading
+    trigger: "clear filter, OR start a new loan application (CREATE_LOAN)"
+
+  # ── application + live schedule preview ──
+  - from: content
+    to: schedule-preview
+    trigger: "start_loan_application / disburse form — calculateLoanSchedule live preview"
+  - from: schedule-preview
+    to: schedule-preview
+    trigger: "recalculate_schedule — a form field changed (debounced re-preview)"
+  - from: schedule-preview
+    to: submitting
+    trigger: "submit the loan application / disbursement (queued through outbox)"
+  - from: schedule-preview
+    to: content
+    trigger: "cancel the application — return to the loan list/detail"
+
+  # ── workflow commands (queued, exactly-once) ──
+  - from: content
+    to: submitting
+    trigger: "approve / reject / withdraw / disburse / undo / repayment / prepay / waive / writeoff / foreclose / reschedule / charge pay+waive queued through the outbox"
+  - from: submitting
+    to: content
+    trigger: "command SUBMITTED (or PENDING_APPROVAL under maker-checker) — row shows Queued / Submitted-for-approval; state re-hydrated"
+  - from: submitting
+    to: error
+    trigger: "command rejected by Fineract (validation / optimistic-lock) — routed to needs-attention-inbox"
+  - from: submitting
+    to: needs-attention-inbox
+    trigger: "a queued command was rejected on replay — surfaced for Retry / Edit / Discard"
+
+  # ── permission-gated / maker persona ──
+  - from: content
+    to: action-disabled
+    trigger: "a maker persona (or a user lacking the specific action) views a control DISABLED-with-reason"
+  - from: action-disabled
+    to: content
+    trigger: "permissions refreshed (fingerprint changed) and the action was granted — the control re-enables live"
+
+  # ── error recovery ──
+  - from: error
+    to: loading
+    trigger: "retry_load — stream.refreshFresh() re-fetch"
+  - from: error
+    to: permission-capability-engine
+    trigger: "403 NoAuthorization drift — refresh permissions + re-resolve the capability surface (never blind-retry)"
+
+navigates_to:
+  - loan-detail
+  - loan-application-wizard
+  - needs-attention-inbox
+  - permission-capability-engine
+  - checker-inbox

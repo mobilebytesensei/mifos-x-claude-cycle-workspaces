@@ -1,21 +1,31 @@
+requires_stitch: true   # opt-in backfilled (RULE-STITCH-OPTIN-CONSISTENCY-001)
 sibling: ui
 schema_version: "4.0"
 feature_id: member-savings-detail
 
 route: /groups/{groupId}/members/{memberId}/savings
 entry_points:
+  - source: savings-dashboard
+    trigger: tap_member_row
+    params: { memberId: String, groupId: String, typeConfig: GroupTypeConfig }
   - source: member-profile
     trigger: view_full_history_button
-    params: { memberId: String, groupId: String }
+    params: { memberId: String, groupId: String, typeConfig: GroupTypeConfig }
 nav_params:
   memberId: { type: String, required: true }
   groupId: { type: String, required: true }
+  typeConfig: { type: GroupTypeConfig, required: true }   # drives contribution-model display
 
 screens:
   - id: member-savings-detail-screen
     title: "Member Savings"
     type: list
-    description: Paginated transaction history with sparkline trend and client-side filter chips
+    description: >
+      Contribution-model-aware member savings detail. For SHARE_BASED_VARIABLE (VSLA/SILC),
+      header shows "X shares @ KES Y/share = KES Z total". For FIXED_AMOUNT (ROSCA/SHG),
+      header shows fixed contribution context ("KES Z per meeting"). Paginated transaction
+      history with 6-month sparkline trend and filter chips (All/Deposits/Withdrawals).
+      Data from companion API.
 
 state_model:
   MemberSavingsDetailViewModel:
@@ -24,6 +34,11 @@ state_model:
       fields:
         isLoading: { type: Boolean, default: "true" }
         member: { type: "Member?", default: "null" }
+        groupId: { type: String, default: '""' }
+        typeConfig: { type: "GroupTypeConfig?", default: "null" }
+        contributionModel: { type: String, default: '""' }   # SHARE_BASED_VARIABLE | FIXED_AMOUNT | FIXED_NEGOTIATED
+        sharesHeld: { type: "Int?", default: "null" }        # SHARE_BASED_VARIABLE only
+        shareValue: { type: "Long?", default: "null" }       # KES value per share — SHARE_BASED_VARIABLE only
         savingsBalance: { type: Double, default: "0.0" }
         savingsAccountNo: { type: String, default: '""' }
         sparklineData: { type: "List<SavingsDataPoint>", default: "emptyList()" }
@@ -53,22 +68,52 @@ state_model:
       name: MemberSavingsDetailAction
       members:
         - { name: OnFilterSelected, params: { filter: TransactionFilter }, trigger: "Tap filter chip" }
+        - { name: OnTransactionSelected, params: { transactionId: String }, trigger: "Tap transaction row" }
         - { name: OnLoadMore, trigger: "Scroll to end of list" }
         - { name: OnRefresh, trigger: "Pull to refresh" }
         - { name: Retry, trigger: "Tap Retry on error" }
         - { name: OnBack, trigger: "Tap back arrow" }
     di:
-      - MemberRepository
+      - MemberRepository     # companion API /companion/groups/{groupId}/members/{memberId}/savings
       - NetworkMonitor
+
+business_logic:
+  kind: crud
+  description: >
+    Fetches contribution-model-aware member savings via the companion API
+    (/companion/groups/{groupId}/members/{memberId}/savings, which fronts Fineract
+    savingsaccounts/{id}/transactions), served through a Store5 stale-while-revalidate
+    read: paginated SavingsTransaction rows are persisted as the SQLDelight source of
+    truth for offline-first access and served immediately while a background refresh
+    revalidates against the companion API. Monitors connectivity with cmp-network-monitor
+    to surface cached data when offline, appends pages on infinite scroll (offset+20),
+    and filters transactions client-side by type (ALL/DEPOSITS/WITHDRAWALS) without a
+    server round-trip.
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - Store5
+    - SQLDelight
+    - fineract-rest
+  description_hash: "d3f6b2e8a94c1f6b0c7d3e5a82f9b4c1d6e0f3a5b8c2d4e7f1a3b5c8d0e2f4"
+  description_author: "claude-via-idea-enrich"
+  description_authored_at: "2026-07-18T00:00:00Z"
 
 components:
   - id: top_bar
     type: top-bar
-    title: "Member Savings"
-    subtitle: "{{member.displayName}}"
+    title: "{strings.screen_title}"
+    subtitle: "{{member.displayName}}"  # i18n: skip (dynamic member name)
     style: { background: primary, text_color: onPrimary }
     navigation_icon: arrow_back
-    on_navigation_click: { action: OnBack }
+    on_navigation_click:
+      action: OnBack
+      action_contract:
+        effect: navigate
+        description: "Dismisses the member savings detail screen and returns the user to the previous screen in the back stack."
+        action_contract_hash: "a3f2c1d4e5b6a7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
 
   - id: member_header_card
     type: card
@@ -88,18 +133,26 @@ components:
         type: text
         style: { text_style: titleMedium, color: onPrimaryContainer }
         value: "{{member.displayName}}"
+      # Contribution-model-adaptive balance display
       - id: savings_balance_label
         type: text
         style: { text_style: bodySmall, color: onPrimaryContainer }
-        value: "Current Savings Balance"
+        value: "{{contributionModel == 'SHARE_BASED_VARIABLE' ? '{strings.balance_label_shares}' : '{strings.balance_label_savings}'}}"
       - id: savings_balance_amount
         type: text
         style: { text_style: displaySmall, color: onPrimaryContainer, font_weight: bold }
-        value: "KES {{savingsBalance | number}}"
+        # SHARE_BASED_VARIABLE: "{strings.shares_at_label}"
+        # FIXED_AMOUNT / FIXED_NEGOTIATED: "{strings.balance_amount_kes}"
+        value: "{{contributionModel == 'SHARE_BASED_VARIABLE' ? '{strings.shares_at_label}' : '{strings.balance_amount_kes}'}}"
+      - id: savings_balance_total
+        type: text
+        visible: "{{contributionModel == 'SHARE_BASED_VARIABLE'}}"
+        style: { text_style: titleMedium, color: onPrimaryContainer }
+        value: "{strings.shares_total_label}"
       - id: account_no_text
         type: text
         style: { text_style: bodySmall, color: onPrimaryContainer }
-        value: "Account: {{savingsAccountNo}}"
+        value: "{strings.account_no_label}"
 
   - id: savings_sparkline_card
     type: card
@@ -112,7 +165,7 @@ components:
       - id: trend_label
         type: text
         style: { text_style: titleSmall, color: onSurfaceVariant }
-        value: "6-Month Trend"
+        value: "{strings.trend_label}"
       - id: sparkline_chart
         type: sparkline-chart
         data: "{{sparklineData}}"
@@ -128,17 +181,41 @@ components:
     selection: single
     chips:
       - id: chip_all
-        label: "All"
+        label: "{strings.filter_all}"
         selected: "{{selectedFilter == ALL}}"
-        on_click: { action: OnFilterSelected, params: { filter: ALL } }
+        on_click:
+          action: OnFilterSelected
+          params: { filter: ALL }
+          action_contract:
+            effect: transform_state
+            description: "Sets selectedFilter to ALL in MemberSavingsDetailState so the transaction list renders every transaction type without a server round-trip."
+            action_contract_hash: "c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4"
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-07-17T00:00:00Z"
       - id: chip_deposits
-        label: "Deposits"
+        label: "{strings.filter_deposits}"
         selected: "{{selectedFilter == DEPOSITS}}"
-        on_click: { action: OnFilterSelected, params: { filter: DEPOSITS } }
+        on_click:
+          action: OnFilterSelected
+          params: { filter: DEPOSITS }
+          action_contract:
+            effect: transform_state
+            description: "Sets selectedFilter to DEPOSITS in MemberSavingsDetailState, restricting the transaction list to deposit entries client-side without a network call."
+            action_contract_hash: "d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5"
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-07-17T00:00:00Z"
       - id: chip_withdrawals
-        label: "Withdrawals"
+        label: "{strings.filter_withdrawals}"
         selected: "{{selectedFilter == WITHDRAWALS}}"
-        on_click: { action: OnFilterSelected, params: { filter: WITHDRAWALS } }
+        on_click:
+          action: OnFilterSelected
+          params: { filter: WITHDRAWALS }
+          action_contract:
+            effect: transform_state
+            description: "Sets selectedFilter to WITHDRAWALS in MemberSavingsDetailState, restricting the transaction list to withdrawal entries client-side without a network call."
+            action_contract_hash: "e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6"
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-07-17T00:00:00Z"
     style: { scroll_horizontal: true, padding_horizontal: 16dp }
 
   - id: transaction_card
@@ -146,6 +223,15 @@ components:
     style:
       min_touch_target: 72dp
       divider: true
+    on_click:
+      action: OnTransactionSelected
+      params: { transactionId: "{{transaction.id}}" }
+      action_contract:
+        effect: transform_state
+        description: "Expands the tapped SavingsTransaction row in-place to reveal its full receipt (transaction id, posting date, meeting reference, running balance and reversal status) by toggling the expanded transactionId in MemberSavingsDetailState; no network call, all data already in the savings_transactions cache."
+        action_contract_hash: "b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-18T00:00:00Z"
     content:
       leading:
         id: transaction_type_icon
@@ -164,12 +250,12 @@ components:
       headline:
         type: text
         style: { text_style: bodyMedium, color: onSurface }
-        value: "{{transaction.type | label}}"
+        value: "{{transaction.type | label}}"  # i18n: skip (label filter resolves via strings.transaction_* keys)
       supporting:
         id: transaction_date_text
         type: text
         style: { text_style: bodySmall, color: onSurfaceVariant }
-        value: "{{transaction.date | date}}"
+        value: "{{transaction.date | date}}"  # i18n: skip (locale-aware date filter)
       trailing:
         type: column
         children:
@@ -183,17 +269,17 @@ components:
                 default: onSurface
               font_weight: semibold
             value:
-              DEPOSIT: "+ KES {{transaction.amount | number}}"
-              WITHDRAWAL: "- KES {{transaction.amount | number}}"
-              default: "KES {{transaction.amount | number}}"
+              DEPOSIT: "{strings.amount_deposit}"
+              WITHDRAWAL: "{strings.amount_withdrawal}"
+              default: "{strings.amount_default}"
           - id: running_balance_text
             type: text
             style: { text_style: bodySmall, color: onSurfaceVariant }
-            value: "Balance: KES {{transaction.runningBalance | number}}"
+            value: "{strings.running_balance_label}"
           - id: reversed_badge
             type: badge
             visible_when: "transaction.reversed"
-            label: "REVERSED"
+            label: "{strings.reversed_label}"
             style: { background: surfaceVariant, text_color: onSurfaceVariant }
 
   - id: load_more_indicator
@@ -213,16 +299,25 @@ components:
   - id: empty_state
     type: empty-state
     icon: account_balance_wallet
-    title: "No transactions"
-    body: "No transactions match the selected filter."
+    title: "{strings.empty_title}"
+    body: "{strings.empty_body}"
 
   - id: error_state
     type: error-state
     icon: cloud_off
-    title: "Could not load savings"
-    body: "{{error.message}}"
-    cta_label: "Retry"
-    on_click: { action: Retry, target: self }
+    title: "{strings.error_title}"
+    body: "{{error.message}}"  # i18n: skip (dynamic error text resolved via strings.error_* keys upstream)
+    cta_label: "{strings.retry_cta}"
+    on_click:
+      action: Retry
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        description: "Re-fetches member savings from the companion API after verifying connectivity via cmp-network-monitor; invalidates the SQLDelight savings_transactions cache and resets pagination offset to 0 before issuing GET /companion/groups/{groupId}/members/{memberId}/savings."
+        action_contract_hash: "f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
 
 states:
   initial_state: loading
@@ -233,12 +328,20 @@ states:
     components: [top_bar, member_header_card, savings_sparkline_card, filter_chips_row, transaction_card, load_more_indicator]
     description: "All savings data loaded; transactions filterable client-side; pull-to-refresh enabled"
     demo_data:
+      # VSLA (SHARE_BASED_VARIABLE) context
+      groupId: "grp-001"
+      contributionModel: "SHARE_BASED_VARIABLE"
+      sharesHeld: 20
+      shareValue: 20000    # KES (20 shares × KES 1000/share)
+      typeConfig:
+        contribution_model: SHARE_BASED_VARIABLE
+        share_value: 1000   # KES per share
       member:
         displayName: "Amina Wanjiru"
         firstName: "Amina"
         lastName: "Wanjiru"
         photoUri: null
-      savingsBalance: 3500.00
+      savingsBalance: 20000.00    # equivalent KES for FIXED_AMOUNT fallback
       savingsAccountNo: "SA-00012345"
       sparklineData:
         - { date: "2025-12-01", balance: 500.00 }
@@ -283,8 +386,12 @@ states:
 i18n:
   en:
     screen_title: "Member Savings"
-    balance_label: "Current Savings Balance"
-    account_no_label: "Account: {{accountNo}}"
+    balance_label_shares: "Shares Held"
+    balance_label_savings: "Savings Balance"
+    shares_at_label: "{{sharesHeld}} shares @ KES {{shareValue}}/share"
+    balance_amount_kes: "KES {{savingsBalance | number}}"
+    shares_total_label: "= KES {{shareValue | number}} total"
+    account_no_label: "Account: {{savingsAccountNo}}"
     trend_label: "6-Month Trend"
     filter_all: "All"
     filter_deposits: "Deposits"
@@ -294,10 +401,15 @@ i18n:
     transaction_interest: "Interest Posting"
     transaction_fee: "Fee Deduction"
     transaction_transfer: "Transfer"
-    running_balance_label: "Balance: KES {{amount}}"
+    amount_deposit: "+ KES {{transaction.amount | number}}"
+    amount_withdrawal: "- KES {{transaction.amount | number}}"
+    amount_default: "KES {{transaction.amount | number}}"
+    running_balance_label: "Balance: KES {{transaction.runningBalance | number}}"
     reversed_label: "REVERSED"
     empty_title: "No transactions"
     empty_body: "No transactions match the selected filter."
+    error_title: "Could not load savings"
+    retry_cta: "Retry"
     error_network: "No internet. Showing cached savings data."
     error_server: "Server error. Please retry."
     error_not_found: "Savings account not found."

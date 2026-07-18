@@ -1,0 +1,109 @@
+schema_version: v1.0.0
+feature: m07-accounting
+scenarios:
+  # ── Behavior: acceptance-criteria keystones ──────────────────────────
+  - id: chart_of_accounts_offline
+    description: "A previously-cached chart of accounts + journal history browse fully offline — the GL tree and journal-entry debit/credit lines render from the Room cache."
+    preconditions: ["the chart of accounts + recent journal entries were previously synced", "device offline"]
+    actions: ["open the Accounting module (cached)", "expand the Asset group", "open a journal entry's detail"]
+    assertions: ["the GL tree renders from cache (CACHE_FIRST_SWR)", "a journal entry's individual debit and credit lines display offline", "an 'Offline · showing cached accounting data' banner is shown", "no network call is required"]
+    priority: high
+
+  - id: journal_must_balance_before_post
+    description: "A manual journal entry can only be posted when its debit total equals its credit total — the balance gate blocks an unbalanced entry client-side, before any network call."
+    preconditions: ["user holds CREATE_JOURNALENTRY"]
+    actions: ["start a manual journal entry", "add a debit line of 12,000", "add a credit line of 10,000", "observe the Post control and balance indicator"]
+    assertions: ["the balance indicator shows 'Out of balance by 2,000' in red", "the Post journal entry control is DISABLED while debits != credits", "correcting the credit to 12,000 flips the indicator to 'Balanced' (green) and enables Post", "no POST /v1/journalentries request is made while unbalanced"]
+    priority: high
+
+  - id: posting_is_exactly_once
+    description: "A balanced journal entry posts exactly-once through the durable outbox — a retry can never create a duplicate posting."
+    preconditions: ["user holds CREATE_JOURNALENTRY", "a balanced entry (debit 12,000 == credit 12,000) is composed", "device offline then reconnects"]
+    actions: ["post the balanced entry", "let the outbox queue it while offline", "restore connectivity", "let the outbox drain (including a simulated batch retry)"]
+    assertions: ["a CREATE_JOURNALENTRY command is queued with glDebits[] + glCredits[] + a durable idempotency key", "the entry shows optimistically with a 'queued offline' chip", "on sync exactly one journal entry is posted via POST /v1/batches — zero duplicates even when the batch is retried", "the idempotency key is reused on retry (no new key minted)"]
+    priority: high
+
+  - id: post_control_hidden_without_permission
+    description: "A user lacking CREATE_JOURNALENTRY never sees the Start-journal / Post controls (onDenied: HIDE, fail-closed)."
+    preconditions: ["user holds READ_GLACCOUNT + READ_JOURNALENTRY but NOT CREATE_JOURNALENTRY"]
+    actions: ["open the Accounting module"]
+    assertions: ["the chart of accounts + journal history are visible (read-gated)", "the Start-journal-entry and Post controls are absent (not merely disabled)", "no journal-entry composer is reachable via deep link either"]
+    priority: high
+
+  - id: reverse_gated_and_confirmed
+    description: "Reversing a posted journal entry is gated on REVERSE_JOURNALENTRY, requires a confirm, and is idempotent (never double-reversed)."
+    preconditions: ["user holds REVERSE_JOURNALENTRY", "a Posted journal entry exists"]
+    actions: ["open the posted entry", "tap Reverse", "confirm with comments + reversalDate"]
+    assertions: ["the Reverse control is enabled only for Posted entries and gated on REVERSE_JOURNALENTRY", "a confirm dialog is shown before the reversal", "a REVERSE_JOURNALENTRY command is queued with a durable idempotency key so the reversal replays exactly-once"]
+    priority: high
+
+  - id: maker_checker_submitted_for_approval
+    description: "Under tenant maker-checker, a journal posting returns queued (commandId, empty changes) and surfaces as Submitted-for-approval, not Posted."
+    preconditions: ["tenant has maker-checker enabled for CREATE_JOURNALENTRY", "user holds CREATE_JOURNALENTRY (maker)", "online"]
+    actions: ["post a balanced journal entry"]
+    assertions: ["the command is queued for approval (commandId returned, empty changes)", "a 'Submitted for approval' badge is shown (a third state, not error/success)", "the entry is NOT optimistically shown as Posted until a checker approves"]
+    priority: medium
+
+  - id: closed_period_rejection_to_needs_attention
+    description: "A journal entry back-dated into a closed GL period is rejected by the server and lands in Needs-Attention with the reason, never silently dropped."
+    preconditions: ["a GL closure exists for 2026-06-30", "a balanced entry dated 2026-06-15 was queued", "online"]
+    actions: ["trigger sync", "wait for the batch response"]
+    assertions: ["the command is marked FAILED with the Fineract server_error ('period closed')", "it appears in needs-attention-inbox for Retry/Edit/Discard", "the entry stays unposted", "never silently dropped"]
+    priority: high
+
+  - id: run_accruals_gated
+    description: "The periodic-accrual run is gated on EXECUTE_PERIODICACCRUALACCOUNTING, confirmed, and idempotent."
+    preconditions: ["user holds EXECUTE_PERIODICACCRUALACCOUNTING"]
+    actions: ["tap Run accruals", "confirm with a tillDate"]
+    assertions: ["the Run-accruals control is gated on EXECUTE_PERIODICACCRUALACCOUNTING", "a confirm dialog is shown", "an EXECUTE_PERIODICACCRUALACCOUNTING command is queued with a durable idempotency key so the run replays exactly-once (no duplicate accrual entries)"]
+    priority: medium
+
+  # ── State coverage (one per ui.yaml state) ───────────────────────────
+  - id: loading_state_shows_progress
+    description: "The initial chart-of-accounts + journal fetch shows the loading state."
+    preconditions: ["no cached accounting data", "fetch in flight"]
+    actions: ["open the Accounting module"]
+    assertions: ["a loading indicator is shown while GET /v1/glaccounts + GET /v1/journalentries are in flight"]
+    priority: low
+
+  - id: content_state_shows_chart_and_journals
+    description: "The Accounting workspace renders the Chart-of-Accounts tree (grouped by type, with running balances) and the recent-journal-entries list."
+    preconditions: ["office has GL accounts + journal entries", "data loaded"]
+    actions: ["open the Accounting module"]
+    assertions: ["GL accounts are grouped by type (Asset/Liability/Equity/Income/Expense) with running balances", "recent journal entries are listed with reference + debit/credit totals + status chip", "the journal history is paged (PagingSource, not an unbounded list)"]
+    priority: high
+
+  - id: empty_state_offers_create_gl_account
+    description: "A fresh tenant with no accounting data shows the empty state and (when permitted) a Create-GL-account CTA."
+    preconditions: ["no GL accounts or journal entries exist", "user holds CREATE_GLACCOUNT"]
+    actions: ["open the Accounting module"]
+    assertions: ["the empty state with a 'No accounting data yet' message is shown", "a 'Create GL account' CTA is offered because the user holds CREATE_GLACCOUNT"]
+    priority: medium
+
+  - id: balancing_state_live_totals
+    description: "The balancing state shows live debit/credit totals and the balance indicator as lines are added."
+    preconditions: ["user holds CREATE_JOURNALENTRY", "a journal-entry composer is open"]
+    actions: ["add a debit line", "add a credit line", "edit the amounts"]
+    assertions: ["the balance indicator shows the live Debit total, Credit total, and difference", "the Post control's enabled state tracks isBalanced live as amounts change"]
+    priority: high
+
+  - id: submitting_state_shows_progress
+    description: "Posting a balanced entry shows the submitting state while the outbox replays it."
+    preconditions: ["user holds CREATE_JOURNALENTRY", "a balanced entry is composed", "online"]
+    actions: ["tap Post journal entry"]
+    assertions: ["a progress indicator is shown while the command is enqueued + replayed via POST /v1/batches", "on 2xx the entry moves to the history (or shows Submitted-for-approval under maker-checker)"]
+    priority: medium
+
+  - id: no_network_serves_cache
+    description: "Offline with cached accounting data shows the cached chart + journal history plus an offline banner; a balanced posting still queues."
+    preconditions: ["accounting data was previously synced", "device offline"]
+    actions: ["open the Accounting module offline"]
+    assertions: ["the last-synced chart + journal history are served from cache", "an 'Offline · showing cached accounting data' banner is shown", "a balanced journal entry can still be composed and queued to the outbox"]
+    priority: high
+
+  - id: error_state_offers_retry
+    description: "A failed fetch with no cache shows the error state with the server message and a Retry CTA; a 403 refreshes permissions instead."
+    preconditions: ["fetch fails (5xx) and no cached accounting data exists"]
+    actions: ["open the Accounting module", "tap Retry"]
+    assertions: ["the error state shows the server message + a Retry CTA", "Retry re-issues GET /v1/glaccounts + GET /v1/journalentries", "a 403 routes through the permission-drift refresh rather than a hard crash"]
+    priority: medium

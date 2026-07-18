@@ -1,0 +1,179 @@
+feature: m06-collections
+status: approved
+approve_hash: "sha256:365a3d80feace64f49f0f0766313de9ebc64fe5517bd517a94c3761f53d1b0e2"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+schema_version: v2
+cluster: back-office-module
+module: m06-collections
+priority: must_have
+is_primary_flow: true
+has_ui: true
+has_api: true
+has_server: false
+capabilities:
+  - has_ui
+  - has_api
+  - has_offline_cache
+  - has_form_input
+  - has_flow
+  - requires_auth
+requires_features:
+  - permission-capability-engine
+  - offline-sync-engine
+  - dynamic-template-forms
+  - needs-attention-inbox
+  - m03-groups-centers
+  - m04-loan-portfolio
+provides_to: []
+permissions_gate: READ_COLLECTIONSHEET, SAVECOLLECTIONSHEET_CENTER, SAVECOLLECTIONSHEET_GROUP, REPAYMENT_LOAN, DEPOSIT_SAVINGSACCOUNT
+requires_permission:
+  - READ_COLLECTIONSHEET
+contracts:
+  reads:
+    - >-
+      POST /v1/collectionsheet?command=generate — individual/JLG sheet: clients + loan-repayment + savings-deposit dues
+      (a read; returns data)
+    - POST /v1/centers/{id}?command=generateCollectionSheet — center meeting sheet (its groups → clients → dues)
+    - POST /v1/groups/{id}?command=generateCollectionSheet — single group meeting sheet
+    - GET /v1/collectionsheet/template — office/staff/meeting-date option lists (dynamic-template-forms picker)
+  writes:
+    - >-
+      POST /v1/collectionsheet?command=save — bulkRepaymentTransactions[] + bulkDisbursementTransactions[] (via outbox
+      when offline)
+    - >-
+      POST /v1/centers/{id}?command=saveCollectionSheet — center sheet save; /v1/groups/{id}?command=saveCollectionSheet
+      for a group
+    - POST /v1/batches?enclosingTransaction=true — the whole captured sheet as one all-or-nothing atomic batch
+  consumes_tables:
+    - collection_sheets
+    - cached_templates
+    - framework_submit_drafts
+    - generated_receipts
+libraries:
+  cmp_modules:
+    - cmp-network-monitor
+    - cmp-file-utils
+  core_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/permissions
+    - core-base/store
+    - core-base/network
+  external:
+    - name: org.mobilenativefoundation.store.store5
+      role: CACHE_FIRST_SWR read of the generated sheet so a 30-member sheet renders offline under 1s.
+    - name: androidx.room
+      role: SourceOfTruth persistence for the sheet working set + the durable command outbox.
+    - name: kotlinx.serialization
+      role: >-
+        Serialize the saveCollectionSheet body (bulkRepaymentTransactions[] + bulkDisbursementTransactions[]) into the
+        durable outbox payload.
+    - name: org.apache.pdfbox
+      role: Render per-client PDF transaction receipts (PDFBox-style) after the sheet submits.
+  training_surfaces:
+    - training-layer/instructions/stream-first/latest/CORE_STORE.md
+    - training-layer/instructions/stream-first/latest/CORE_DATA.md
+    - training-layer/instructions/stream-first/latest/CORE_DATABASE.md
+    - training-layer/instructions/stream-first/latest/CORE_BASE_STORE.md
+vm_actions:
+  - action: OnPickSheetContextClick
+    maps_to_on_click: pick_sheet_context
+    handler: >-
+      Open the dynamic-template-forms picker (center/group + staff + meeting-date); on confirm issue POST
+      command=generate and hydrate the sheet cache.
+  - action: OnSheetMemberRowClick
+    maps_to_on_click: open_loan_detail
+    handler: sendEvent(NavigateToLoanDetail(loanId)) into m04-loan-portfolio (read-only repayment context).
+  - action: OnCaptureAmount
+    maps_to_on_click: capture_member_collection
+    handler: >-
+      Record the per-client amount collected (loan + savings split) into the in-VM sheet draft; update captured flag +
+      running total; mark dirty; enable Submit.
+  - action: OnSubmitSheetClick
+    maps_to_on_click: submit_collection_sheet
+    handler: >-
+      Assemble the saveCollectionSheet command (bulkRepaymentTransactions[] + bulkDisbursementTransactions[]); enqueue
+      to the outbox as one AllOrNothing batch (durable idempotency).
+  - action: OnGenerateReceiptsClick
+    maps_to_on_click: generate_receipts
+    handler: Render per-client PDF receipts from the submitted sheet and write them to durable local storage.
+  - action: OnReviewFailedClick
+    maps_to_on_click: open_needs_attention
+    handler: sendEvent(NavigateToNeedsAttention) to triage rejected sheet rows.
+  - action: OnRetryClick
+    maps_to_on_click: retry_generate
+    handler: Re-issue POST command=generate through Store5; on 403 route to permission-drift refresh.
+  - action: Internal.ReceiveSheet
+    handler: Fold the collection-sheet Store5 stream into ScreenState (loading/content/empty/error/no-network).
+  - action: Internal.ReceiveSubmitResult
+    handler: >-
+      On success → queued-offline (queued) or content (online applied); on partial reject → route the rejected rows to
+      needs-attention.
+  - action: Internal.ReceiveNetworkStatus
+    handler: On loss → no-network state (captured amounts persist in the draft); on regain → auto-drain the outbox.
+error_cases:
+  - code: sheet_generate_failed
+    ux: error state with Retry; no cache → nothing rendered; cache present → serve the last sheet + soft error toast.
+  - code: sheet_queued_offline
+    ux: >-
+      queued-offline state; the captured sheet stays PENDING in the outbox with a 'will sync when online' chip (never
+      dropped).
+  - code: command_rejected
+    ux: >-
+      a rejected sheet row on replay routes to needs-attention-inbox with the Fineract server error; accepted rows stay
+      posted.
+  - code: permission_drift_403
+    ux: >-
+      403 NoAuthorization → permission-capability-engine refresh + re-resolve; now-denied controls prune; the sheet
+      stays alive.
+  - code: maker_checker_pending
+    ux: >-
+      under tenant maker-checker the saveCollectionSheet returns commandId without resourceId → 'Submitted for approval'
+      badge, not applied optimistically.
+test_fixtures:
+  - 30-member center sheet cached → open offline → per-client dues render from Room under 1s (CACHE_FIRST_SWR)
+  - >-
+    user holds READ_COLLECTIONSHEET but not SAVECOLLECTIONSHEET_CENTER → capture fields + Submit hidden/disabled with a
+    reason
+  - >-
+    capture amounts for 28 of 30 clients offline → Submit → the whole sheet queues as one AllOrNothing batch with a
+    durable idempotency_key
+  - >-
+    kill+restore app with a queued sheet → payload + idempotency key survive (Room) → replay posts exactly-once (no
+    double post)
+  - >-
+    one repayment row rejected on replay (loan closed) → lands in needs-attention-inbox with server_error; the other
+    rows stay posted
+  - sheet submitted → generate_receipts writes one PDF per captured client to local storage
+acceptance_refs:
+  - Center/group/individual sheets w/ dues; bulk atomic batch submit; 30-member sheet <1s cache; receipts
+plan_ref: idea-plan.yaml#features[m06-collections]
+summary: >-
+  M06 · Collections (field operations). Meeting-based collection sheets for group/center lending — generate a
+  center/group/individual sheet with per-client loan-repayment + savings-deposit dues, capture amounts inline
+  (productive/JLG/individual), then submit the whole sheet as ONE atomic batch (POST /v1/batches enclosingTransaction)
+  through offline-sync-engine with a durable idempotency key so the day's collections post exactly-once offline.
+  30-member sheet renders <1s from cache; PDF receipts per client. Permission-gated via permission-capability-engine;
+  meeting-context picker through dynamic-template-forms; center/group + loan context cross-linked read-only into
+  m03-groups-centers and m04-loan-portfolio.
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T11:20:00Z'
+enriched_by: /idea-feature-enrich
+status_history:
+  - from: designed
+    to: design_partial
+    at: '2026-07-17T20:36:19.675Z'
+    by: /idea-feature-stitch
+  - from: design_partial
+    to: designed
+    at: '2026-07-17T22:10:51.931Z'
+    by: /idea-feature-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

@@ -1,0 +1,81 @@
+schema_version: v1.0.0
+feature: offline-sync-engine
+scenarios:
+  # ── Behavior: financial-correctness keystones ─────────────────────────
+  - id: exactly_once_replay_no_double_post
+    description: "A queued repayment replayed twice (network flap) posts exactly once via the durable idempotency key."
+    preconditions: ["outbox has a queued REPAYMENT_LOAN command", "network restored", "replay retried twice"]
+    actions: ["trigger sync", "force a retry of the same command"]
+    assertions: ["POST /v1/batches replays with the SAME Idempotency-Key both times", "Fineract shows one posting, zero duplicates", "outbox row ends SUBMITTED"]
+    priority: high
+
+  - id: rejected_replay_routes_to_needs_attention
+    description: "A command the server rejects lands in Needs-Attention with the error, never silently dropped."
+    preconditions: ["outbox has a SAVECOLLECTIONSHEET_CENTER the server rejects (validation)"]
+    actions: ["trigger sync", "wait for batch response"]
+    assertions: ["rejected command marked FAILED with server_error", "row appears in needs-attention-inbox", "error state shows 'Review failed' CTA", "never silently dropped"]
+    priority: high
+
+  - id: outbox_survives_crash_and_reinstall
+    description: "Queued commands + idempotency keys are durable across process death and backup-restore (Room v11)."
+    preconditions: ["outbox has queued commands", "app crashes then restores from backup"]
+    actions: ["restart app", "inspect outbox"]
+    assertions: ["queued commands + idempotency keys survive (Room v11 durable)", "no new key minted on restart", "PENDING status preserved"]
+    priority: high
+
+  - id: retry_all_reuses_original_idempotency_key
+    description: "Retry all re-drains FAILED entries without minting new keys, so a half-applied batch does not double-post."
+    preconditions: ["outbox has a FAILED entry from a partial batch"]
+    actions: ["tap Retry all"]
+    assertions: ["entry moves FAILED → RETRYING", "replay carries the ORIGINAL idempotency key", "no duplicate posting on the server"]
+    priority: high
+
+  - id: delta_pull_scoped_to_office_portfolio
+    description: "Delta-pull hydrates only the signed-in user's office/portfolio working set."
+    preconditions: ["user is authenticated as officeId=3", "delta feed available"]
+    actions: ["tap Pull latest"]
+    assertions: ["GET /v1/audits called with officeId=3 + makerDateTimeFrom watermark", "only office 3 working set hydrated (CACHE_FIRST_SWR)", "FetchedAt watermark advanced"]
+    priority: medium
+
+  # ── State coverage (one per ui.yaml state) ────────────────────────────
+  - id: idle_state_zero_pending
+    description: "Empty outbox after a successful sync shows the up-to-date idle banner."
+    preconditions: ["outbox drained", "last sync succeeded"]
+    actions: ["open Sync console"]
+    assertions: ["status banner reads 'Up to date · last synced …'", "Sync now enabled, no rows listed"]
+    priority: medium
+
+  - id: content_state_lists_pending
+    description: "Pending commands render as rows with idempotency key, action, entity, age, status chip."
+    preconditions: ["outbox has 3 PENDING/RETRYING commands"]
+    actions: ["open Sync console"]
+    assertions: ["3 command rows visible", "banner reads '3 pending'", "each row shows action + entity + status chip"]
+    priority: medium
+
+  - id: syncing_state_disables_cta
+    description: "While draining, per-command progress shows and the CTA is disabled."
+    preconditions: ["sync in flight"]
+    actions: ["observe during drain"]
+    assertions: ["banner reads 'Syncing… x/N commands'", "Sync now disabled while syncing"]
+    priority: low
+
+  - id: empty_state_offers_first_pull
+    description: "Fresh login with no queue and no prior delta offers a first full pull."
+    preconditions: ["fresh install / just logged in", "no outbox, no prior delta"]
+    actions: ["open Sync console"]
+    assertions: ["empty state shown", "Pull latest CTA prompts first office/portfolio hydrate"]
+    priority: low
+
+  - id: no_network_keeps_queue
+    description: "Offline keeps commands queued with a persistent banner; auto-drains on regain."
+    preconditions: ["device offline", "2 commands queued"]
+    actions: ["queue a repayment offline", "restore connectivity"]
+    assertions: ["banner reads 'N queued · will sync when online'", "commands stay PENDING", "on regain OfflineSubmitSyncer auto-drains"]
+    priority: high
+
+  - id: error_state_offers_retry_and_review
+    description: "A failed drain surfaces both Retry all and Review failed CTAs."
+    preconditions: ["a batch failed with ≥1 FAILED entry"]
+    actions: ["open Sync console after failed drain"]
+    assertions: ["error state shown", "Retry all + Review failed CTAs enabled", "failedCount reflected in banner"]
+    priority: medium

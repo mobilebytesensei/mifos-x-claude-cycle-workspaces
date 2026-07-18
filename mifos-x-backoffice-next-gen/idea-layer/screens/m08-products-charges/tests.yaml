@@ -1,0 +1,99 @@
+schema_version: v1.0.0
+feature: m08-products-charges
+scenarios:
+  - id: catalog_renders_offline_from_cache
+    description: "The product/charge catalog renders CACHE_FIRST_SWR and feeds downstream form option lists offline"
+    preconditions: ["user holds READ_LOANPRODUCT + READ_CHARGE", "catalog previously cached in Room", "network unavailable"]
+    actions: ["open Products & Charges", "wait for template-loading -> content", "switch to the Charges tab"]
+    assertions:
+      - "loan products, savings products and charges render from the cached catalog (fromCache = true)"
+      - "the loan-product option list is available offline to the M04 loan application form"
+      - "no mutating (create/edit/delete) control triggers a network call in this read path"
+    priority: high
+
+  - id: create_loan_product_from_large_template
+    description: "The loan-product create form renders from the large GET /v1/loanproducts/template and submits online"
+    preconditions: ["user holds CREATE_LOANPRODUCT", "GET /v1/loanproducts/template returns interestTypeOptions + accountingRuleOptions + chargeOptions", "network available"]
+    actions: ["tap Create loan product", "fill name/shortName/principal/interest/term via the template form", "pick Accrual (periodic) accounting + GL mappings", "submit"]
+    assertions:
+      - "the editor renders every template field with its allowed-value dropdowns (interest method, amortization, repayment frequency, accounting rule, charges)"
+      - "state transitions content -> submitting"
+      - "POST /v1/loanproducts receives the assembled JsonObject with charges[] + GL mappings"
+      - "on 2xx the new product appears in the catalog (or a Submitted-for-approval badge under maker-checker)"
+    priority: high
+
+  - id: create_charge_appears_in_product_lists
+    description: "A newly created charge becomes selectable in product charge-assignment lists"
+    preconditions: ["user holds CREATE_CHARGE", "GET /v1/charges/template returns chargeCalculationTypeOptions + taxGroupOptions", "network available"]
+    actions: ["tap Create charge", "set applies-to Loan, calculation % Approved Amount, amount 2%, GL income account, tax group", "submit"]
+    assertions:
+      - "POST /v1/charges receives the assembled JsonObject"
+      - "on 2xx the charge is added to the catalog and to the loanproducts/savingsproducts template chargeOptions on next revalidate"
+    priority: high
+
+  - id: create_gated_hidden_without_permission
+    description: "Create FABs are fail-closed HIDDEN for a persona lacking the CREATE_ permission"
+    preconditions: ["user holds READ_LOANPRODUCT + READ_CHARGE but NOT CREATE_LOANPRODUCT / CREATE_CHARGE"]
+    actions: ["open Products & Charges", "inspect the FABs on each tab"]
+    assertions:
+      - "no create-product / create-charge FAB is rendered (HIDE, not disabled)"
+      - "the catalog is fully browsable read-only"
+    priority: high
+
+  - id: edit_disabled_with_reason_for_maker
+    description: "Edit/Delete on a visible detail are DISABLE-with-reason for a user lacking the action"
+    preconditions: ["user holds READ_LOANPRODUCT but NOT UPDATE_LOANPRODUCT"]
+    actions: ["open a loan product's detail", "inspect the Edit and Delete controls"]
+    assertions:
+      - "Edit is visible-but-disabled with 'Requires UPDATE_LOANPRODUCT — ask your product admin'"
+      - "Delete is visible-but-disabled with its reason chip"
+    priority: high
+
+  - id: config_edit_blocked_offline
+    description: "A product/charge config write is BLOCKED offline (config is online-only, never queued)"
+    preconditions: ["user holds CREATE_CHARGE", "network unavailable"]
+    actions: ["tap Create charge", "attempt to submit"]
+    assertions:
+      - "state transitions content -> config-online-only"
+      - "a 'Connect to edit configuration' banner is shown"
+      - "NO framework_submit_drafts row is drained silently later — the write only submits online"
+      - "the catalog stays fully readable from cache underneath"
+    priority: high
+
+  - id: delete_product_referenced_rejected
+    description: "Deleting a product still referenced by accounts is 409-rejected and surfaced verbatim"
+    preconditions: ["user holds DELETE_LOANPRODUCT", "the product has open loan accounts", "network available"]
+    actions: ["open the product detail", "tap Delete", "confirm"]
+    assertions:
+      - "DELETE /v1/loanproducts/{id} returns 409"
+      - "state transitions submitting -> error with the server message shown verbatim"
+      - "the product remains in the catalog"
+    priority: medium
+
+  - id: maker_checker_submit_routes_to_inbox_on_reject
+    description: "A rejected maker-checker config submission surfaces in Needs-Attention, never silently dropped"
+    preconditions: ["tenant maker-checker enabled for product config", "user holds CREATE_LOANPRODUCT", "a checker rejects the queued command"]
+    actions: ["create a loan product", "observe the Submitted-for-approval badge", "checker rejects it"]
+    assertions:
+      - "the queued command lands PENDING_APPROVAL with a commandId + empty changes"
+      - "on rejection the entry appears in needs-attention-inbox with the server reason (Retry / Edit / Discard)"
+    priority: medium
+
+  - id: empty_tab_shows_gated_cta
+    description: "An empty catalog tab shows a create CTA gated on the tab's CREATE_ permission"
+    preconditions: ["the Charges tab has no charges defined", "user holds CREATE_CHARGE"]
+    actions: ["switch to the Charges tab"]
+    assertions:
+      - "state is empty with an illustration + message"
+      - "a 'Create charge' CTA is shown (hidden entirely if the user lacks CREATE_CHARGE)"
+    priority: medium
+
+  - id: error_retry_refetches_catalog
+    description: "A catalog fetch failure shows a recoverable error and Retry refetches"
+    preconditions: ["catalog never cached", "GET /v1/loanproducts fails"]
+    actions: ["open Products & Charges", "observe error state", "tap Retry after reconnect"]
+    assertions:
+      - "error state shown with the server error verbatim + a Retry"
+      - "Retry re-fetches via Store5 refreshFresh() and transitions template-loading -> content"
+      - "a 403 drift routes to the permission-refresh protocol rather than blindly retrying"
+    priority: medium

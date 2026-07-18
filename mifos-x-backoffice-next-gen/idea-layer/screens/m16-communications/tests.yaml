@@ -1,0 +1,84 @@
+schema_version: v1.0.0
+feature: m16-communications
+scenarios:
+  - id: content_campaign_list_and_gated_bar
+    description: "The module resolves the SMS/email campaign list with each campaign's template, run type and status, and renders the permission-gated command bar"
+    preconditions: ["user holds READ_SMSCAMPAIGN", "campaign sources reachable", "capability map available"]
+    actions: ["open Communications", "wait for load"]
+    assertions:
+      - "state transitions loading -> content"
+      - "each campaign renders name + SMS/Email badge + template name + status chip (Pending/Active/Closed)"
+      - "opening a campaign shows its message-template preview, recipient criteria and the delivery report"
+      - "only controls whose {ACTION}_{ENTITY} permission the user holds are present"
+    priority: high
+
+  - id: campaign_controls_gated_fail_closed
+    description: "A user with READ_SMSCAMPAIGN but no create/activate/close permission sees the read surface with every mutating control HIDDEN (fail-closed)"
+    preconditions: ["user holds READ_SMSCAMPAIGN but NOT CREATE_SMSCAMPAIGN / ACTIVATE_SMSCAMPAIGN / CLOSE_SMSCAMPAIGN / CREATE_TEMPLATE / CREATE_HOOK"]
+    actions: ["open Communications", "open a campaign detail"]
+    assertions:
+      - "the campaign list + template preview + recipient report are visible"
+      - "the New-campaign FAB, Activate, Close, New-template and Register-hook controls are HIDDEN"
+      - "no role name is branched on — visibility is 100% data from the PermissionSet"
+    priority: high
+
+  - id: activate_campaign_queues_exactly_once
+    description: "A campaign activation issued offline is written to the durable outbox and replays exactly once (no double-activate) even across an app kill/retry"
+    preconditions: ["user holds ACTIVATE_SMSCAMPAIGN", "network unavailable", "a Pending campaign is selected"]
+    actions: ["activate the campaign", "kill and relaunch the app", "restore connectivity", "force a retry"]
+    assertions:
+      - "the activate command is written to draft_outbox with a durable idempotency_key + (action=ACTIVATE, entity=SMSCAMPAIGN)"
+      - "state is queued_offline with a 'N queued · will sync when online' banner and an optimistic Active status marked pending-sync"
+      - "the queued command + idempotency key survive the app kill (Room durable)"
+      - "on reconnect the activation posts EXACTLY once — the campaign flips to Active once, never twice"
+    priority: high
+
+  - id: close_campaign_gated_and_authoritative
+    description: "Close is hidden without permission, and a close rejected by the server (409/400) surfaces the Fineract error into Needs-Attention"
+    preconditions: ["a user WITHOUT CLOSE_SMSCAMPAIGN opens an Active campaign, then a user WITH it closes a campaign the server rejects"]
+    actions: ["open the campaign as the un-permissioned user", "as the permissioned user, close a campaign that the server rejects on replay"]
+    assertions:
+      - "for the un-permissioned user the Close control is HIDDEN"
+      - "for the permissioned user the optimistic status flip is reverted when the server rejects"
+      - "the rejected close lands in needs-attention-inbox with the Fineract error"
+    priority: high
+
+  - id: create_campaign_from_template_form
+    description: "New-campaign opens the dynamic-template-forms create form sourced from GET /v1/smscampaigns/template and enqueues a durable create command"
+    preconditions: ["user holds CREATE_SMSCAMPAIGN", "smscampaigns/template reachable or cached", "≥1 message template exists"]
+    actions: ["tap New campaign", "pick a message template + recipient criteria from the template option lists", "submit"]
+    assertions:
+      - "the form fields + template/provider option lists come from the server template, not hardcoded"
+      - "submit assembles a create-campaign command JsonObject and enqueues it through the durable outbox"
+      - "online -> submitting -> content with the new Pending campaign; offline -> queued_offline"
+    priority: medium
+
+  - id: create_template_and_recipient_report
+    description: "A message template is authored via the template form and a campaign's recipient delivery report is read grouped by delivery status"
+    preconditions: ["user holds CREATE_TEMPLATE and READ_SMSCAMPAIGN"]
+    actions: ["open Templates tab", "create a message template", "open an Active campaign", "view its recipient report"]
+    assertions:
+      - "the create-template command (name + entity + type + mustache body) is enqueued through the durable outbox"
+      - "the recipient report groups messages by status (Pending/Sent/Delivered/Failed) with counts"
+      - "the report renders from cache offline (CACHE_FIRST_SWR)"
+    priority: medium
+
+  - id: register_hook_and_edit_email_config
+    description: "A webhook is registered and the outbound email (SMTP) gateway config is edited; the password field is masked and never logged"
+    preconditions: ["user holds CREATE_HOOK and UPDATE_EXTERNALSERVICES"]
+    actions: ["open Hooks tab", "register a webhook with events + payload URL", "open Email config tab", "edit the SMTP host/port/username", "submit"]
+    assertions:
+      - "the register-hook command (name + events[] + config{payloadURL,contentType}) is enqueued through the durable outbox"
+      - "the email-config command is enqueued; the password field is masked in the UI and stored via secure storage, never logged"
+      - "each control is gated on its exact permission (CREATE_HOOK / UPDATE_EXTERNALSERVICES)"
+    priority: medium
+
+  - id: offline_shows_cached_campaigns
+    description: "Offline, the campaign list + templates + hooks show last cached values with an offline banner"
+    preconditions: ["campaigns/templates/hooks previously cached in communications", "network unavailable"]
+    actions: ["open Communications offline"]
+    assertions:
+      - "state is no_network"
+      - "the offline banner is visible"
+      - "each campaign shows its cached status and template; queued lifecycle commands show a pending-sync marker"
+    priority: medium

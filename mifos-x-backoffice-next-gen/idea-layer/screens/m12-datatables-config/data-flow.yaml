@@ -1,0 +1,211 @@
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: m12-datatables-config
+
+# Configuration families hydrate CACHE_FIRST_SWR Store5 SourceOfTruth streams over the Room
+# `config_reference_data` table (one durable row per (config_type, config_id)) so the custom datatable
+# SCHEMAS that dynamic-template-forms renders resolve fully offline. Every mutating configuration/schema
+# command is ONLINE-ONLY (per the per-domain offline policy — a half-applied schema or a config flag that
+# half-toggles maker-checker is dangerous) and, when online, is queued into the durable `draft_outbox`
+# (idempotency_key + (action,entity)) and replayed exactly-once over POST /v1/batches. Register/edit forms
+# carry a JsonObject template payload straight through the outbox unchanged (dynamic-template-forms).
+# External-service secret values are write-only — never persisted to cache, only forwarded through the outbox.
+
+entries:
+  # ── 1. Configuration families — mount (multi-family CACHE_FIRST_SWR) ──────
+  - screen_id: m12-datatables-config
+    trigger: on_mount
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_datatables
+        transport: rest
+      - api_id: get_configurations
+        transport: rest
+      - api_id: list_entity_datatable_checks
+        transport: rest
+      - api_id: get_external_service
+        transport: rest
+      - api_id: get_field_configuration
+        transport: rest
+    tables:
+      - name: config_reference_data
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          ConfigReferenceEntity keyed by (config_type, config_id): config_type ∈
+          {datatable,global_config,entity_check,external_service,field_config}, plus name, entity_attached
+          (for a datatable), and payload_json for the entity's full fields (a datatable's column list, a
+          config flag's value, an entity-check's status). One CACHE_FIRST_SWR SourceOfTruth stream per
+          config_type over Room. validator.markFresh() after each write starts the TTL. The datatable
+          schemas here are the offline vocabulary dynamic-template-forms reads to render custom fields.
+          External-service SECRET fields are never written to this table — only the non-secret config is cached.
+    dtos:
+      - name: DatatableDto
+        role: response
+        api_id: list_datatables
+      - name: GlobalConfigurationDto
+        role: response
+        api_id: get_configurations
+      - name: EntityDatatableCheckDto
+        role: response
+        api_id: list_entity_datatable_checks
+      - name: ExternalServiceDto
+        role: response
+        api_id: get_external_service
+      - name: FieldConfigurationDto
+        role: response
+        api_id: get_field_configuration
+    cache:
+      strategy: cache_first
+      ttl_seconds: 3600
+      key_template: "fineract:config:{configType}:tenant:{tenantId}"
+      shape: list
+    privacy_constraint:
+      scope: shared_reference
+      notes: "Datatable schemas + config flags + entity checks are tenant-global reference data. External-service SECRETS (S3/SMTP/SMS keys) are write-only — never cached. No client PII. Encrypted at rest (SQLCipher)."
+    error_paths:
+      - error_code: config_read_failed
+        behavior: fallback_cache
+        message_key: m12_error_list_failed
+      - error_code: auth.session_expired
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: sync_reauth_required
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m12_showing_cached
+
+  # ── 2. Datatable schema drill-in — interaction (column list for dynamic forms) ──
+  - screen_id: m12-datatables-config
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: get_datatable_detail
+        transport: rest
+    tables:
+      - name: config_reference_data
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: "A datatable's column list stored as (config_type=datatable, config_id=name, entity_attached, payload_json=columns[]) so dynamic-template-forms renders that entity's custom fields offline."
+    dtos:
+      - name: DatatableDetailDto
+        role: response
+        api_id: get_datatable_detail
+    cache:
+      strategy: cache_first
+      ttl_seconds: 3600
+      key_template: "fineract:config:datatable:{datatable}"
+      shape: flat
+    error_paths:
+      - error_code: config_read_failed
+        behavior: fallback_cache
+        message_key: m12_error_list_failed
+
+  # ── 3. Schema / config / entity-check / external-service write — ONLINE-ONLY, queued exactly-once ──
+  - screen_id: m12-datatables-config
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: create_datatable
+        transport: rest
+      - api_id: register_datatable
+        transport: rest
+      - api_id: update_datatable
+        transport: rest
+      - api_id: deregister_datatable
+        transport: rest
+      - api_id: update_configuration
+        transport: rest
+      - api_id: create_entity_datatable_check
+        transport: rest
+      - api_id: delete_entity_datatable_check
+        transport: rest
+      - api_id: update_external_service
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          RoomSubmitOutbox entry (framework_submit_drafts, Room v11): durable idempotency_key +
+          (action,entity) composite key + JsonObject template payload. ONLINE-ONLY drain — the syncer only
+          replays these when connectivity is present (config + schema must never deferred-sync; a
+          half-registered datatable or half-toggled maker-checker flag is dangerous); when offline the
+          register/edit/toggle control is disabled with a 'connect to change configuration' reason.
+          Maker-checker aware — a queued commandId with empty changes lands PENDING_APPROVAL.
+          External-service secret fields ride the payload write-only and are never mirrored to cache.
+      - name: config_reference_data
+        mutation: read
+    dtos:
+      - name: DatatableCreateRequest
+        role: request
+        api_id: create_datatable
+      - name: DatatableRegisterRequest
+        role: request
+        api_id: register_datatable
+      - name: GlobalConfigurationUpdateRequest
+        role: request
+        api_id: update_configuration
+      - name: EntityDatatableCheckRequest
+        role: request
+        api_id: create_entity_datatable_check
+      - name: ExternalServiceUpdateRequest
+        role: request
+        api_id: update_external_service
+      - name: CommandProcessingResultDto
+        role: response
+        api_id: create_datatable
+    privacy_constraint:
+      scope: user_synced
+      notes: "Config/schema payloads are tenant-global admin data; external-service secret payloads are write-only and scrubbed from logs. Encrypted at rest."
+    side_effects:
+      - kind: invalidate_cache
+        target: "the edited config family's cached collection (datatables/global-config/entity-checks/external-services) — revalidated by the follow-on delta-pull; a maker-checker flag change re-resolves the capability map"
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer online-only drain for this outbox entry"
+    error_paths:
+      - error_code: command.rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: m12_command_rejected
+      - error_code: command.pending_approval
+        behavior: user_action
+        message_key: m12_submitted_for_approval
+      - error_code: permission.drift_403
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: sync_reauth_required
+      - error_code: network.offline
+        behavior: user_action
+        message_key: m12_edit_online_only
+
+  # ── 4. Periodic freshness re-check (CACHE_FIRST_SWR revalidate of schemas) ──
+  - screen_id: m12-datatables-config
+    trigger: on_timer
+    interval_seconds: 3600
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_datatables
+        transport: rest
+    tables:
+      - name: config_reference_data
+        mutation: read
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 3600
+      key_template: "fineract:config:{configType}:tenant:{tenantId}"
+      shape: list
+    error_paths:
+      - error_code: network.offline
+        behavior: silent
+        message_key: m12_showing_cached

@@ -1,0 +1,102 @@
+feature: m02-clients
+
+entry_points:
+  - type: nav_root
+    description: "Clients module root (M02 'Clients' tab) — visible only when the permission-capability-engine resolves READ_CLIENT (or an umbrella); unmapped fails closed."
+  - type: from_dashboard
+    description: "Opened from a dashboard client/portfolio tile or a 'my clients' KPI drill-down (M01)."
+  - type: deep_link
+    description: "A notification, search result, or the client-onboarding-to-loan flow routes into a specific Client 360 (guarded by the NavController permission interceptor)."
+
+transitions:
+  # ── list load lifecycle ──────────────────────────────────────────────
+  - from: loading
+    to: content
+    trigger: "client list loaded (GET /v1/clients — fresh or CACHE_FIRST_SWR)"
+  - from: loading
+    to: empty
+    trigger: "no clients in the office scope / search filter"
+  - from: loading
+    to: no-network
+    trigger: "offline with a cached list available — cached rows served"
+  - from: loading
+    to: error
+    trigger: "fetch failed and no cached list exists"
+
+  # ── search ───────────────────────────────────────────────────────────
+  - from: content
+    to: content
+    trigger: "search_clients — re-query (GET /v1/clients / POST /v2/clients/search)"
+  - from: content
+    to: empty
+    trigger: "search_clients returns zero rows"
+
+  # ── drill into the 360 ───────────────────────────────────────────────
+  - from: content
+    to: client-detail-360
+    trigger: "open_client_360 — tap a client row (GET /v1/clients/{id} + /accounts)"
+  - from: content
+    to: content
+    trigger: "select_360_tab — lazily load a sub-resource tab (identifiers/documents/addresses/family/charges/notes)"
+
+  # ── onboarding + edit (via dynamic-template-forms) ───────────────────
+  - from: content
+    to: dynamic-template-forms
+    trigger: "start_client_onboarding — CREATE_CLIENT template form (client-generated externalId)"
+  - from: empty
+    to: dynamic-template-forms
+    trigger: "start_client_onboarding from the empty-state CTA"
+  - from: content
+    to: dynamic-template-forms
+    trigger: "edit_client — UPDATE_CLIENT pre-filled template form"
+  - from: content
+    to: dynamic-template-forms
+    trigger: "add_client_identifier — CREATE_CLIENTIDENTIFIER sub-resource form"
+  - from: content
+    to: dynamic-template-forms
+    trigger: "propose_client_transfer — PROPOSETRANSFER_CLIENT form"
+  - from: dynamic-template-forms
+    to: content
+    trigger: "form submitted — command queued to the outbox; return to the list/360 with a 'queued offline' chip (or a maker-checker 'Submitted for approval' badge)"
+
+  # ── lifecycle commands (queued via offline-sync-engine) ──────────────
+  - from: content
+    to: content
+    trigger: "activate_client — ACTIVATE_CLIENT queued (Pending → Active on sync)"
+  - from: content
+    to: content
+    trigger: "close_client — CLOSE_CLIENT queued after confirm (Active → Closed on sync)"
+  - from: content
+    to: content
+    trigger: "reject_client — REJECT_CLIENT queued after confirm (Pending → Rejected on sync)"
+  - from: content
+    to: content
+    trigger: "withdraw_client — WITHDRAW_CLIENT queued after confirm (Pending → Withdrawn on sync)"
+  - from: content
+    to: needs-attention-inbox
+    trigger: "a queued client command was rejected by the server (e.g. close with open accounts) — routed to triage with the server error"
+
+  # ── sub-resource writes ──────────────────────────────────────────────
+  - from: content
+    to: content
+    trigger: "upload_client_document — CREATE_DOCUMENT staged + queued (multipart on sync)"
+  - from: content
+    to: content
+    trigger: "add_client_note — CREATE_CLIENTNOTE queued"
+
+  # ── error / offline recovery ─────────────────────────────────────────
+  - from: error
+    to: loading
+    trigger: "retry_load — re-issue the failed fetch"
+  - from: no-network
+    to: loading
+    trigger: "retry_load OR connectivity regained — revalidate the cached list/360"
+  - from: error
+    to: content
+    trigger: "a 403 resolved via the permission-drift refresh — surface re-resolved, denied controls pruned"
+
+navigates_to:
+  - client-detail-360
+  - dynamic-template-forms
+  - needs-attention-inbox
+  - m04-loan-portfolio

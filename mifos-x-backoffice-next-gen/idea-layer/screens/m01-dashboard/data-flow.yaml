@@ -1,0 +1,115 @@
+feature: m01-dashboard
+# The dashboard is a composite of independently-hydrating tiles. On mount, the
+# permitted tile roster is resolved from the PermissionSet, then EACH permitted
+# tile fetches its own source CACHE_FIRST_SWR: the Room dashboard_tile_cache row
+# emits instantly (offline-safe) and a background revalidation replaces it when
+# stale. A single tile's failure lands in partial-tile-error, isolated to that
+# card; the roster itself failing lands in error.
+entries:
+  - trigger: on_mount
+    source: local.retained_permission_set
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: tile_roster_resolve_failed
+    persistence_contract:
+      store: encrypted_prefs
+      table: permission_set
+      keys: [permissions_raw, permission_fingerprint]
+      note: >-
+        Reads the retained encrypted PermissionSet back from secure settings and asks the
+        PermissionEvaluator which dashboard tiles are VISIBLE. No network call is needed to
+        resolve the roster — only the per-tile data fetches below hit Fineract. If the
+        retained set is absent the screen routes to re-authenticate.
+
+  - trigger: on_mount
+    source: api.run_dashboard_reports
+    target_state: content
+    loading_state: loading
+    error_state: partial-tile-error
+    on_error:
+      nav_target: null
+      error_code: tile_load_failed
+    persistence_contract:
+      store: room
+      table: dashboard_tile_cache
+      keys: [tile_id, payload_json, fetched_at]
+      note: >-
+        Backs the KPI cards (portfolio-at-risk, active-clients, collections-due). Each report
+        result is cached per tile_id (CACHE_FIRST_SWR) so the KPI renders instantly offline; a
+        500 on one report shows an inline error on that card only, never blanking the rest.
+
+  - trigger: on_mount
+    source: api.get_makerchecker_count
+    target_state: content
+    loading_state: loading
+    error_state: partial-tile-error
+    on_error:
+      nav_target: null
+      error_code: tile_load_failed
+    persistence_contract:
+      store: room
+      table: dashboard_tile_cache
+      keys: [tile_id, payload_json, fetched_at]
+      note: "Backs the pending-approvals KPI. Cached count; only fetched when the checker inbox is reachable for the user."
+
+  - trigger: on_mount
+    source: api.get_collectionsheet_today
+    target_state: content
+    loading_state: loading
+    error_state: partial-tile-error
+    on_error:
+      nav_target: null
+      error_code: tile_load_failed
+    persistence_contract:
+      store: room
+      table: dashboard_tile_cache
+      keys: [tile_id, payload_json, fetched_at]
+      note: "Backs the collections-due KPI, staffId-scoped. Cached sheet summary so a field officer sees today's dues offline before syncing."
+
+  - trigger: on_mount
+    source: api.get_notifications
+    target_state: content
+    loading_state: loading
+    error_state: partial-tile-error
+    on_error:
+      nav_target: null
+      error_code: tile_load_failed
+    persistence_contract:
+      store: room
+      table: dashboard_tile_cache
+      keys: [tile_id, payload_json, fetched_at]
+      note: "Backs the recent-activity list. Cached notification page; deep-links resolve against cached entities offline."
+
+  - trigger: on_retry
+    source: api.run_dashboard_reports
+    target_state: content
+    loading_state: partial-tile-error
+    error_state: partial-tile-error
+    on_error:
+      nav_target: null
+      error_code: tile_retry_failed
+    note: >-
+      retry_failed_tile re-issues ONLY the failed tile's fetch (any of the four sources), leaving
+      loaded tiles untouched; on success the inline error placeholder is replaced with the live value.
+
+# Reads consumed by the ui.yaml action_contracts (reads_from).
+reads:
+  - name: dashboard_tile_cache
+    source: api.run_dashboard_reports
+    cache: room
+    note: "Per-tile cached payloads keyed by tile_id; read by retry_failed_tile to know which tiles to re-fetch."
+  - name: retained_permission_set
+    source: local.retained_permission_set
+    cache: encrypted-persist
+    note: "The retained encrypted PermissionSet read by retry_dashboard to re-resolve the tile roster without a re-login."
+
+cache:
+  strategy: cache-first-swr
+  note: >-
+    Every tile is CACHE_FIRST_SWR over the Room dashboard_tile_cache table: the cached row emits
+    immediately and a background revalidation refreshes it only when FreshnessBands mark it Stale.
+    validator.markFresh() follows every successful tile fetch so TTL starts; offline, the cached
+    value is the source of truth and the offline banner is shown.

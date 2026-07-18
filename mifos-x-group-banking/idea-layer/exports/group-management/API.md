@@ -1,5 +1,28 @@
 # Group Management — API Contract
 
+> **Companion API note (global self-signup pivot, 2026-07-17):** Group orchestration ops that require
+> back-office privileges (create group, activate, associate clients, assign roles, assign staff) are
+> implemented as **COMP-GRP-001..005** tools in mcp-mifosx (`go/tools/companion_groups.go`). The
+> companion layer executes these with a service credential on behalf of the self-signed-up organizer.
+> Calendar + collection-sheet tooling is **COMP-CAL-001..003** (`go/tools/companion_calendar.go`).
+> These tools require the companion API to be deployed before use.
+> Build spec: `server-layer/COMPANION_API_BUILD_DEPLOY.md §1a (TIER-1)`
+
+## Companion API Endpoints (group orchestration — mcp-mifosx)
+
+| Contract | Method | Path |
+|----------|--------|------|
+| COMP-GRP-001 | POST/GET | `/companion/groups*` |
+| COMP-GRP-002 | POST | `/companion/groups/{id}/activate` |
+| COMP-GRP-003 | POST | `/companion/groups/{id}/associate-clients` |
+| COMP-GRP-004 | POST | `/companion/groups/{id}/assign-role` |
+| COMP-GRP-005 | POST | `/companion/groups/{id}/assign-staff` |
+| COMP-CAL-001 | POST | `/companion/groups/{id}/calendar` |
+| COMP-CAL-002 | GET | `/companion/groups/{id}/collection-sheet` |
+| COMP-CAL-003 | POST | `/companion/groups/{id}/collection-sheet` (save) |
+
+## Fineract Direct Endpoints
+
 ## Endpoints
 
 | Method | Path | Description | Auth |

@@ -16,6 +16,7 @@
 | 4 | kmp-project-template | KMP Project Template | Active | 80% | `workspaces/mifos-x/kmp-project-template/` |
 | 5 | mcp-mifosx | Mifos X MCP Server | Active | 60% | `workspaces/mifos-x/mcp-mifosx/` |
 | 6 | mobile-wallet | Mobile Wallet (KMP) | Planning | 5% | `workspaces/mifos-x/mobile-wallet/` |
+| 7 | mifos-x-actionhub | Reusable CI/CD GHA Workflows | Active | 100% | `workspaces/mifos-x/mifos-x-actionhub/` |
 
 ---
 

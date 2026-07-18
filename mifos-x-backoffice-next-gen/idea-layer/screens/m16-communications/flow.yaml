@@ -1,0 +1,69 @@
+feature: m16-communications
+entry_points:
+  - type: nav_root
+    description: "Communications module root — present in the nav only when the user's PermissionSet resolves the campaign/template group (READ_SMSCAMPAIGN or an umbrella); a marketing/admin operator sees it, a read-only viewer sees the read surface, a persona with no *_SMSCAMPAIGN permission never sees the nav entry (fail-closed HIDE)."
+
+transitions:
+  # ── list / detail hydration (Store5 CACHE_FIRST_SWR) ──
+  - from: loading
+    to: content
+    trigger: "campaign list (or a selected campaign's recipient report / the template library / the hooks list) loaded — live or from cache"
+  - from: loading
+    to: empty
+    trigger: "no campaigns, templates or hooks in the user's scope"
+  - from: loading
+    to: no_network
+    trigger: "offline with no cached campaign/template/hook data for the requested scope (captive-portal aware)"
+  - from: loading
+    to: error
+    trigger: "campaign list/detail fetch failed with no cache to fall back on"
+
+  # ── tab switch + open detail (pure in-VM re-projection, no fetch) ──
+  - from: content
+    to: content
+    trigger: "switch_comms_tab — re-project the Campaigns / Templates / Email config / Hooks view over cached rows with no network call"
+  - from: content
+    to: content
+    trigger: "open_campaign_detail — a campaign row tapped; the detail (template preview + recipient criteria + delivery report + gated command bar) renders"
+
+  # ── command submit lifecycle (create/activate/close campaign · create template · register hook · save email config) ──
+  - from: content
+    to: submitting
+    trigger: "create_campaign_form / edit_campaign_form / activate_campaign / close_campaign / create_template_form / register_hook_form / save_email_config submitted ONLINE (permission held)"
+  - from: content
+    to: queued_offline
+    trigger: "a create/activate/close/template/hook/email-config command issued OFFLINE — written to the durable outbox with an idempotency key, will replay exactly-once"
+  - from: submitting
+    to: content
+    trigger: "command accepted (2xx with resourceId) — the campaign status / template library / hooks list refreshed"
+  - from: submitting
+    to: pending_approval
+    trigger: "maker-checker tenant queued the command (2xx with commandId, empty changes) — 'Submitted for approval', the campaign status NOT optimistically flipped"
+  - from: submitting
+    to: error
+    trigger: "command rejected (400 validation / 409 optimistic-lock e.g. activating a campaign whose template was deleted / 403 permission-drift)"
+  - from: queued_offline
+    to: content
+    trigger: "connectivity restored — OfflineSubmitSyncer drained the outbox; the queued campaign command posted exactly-once and reconciled"
+  - from: queued_offline
+    to: error
+    trigger: "a queued command was rejected on replay — routed to needs-attention-inbox with the server error"
+  - from: pending_approval
+    to: content
+    trigger: "a checker approved the queued campaign/template command in M15 — the change applies and the campaign status refreshes"
+
+  # ── retries / recovery ──
+  - from: error
+    to: loading
+    trigger: "retry_load — re-run the failed campaign/template/hook list fetch (stream.refreshFresh)"
+  - from: no_network
+    to: content
+    trigger: "connectivity restored + SWR revalidation refreshed the campaigns + templates + hooks"
+
+  # ── navigation out (each gated; target present only if permitted) ──
+  - from: content
+    to: dynamic-template-forms
+    trigger: "create_campaign_form (CREATE_SMSCAMPAIGN) / edit_campaign_form (UPDATE_SMSCAMPAIGN) / create_template_form (CREATE_TEMPLATE) / register_hook_form (CREATE_HOOK) / save_email_config (UPDATE_EXTERNALSERVICES) — the create/edit form is rendered from the Fineract template"
+  - from: error
+    to: needs-attention-inbox
+    trigger: "open_needs_attention — a rejected create/activate/close-campaign, create-template, register-hook or save-email-config command is triaged (Retry / Edit / Discard) with the Fineract server error"

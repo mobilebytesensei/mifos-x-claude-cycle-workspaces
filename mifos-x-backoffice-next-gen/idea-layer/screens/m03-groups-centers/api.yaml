@@ -1,0 +1,138 @@
+feature: m03-groups-centers
+# Fineract Groups & Centers surface. Reads are office-scoped + CACHE_FIRST_SWR
+# cacheable; every mutation is a ?command= state transition returning a
+# CommandProcessingResult and is enqueued through the offline outbox (durable
+# idempotency) rather than posted directly. Each op declares its exact
+# {ACTION}_{ENTITY} permission code; ALL_FUNCTIONS_READ grants reads only.
+endpoints:
+  # ── Reads (office-scoped, CACHE_FIRST_SWR) ──────────────────────────────
+  - id: list_centers
+    method: GET
+    path: "/v1/centers"
+    description: "Office-scoped center list (paged: offset/limit/orderBy; underHierarchy + staffId filters)"
+    response_type: "CenterPage"
+    requires_auth: true
+    requires_permission: [READ_CENTER]
+    cacheable: true
+    pagination:
+      style: offset_limit
+      envelope: "{ totalFilteredRecords, pageItems[] }"
+      default_limit: 20
+
+  - id: list_groups
+    method: GET
+    path: "/v1/groups"
+    description: "Office-scoped group list (paged; filters: officeId, staffId, underHierarchy, status)"
+    response_type: "GroupPage"
+    requires_auth: true
+    requires_permission: [READ_GROUP]
+    cacheable: true
+    pagination:
+      style: offset_limit
+      envelope: "{ totalFilteredRecords, pageItems[] }"
+      default_limit: 20
+
+  - id: get_group_detail
+    method: GET
+    path: "/v1/groups/{groupId}?associations=all"
+    description: "Group detail — associated clients (members), group roles, GLIM group loans, active meeting calendar"
+    response_type: "GroupDetail"
+    requires_auth: true
+    requires_permission: [READ_GROUP]
+    cacheable: true
+
+  - id: get_center_detail
+    method: GET
+    path: "/v1/centers/{centerId}?associations=groupMembers"
+    description: "Center detail — the groups associated under this center + the collection meeting calendar"
+    response_type: "CenterDetail"
+    requires_auth: true
+    requires_permission: [READ_CENTER]
+    cacheable: true
+
+  - id: list_meetings
+    method: GET
+    path: "/v1/groups/{groupId}/calendars"
+    description: "Meeting calendars + upcoming meetings for a group/center (drives the attendance sheet)"
+    response_type: "Calendar[]"
+    requires_auth: true
+    requires_permission: [READ_MEETING]
+    cacheable: true
+
+  - id: group_center_template
+    method: GET
+    path: "/v1/groups/template?officeId={officeId}&staffInSelectedOfficeOnly=true"
+    description: "Create/edit template — office, staff, group-role option lists (rendered by dynamic-template-forms; /v1/centers/template for a center)"
+    response_type: "GroupTemplate"
+    requires_auth: true
+    requires_permission: [READ_GROUP]
+    cacheable: true
+
+  # ── Mutations (?command=, enqueued via offline outbox) ──────────────────
+  - id: create_group
+    method: POST
+    path: "/v1/groups"
+    description: "Create a group (or /v1/centers for a center); client-generated externalId enables offline queueing"
+    response_type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [CREATE_GROUP]
+    idempotency: durable
+    maker_checker: true
+
+  - id: activate_group_center
+    method: POST
+    path: "/v1/groups/{groupId}?command=activate"
+    description: "Activate a pending group/center (activationDate + dateFormat + locale); /v1/centers/{id}?command=activate for a center"
+    response_type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [ACTIVATE_GROUP, ACTIVATE_CENTER]
+    idempotency: durable
+    maker_checker: true
+
+  - id: assign_staff
+    method: POST
+    path: "/v1/groups/{groupId}?command=assignStaff"
+    description: "Assign/reassign the loan officer (staffId) to a group/center"
+    response_type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [ASSIGNSTAFF_GROUP]
+    idempotency: durable
+    maker_checker: true
+
+  - id: manage_members
+    method: POST
+    path: "/v1/groups/{groupId}?command={associateClients|disassociateClients|transferClients}"
+    description: "Edit group membership — associate/disassociate/transfer clients (clientMembers[]); roster source is m02-clients"
+    response_type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [ASSOCIATECLIENTS_GROUP, DISASSOCIATECLIENTS_GROUP, TRANSFERCLIENTS_GROUP]
+    idempotency: durable
+    maker_checker: true
+
+  - id: associate_groups_to_center
+    method: POST
+    path: "/v1/centers/{centerId}?command={associateGroups|disassociateGroups}"
+    description: "Attach/detach groups under a center (groupMembers[])"
+    response_type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [ASSOCIATEGROUPS_CENTER, DISASSOCIATEGROUPS_CENTER]
+    idempotency: durable
+    maker_checker: true
+
+  - id: save_attendance
+    method: POST
+    path: "/v1/meetings/{meetingId}?command=saveOrUpdateAttendance"
+    description: "Save/update member attendance for a meeting (clientsAttendance[] with attendanceType + meetingDate + dateFormat + locale)"
+    response_type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [SAVEORUPDATEATTENDANCE_MEETING]
+    idempotency: durable
+
+  - id: save_collection_sheet
+    method: POST
+    path: "/v1/centers/{centerId}?command=saveCollectionSheet"
+    description: "Save the center/group collection sheet (transactions + dues); the field-officer workhorse — bulk atomic via POST /v1/batches"
+    response_type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [SAVECOLLECTIONSHEET_CENTER, SAVECOLLECTIONSHEET_GROUP]
+    idempotency: durable

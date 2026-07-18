@@ -1,0 +1,71 @@
+feature: m11-tellers-cash
+entry_points:
+  - type: nav_root
+    description: "Tellers & Cash module root — present in the nav only when the user's PermissionSet resolves the cash_mgmt group (READ_TELLER or an umbrella); a teller/cash officer sees it, a read-only auditor sees the read surface, a persona with no *_TELLER permission never sees the nav entry (fail-closed HIDE)."
+
+transitions:
+  # ── list / detail hydration (Store5 CACHE_FIRST_SWR) ──
+  - from: loading
+    to: content
+    trigger: "teller list (or a selected teller's cashiers + cash position) loaded — live or from cache"
+  - from: loading
+    to: empty
+    trigger: "no tellers in the user's office scope (or a teller with no cashiers for the selected date range)"
+  - from: loading
+    to: no_network
+    trigger: "offline with no cached teller/cashier data for the requested scope (captive-portal aware)"
+  - from: loading
+    to: error
+    trigger: "teller list/detail fetch failed with no cache to fall back on"
+
+  # ── date-range re-projection (pure in-VM, no fetch) ──
+  - from: content
+    to: content
+    trigger: "change_cashier_date_range — re-project the cashier assignments for the new date range over cached rows"
+
+  # ── open teller detail (same module, master → detail) ──
+  - from: content
+    to: content
+    trigger: "open_teller_detail — a teller row tapped; the detail (cash header + cashiers + ledger + gated command bar) renders"
+
+  # ── command submit lifecycle (create teller / assign cashier / allocate / settle) ──
+  - from: content
+    to: submitting
+    trigger: "create_teller_form / edit_teller_form / assign_cashier / allocate_cash_to_cashier / settle_cash_from_cashier submitted ONLINE (permission held)"
+  - from: content
+    to: queued_offline
+    trigger: "a create/assign/allocate/settle command issued OFFLINE — written to the durable outbox with an idempotency key, will replay exactly-once"
+  - from: submitting
+    to: content
+    trigger: "command accepted (2xx with resourceId) — cash position / cashier roster refreshed"
+  - from: submitting
+    to: pending_approval
+    trigger: "maker-checker tenant queued the command (2xx with commandId, empty changes) — 'Submitted for approval', cash NOT optimistically mutated"
+  - from: submitting
+    to: error
+    trigger: "command rejected (400 validation / 409 optimistic-lock e.g. settle > allocated / 403 permission-drift)"
+  - from: queued_offline
+    to: content
+    trigger: "connectivity restored — OfflineSubmitSyncer drained the outbox; the queued cash movement posted exactly-once and reconciled"
+  - from: queued_offline
+    to: error
+    trigger: "a queued command was rejected on replay — routed to needs-attention-inbox with the server error"
+  - from: pending_approval
+    to: content
+    trigger: "a checker approved the queued teller/cash command in M15 — the change applies and the cash position refreshes"
+
+  # ── retries / recovery ──
+  - from: error
+    to: loading
+    trigger: "retry_load — re-run the failed teller list/detail fetch (stream.refreshFresh)"
+  - from: no_network
+    to: content
+    trigger: "connectivity restored + SWR revalidation refreshed the tellers + cash position"
+
+  # ── navigation out (each gated; target present only if permitted) ──
+  - from: content
+    to: dynamic-template-forms
+    trigger: "create_teller_form (CREATE_TELLER) / edit_teller_form (UPDATE_TELLER) / assign_cashier (ALLOCATECASHIER_TELLER) / allocate_cash_to_cashier (ALLOCATECASHTOCASHIER_TELLER) / settle_cash_from_cashier (SETTLECASHFROMCASHIER_TELLER) — the create/edit/assign/movement form is rendered from the Fineract template"
+  - from: error
+    to: needs-attention-inbox
+    trigger: "open_needs_attention — a rejected allocate/settle/assign command is triaged (Retry / Edit / Discard) with the Fineract server error"

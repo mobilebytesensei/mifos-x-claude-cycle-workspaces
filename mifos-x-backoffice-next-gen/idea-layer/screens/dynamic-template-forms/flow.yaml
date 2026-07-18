@@ -1,0 +1,49 @@
+feature: dynamic-template-forms
+entry_points:
+  - type: embedded
+    description: "Invoked by any create/edit surface that needs a template-driven form — client onboarding (M02), loan/savings application wizards (M04/M05), product editor (M08), datatable rows (M12). The caller passes the target entity + optional command; this engine owns the render → validate → submit lifecycle and inherits the caller's permission gate."
+
+transitions:
+  - from: template-loading
+    to: content
+    trigger: "schema resolved from GET /{entity}/template + GET /v1/datatables (fresh fetch or offline cache hit)"
+  - from: template-loading
+    to: error
+    trigger: "template fetch failed AND no cached schema exists"
+
+  - from: content
+    to: content
+    trigger: "edit_text_field | select_option | pick_date — values map updated, field re-validated in place"
+  - from: content
+    to: validation-error
+    trigger: "submit_form attempted while fieldErrors is non-empty (mandatory-missing / format / range)"
+  - from: content
+    to: submitting
+    trigger: "submit_form with a clean form AND connectivity available for an online-only entity"
+  - from: content
+    to: queued-offline
+    trigger: "submit_form with a clean form while offline OR for a per-domain offline-queued entity — enqueued to the outbox with a durable idempotency key"
+
+  - from: validation-error
+    to: content
+    trigger: "offending field corrected — fieldErrors cleared, submit re-enabled"
+
+  - from: submitting
+    to: content
+    trigger: "server returned CommandProcessingResult 2xx — caller navigates to the created/updated resource (or a checker-queued badge on empty changes)"
+  - from: submitting
+    to: error
+    trigger: "server rejected with 400 validation / 409 optimistic-lock — error body surfaced against the offending field(s)"
+  - from: submitting
+    to: queued-offline
+    trigger: "connectivity lost mid-submit — payload persisted to the outbox for exactly-once batch replay"
+
+  - from: queued-offline
+    to: content
+    trigger: "user dismisses the queued confirmation and stays to add another, or navigates away; a rejected replay later surfaces in the Needs-Attention inbox"
+
+  - from: error
+    to: template-loading
+    trigger: "retry_template_fetch — re-issue GET /{entity}/template + GET /v1/datatables"
+
+terminal_states: [content, queued-offline]

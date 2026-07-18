@@ -1,0 +1,141 @@
+schema_version: "1.0"
+id: unified-auth-flow
+name: Unified Auth Flow
+type: happy
+feature_ref: unified-auth
+milestone: v1.0.0
+description: >
+  ONE login/signup screen for everyone — no up-front client-type selector (global
+  self-signup pivot, 2026-07-17). On launch the app checks for a cached unified session
+  token. Existing users log in; new users self-sign-up via the companion API. After
+  authentication the app resolves each user's per-group role from dt_member_role and
+  routes accordingly: organizers land on organizer-dashboard, plain members on
+  personal-dashboard, and users belonging to multiple groups on group-list. A user with
+  zero groups is never rejected — they land on the login-signup zero-groups empty state
+  prompting them to create their first group or join with an invite code.
+
+entry_point:
+  screen: login-signup
+  condition: app_launch_no_cached_session
+
+steps:
+  - step: 1
+    screen: login-signup
+    action: >
+      App launches; single unified login/signup screen renders with LOGIN and SIGNUP
+      tab toggle (no client-type-selector gate). If a stored session token exists,
+      biometric re-auth runs on mount for offline login.
+    transition: login-signup
+    condition: no_cached_token_or_biometric_prompt
+
+  - step: 2
+    screen: login-signup
+    action: >
+      Existing user submits credentials (LOGIN mode) → POST /companion/auth/login; or
+      new user self-signs-up (SIGNUP mode) → POST /companion/auth/self-register creating
+      a Fineract client + self-service user. On success the unified session token is stored.
+    transition: login-signup
+    condition: authenticated
+
+  - step: 3
+    screen: login-signup
+    action: >
+      Post-login role resolution — the app queries the user's group memberships and
+      reads dt_member_role across those groups to resolve per-group capabilities
+      (organizer vs member). Local PIN set up for offline access; optional biometric unlock.
+    transition: organizer-dashboard
+    condition: has_groups_organizer_role
+
+  - step: 4
+    screen: login-signup
+    action: >
+      A user whose resolved role is plain member (member surface only) is routed to their
+      personal dashboard.
+    transition: personal-dashboard
+    condition: has_groups_member_role
+
+  - step: 5
+    screen: login-signup
+    action: >
+      A user who belongs to multiple groups (mixed roles) is routed to the group list to
+      pick an active group; capabilities then resolve per the selected group's role.
+    transition: group-list
+    condition: has_multiple_groups
+
+  - step: 6
+    screen: login-signup
+    action: >
+      Zero-group user — the login-signup screen renders its zero-groups empty state:
+      "Create your first group" and "Join with an invite code" calls to action. The user
+      is never rejected for having no groups.
+    transition: group-type-picker
+    condition: zero_groups_taps_create_group
+
+  - step: 7
+    screen: login-signup
+    action: Zero-group user taps "Join with Invite Code" in the zero-groups empty state
+    transition: join-with-code
+    condition: zero_groups_taps_join_with_code
+
+exit_points:
+  - screen: organizer-dashboard
+    outcome: success
+    description: Authenticated user with an organizer role in ≥1 group lands on the organizer dashboard.
+
+  - screen: personal-dashboard
+    outcome: success
+    description: Authenticated user with a plain member role lands on their personal dashboard.
+
+  - screen: group-list
+    outcome: success
+    description: Authenticated user with multiple groups lands on the group list to pick an active group.
+
+  - screen: login-signup
+    outcome: zero_groups
+    description: Authenticated user with no groups lands on the zero-groups empty state (create or join).
+
+  - screen: login-signup
+    outcome: failure
+    description: Invalid credentials or self-registration error — inline error shown; form data preserved.
+
+screens_involved:
+  - login-signup
+  - organizer-dashboard
+  - personal-dashboard
+  - group-list
+  - group-type-picker
+  - join-with-code
+
+api_calls:
+  - endpoint: /companion/auth/login
+    method: POST
+    purpose: Authenticate an existing user and return their unified session token plus group memberships.
+
+  - endpoint: /companion/auth/self-register
+    method: POST
+    purpose: Self-registration bridge — create a Fineract client + self-service user with no back-office officer.
+
+  - endpoint: /companion/me/groups
+    method: GET
+    purpose: List the authenticated user's group memberships for post-login capability resolution.
+
+  - endpoint: /datatables/dt_member_role/{clientId}
+    method: GET
+    purpose: Read the user's per-group roles to resolve organizer vs member capabilities after login.
+
+offline_capable: true
+offline_notes: >
+  If a session token is cached, offline re-auth uses local PIN or biometric — no network
+  call required. First-time login and self-registration require connectivity. Post-login
+  role resolution reads cached dt_member_role when offline; the last-resolved landing
+  surface is restored from SQLDelight cache.
+
+analytics_events:
+  - auth_screen_viewed: Unified login/signup screen shown on launch (no client-type selector)
+  - login_submitted: Existing user submits credentials in LOGIN mode
+  - self_register_submitted: New user self-signs-up in SIGNUP mode
+  - auth_success: "Authentication succeeds; token stored (mode: login|signup)"
+  - role_resolved: "Post-login per-group role resolution completes (landing: organizer|member|multi_group|zero_groups)"
+  - zero_groups_create_tapped: Zero-group user taps Create Group in the empty state
+  - zero_groups_join_tapped: Zero-group user taps Join with Invite Code in the empty state
+  - biometric_reauth: Offline re-auth via biometric or PIN

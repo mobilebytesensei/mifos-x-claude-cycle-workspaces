@@ -1,0 +1,224 @@
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: m07-accounting
+
+# Accounting reads (chart of accounts, journal history) are CACHE_FIRST_SWR per-entity Store5
+# caches so the GL tree + journal entries render offline. FINANCE-CRITICAL WRITES — a manual
+# journal entry is only queued when its debit total EQUALS its credit total (client-side balance
+# gate); postings, reversals, closures, financial-activity mappings, and accrual runs all funnel
+# through the durable outbox (draft_outbox, Room v11) with a durable idempotency key and replay
+# EXACTLY-ONCE via POST /v1/batches — a retry can never double-post. A rejected posting (unbalanced
+# / closed period / invalid GL) lands in needs-attention-inbox, never silently dropped.
+
+entries:
+  # ── 1. Chart of accounts + journal history (on mount) ────────────────
+  - screen_id: m07-accounting
+    trigger: on_mount
+    produces_state: content
+    loading_state: loading
+    error_state: error
+    auth_required: true
+    endpoints:
+      - api_id: list_gl_accounts
+        transport: rest
+      - api_id: list_journal_entries
+        transport: rest
+    tables:
+      - name: gl_accounts
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Chart-of-accounts Room cache keyed by (gl_account_id, gl_code); name, type, usage,
+          parent_id, running_balance, payload_json columns. CACHE_FIRST_SWR — the GL tree serves
+          cached rows instantly and the delta-pull (offline-sync-engine) revalidates against the
+          FetchedAt watermark.
+      - name: journal_entries
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Per-entry journal-history cache keyed by (transaction_id, entry_id); each row is one GL
+          debit or credit leg. CACHE_FIRST_SWR so the journal history renders offline.
+    dtos:
+      - name: GLAccountNode
+        role: response
+        api_id: list_gl_accounts
+      - name: JournalEntryRow
+        role: response
+        api_id: list_journal_entries
+    cache:
+      strategy: cache_first
+      ttl_seconds: 3600
+      key_template: "fineract:glaccounts:{officeId}"
+      shape: tree
+    privacy_constraint:
+      scope: user_synced
+      notes: "GL balances + journal entries are sensitive financial data — SQLCipher DB, PII-scrubbed logs, screenshot-block; scoped to the signed-in accountant's office hierarchy."
+    error_paths:
+      - error_code: gl_read_failed
+        behavior: retry
+        message_key: m07_error_list_failed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m07_showing_cached
+
+  # ── 2. GL-type filter + drill-in (on interact, in-memory) ────────────
+  - screen_id: m07-accounting
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints: []
+    tables:
+      - name: gl_accounts
+        mutation: read
+      - name: journal_entries
+        mutation: read
+    cache:
+      strategy: cache_first
+      ttl_seconds: 3600
+      key_template: "fineract:glaccounts:{officeId}:{type}"
+      shape: tree
+    error_paths:
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m07_showing_cached
+
+  # ── 3. Manual journal-entry posting (balanced, queued, exactly-once) ─
+  - screen_id: m07-accounting
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: get_journal_entry_template
+        transport: rest
+      - api_id: post_journal_entry
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          RoomSubmitOutbox (framework_submit_drafts, Room v11). The CREATE_JOURNALENTRY command is
+          queued ONLY when debits == credits (balance gate), carrying glDebits[] + glCredits[] +
+          transactionDate + dateFormat + locale + a durable idempotency_key + (action=CREATE,
+          entity=JOURNALENTRY); PENDING never pruned; replayed EXACTLY-ONCE via POST /v1/batches so
+          a retry can never double-post.
+      - name: journal_entries
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: "Optimistic local journal-entry rows inserted on queue (status Pending/queued-offline) so the history reflects the posting immediately; reconciled by transactionId on sync."
+    dtos:
+      - name: JournalEntryTemplate
+        role: response
+        api_id: get_journal_entry_template
+      - name: PostJournalEntryRequest
+        role: request
+        api_id: post_journal_entry
+      - name: CommandProcessingResult
+        role: response
+        api_id: post_journal_entry
+    privacy_constraint:
+      scope: user_synced
+      notes: "Journal-entry payloads are financial records — encrypted outbox; durable idempotency prevents duplicate postings on replay (finance-critical)."
+    side_effects:
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer drain — replays the CREATE_JOURNALENTRY command via POST /v1/batches on connectivity, exactly-once"
+      - kind: invalidate_cache
+        target: "journal_entries + gl_accounts running balances — revalidated by the follow-on delta-pull"
+      - kind: notification
+        target: "'Submitted for approval' badge when the posting is maker-checkerable (queued, not applied)"
+    error_paths:
+      - error_code: journal.unbalanced
+        behavior: retry
+        message_key: m07_out_of_balance
+      - error_code: journal.command_rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: m07_command_rejected
+      - error_code: journal.period_closed
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: m07_period_closed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m07_queued_offline
+      - error_code: auth.session_expired
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: m07_access_changed
+
+  # ── 4. Reversal / GL account / closure / mapping / accrual (queued) ──
+  - screen_id: m07-accounting
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: reverse_journal_entry
+        transport: rest
+      - api_id: create_gl_account
+        transport: rest
+      - api_id: create_gl_closure
+        transport: rest
+      - api_id: map_financial_activity
+        transport: rest
+      - api_id: run_periodic_accruals
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Each accounting command (REVERSE_JOURNALENTRY / CREATE_GLACCOUNT / CREATE_GLCLOSURE /
+          financial-activity mapping / EXECUTE_PERIODICACCRUALACCOUNTING) queued with its own durable
+          idempotency key + (action,entity); date-bearing commands carry dateFormat + locale; each
+          replays exactly-once so reversals/closures/accrual runs are never duplicated.
+      - name: gl_accounts
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+    dtos:
+      - name: ReverseJournalEntryRequest
+        role: request
+        api_id: reverse_journal_entry
+      - name: CreateGLAccountRequest
+        role: request
+        api_id: create_gl_account
+      - name: CreateGLClosureRequest
+        role: request
+        api_id: create_gl_closure
+      - name: FinancialActivityRequest
+        role: request
+        api_id: map_financial_activity
+      - name: RunAccrualsRequest
+        role: request
+        api_id: run_periodic_accruals
+      - name: CommandProcessingResult
+        role: response
+        api_id: reverse_journal_entry
+    side_effects:
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer drain via POST /v1/batches, exactly-once"
+      - kind: notification
+        target: "'Submitted for approval' badge when the command is maker-checkerable (queued, not applied)"
+    error_paths:
+      - error_code: journal.command_rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: m07_command_rejected
+      - error_code: permission.revoked
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: m07_access_changed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m07_queued_offline

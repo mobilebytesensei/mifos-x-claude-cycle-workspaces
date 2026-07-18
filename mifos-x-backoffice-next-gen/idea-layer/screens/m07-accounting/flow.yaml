@@ -1,0 +1,102 @@
+feature: m07-accounting
+
+entry_points:
+  - type: nav_root
+    description: "Accounting module root (M07 'Accounting' tab) — visible only when the permission-capability-engine resolves READ_GLACCOUNT ∨ READ_JOURNALENTRY (or an umbrella); the accountant persona sees it, unmapped fails closed."
+  - type: from_dashboard
+    description: "Opened from the M01 dashboard 'pending journals' / accounting KPI tile (accountant persona)."
+  - type: deep_link
+    description: "A notification or a maker-checker approval routes into a specific journal entry (guarded by the NavController permission interceptor)."
+
+transitions:
+  # ── chart-of-accounts + journal load lifecycle ───────────────────────
+  - from: loading
+    to: content
+    trigger: "chart of accounts + journal history loaded (GET /v1/glaccounts + GET /v1/journalentries — fresh or CACHE_FIRST_SWR)"
+  - from: loading
+    to: empty
+    trigger: "no GL accounts or journal entries exist yet for this office/tenant"
+  - from: loading
+    to: no-network
+    trigger: "offline with a cached chart + journal history available — cached data served"
+  - from: loading
+    to: error
+    trigger: "fetch failed and no cached accounting data exists"
+
+  # ── chart-of-accounts browse ─────────────────────────────────────────
+  - from: content
+    to: content
+    trigger: "filter_gl_type — re-slice the cached GL tree by type (in-memory, no network)"
+  - from: content
+    to: content
+    trigger: "open_gl_account — expand a GL account's detail (served from cache offline)"
+  - from: content
+    to: content
+    trigger: "open_journal_entry — open a journal entry's debit/credit-line detail"
+
+  # ── manual journal-entry composition (finance-critical balance gate) ──
+  - from: content
+    to: dynamic-template-forms
+    trigger: "start_journal_entry — open the CREATE_JOURNALENTRY composer (office + entry date + payment type, GL options from GET /v1/glaccounts)"
+  - from: no-network
+    to: dynamic-template-forms
+    trigger: "start_journal_entry offline — the composer opens from the cached GL account list"
+  - from: dynamic-template-forms
+    to: balancing
+    trigger: "composer template loaded — enter debit/credit lines"
+  - from: balancing
+    to: balancing
+    trigger: "add_debit_line / add_credit_line — recompute the live debit/credit totals; Post stays disabled until debits == credits"
+  - from: balancing
+    to: submitting
+    trigger: "post_journal_entry — balance invariant re-asserted (debits == credits AND total > 0), CREATE_JOURNALENTRY queued to the durable outbox (exactly-once)"
+  - from: balancing
+    to: content
+    trigger: "cancel the composer — discard the unposted draft and return to the workspace"
+  - from: balancing
+    to: error
+    trigger: "attempt to post while unbalanced (guarded — the Post control is disabled, surfaced as an out-of-balance error)"
+
+  # ── posting / reversal / closure / accrual results ───────────────────
+  - from: submitting
+    to: content
+    trigger: "journal entry posted (2xx CommandProcessingResult) — the entry appears in the history; or maker-checker queued 'Submitted for approval'"
+  - from: submitting
+    to: no-network
+    trigger: "offline while submitting — the command stays queued in the outbox with a 'queued offline' chip; posts exactly-once on reconnect"
+  - from: submitting
+    to: needs-attention-inbox
+    trigger: "the server rejected the posting (unbalanced / closed period / invalid GL account) — routed to triage with the server error, never silently dropped"
+
+  # ── reversal / closure / mapping / accruals (queued via offline-sync-engine) ──
+  - from: content
+    to: submitting
+    trigger: "reverse_journal_entry — REVERSE_JOURNALENTRY queued after confirm (durable exactly-once)"
+  - from: content
+    to: submitting
+    trigger: "create_gl_closure — CREATE_GLCLOSURE queued after confirm"
+  - from: content
+    to: submitting
+    trigger: "map_financial_activity — CREATE_ACCOUNTINGRULE-gated mapping queued"
+  - from: content
+    to: submitting
+    trigger: "run_periodic_accruals — EXECUTE_PERIODICACCRUALACCOUNTING queued after confirm"
+  - from: content
+    to: dynamic-template-forms
+    trigger: "create_gl_account — CREATE_GLACCOUNT template form (durable outbox)"
+
+  # ── error / offline recovery ─────────────────────────────────────────
+  - from: error
+    to: loading
+    trigger: "retry_load — re-issue the failed chart/journal fetch"
+  - from: no-network
+    to: loading
+    trigger: "retry_load OR connectivity regained — revalidate the cached chart + journal history"
+  - from: error
+    to: content
+    trigger: "a 403 resolved via the permission-drift refresh — surface re-resolved, denied controls pruned"
+
+navigates_to:
+  - dynamic-template-forms
+  - needs-attention-inbox
+  - permission-capability-engine

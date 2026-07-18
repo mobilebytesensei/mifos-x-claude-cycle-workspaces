@@ -1,0 +1,65 @@
+feature: offline-sync-engine
+# Fineract is consumed as-is (backend provider = none). These are the two Fineract endpoints the
+# sync engine drives; the outbox/delta orchestration around them is local (core/store, core/data).
+endpoints:
+  - id: replay_batch
+    method: POST
+    path: "/v1/batches"
+    description: >-
+      Transactional batch replay — the offline-sync keystone. AllOrNothing sets enclosingTransaction
+      so the whole batch commits or rolls back atomically; each enclosed request carries a durable
+      Idempotency-Key header so a retry after a partial network failure never double-posts.
+    request:
+      shape: object
+      body: BatchRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+      params:
+        - name: enclosingTransaction
+          type: boolean
+          default: true
+          description: "true = AllOrNothing; false = Independent (collection-sheet rows may partially succeed)"
+    response:
+      shape: object
+      dto: BatchResponse
+      description: "Fixed-cardinality result set — one entry per enclosed request, index-aligned to request order (statusCode + body or error). Bounded by the batch size, never paginated."
+    requires_auth: true
+    requires_permission: []
+    idempotency: durable
+    offline: queued
+
+  - id: delta_changelist
+    method: GET
+    path: "/v1/audits"
+    description: >-
+      lastModifiedSince delta feed driving Synchronizer.changeListSync per-entity adapters. Scoped to
+      the signed-in user's office/portfolio; the response advances each entity cache's FetchedAt
+      watermark so CACHE_FIRST_SWR reads know what to revalidate.
+    request:
+      shape: object
+      params:
+        - name: makerDateTimeFrom
+          type: string
+          description: "ISO-8601 watermark — only changes after this timestamp are returned (delta, not snapshot)."
+        - name: officeId
+          type: long
+          description: "Scopes the change feed to the user's office/portfolio."
+    response:
+      shape: list
+      dto: AuditEntry
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+        default_limit: 200
+        description: "Fineract offset/limit paging; the sync loop pages until the delta feed is drained."
+    requires_auth: true
+    requires_permission: [READ_AUDIT]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+notes:
+  - "No server is built for this project — these contracts document how the client drives the live Fineract instance."
+  - "Money-movement commands (REPAYMENT_LOAN, DEPOSIT_SAVINGSACCOUNT, SAVECOLLECTIONSHEET_*) are the outbox payloads replayed inside the /v1/batches enclosed requests."
+  - "Admin/accounting/roles mutations are NEVER queued here — they are online-only + maker-checker (per-domain offline policy)."

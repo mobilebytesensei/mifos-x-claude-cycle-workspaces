@@ -1,0 +1,88 @@
+schema_version: v1.0.0
+feature: m02-clients
+scenarios:
+  # ── Behavior: acceptance-criteria keystones (AC-009) ─────────────────
+  - id: client_360_offline
+    description: "A previously-cached Client 360 opens with no connectivity — every sub-resource renders from the Room cache."
+    preconditions: ["client 10241's list row + detail + accounts were previously synced", "device offline"]
+    actions: ["open the client list (cached)", "tap Grace Wanjiru Mwangi", "open the Identifiers and Documents tabs"]
+    assertions: ["the 360 profile renders from cache (CACHE_FIRST_SWR)", "identifiers, documents, and account summaries display offline", "an 'Offline · showing cached clients' banner is shown", "no network call is required"]
+    priority: high
+
+  - id: onboarding_queues_with_external_id
+    description: "Offline onboarding queues a CREATE_CLIENT command with a client-generated externalId and replays exactly-once on reconnect."
+    preconditions: ["user holds CREATE_CLIENT", "device offline"]
+    actions: ["tap the New-client FAB", "complete the template form (dynamic-template-forms)", "submit", "restore connectivity", "let the outbox drain"]
+    assertions: ["a CREATE_CLIENT command is queued in the outbox with a client-generated externalId + durable idempotency key", "the list shows the new client optimistically with a 'queued offline' chip", "on sync exactly one client is created via POST /v1/batches — zero duplicates even if the batch is retried", "the idempotency key is reused on retry (no new key minted)"]
+    priority: high
+
+  - id: lifecycle_command_gated_and_queued
+    description: "A user with READ_CLIENT but not CLOSE_CLIENT sees the Close control disabled with a reason; a permitted activate queues correctly."
+    preconditions: ["user holds READ_CLIENT + ACTIVATE_CLIENT but NOT CLOSE_CLIENT"]
+    actions: ["open an Active client's 360", "observe the Close control", "open a Pending client's 360", "tap Activate"]
+    assertions: ["the Close control is visible-but-disabled with a 'Requires CLOSE_CLIENT' reason", "the Activate control is enabled for the Pending client and gated on ACTIVATE_CLIENT", "activate enqueues an ACTIVATE_CLIENT command (activationDate + dateFormat + locale) to the outbox"]
+    priority: high
+
+  - id: new_client_fab_hidden_without_permission
+    description: "A user lacking CREATE_CLIENT never sees the New-client FAB (onDenied: HIDE, fail-closed)."
+    preconditions: ["user lacks CREATE_CLIENT"]
+    actions: ["open the client list"]
+    assertions: ["the New-client FAB is absent (not merely disabled)", "no create entry point is reachable via deep link either"]
+    priority: high
+
+  - id: subresource_tab_permission_gated
+    description: "A 360 sub-resource tab renders only when the user holds its read permission; denied tabs are hidden, unmapped fail closed."
+    preconditions: ["user holds READ_CLIENT + READ_DOCUMENT but NOT READ_CLIENTIDENTIFIER"]
+    actions: ["open a client 360", "inspect the tab bar"]
+    assertions: ["the Documents tab is present", "the Identifiers tab is hidden", "any unmapped sub-resource tab fails closed (hidden)"]
+    priority: medium
+
+  - id: maker_checker_submitted_for_approval
+    description: "Under tenant maker-checker, a lifecycle command returns queued (commandId, empty changes) and surfaces as Submitted-for-approval, not success."
+    preconditions: ["tenant has maker-checker enabled for ACTIVATE_CLIENT", "user holds ACTIVATE_CLIENT (maker)", "online"]
+    actions: ["activate a Pending client"]
+    assertions: ["the command is queued for approval (commandId returned, empty changes)", "a 'Submitted for approval' badge is shown (a third state, not error/success)", "the client stays Pending until a checker approves", "the app does not optimistically flip the status to Active"]
+    priority: medium
+
+  - id: rejected_command_routes_to_needs_attention
+    description: "A server-rejected client command lands in Needs-Attention with the error, never silently dropped."
+    preconditions: ["a CLOSE_CLIENT was queued for a client with open accounts", "online"]
+    actions: ["trigger sync", "wait for the batch response"]
+    assertions: ["the command is marked FAILED with the Fineract server_error (open accounts)", "it appears in needs-attention-inbox for Retry/Edit/Discard", "the client stays Active", "never silently dropped"]
+    priority: high
+
+  # ── State coverage (one per ui.yaml state) ───────────────────────────
+  - id: loading_state_shows_progress
+    description: "The initial client-list fetch shows the loading state."
+    preconditions: ["no cached list", "fetch in flight"]
+    actions: ["open the Clients module"]
+    assertions: ["a loading indicator is shown while GET /v1/clients is in flight"]
+    priority: low
+
+  - id: content_state_lists_clients
+    description: "The office-scoped client list renders paged rows with name, external id, office, account summary, and status chip."
+    preconditions: ["office has clients", "list loaded"]
+    actions: ["open the Clients module"]
+    assertions: ["client rows are visible", "each row shows display name + external id + office + account summary + status chip", "the list is paged (PagingSource, not an unbounded list)"]
+    priority: high
+
+  - id: empty_state_offers_onboarding
+    description: "An office/filter with no matching clients shows the empty state and (when permitted) a New-client CTA."
+    preconditions: ["office scope / search filter yields zero clients", "user holds CREATE_CLIENT"]
+    actions: ["search for a name that matches nothing"]
+    assertions: ["the empty state with a 'No clients found' message is shown", "a 'New client' CTA is offered because the user holds CREATE_CLIENT"]
+    priority: medium
+
+  - id: no_network_serves_cache
+    description: "Offline with a cached list shows the cached clients plus an offline banner; writes still queue."
+    preconditions: ["a client list was previously synced", "device offline"]
+    actions: ["open the Clients module offline"]
+    assertions: ["the last-synced list is served from cache", "an 'Offline · showing cached clients' banner is shown", "onboarding + lifecycle actions still queue to the outbox"]
+    priority: high
+
+  - id: error_state_offers_retry
+    description: "A failed fetch with no cache shows the error state with the server message and a Retry CTA; a 403 refreshes permissions instead."
+    preconditions: ["fetch fails (5xx) and no cached list exists"]
+    actions: ["open the Clients module", "tap Retry"]
+    assertions: ["the error state shows the server message + a Retry CTA", "Retry re-issues GET /v1/clients", "a 403 routes through the permission-drift refresh rather than a hard crash"]
+    priority: medium

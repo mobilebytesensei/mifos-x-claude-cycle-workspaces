@@ -1,0 +1,141 @@
+screen_id: permission-capability-engine
+name: "Permission & Capability Engine (login → capability bootstrap)"
+status: designed
+archetype: detail_screen
+cluster: foundation
+module: foundation
+initial_state: loading
+
+# ─────────────────────────────────────────────────────────────────────────
+# The single UI authority for authorization. Runs immediately after
+# POST /v1/authentication returns permissions[]: normalizes them into a
+# PermissionSet (O(1) exact-case whole-string lookup + sha256 fingerprint +
+# umbrella flags), resolves the data-driven CapabilityMap, and exposes the
+# resolved capability surface (gated nav roots + per-action decisions) as an
+# "Access & Permissions" diagnostics/settings screen reachable from M17.
+# There is NO role branching anywhere — same binary, five apps, 100% data.
+# ─────────────────────────────────────────────────────────────────────────
+
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  description: >-
+    Normalizes flat opaque login permission codes into an umbrella-aware
+    PermissionSet, then resolves the data-driven CapabilityMap so all 17 module
+    roots and every action are HIDE/DISABLE/VISIBLE gated (ALL_FUNCTIONS_READ
+    never grants a mutation; codes composed never decomposed; unmapped ids fail
+    closed). On a 403 drift the set is re-fetched and the surface re-resolved.
+  library_refs: []
+  external_library_refs: ["ktorfit", "kotlinx-serialization", "multiplatform-settings", "kotlinx-coroutines"]
+  required_modules:
+    - "core/permissions"
+    - "core/network"
+    - "core/database"
+
+states:
+  loading:
+    description: "Resolving PermissionSet + CapabilityMap after login — normalizing permissions[], computing the fingerprint, resolving umbrella short-circuits, and building the gated module roster."
+  content:
+    description: "Capability surface resolved — persona summary, umbrella flags, per-module visibility (N of 17 gated), checker-inbox availability, and capability-map version are shown; nav + actions are gated for the signed-in user."
+  unauthenticated:
+    description: "No valid PermissionSet (login not completed, shouldRenewPassword forces password change, or 2FA is required) — routed back to the tenant login screen; no capability surface is built."
+  error:
+    description: "Capability map failed to build (malformed permission payload, missing/checksum-invalid capability-map.json, or refresh fetch failure) — retry rebuilds; the last-known encrypted set is retained so the app stays usable offline."
+
+components:
+  - id: header
+    type: header
+    label: "{strings.pce_title}"
+    testTag: "permission-capability-engine_header"
+    visible_states: [loading, content, error]
+
+  - id: persona_summary_card
+    type: card
+    label: "{strings.pce_persona_summary}"
+    testTag: "permission-capability-engine_persona_card"
+    visible_states: [content]
+    description: "Signed-in persona, office scope, and the umbrella flags resolved from permissions[] (ALL_FUNCTIONS / ALL_FUNCTIONS_READ / CHECKER_SUPER_USER / REPORTING_SUPER_USER). A super user shows the ALL_FUNCTIONS short-circuit badge; an auditor shows the read-only (ALL_FUNCTIONS_READ) badge."
+    on_click:
+      action: view_permission_set
+      target: permission-set-detail
+      action_contract:
+        effect: navigate
+        description: "Opens the resolved PermissionSet detail — raw permission codes, umbrella flags, and the sha256 fingerprint used for CapabilityMap drift detection."
+
+  - id: gated_module_roster
+    type: content_area
+    label: "{strings.pce_module_roster}"
+    testTag: "permission-capability-engine_content"
+    visible_states: [content]
+    description: "The 17 back-office module roots, each rendered VISIBLE / DISABLED(reason) / HIDDEN per the CapabilityMap resolution. Field-officer sees ~3 roots; auditor sees every read root with zero mutating controls; system-admin sees all 17 via the umbrella short-circuit. Unmapped ids fail closed (HIDDEN)."
+
+  - id: capability_map_version_chip
+    type: chip
+    label: "{strings.pce_map_version}"
+    testTag: "permission-capability-engine_map_version"
+    visible_states: [content]
+    description: "The active CapabilityMap version + checksum (bundled capability-map.json, superseded by signed remote config). Tapping surfaces the map source + minAppVersion so an operator can confirm which capability data the surface was resolved against."
+    on_click:
+      action: view_capability_map_meta
+      target: capability-map-detail
+      action_contract:
+        effect: navigate
+        description: "Opens the CapabilityMap metadata detail — version, checksum, minAppVersion, source (bundled vs remote), and the per-module requirement tree the surface resolved against."
+
+  - id: checker_inbox_availability_row
+    type: row
+    label: "{strings.pce_checker_availability}"
+    testTag: "permission-capability-engine_checker_row"
+    visible_states: [content]
+    description: "Shows whether the Checker Inbox (M15) is reachable — reachable iff CHECKER_SUPER_USER OR the set contains any code ending in _CHECKER (hasAnyChecker). A maker sees this OFF; a branch supervisor sees it ON with the per-entry actions they can approve."
+
+  - id: refresh_perms_button
+    type: button
+    label: "{strings.pce_refresh_perms}"
+    testTag: "permission-capability-engine_refresh_perms"
+    visible_states: [content]
+    on_click:
+      action: refresh_permissions
+      action_contract:
+        effect: call_api
+        external_library_refs: ["ktorfit"]
+        reads_from: ["role_permissions"]
+        invalidates: ["permissions_raw", "permission_fingerprint", "capability_map"]
+        description: "Re-fetch permissions via GET /roles/{roleId}/permissions (the password-less refresh fallback), rebuild the PermissionSet + sha256 fingerprint, and — only if the fingerprint changed — atomically swap the set and re-resolve the CapabilityMap, pruning any now-denied nav roots and controls. Also the 403 drift protocol entry point."
+
+  - id: view_my_permissions_link
+    type: link
+    label: "{strings.pce_view_my_permissions}"
+    testTag: "permission-capability-engine_view_perms_link"
+    visible_states: [content]
+    on_click:
+      action: view_permission_set
+      target: permission-set-detail
+      action_contract:
+        effect: navigate
+        description: "Navigates to the full PermissionSet detail listing every raw code grouped by Fineract grouping (portfolio, transaction_loan, accounting, …) so an operator can see exactly what access they hold."
+
+  - id: retry_bootstrap_button
+    type: button
+    label: "{strings.pce_retry}"
+    testTag: "permission-capability-engine_retry"
+    visible_states: [error]
+    on_click:
+      action: retry_capability_bootstrap
+      action_contract:
+        effect: transform_state
+        external_library_refs: ["multiplatform-settings"]
+        reads_from: ["retained_permission_set"]
+        description: "Re-runs the capability bootstrap from the retained encrypted PermissionSet read back from secure settings — re-parses permissions[], recomputes the fingerprint, and re-resolves the CapabilityMap. No network call unless the retained set is absent, in which case it routes to refresh_permissions."
+
+  - id: go_to_login_button
+    type: button
+    label: "{strings.pce_go_to_login}"
+    testTag: "permission-capability-engine_go_login"
+    visible_states: [unauthenticated]
+    on_click:
+      action: go_to_login
+      target: login-tenant
+      action_contract:
+        effect: navigate
+        description: "Routes to the tenant login screen when there is no valid PermissionSet, when shouldRenewPassword forces a password change, or when two-factor authentication must be completed before any capability surface is built."

@@ -1,0 +1,119 @@
+feature: m15-approvals-makerchecker
+
+# The maker-checker queue. Reads are self-scoped + CACHE_FIRST_SWR through Store5 so
+# the queue and payloads work offline. Approve / reject / delete are command mutations
+# enqueued through offline-sync-engine (durable idempotency key → exactly-once via POST
+# /v1/batches) so a command can never be double-approved. Every entry is permission-
+# filtered client-side by canCheck(action, entity) on top of the server's own scoping.
+
+endpoints:
+  # ── Queue read (self-scoped, optionally filtered) ──────────────────────────
+  - id: list_makercheckers
+    method: GET
+    path: "/v1/makercheckers"
+    description: >-
+      Self-scoped list of queued maker-checker commands awaiting a checker. Each entry carries the
+      audit id, action, entity, maker, made-on, and the command payload. Server filters to the
+      checker's scope; the client further gates per-entry via canCheck(action,entity). Optional
+      ?actionName=&entityName= narrow the queue; ?makerCheckerable=true surfaces pre-flight badges.
+    query_params:
+      - { name: actionName, type: string, required: false }
+      - { name: entityName, type: string, required: false }
+      - { name: makerCheckerable, type: boolean, required: false }
+      - { name: makerDateTimeFrom, type: string, required: false }
+    response:
+      shape: list
+      dto: MakerCheckerEntryDto
+    pagination:
+      strategy: offset
+      style: offset-limit
+      params: [offset, limit]
+      envelope: bare_array
+    requires_auth: true
+    requires_permission: ["CHECKER_SUPER_USER"]   # any *_CHECKER also satisfies (hasAnyChecker); server is the real gate
+    # cache strategy declared in data-flow.yaml#entries[].cache (SCH-9) → cache_first_swr
+
+  # ── Filter option lists (actions + entities present in the queue) ──────────
+  - id: makerchecker_search_template
+    method: GET
+    path: "/v1/makercheckers/searchtemplate"
+    description: >-
+      Returns the allowed actionName / entityName option lists (and other filter fields) for the
+      maker-checker queue, so the action/entity filter chips are rendered FROM the template rather
+      than hardcoded. Cached CACHE_FIRST_SWR (see data-flow.yaml) so the filter works offline.
+    response:
+      shape: object
+      dto: MakerCheckerSearchTemplateDto
+    requires_auth: true
+    requires_permission: ["CHECKER_SUPER_USER"]
+    # cache strategy declared in data-flow.yaml#entries[].cache (SCH-9) → cache_first_swr
+
+  # ── Approve a queued command ───────────────────────────────────────────────
+  - id: approve_entry
+    method: POST
+    path: "/v1/makercheckers/{auditId}"
+    description: >-
+      Approve a queued command (?command=approve). Exposed only on entries the checker
+      canCheck(action,entity) — CHECKER_SUPER_USER or {ACTION}_{ENTITY}_CHECKER. Enqueued through the
+      offline outbox with a durable idempotency key so it replays EXACTLY-ONCE via POST /v1/batches;
+      a command must never be double-approved. On success the underlying command executes.
+    query_params:
+      - { name: command, type: string, required: true }   # approve
+    response:
+      shape: object
+      dto: CommandProcessingResultDto
+    requires_auth: true
+    requires_permission: ["CHECKER_SUPER_USER"]
+    idempotency: durable
+
+  # ── Reject a queued command ────────────────────────────────────────────────
+  - id: reject_entry
+    method: POST
+    path: "/v1/makercheckers/{auditId}"
+    description: >-
+      Reject a queued command (?command=reject) — the maker is notified and the underlying command is
+      discarded, never executed. Same per-entry canCheck gate and durable-idempotency replay as approve.
+    query_params:
+      - { name: command, type: string, required: true }   # reject
+    response:
+      shape: object
+      dto: CommandProcessingResultDto
+    requires_auth: true
+    requires_permission: ["CHECKER_SUPER_USER"]
+    idempotency: durable
+
+  # ── Delete a stale/obsolete pending command ────────────────────────────────
+  - id: delete_entry
+    method: DELETE
+    path: "/v1/makercheckers/{auditId}"
+    description: >-
+      Purge a stale or obsolete pending command from the queue (neither approved nor executed) after
+      an explicit confirm. Same per-entry canCheck gate; enqueued through the offline outbox with a
+      durable idempotency key so the removal replays exactly-once and is never silently dropped.
+    response:
+      shape: object
+      dto: CommandProcessingResultDto
+    requires_auth: true
+    requires_permission: ["CHECKER_SUPER_USER"]
+    idempotency: durable
+
+  # ── Bulk approve (transactional/independent batch of approve commands) ─────
+  - id: bulk_approve_entries
+    method: POST
+    path: "/v1/batches"
+    description: >-
+      Approve every audit id in a bulk selection as an Independent batch (one approve BatchRequest per
+      selected entry, enclosingTransaction=false) so a single failed entry never aborts the rest. Each
+      approve carries its own durable idempotency key; per-entry failures surface individually in
+      needs-attention-inbox. Every selected entry was canCheck-gated at selection time and re-checked
+      per-command in the domain layer.
+    query_params:
+      - { name: enclosingTransaction, type: boolean, required: false }   # false → Independent
+    response:
+      shape: list
+      dto: BatchResponseDto
+      pagination:
+        strategy: none   # bounded per-request result array (one BatchResponse per selected entry), not paged
+    requires_auth: true
+    requires_permission: []   # per-command canCheck is revalidated on replay, not gated on the batch envelope
+    idempotency: durable

@@ -1,0 +1,260 @@
+feature: m11-tellers-cash
+status: approved
+cluster: back-office-module
+module: m11-tellers-cash
+priority: could_have
+new_infra: false
+is_primary_flow: false
+has_ui: true
+has_api: true
+has_server: false
+capabilities:
+  - has_ui
+  - has_api
+  - has_offline_cache
+  - has_form_input
+  - has_flow
+  - requires_auth
+requires_features:
+  - offline-sync-engine
+  - dynamic-template-forms
+  - permission-capability-engine
+  - needs-attention-inbox
+requires_permission:
+  - READ_TELLER
+  - CREATE_TELLER
+  - UPDATE_TELLER
+  - ALLOCATECASHIER_TELLER
+  - ALLOCATECASHTOCASHIER_TELLER
+  - SETTLECASHFROMCASHIER_TELLER
+acceptance_refs:
+  - Teller mgmt, cashier allocation, vault<->cashier cash, cash position — teller persona
+  - >-
+    Every cash movement (allocate/settle) queued with a DURABLE idempotency key through the outbox; replays exactly-once
+    (zero double-move) even across an app kill
+  - >-
+    Every control gated on its exact {ACTION}_{ENTITY} code
+    (READ_/CREATE_/ALLOCATECASHIER_/ALLOCATECASHTOCASHIER_/SETTLECASHFROMCASHIER_TELLER); same binary renders
+    teller-officer vs read-only auditor
+plan_ref: idea-plan.yaml#features[m11-tellers-cash]
+permissions_gate: '*_TELLER, ALLOCATECASHIER_/ALLOCATECASHTOCASHIER_/SETTLECASHFROMCASHIER_TELLER'
+summary: >-
+  M11 · Tellers & Cash Management — the teller persona's surface. A list of tellers with their vault cash position, a
+  per-teller detail of the cashiers assigned for a date range with their allocated cash, and the teller-transaction
+  ledger. Create a teller, assign a cashier for a date range, allocate cash from the vault to a cashier, and settle cash
+  back — every cash movement flows through the durable outbox (offline-sync-engine) with an exactly-once idempotency
+  key, every form is rendered from the Fineract GET template (dynamic-template-forms), and every control is gated on its
+  exact {ACTION}_{ENTITY} permission (permission-capability-engine). Reads ride CACHE_FIRST_SWR Store5 so the cash
+  position renders offline.
+metadata:
+  category: permission-gated-feature
+  implementation_ready: true
+  impl_ready_at: '2026-07-17T11:30:00Z'
+  impl_ready_schema: v2
+contracts:
+  - capability: list_tellers_with_cash
+    platform_spec: >-
+      GET /v1/tellers → StoreFactory.createStore + Room SourceOfTruth(tellers_cash) + asScreenStream(CACHE_FIRST_SWR);
+      TellerDto -> Teller (office, vaultCashBalance, status); scoped to office hierarchy server-side
+    permission: READ_TELLER
+    error_cases:
+      - teller_read_failed
+      - offline_no_cache
+  - capability: list_cashiers_for_teller
+    platform_spec: >-
+      GET /v1/tellers/{id}/cashiers?fromDate&toDate → cached per teller_id + date range; CashierDto -> Cashier (staffId,
+      allocatedCash, startDate, endDate); re-projected by change_cashier_date_range over cached rows
+    permission: READ_TELLER
+    error_cases:
+      - cashier_read_failed
+  - capability: create_teller
+    platform_spec: >-
+      GET /v1/tellers/template (office option list) → dynamic-template-forms → POST /v1/tellers command JsonObject
+      (name, officeId, status, startDate + dateFormat + locale) enqueued via RoomSubmitOutbox with durable
+      IdempotencyKey
+    permission: CREATE_TELLER
+    error_cases:
+      - teller_command_rejected
+      - template_fetch_failed
+  - capability: assign_cashier
+    platform_spec: >-
+      GET /v1/tellers/{id}/cashiers/template (staff option list) → POST /v1/tellers/{id}/cashiers command JsonObject
+      (staffId, startDate, endDate, isFullDay + dateFormat + locale) enqueued via durable outbox; exactly-once replay
+    permission: ALLOCATECASHIER_TELLER
+    error_cases:
+      - cash_command_rejected
+  - capability: allocate_cash_to_cashier
+    platform_spec: >-
+      POST /v1/tellers/{id}/cashiers/{cashierId}/allocate command JsonObject (txnAmount, txnDate, currencyCode +
+      dateFormat + locale) → RoomSubmitOutbox with DURABLE idempotency_key; BatchSubmitHandler.AllOrNothing replay;
+      optimistic vault decrement + cashier credit, pending-sync until replayed
+    permission: ALLOCATECASHTOCASHIER_TELLER
+    error_cases:
+      - cash_command_rejected
+      - insufficient_vault_cash
+  - capability: settle_cash_from_cashier
+    platform_spec: >-
+      POST /v1/tellers/{id}/cashiers/{cashierId}/settle command JsonObject (txnAmount, txnDate, currencyCode +
+      dateFormat + locale) → durable outbox exactly-once; client-side over-settle guard against allocated cash, server
+      final authority (409 -> needs-attention)
+    permission: SETTLECASHFROMCASHIER_TELLER
+    error_cases:
+      - cash_command_rejected
+      - settle_exceeds_allocated
+  - capability: view_teller_transactions
+    platform_spec: >-
+      GET /v1/tellers/{id}/transactions → cached ledger (allocate/settle + cash-in/out with running totals);
+      CACHE_FIRST_SWR read-only; renders offline
+    permission: READ_TELLER
+    error_cases:
+      - teller_txn_read_failed
+libraries:
+  - capability: list_tellers_with_cash
+    library: ktorfit
+    version: 2.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: list_tellers_with_cash
+    library: kotlinx-serialization
+    version: 1.7.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: list_cashiers_for_teller
+    library: kotlinx-coroutines
+    version: 1.9.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: allocate_cash_to_cashier
+    library: androidx.room
+    version: 3.x
+    targets:
+      - android
+      - ios
+      - desktop
+vm_actions:
+  - name: LoadTellers
+    signature: private fun loadTellers()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content(tellers) | Empty | NoNetwork(cachedTellers)
+      - uiState=Error
+    side_effects:
+      - TellersRepository.tellersStream(CACHE_FIRST_SWR).collect { … }
+    error_handling:
+      TellerReadFailed: uiState=Error; keep last-known cache; offer Retry
+      Offline: uiState=NoNetwork; emit cached tellers + cash position; show offline banner
+  - name: OpenTellerDetail
+    signature: 'private fun onOpenTellerDetail(tellerId: String)'
+    state_mutations:
+      - selectedTellerId=tellerId
+      - uiState=Content(detail)
+    side_effects:
+      - CashiersRepository.cashiersStream(tellerId, dateRange).collect { … }
+    error_handling:
+      CashierReadFailed: uiState=Error; offer Retry
+  - name: ChangeCashierDateRange
+    signature: 'private fun onChangeCashierDateRange(range: DateRange)'
+    state_mutations:
+      - dateRange=range
+      - uiState=Content(reprojected)
+    side_effects: []
+    error_handling: {}
+  - name: AllocateCash
+    signature: 'private fun allocateCash(cashierId: String, amount: Money)'
+    state_mutations:
+      - uiState=Submitting | QueuedOffline
+      - vaultCashBalance-=amount (optimistic, pending-sync)
+    side_effects:
+      - RoomSubmitOutbox.enqueue(AllocateCashPayload, IdempotencyKey.generate())
+      - OfflineSubmitSyncer drain on reconnect (POST .../allocate)
+    error_handling:
+      InsufficientVaultCash: block before enqueue; surface guard message
+      CashCommandRejected: uiState=Error; route to needs-attention-inbox with server_error
+  - name: SettleCash
+    signature: 'private fun settleCash(cashierId: String, amount: Money)'
+    state_mutations:
+      - uiState=Submitting | QueuedOffline
+      - vaultCashBalance+=amount (optimistic, pending-sync)
+    side_effects:
+      - RoomSubmitOutbox.enqueue(SettleCashPayload, IdempotencyKey.generate())
+    error_handling:
+      SettleExceedsAllocated: block before enqueue; surface guard message
+      CashCommandRejected: uiState=Error; route to needs-attention-inbox
+  - name: AssignCashier
+    signature: 'private fun assignCashier(payload: AssignCashierPayload)'
+    state_mutations:
+      - uiState=Submitting | QueuedOffline
+    side_effects:
+      - RoomSubmitOutbox.enqueue(AssignCashierPayload, IdempotencyKey.generate())
+    error_handling:
+      CashCommandRejected: uiState=Error; route to needs-attention-inbox
+  - name: CreateTeller
+    signature: 'private fun createTeller(payload: CreateTellerPayload)'
+    state_mutations:
+      - uiState=Submitting | QueuedOffline
+    side_effects:
+      - RoomSubmitOutbox.enqueue(CreateTellerPayload, IdempotencyKey.generate())
+    error_handling:
+      TellerCommandRejected: uiState=Error; route to needs-attention-inbox
+  - name: ViewTellerTransactions
+    signature: 'private fun viewTellerTransactions(tellerId: String)'
+    state_mutations:
+      - uiState=Content(ledger)
+    side_effects:
+      - TellerTransactionsRepository.ledgerStream(tellerId, CACHE_FIRST_SWR).collect { … }
+    error_handling:
+      TellerTxnReadFailed: uiState=Error; offer Retry
+  - name: RetryLoad
+    signature: private fun retryLoad()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content | Error
+    side_effects:
+      - TellersRepository.tellersStream.refreshFresh()
+    error_handling: {}
+  - name: OpenNeedsAttention
+    signature: private fun onOpenNeedsAttention()
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToNeedsAttention)
+    error_handling: {}
+error_cases:
+  - teller_read_failed
+  - cashier_read_failed
+  - teller_txn_read_failed
+  - teller_command_rejected
+  - cash_command_rejected
+  - insufficient_vault_cash
+  - settle_exceeds_allocated
+  - offline_no_cache
+test_fixtures:
+  source: screens/m11-tellers-cash/tests.yaml
+  scenario_count: 8
+  priority_distribution:
+    high: 4
+    medium: 4
+    low: 0
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T11:30:00Z'
+enriched_by: /idea-feature-enrich
+approve_hash: "sha256:4160a49c083ff0c3a3d1c878281694ee19dd1ac465d09746d027ca9415396743"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+status_history:
+  - from: designed
+    to: design_partial
+    at: '2026-07-17T21:19:29.563Z'
+    by: /idea-feature-stitch
+  - from: design_partial
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

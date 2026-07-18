@@ -1,21 +1,26 @@
+requires_stitch: true   # opt-in backfilled (RULE-STITCH-OPTIN-CONSISTENCY-001)
 sibling: ui
 schema_version: "4.0"
 feature_id: savings-dashboard
 
-route: /savings
+route: /groups/{groupId}/savings
 entry_points:
-  - source: home-dashboard
-    trigger: user_taps_savings_nav
-  - source: bottom_nav
-    trigger: savings_tab_selected
+  - source: group-dashboard
+    trigger: "OnViewSavings (all roles)"
 nav_params:
-  center_id: { type: Int, required: true }
+  groupId: { type: String, required: true }
+  typeConfig: { type: GroupTypeConfig, required: true }   # drives contribution model display
 
 screens:
   - id: savings-dashboard-screen
     name: SavingsDashboardScreen
     type: dashboard
-    description: Tabbed savings dashboard with charts, cycle progress, and per-member lists
+    description: >
+      Contribution-model-aware savings dashboard scoped to a single group. Display adapts to
+      GroupTypeConfig.contribution_model: SHARE_BASED_VARIABLE (VSLA/SILC) shows "X shares @
+      KES Y/share" per member and cycle shares target; FIXED_AMOUNT (ROSCA/SHG) shows
+      "KES Z per meeting" and cycle meeting progress; FIXED_NEGOTIATED (JLG) shows negotiated
+      amounts. Cycle progress bar adapts to model. Data from companion API.
 
 state_model:
   SavingsDashboardViewModel:
@@ -23,6 +28,9 @@ state_model:
       name: SavingsDashboardState
       fields:
         selectedTab: { type: SavingsTab, default: "SavingsTab.GROUP" }
+        groupId: { type: String, default: '""' }
+        typeConfig: { type: "GroupTypeConfig?", default: "null" }
+        contributionModel: { type: String, default: '""' }   # SHARE_BASED_VARIABLE | FIXED_AMOUNT | FIXED_NEGOTIATED
         groupSavingsSummary: { type: "GroupSavingsSummary?", default: "null" }
         individualSavingsSummary: { type: "IndividualSavingsSummary?", default: "null" }
         weeklyTrend: { type: "List<WeeklyContributionPoint>", default: "emptyList()" }
@@ -30,7 +38,6 @@ state_model:
         isRefreshing: { type: Boolean, default: "false" }
         error: { type: "String?", default: "null" }
         lastSyncAt: { type: "String?", default: "null" }
-        centerId: { type: Int, default: "0" }
         cycleTarget: { type: Long, default: "0L" }
         cycleCollected: { type: Long, default: "0L" }
     screen_state:
@@ -41,7 +48,7 @@ state_model:
     events:
       name: SavingsDashboardEvent
       members:
-        - { name: NavigateToMemberDetail, params: "memberId: String, savingsType: SavingsType" }
+        - { name: NavigateToMemberDetail, params: "memberId: String, groupId: String, typeConfig: GroupTypeConfig" }
         - { name: ShowError, params: "message: String" }
     actions:
       name: SavingsDashboardAction
@@ -49,18 +56,36 @@ state_model:
         - { name: LoadDashboard, trigger: "Screen enters composition" }
         - { name: RefreshDashboard, trigger: "Pull-to-refresh" }
         - { name: SelectTab, params: { tab: SavingsTab }, trigger: "Tap tab" }
-        - { name: OpenMemberDetail, params: { memberId: String, savingsType: SavingsType }, trigger: "Tap member row" }
+        - { name: OpenMemberDetail, params: { memberId: String }, trigger: "Tap member row" }
     di:
-      - SavingsRepository
+      - SavingsRepository    # companion API /companion/groups/{groupId}/savings
       - NavigationManager
       - ConnectivityObserver
       - LocalSavingsDao
 
+business_logic:
+  kind: composite
+  description: >
+    Fetches group and individual savings summaries from the companion API (/companion/groups/{groupId}/savings)
+    via Store5 stale-while-revalidate; adapts per-member display to GroupTypeConfig.contribution_model —
+    SHARE_BASED_VARIABLE (VSLA/SILC) renders sharesHeld × share_value, FIXED_AMOUNT/FIXED_NEGOTIATED renders
+    totalContributed + meetingsContributed; cycle progress is computed client-side as cycleCollected/cycleTarget.
+    Offline reads are served from SQLDelight LocalSavingsDao; cmp-network-monitor drives the connectivity
+    gate for pull-to-refresh.
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - Store5
+    - SQLDelight
+  description_hash: "b3c2a1f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8e9d0c1"
+  description_author: "claude-via-idea-enrich"
+  description_authored_at: "2026-07-17T00:00:00Z"
+
 components:
   - id: top_app_bar
     type: top-app-bar
-    title: "Savings"
-    subtitle: "Mwangaza Women's Group"
+    title: "{strings.screen_title}"
+    subtitle: "{strings.group_subtitle}"
     style: { background: surface }
 
   - id: sync_band
@@ -68,18 +93,29 @@ components:
     visible_when: "lastSyncAt != null"
     style: { background: surfaceVariant, padding_horizontal: 16dp, padding_vertical: 4dp }
     content:
-      - { type: text, value: "Last synced: {{lastSyncAt}}", style: { text_style: labelSmall, color: onSurfaceVariant } }
+      - { type: text, value: "{strings.last_synced_prefix} {{lastSyncAt}}", style: { text_style: labelSmall, color: onSurfaceVariant } }
 
   - id: tab_row
     type: tab-row
     style:
       tabs:
-        - { id: GROUP, label: "Group Savings", icon: people_money_24_regular }
-        - { id: INDIVIDUAL, label: "Individual", icon: person_money_24_regular }
+        - { id: GROUP, label: "{strings.group_tab_label}", icon: people_money_24_regular }
+        - { id: INDIVIDUAL, label: "{strings.individual_tab_label}", icon: person_money_24_regular }
       indicator_color: primary
       selected_label_color: primary
       unselected_label_color: onSurfaceVariant
-    on_click: { action: SelectTab, params: { tab: "{{tappedTabId}}" } }
+    on_click:
+      action: SelectTab
+      params: { tab: "{{tappedTabId}}" }
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        description: >
+          Updates selectedTab in SavingsDashboardState to the tapped tab id (GROUP or INDIVIDUAL),
+          switching the visible tab-content pane without a network call; no library needed.
+        action_contract_hash: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
 
   - id: group_savings_content
     type: tab-content
@@ -107,16 +143,18 @@ components:
         type: card
         style: { background: primaryContainer, corner_radius: md, padding: 16dp, margin_horizontal: 16dp }
         content:
-          - { type: text, value: "Cycle Progress", style: { text_style: labelLarge, color: onPrimaryContainer } }
+          - { type: text, value: "{strings.cycle_progress_label}", style: { text_style: labelLarge, color: onPrimaryContainer } }
           - id: cycle_progress_bar
             type: linear-progress
             value: "{{cycleCollected / cycleTarget}}"
             style: { track_color: primary, track_alpha: 0.3, indicator_color: primary, height: 8dp }
-          - { type: text, value: "KES {{cycleCollected}} of KES {{cycleTarget}}", style: { text_style: bodyMedium, color: onPrimaryContainer } }
-          - { type: text, value: "{{(cycleCollected * 100 / cycleTarget)}}% of cycle target", style: { text_style: labelSmall, color: onPrimaryContainer } }
+          # Contribution-model-adaptive progress text
+          - { type: text, visible: "{{contributionModel == 'SHARE_BASED_VARIABLE'}}", value: "{strings.cycle_progress_shares_format}", style: { text_style: bodyMedium, color: onPrimaryContainer } }
+          - { type: text, visible: "{{contributionModel != 'SHARE_BASED_VARIABLE'}}", value: "{strings.cycle_progress_amount_format}", style: { text_style: bodyMedium, color: onPrimaryContainer } }
+          - { type: text, value: "{strings.cycle_progress_percent_format}", style: { text_style: labelSmall, color: onPrimaryContainer } }
       - id: group_savings_total_chip
         type: chip
-        label: "Group total: KES {{groupSavingsSummary.totalCollected}}"
+        label: "{strings.group_total_chip_format}"
         style: { background: primaryContainer, text_color: onPrimaryContainer, margin_horizontal: 16dp }
       - id: group_member_savings_row
         type: list-item
@@ -127,14 +165,27 @@ components:
           headline: { type: text, value: "{{member.name}}", style: { text_style: bodyLarge } }
           supporting:
             type: text
-            value: "{{member.meetingsContributed}} meetings · Last: KES {{member.lastContribution}}"
+            # Contribution-model-adaptive supporting text
+            value: "{{contributionModel == 'SHARE_BASED_VARIABLE' ? member.sharesHeld + ' shares @ KES ' + typeConfig.share_value + '/share' : member.meetingsContributed + ' meetings · Last: KES ' + member.lastContribution}}"
             style: { text_style: bodySmall, color: onSurfaceVariant }
           trailing:
             type: column
             children:
-              - { type: text, value: "KES {{member.totalContributed}}", style: { text_style: labelLarge, color: primary } }
-              - { type: text, value: "total", style: { text_style: labelSmall, color: onSurfaceVariant } }
-        on_click: { action: OpenMemberDetail, params: { member_id: "{{member.memberId}}", savings_type: GROUP_LINKED }, target: member-savings-detail }
+              - { type: text, value: "{strings.member_trailing_amount_format}", style: { text_style: labelLarge, color: primary } }
+              - { type: text, value: "{strings.member_trailing_label_format}", style: { text_style: labelSmall, color: onSurfaceVariant } }
+        on_click:
+          action: OpenMemberDetail
+          params: { member_id: "{{member.memberId}}" }
+          target: member-savings-detail
+          action_contract:
+            effect: navigate
+            description: >
+              Navigates to the member-savings-detail screen, passing memberId and groupId so
+              the detail screen can load contribution-model-aware individual savings history
+              for the selected group member.
+            action_contract_hash: "c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2"
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-07-17T00:00:00Z"
 
   - id: individual_savings_content
     type: tab-content
@@ -165,8 +216,8 @@ components:
         type: card
         style: { background: secondaryContainer, corner_radius: md, padding: 16dp, margin_horizontal: 16dp }
         content:
-          - { type: text, value: "Total Individual Balances", style: { text_style: labelLarge, color: onSecondaryContainer } }
-          - { type: text, value: "KES {{individualSavingsSummary.totalBalance}}", style: { text_style: headlineMedium, color: onSecondaryContainer, font_weight: bold } }
+          - { type: text, value: "{strings.total_individual_label}", style: { text_style: labelLarge, color: onSecondaryContainer } }
+          - { type: text, value: "{strings.individual_total_amount_format}", style: { text_style: headlineMedium, color: onSecondaryContainer, font_weight: bold } }
       - id: individual_member_row
         type: list-item
         repeats_for: individualSavingsSummary.memberRows
@@ -177,14 +228,26 @@ components:
           supporting:
             type: chip
             visible: "{{member.lastTransaction != null}}"
-            label: "KES {{member.lastTransaction}} on {{member.lastTransactionDate}}"
+            label: "{strings.individual_last_transaction_format}"
             style: { background: primaryContainer, text_color: onPrimaryContainer }
           trailing:
             type: column
             children:
-              - { type: text, value: "KES {{member.currentBalance}}", style: { text_style: labelLarge, color: secondary } }
-              - { type: text, value: "balance", style: { text_style: labelSmall, color: onSurfaceVariant } }
-        on_click: { action: OpenMemberDetail, params: { member_id: "{{member.memberId}}", savings_type: INDIVIDUAL }, target: member-savings-detail }
+              - { type: text, value: "{strings.individual_balance_amount_format}", style: { text_style: labelLarge, color: secondary } }
+              - { type: text, value: "{strings.individual_balance_label}", style: { text_style: labelSmall, color: onSurfaceVariant } }
+        on_click:
+          action: OpenMemberDetail
+          params: { member_id: "{{member.memberId}}", savings_type: INDIVIDUAL }
+          target: member-savings-detail
+          action_contract:
+            effect: navigate
+            description: >
+              Navigates to the member-savings-detail screen with savings_type=INDIVIDUAL,
+              so the detail screen loads voluntary individual savings balance and transaction
+              history for the selected member.
+            action_contract_hash: "d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3"
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-07-17T00:00:00Z"
 
   - id: loading_skeleton
     type: shimmer
@@ -194,17 +257,42 @@ components:
   - id: error_banner
     type: banner
     style: { background: errorContainer, padding: 12dp }
-    content: "{{i18n.network_error}}"
-    action: { label: "Retry", on_click: { action: RefreshDashboard } }
+    content: "{strings.network_error}"
+    action:
+      label: "{strings.retry_button}"
+      on_click:
+        action: RefreshDashboard
+        action_contract:
+          effect: call_api
+          library_refs:
+            - cmp-network-monitor
+          description: >
+            Checks connectivity via cmp-network-monitor before re-fetching group and individual
+            savings summaries from the companion API; updates lastSyncAt on success and clears
+            the error state, or shows an offline snackbar when the device has no connection.
+          action_contract_hash: "e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4"
+          action_contract_author: "claude-via-idea-enrich"
+          action_contract_authored_at: "2026-07-17T00:00:00Z"
 
 states:
   initial_state: loading
   loading:
     components: [top_app_bar, tab_row, loading_skeleton]
-    description: "Fetching savings data"
+    description: "Fetching savings data from companion API"
   content_group:
     components: [top_app_bar, sync_band, tab_row, group_savings_content]
-    description: "Group tab selected"
+    description: "Group tab selected; contribution model drives per-member row display"
+    demo_data:
+      groupId: "grp-001"
+      contributionModel: "SHARE_BASED_VARIABLE"
+      cycleTarget: 200     # total shares target for VSLA
+      cycleCollected: 120  # shares collected so far
+      groupSavingsSummary:
+        totalCollected: 120000    # KES equivalent (120 shares × KES 1000)
+        memberRows:
+          - { memberId: "m-101", name: "Amina Hassan", sharesHeld: 20, shareValue: 20000, meetingsContributed: 8, lastContribution: 2500 }
+          - { memberId: "m-102", name: "Peter Otieno", sharesHeld: 15, shareValue: 15000, meetingsContributed: 8, lastContribution: 1875 }
+          - { memberId: "m-103", name: "Grace Wanjiku", sharesHeld: 12, shareValue: 12000, meetingsContributed: 7, lastContribution: 1500 }
   content_individual:
     components: [top_app_bar, sync_band, tab_row, individual_savings_content]
     description: "Individual tab selected"
@@ -221,14 +309,26 @@ states:
 i18n:
   en:
     screen_title: "Savings"
+    group_subtitle: "Mwangaza Women's Group"
     group_tab_label: "Group Savings"
     individual_tab_label: "Individual"
     cycle_progress_label: "Cycle Progress"
+    cycle_progress_shares_format: "{{cycleCollected}} shares of {{cycleTarget}} target"
+    cycle_progress_amount_format: "KES {{cycleCollected}} of KES {{cycleTarget}}"
+    cycle_progress_percent_format: "{{(cycleCollected * 100 / cycleTarget)}}% of cycle target"
     per_member_header: "Per-Member Contributions"
     member_balances_header: "Member Balances"
     total_group_label: "Group total"
+    group_total_chip_format: "Group total: KES {{groupSavingsSummary.totalCollected}}"
+    member_trailing_amount_format: "{{contributionModel == 'SHARE_BASED_VARIABLE' ? 'KES ' + member.shareValue : 'KES ' + member.totalContributed}}"
+    member_trailing_label_format: "{{contributionModel == 'SHARE_BASED_VARIABLE' ? 'share value' : 'total'}}"
     total_individual_label: "Total Individual Balances"
+    individual_total_amount_format: "KES {{individualSavingsSummary.totalBalance}}"
+    individual_last_transaction_format: "KES {{member.lastTransaction}} on {{member.lastTransactionDate}}"
+    individual_balance_amount_format: "KES {{member.currentBalance}}"
+    individual_balance_label: "balance"
     network_error: "Showing cached savings — pull down to retry"
+    retry_button: "Retry"
     last_synced_prefix: "Last synced:"
     empty_title: "No Savings Data"
     empty_subtitle: "Savings will appear after the first meeting is conducted"

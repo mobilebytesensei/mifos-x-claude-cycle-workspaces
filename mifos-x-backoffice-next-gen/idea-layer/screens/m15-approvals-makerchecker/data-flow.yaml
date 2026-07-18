@@ -1,0 +1,71 @@
+feature: m15-approvals-makerchecker
+
+# Reads: the self-scoped maker-checker queue + its payloads through a Store5 SourceOfTruth
+# over Room (CACHE_FIRST_SWR) so the queue and command bodies are offline-readable and
+# permission-filtered by canCheck(action,entity). Writes: approve / reject / delete / bulk-
+# approve are command mutations enqueued to the offline-sync-engine draft_outbox with a
+# durable idempotency key and replayed EXACTLY-ONCE via POST /v1/batches — a queued command
+# can never be double-approved.
+
+entries:
+  # ── READ · self-scoped maker-checker queue (remote, cached) ──
+  - trigger: on_mount
+    source: api.list_makercheckers
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: checker_queue_failed
+    persistence_contract:
+      store: room
+      table: maker_checker_inbox
+      keys: [audit_id, action_name, entity_name, maker, made_on_date, processing_result, command_json, status]
+      note: >-
+        CACHE_FIRST_SWR mirror of GET /v1/makercheckers; contributes rows only where
+        canCheck(action,entity). command_json holds the payload the checker inspects offline.
+
+  # ── READ · filter option lists (remote, cached) ──
+  - trigger: on_demand
+    source: api.makerchecker_search_template
+    target_state: content
+    loading_state: loading
+    error_state: content   # a filter-template miss degrades to unfiltered queue, not a whole-screen error
+    on_error:
+      nav_target: null
+      error_code: search_template_failed
+    persistence_contract:
+      store: room
+      table: maker_checker_search_template_cache
+      keys: [action_names, entity_names, processing_results]
+      note: "CACHE_FIRST_SWR mirror of GET /v1/makercheckers/searchtemplate; drives the filter chips offline."
+
+  # ── WRITE · approve / reject / delete / bulk-approve (offline outbox, exactly-once) ──
+  - trigger: on_action
+    source: local.draft_outbox_enqueue
+    target_state: submitting
+    loading_state: submitting
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: command_enqueue_failed
+    persistence_contract:
+      store: room
+      table: draft_outbox
+      keys: [idempotency_key, action, entity, audit_id, command, payload_json, status, server_error, rejected_at]
+      note: >-
+        offline-sync-engine system-of-record. approve/reject/delete/bulk-approve serialize the
+        {auditId, command} (approve|reject|delete) and enqueue with a fresh durable idempotency_key;
+        OfflineSubmitSyncer replays via POST /v1/batches EXACTLY-ONCE. The entry is locked (removed
+        from selectedIds) while status IN (pending, retrying) so a command is never double-approved.
+        Replay re-checks canCheck(action,entity); a revoked permission surfaces
+        BLOCKED_PERMISSION_REVOKED and a hard rejection routes to needs-attention-inbox — never
+        silently dropped.
+
+cache:
+  strategy: cache_first_swr
+  note: >-
+    The queue + search-template reads are cache-first and revalidate in the background per
+    FreshnessBands; the draft_outbox is authoritative for pending commands and never revalidated.
+    The queue re-emits whenever the Room queue cache changes, an SWR refresh lands, or a permission-
+    fingerprint swap re-filters the entries.

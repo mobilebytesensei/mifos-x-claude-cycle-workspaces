@@ -1,0 +1,289 @@
+feature: m08-products-charges
+# The product & charge control plane of Fineract. Reads (catalog + templates) are
+# CACHE_FIRST_SWR so the catalog + its option lists are available offline and feed
+# every loan/savings origination form. Every create/edit surface is rendered FROM
+# GET /{entity}/template (the LARGEST template payloads in the API — interest/terms/
+# accounting-rule/charge-assignment/GL-mapping option lists), never hardcoded, via
+# dynamic-template-forms. Writes are ONLINE-ONLY + maker-checker: a GL-affecting
+# product/charge config change is deliberately never offline-queued for silent replay.
+base_url: "{host}/fineract-provider/api/v1"
+tenant_header: "Fineract-Platform-TenantId"
+
+endpoints:
+  # ── Loan products ────────────────────────────────────────────────────
+  - id: list_loan_products
+    method: GET
+    path: "/v1/loanproducts"
+    description: "Loan product catalog — each entry carries interest method/rate, term ranges, repayment strategy, accounting rule, attached charges, delinquency bucket. Feeds the product option list of the loan application form (M04)."
+    response:
+      shape: list
+      type: "LoanProduct"
+      note: "Array of loan products; a lightweight ?fields= projection is used for the catalog list, full detail fetched per product."
+    requires_auth: true
+    requires_permission: [READ_LOANPRODUCT]
+    cacheable: true
+    cache_strategy: cache_first_swr
+
+  - id: get_loan_product_template
+    method: GET
+    path: "/v1/loanproducts/template"
+    description: "The LARGE loan-product template — default field values + allowed-value option lists (interestType, amortizationType, repaymentFrequencyType, interestCalculationPeriodType, accountingRule, fundOptions, chargeOptions, paymentTypeOptions, GL account mappings, delinquencyBucketOptions, floatingRateOptions). Rendered by dynamic-template-forms; never hardcoded."
+    response:
+      shape: object
+      type: "LoanProductTemplate"
+      note: "Envelope of defaults + *Options[] arrays the create/edit renderer binds to dropdowns."
+    requires_auth: true
+    requires_permission: [READ_LOANPRODUCT]
+    cacheable: true
+    cache_strategy: cache_first_swr
+
+  - id: create_loan_product
+    method: POST
+    path: "/v1/loanproducts"
+    description: "Create a loan product from the template-driven form; ONLINE-ONLY (config is never offline-queued). Returns CommandProcessingResult{resourceId,commandId,changes}; a maker-checkerable create returns 2xx + commandId with empty changes (queued for a checker)."
+    request_body:
+      type: "JsonObject"
+      note: "Assembled from the values map — name, shortName, currencyCode, principal/interest/term ranges, interestType, amortizationType, repaymentEvery, accountingRule + GL mappings, charges[], dateFormat + locale on any date field."
+    headers:
+      - { name: "Idempotency-Key", required: false, note: "Durable UUID carried by DraftSubmitHandler so a maker-checker resubmit never double-creates; config writes are online-only but still exactly-once." }
+    response:
+      shape: object
+      type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [CREATE_LOANPRODUCT]
+    maker_checker: true
+    cacheable: false
+
+  - id: update_loan_product
+    method: PUT
+    path: "/v1/loanproducts/{id}"
+    description: "Edit a loan product (ONLINE-ONLY). The form pre-fills from GET /v1/loanproducts/{id} and re-renders via dynamic-template-forms."
+    request_body:
+      type: "JsonObject"
+      note: "Changed fields only; the same template field model as create."
+    response:
+      shape: object
+      type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [UPDATE_LOANPRODUCT]
+    maker_checker: true
+    cacheable: false
+
+  - id: delete_loan_product
+    method: DELETE
+    path: "/v1/loanproducts/{id}"
+    description: "Delete a loan product (ONLINE-ONLY) — server 409-rejects if any loan account references it; the rejection body is surfaced verbatim."
+    response:
+      shape: object
+      type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [DELETE_LOANPRODUCT]
+    maker_checker: true
+    cacheable: false
+
+  # ── Savings products (savings + FD/RD share the products surface + template) ──
+  - id: list_savings_products
+    method: GET
+    path: "/v1/savingsproducts"
+    description: "Savings product catalog — nominal annual interest, compounding/posting period, interest-calculation type, min opening balance, lock-in, accounting rule, attached charges. Feeds the savings/FD/RD application forms (M05)."
+    response:
+      shape: list
+      type: "SavingsProduct"
+    requires_auth: true
+    requires_permission: [READ_SAVINGSPRODUCT]
+    cacheable: true
+    cache_strategy: cache_first_swr
+
+  - id: get_savings_product_template
+    method: GET
+    path: "/v1/savingsproducts/template"
+    description: "Savings-product template — defaults + option lists (interestCompoundingPeriodType, interestPostingPeriodType, interestCalculationType, accountingRule, chargeOptions, GL mappings, withdrawalFeeType). Rendered by dynamic-template-forms."
+    response:
+      shape: object
+      type: "SavingsProductTemplate"
+    requires_auth: true
+    requires_permission: [READ_SAVINGSPRODUCT]
+    cacheable: true
+    cache_strategy: cache_first_swr
+
+  - id: create_savings_product
+    method: POST
+    path: "/v1/savingsproducts"
+    description: "Create a savings product from the template-driven form; ONLINE-ONLY + maker-checker."
+    request_body:
+      type: "JsonObject"
+      note: "name, shortName, currencyCode, nominalAnnualInterestRate, interestCompoundingPeriodType, interestPostingPeriodType, interestCalculationType, minRequiredOpeningBalance, lockinPeriodFrequency, accountingRule + GL mappings, charges[]."
+    headers:
+      - { name: "Idempotency-Key", required: false, note: "Durable UUID for exactly-once maker-checker resubmit." }
+    response:
+      shape: object
+      type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [CREATE_SAVINGSPRODUCT]
+    maker_checker: true
+    cacheable: false
+
+  - id: update_savings_product
+    method: PUT
+    path: "/v1/savingsproducts/{id}"
+    description: "Edit a savings product (ONLINE-ONLY + maker-checker); form pre-fills from GET /v1/savingsproducts/{id}."
+    response:
+      shape: object
+      type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [UPDATE_SAVINGSPRODUCT]
+    maker_checker: true
+    cacheable: false
+
+  # ── Charges catalog ──────────────────────────────────────────────────
+  - id: list_charges
+    method: GET
+    path: "/v1/charges"
+    description: "Charge catalog — each charge carries applies-to (loan/savings/client/share), time type, calculation type (flat / %-of-amount / %-of-installment), amount, charge-payment mode, currency, GL income account, tax group. Feeds product charge-assignment option lists."
+    response:
+      shape: list
+      type: "Charge"
+    requires_auth: true
+    requires_permission: [READ_CHARGE]
+    cacheable: true
+    cache_strategy: cache_first_swr
+
+  - id: get_charge_template
+    method: GET
+    path: "/v1/charges/template"
+    description: "Charge template — defaults + option lists (chargeAppliesToOptions, chargeTimeTypeOptions, chargeCalculationTypeOptions, chargePaymentModeOptions, currencyOptions, incomeOrLiabilityAccountOptions, taxGroupOptions). Rendered by dynamic-template-forms."
+    response:
+      shape: object
+      type: "ChargeTemplate"
+    requires_auth: true
+    requires_permission: [READ_CHARGE]
+    cacheable: true
+    cache_strategy: cache_first_swr
+
+  - id: create_charge
+    method: POST
+    path: "/v1/charges"
+    description: "Create a charge from the template-driven form; ONLINE-ONLY + maker-checker. The new charge then appears in loan/savings product charge-assignment lists."
+    request_body:
+      type: "JsonObject"
+      note: "name, chargeAppliesTo, chargeTimeType, chargeCalculationType, amount, chargePaymentMode, currencyCode, active, incomeAccountId, taxGroupId."
+    headers:
+      - { name: "Idempotency-Key", required: false, note: "Durable UUID for exactly-once maker-checker resubmit." }
+    response:
+      shape: object
+      type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [CREATE_CHARGE]
+    maker_checker: true
+    cacheable: false
+
+  - id: update_charge
+    method: PUT
+    path: "/v1/charges/{id}"
+    description: "Edit a charge or toggle it active/inactive (ONLINE-ONLY + maker-checker); an inactive charge is retained but hidden from new product charge-assignment lists."
+    response:
+      shape: object
+      type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [UPDATE_CHARGE]
+    maker_checker: true
+    cacheable: false
+
+  # ── Funds ────────────────────────────────────────────────────────────
+  - id: list_funds
+    method: GET
+    path: "/v1/funds"
+    description: "Fund catalog — a fund is a lightweight source-of-money label (name + external id) attached to loans; feeds loan-product and loan-account fund option lists."
+    response:
+      shape: list
+      type: "Fund"
+    requires_auth: true
+    requires_permission: [READ_FUND]
+    cacheable: true
+    cache_strategy: cache_first_swr
+
+  - id: create_fund
+    method: POST
+    path: "/v1/funds"
+    description: "Create a fund (ONLINE-ONLY + maker-checker)."
+    request_body:
+      type: "JsonObject"
+      note: "name, externalId."
+    response:
+      shape: object
+      type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [CREATE_FUND]
+    maker_checker: true
+    cacheable: false
+
+  # ── Tax groups + components ──────────────────────────────────────────
+  - id: list_tax_groups
+    method: GET
+    path: "/v1/taxes/group"
+    description: "Tax group catalog — each group bundles tax components (percentage → GL liability account, with start dates); feeds charge tax-group option lists."
+    response:
+      shape: list
+      type: "TaxGroup"
+    requires_auth: true
+    requires_permission: [READ_TAXGROUP]
+    cacheable: true
+    cache_strategy: cache_first_swr
+
+  - id: get_tax_group_template
+    method: GET
+    path: "/v1/taxes/group/template"
+    description: "Tax-group template — available tax components + GL liability account options to compose a group. Rendered by dynamic-template-forms."
+    response:
+      shape: object
+      type: "TaxGroupTemplate"
+    requires_auth: true
+    requires_permission: [READ_TAXGROUP]
+    cacheable: true
+    cache_strategy: cache_first_swr
+
+  - id: create_tax_group
+    method: POST
+    path: "/v1/taxes/group"
+    description: "Create a tax group by composing tax components (ONLINE-ONLY + maker-checker)."
+    request_body:
+      type: "JsonObject"
+      note: "name, taxComponents[] (each: taxComponentId, startDate, dateFormat, locale)."
+    response:
+      shape: object
+      type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [CREATE_TAXGROUP]
+    maker_checker: true
+    cacheable: false
+
+  # ── Floating rates + delinquency buckets (loan-product config inputs) ──
+  - id: list_floating_rates
+    method: GET
+    path: "/v1/floatingrates"
+    description: "Floating rate schemes (base-rate curves with dated periods) selectable on a variable-rate loan product."
+    response:
+      shape: list
+      type: "FloatingRate"
+    requires_auth: true
+    requires_permission: [READ_FLOATINGRATE]
+    cacheable: true
+    cache_strategy: cache_first_swr
+
+  - id: list_delinquency_buckets
+    method: GET
+    path: "/v1/delinquency/buckets"
+    description: "Delinquency bucket definitions (aging ranges → classification) attachable to a loan product for PAR reporting."
+    response:
+      shape: list
+      type: "DelinquencyBucket"
+    requires_auth: true
+    requires_permission: [READ_DELINQUENCY_BUCKET]
+    cacheable: true
+    cache_strategy: cache_first_swr
+
+conventions:
+  template_pattern: "Every create/edit surface renders FROM GET /{entity}/template allowed-value lists via dynamic-template-forms — the loan/savings product templates are the largest in the API; never hardcode options."
+  online_only_config: "Product/charge/fund/tax WRITES are ONLINE-ONLY + maker-checker — a GL-affecting config change is deliberately never offline-queued for silent later replay (per-domain offline policy)."
+  read_offline: "Catalog + template READS are CACHE_FIRST_SWR so the option lists that feed loan/savings origination forms are available fully offline."
+  permission_per_family: "Each family gates on its own {ACTION}_{ENTITY}: *_LOANPRODUCT / *_SAVINGSPRODUCT / *_CHARGE / *_FUND / *_TAXGROUP — composed strings, never decomposed."

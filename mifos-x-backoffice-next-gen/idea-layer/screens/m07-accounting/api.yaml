@@ -1,0 +1,157 @@
+feature: m07-accounting
+
+# Fineract Accounting & GL surface. Reads (chart of accounts, journal history) are
+# CACHE_FIRST_SWR; every mutating posting/reversal/closure/mapping/accrual-run flows
+# through the durable outbox and replays exactly-once via POST /v1/batches so a retry
+# can never double-post. Maker-checker aware: a queued mutation returns commandId with
+# empty changes → Submitted-for-approval.
+
+endpoints:
+  # ── Chart of accounts (read) ──────────────────────────────────────────
+  - id: list_gl_accounts
+    method: GET
+    path: "/v1/glaccounts"
+    description: "Chart of accounts — GL accounts grouped by type (Asset/Liability/Equity/Income/Expense); CACHE_FIRST_SWR."
+    response_type: "GLAccount[]"
+    response:
+      shape: list
+    pagination:
+      style: offset_limit
+      params: [offset, limit]
+      envelope: bare_array
+    requires_auth: true
+    requires_permission: [READ_GLACCOUNT]
+    cacheable: true
+
+  - id: get_gl_account_template
+    method: GET
+    path: "/v1/glaccounts/template"
+    description: "Field defaults + option lists (type, usage, parent, tag) for the Create-GL-account form (dynamic-template-forms)."
+    response_type: "GLAccountTemplate"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [READ_GLACCOUNT]
+    cacheable: true
+
+  - id: create_gl_account
+    method: POST
+    path: "/v1/glaccounts"
+    description: "Create a GL account (name, glCode, type, usage, parentId, description); queued through the durable outbox."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [CREATE_GLACCOUNT]
+    idempotency: durable
+    maker_checker: true
+
+  # ── Journal entries (read + post + reverse) ───────────────────────────
+  - id: list_journal_entries
+    method: GET
+    path: "/v1/journalentries"
+    description: "Recent journal-entry history (filters: glAccountId, officeId, fromDate, toDate, manualEntriesOnly); CACHE_FIRST_SWR."
+    response_type: "JournalEntry[]"
+    response:
+      shape: list
+    pagination:
+      style: offset_limit
+      params: [offset, limit, orderBy, sortOrder]
+      envelope: "{ totalFilteredRecords, pageItems[] }"
+    requires_auth: true
+    requires_permission: [READ_JOURNALENTRY]
+    cacheable: true
+
+  - id: get_journal_entry_template
+    method: GET
+    path: "/v1/journalentries/template"
+    description: "Field defaults + GL-account/payment-type option lists for the manual journal-entry composer (dynamic-template-forms)."
+    response_type: "JournalEntryTemplate"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [READ_JOURNALENTRY]
+    cacheable: true
+
+  - id: post_journal_entry
+    method: POST
+    path: "/v1/journalentries"
+    description: "Post a BALANCED manual journal entry (glDebits[] + glCredits[], debit total == credit total; transactionDate + dateFormat + locale). Enqueued to the durable outbox with a durable idempotency key so a retry never double-posts."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [CREATE_JOURNALENTRY]
+    idempotency: durable
+    maker_checker: true
+
+  - id: reverse_journal_entry
+    method: POST
+    path: "/v1/journalentries/{transactionId}?command=reverse"
+    description: "Reverse a posted journal entry (comments + reversalDate). Durable idempotency key ensures the reversal replays exactly-once (never double-reversed)."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [REVERSE_JOURNALENTRY]
+    idempotency: durable
+    maker_checker: true
+
+  # ── GL period closures ────────────────────────────────────────────────
+  - id: get_gl_closure_template
+    method: GET
+    path: "/v1/glclosures/template"
+    description: "Field defaults + office option list for the GL period-closure form (dynamic-template-forms)."
+    response_type: "GLClosureTemplate"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [READ_GLACCOUNT]
+    cacheable: true
+
+  - id: create_gl_closure
+    method: POST
+    path: "/v1/glclosures"
+    description: "Close a GL period for an office (closingDate + comments); journal entries dated on/before it are then rejected server-side. Queued through the durable outbox."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [CREATE_GLCLOSURE]
+    idempotency: durable
+    maker_checker: true
+
+  # ── Financial-activity → GL account mappings ──────────────────────────
+  - id: get_financial_activity_template
+    method: GET
+    path: "/v1/financialactivityaccounts/template"
+    description: "Financial-activity + GL-account option lists for the financial-activity mapping form (dynamic-template-forms)."
+    response_type: "FinancialActivityTemplate"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [READ_GLACCOUNT]
+    cacheable: true
+
+  - id: map_financial_activity
+    method: POST
+    path: "/v1/financialactivityaccounts"
+    description: "Map a financial activity (e.g. Asset-transfer / Fund-source) to a GL account (financialActivityId + glAccountId). Queued through the durable outbox; gated by the accounting-configuration group."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [CREATE_ACCOUNTINGRULE]
+    idempotency: durable
+
+  # ── Periodic accrual run ──────────────────────────────────────────────
+  - id: run_periodic_accruals
+    method: POST
+    path: "/v1/runaccruals"
+    description: "Run periodic-accrual accounting up to a date (tillDate + dateFormat + locale). Durable idempotency key so the accrual run replays exactly-once and never posts duplicate accrual entries."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [EXECUTE_PERIODICACCRUALACCOUNTING]
+    idempotency: durable

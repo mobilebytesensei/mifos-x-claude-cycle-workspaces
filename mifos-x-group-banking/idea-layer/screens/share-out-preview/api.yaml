@@ -3,88 +3,94 @@ schema_version: "4.0"
 feature_id: share-out-preview
 
 api:
-  - id: get_center_accounts
+  - id: get_shareout_preview
+    function: get_shareout_preview
     method: GET
-    endpoint: "/fineract-provider/api/v1/centers/{centerId}/accounts"
-    description: Get all savings and loan accounts for the center to compute corpus and profit
+    endpoint: "/companion/groups/{groupId}/shareout/preview"   # COMP-DIST-001 preview path
+    description: >
+      Strategy-aware distribution preview computed by the companion API. Returns totalCorpus,
+      totalProfit, totalPool, and strategy-specific payload: memberPayouts[] for ACCUMULATING
+      types (VSLA/ASCA/SHG/SILC) OR rotationPosition + nextRecipientName + nextRecipientAmount
+      for ROTATING_PAYOUT types (ROSCA/chit). Replaces raw /centers/{centerId}/accounts +
+      dt_share_out datatable calls.
     params:
-      centerId: { type: Long, required: true, source: nav_params }
-    response_ref: CenterAccountsResponse
+      groupId: { type: String, required: true, source: nav_params }
+    response:
+      type: object
+      fields:
+        cycleNumber: Int
+        poolModel: String         # ACCUMULATING | ROTATING_PAYOUT
+        shareoutFormula: String   # PRORATA_SHARES | PRORATA_SAVINGS | EQUAL | FIXED_ORDER | LOTTERY | AUCTION
+        totalCorpus: Double
+        totalProfit: Double
+        totalPool: Double
+        memberPayouts:
+          type: "array | null"    # present for ACCUMULATING; null for ROTATING_PAYOUT
+          items:
+            memberId: String
+            memberName: String
+            sharesHeld: "Int?"       # PRORATA_SHARES only
+            totalSavings: "Double?"  # PRORATA_SAVINGS only
+            sharePercent: Double
+            payoutAmount: Double
+        rotationPosition: "Int?"          # ROTATING_PAYOUT: viewer's queue position
+        nextRecipientName: "String?"      # ROTATING_PAYOUT: next to receive
+        nextRecipientAmount: "Double?"    # ROTATING_PAYOUT: payout to next recipient
     errors:
-      404: Center not found
+      401: Unauthorized — session expired
+      403: Forbidden — caller is not organizer/treasurer/chair
+      404: Group not found
+      409: Conflict — share-out already executed this cycle
       500: Server error
     cache:
       ttl: 60
-      strategy: stale-while-revalidate
+      strategy: network-first
+      offline: show_cached
 
-  - id: get_share_out_datatable
-    method: GET
-    endpoint: "/fineract-provider/api/v1/datatables/dt_share_out/{centerId}"
-    description: Retrieve existing share-out record for the current cycle (if any)
-    params:
-      centerId: { type: Long, required: true }
-    response_ref: ShareOutRecordList
-    errors:
-      404: No share-out record yet — begin fresh calculation
-      500: Server error
-    cache:
-      ttl: 30
+cache_strategy:
+  default: network-first
+  offline: show_cached
 
 dtos:
   MemberPayout:
-    memberId: Long
+    memberId: String
     memberName: String
-    totalSavings: { type: Double, currency: KES }
+    sharesHeld: "Int?"           # PRORATA_SHARES: shares × share_value contributed
+    totalSavings: "Double?"      # PRORATA_SAVINGS: total savings in KES
     sharePercent: Double
     payoutAmount: { type: Double, currency: KES }
-    savingsAccountId: Long
 
-  MemberSavingsSummary:
-    memberId: Long
-    memberName: String
-    totalSavings: { type: Double, currency: KES }
-    savingsAccountId: Long
-
-  ShareOutRecord:
-    id: Long
+  ShareOutPreview:
     cycleNumber: Int
-    totalPool: { type: Double, currency: KES }
-    executedAt: "String?"
-    status: String
-
-  ShareOutRecordList:
-    type: array
-    items: ShareOutRecord
-
-  CenterAccountsResponse:
-    savingsAccounts:
-      type: array
-      items:
-        id: Long
-        accountBalance: Double
-        accountNo: String
-        productName: String
-        status: { value: String }
-    loanAccounts:
-      type: array
-      items:
-        id: Long
-        totalInterestPaid: Double
-
-  CenterAccounts:
+    poolModel: String
+    shareoutFormula: String
     totalCorpus: { type: Double, currency: KES }
-    totalInterestEarned: { type: Double, currency: KES }
+    totalProfit: { type: Double, currency: KES }
+    totalPool: { type: Double, currency: KES }
+    memberPayouts: "List<MemberPayout>?"
+    rotationPosition: "Int?"
+    nextRecipientName: "String?"
+    nextRecipientAmount: "Double?"
+
+  GroupTypeConfig:
+    group_type: String
+    pool_model: String
+    contribution_model: String
+    shareout_formula: String
+    payout_order_method: String
+    share_value: Double
+    contribution_amount: Double
+    social_fund_enabled: Boolean
+    cycle_length_months: Int
+    loan_multiplier: Double
+    interest_rate: Double
+    fine_amount: Double
 
 dependencies:
   repositories:
     - name: ShareOutRepository
       methods:
-        - "getShareOutRecord(centerId: Long): Flow<ShareOutRecord?>"
-        - "getGroupTotalSavings(centerId: Long): Flow<Double>"
-    - name: SavingsRepository
-      methods:
-        - "getCenterAccounts(centerId: Long): Flow<CenterAccounts>"
-        - "getMemberSavingsTotals(groupId: Long): Flow<List<MemberSavingsSummary>>"
+        - "getShareOutPreview(groupId: String): Flow<ShareOutPreview>"   # COMP-DIST-001 read
   services:
     - NetworkMonitor
     - SessionManager

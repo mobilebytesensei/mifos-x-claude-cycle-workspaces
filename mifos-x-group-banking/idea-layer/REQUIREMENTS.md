@@ -1,6 +1,7 @@
 # Requirements — CommonPurse (mifos-x-group-banking)
 
-> 20 functional requirements · 8 data entities · 2 third-party services
+> 26 functional requirements · 8 data entities · 2 third-party services
+> **Global self-signup pivot (2026-07-17):** FR-013/014/015 revised, FR-021..FR-026 added, FR-009 demoted. See `ARCHITECTURE.md` for the backend contract + 9-type group registry.
 > Generated from `idea-plan.yaml` §requirements (quality 95%, approved 2026-05-03).
 > Source of truth: `idea-layer/idea-plan.yaml` — do not hand-edit acceptance criteria here; edit the plan.
 
@@ -29,9 +30,15 @@
 | FR-006 | Track loan repayments with schedule, overdue detection, and fine calculation |
 | FR-007 | Calculate and execute share-out at end of cycle based on savings ratio + profit distribution |
 | FR-008 | Work fully offline with local SQLDelight database and queue-based sync to Fineract |
-| FR-013 | Authenticate users via Fineract credentials with local PIN and optional biometric for offline access |
-| FR-014 | Two client types — Admin (staff) and End User (self-service) — each with a distinct UI surface |
-| FR-015 | Admin role-based permissions: treasurer, chairperson, field officer, program manager |
+| FR-013 | Self-signup + login via the companion API (Fineract self-service registration bridged to back-office) + local PIN/biometric for offline re-auth |
+| FR-014 | **Single unified login/signup** with post-login capability auto-resolution (organizer vs member, per group) — replaces the prior dual client-type split |
+| FR-015 | **Group-scoped roles** resolved per group: organizer (loan-officer powers), treasurer, chairperson, secretary, member |
+| FR-021 | Self-signup registers the user as a group **organizer** by default — creates & runs a group end-to-end like a loan officer |
+| FR-022 | **Config-driven group_type** (2-axis GroupTypeConfig); 9 seeded types (ROSCA/ASCA/VSLA/SILC/SHG/SACCO/CBO/Burial/JLG); new types = config rows |
+| FR-023 | **Pluggable distribution** — pro-rata share-out · ROSCA rotation · auction/bid, selected by group_type |
+| FR-024 | Members join a group via **invite link/code** (invitee self-registers, is associated to the group) |
+| FR-025 | Group-type state as Fineract **datatables** via the companion API (group_type_config, rosca_rotation, rosca_auction, vsla_cycle, welfare_fund) |
+| FR-026 | **Non-goals**: no standalone DDD service, no YAPE/PLIN, no group-level GL, no deployment-time group-type trapdoor |
 | FR-017 | Dual savings: mandatory group savings (meeting-collected) and voluntary individual savings (anytime) — CR-003 |
 | FR-018 | Real-time fund balance (corpus) for the group; blocks loan disbursement when insufficient — CR-003 |
 | FR-019 | Enhanced meeting flow: review previous, separate cash inflows/outflows, fund balance throughout, opening/closing reconciliation — CR-003 |
@@ -40,7 +47,7 @@
 
 | ID | Description |
 |----|-------------|
-| FR-009 | Field officer can view and supervise multiple groups with read-only access |
+| FR-009 | *(demoted → Could)* OPTIONAL supervisory tier: field officer / NGO program manager read-only cross-group monitoring — no longer the primary identity |
 | FR-010 | Support multiple languages (English, Swahili, French, Hindi) with runtime switching |
 | FR-012 | Fine collection for late attendance, missed meetings, or late loan repayment |
 | FR-016 | End user can submit loan request from personal dashboard; appears as pending in next admin meeting |
@@ -80,10 +87,26 @@
 
 ---
 
+## Infrastructure Requirements (external gate)
+
+> These are not functional requirements for the KMP app — they are **backend infrastructure prerequisites**
+> that must be satisfied before `/device-test` can produce a non-`pending-device-verify` result and before
+> `matrix-green` can be reached. See `server-layer/COMPANION_API_BUILD_DEPLOY.md` for the full spec.
+
+| ID | Description |
+|----|-------------|
+| IR-001 | **Companion API — auth-model change (P0)**: mcp-mifosx Go server extended with per-call user credential intake; companion tools mint Fineract sessions and execute back-office group ops via service credential while enforcing organizer-vs-member authz at the companion tier |
+| IR-002 | **Companion API — TIER-1 tools (9)**: COMP-AUTH-001..003 (self-register, login, me) + COMP-GRP-001..005 (create, activate, associate-clients, assign-role, assign-staff) + COMP-CAL-001..003 (calendar, collection-sheet get/save) — registered in `go/tools/companion_*.go` |
+| IR-003 | **Companion API — TIER-2 datatable-CRUD tools (7)**: COMP-DT-001..005 (register, create-row, read-row, update-row, delete-row) + COMP-DIST-001/002 (share-out execute, rotation execute) — registered in `go/tools/datatables.go` |
+| IR-004 | **Self-service-enabled Fineract instance**: a Fineract deployment with the self-service module enabled (the community sandbox does NOT qualify); tenant/office strategy configured for global "anyone in the world" onboarding |
+| IR-005 | **6 companion datatables provisioned** against deployed Fineract (once, via COMP-DT-001): `dt_group_type_config`, `dt_companion_invitations`, `dt_rosca_rotation`, `dt_rosca_auction`, `dt_vsla_cycle`, `dt_welfare_fund` (all attached to `m_group`) |
+| IR-006 | **App wired to companion backend**: CommonPurse companion base URL points at deployed mcp-mifosx; end-to-end flow (signup → create group → invite → savings/loan → share-out) verified via Maestro on device |
+
 ## Cross-References
 
 - **Features**: see `idea-layer/FEATURES.md` (20 features → these FRs)
-- **API Contract**: see `server-layer/API_CONTRACT.yaml` (Fineract endpoints + 36 MCP tools generated by /mifos-bridge)
+- **API Contract**: see `server-layer/API_CONTRACT.yaml` (Fineract endpoints + 36 MCP tools generated by /mifos-bridge; companion section: 20 tools + 6 datatables)
+- **Companion API Build Spec**: see `server-layer/COMPANION_API_BUILD_DEPLOY.md`
 - **Bridge Audit**: see `server-layer/BRIDGE_AUDIT_LOG.yaml` (21-item Tier-1/Tier-2 resolution record)
 - **Data Tables (custom)**: 15 datatable schemas in `server-layer/API_CONTRACT.yaml` under `custom_tables[]`
-- **Plan**: `idea-layer/idea-plan.yaml` §requirements (line 541)
+- **Plan**: `idea-layer/idea-plan.yaml` §requirements (line 541); §technical_decisions.companion_api; §release_plan.milestones[companion-api-backend]

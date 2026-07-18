@@ -1,0 +1,91 @@
+schema_version: v1.0.0
+feature: m10-users-roles-permissions
+
+scenarios:
+  - id: loading_state_renders
+    description: "Loading state while users/roles/grid fetch."
+    preconditions: ["module opened with an empty cache"]
+    actions: ["open Users & Roles"]
+    assertions: ["loading indicator shown", "no roster rows yet"]
+    expected_outcome: "loading state visible until rosters resolve"
+    priority: high
+
+  - id: content_rosters_render
+    description: "Users tab, Roles tab and the grid editor render from resolved data."
+    preconditions: ["user holds READ_USER + READ_ROLE"]
+    actions: ["open Users & Roles", "switch to Roles tab", "open a role"]
+    assertions: ["user rows visible", "role rows visible", "role permission grid renders grouped by grouping"]
+    expected_outcome: "content state with users, roles and the selected role's grid"
+    priority: high
+
+  - id: empty_state_with_gated_cta
+    description: "Empty pane shows a Create CTA only when the create permission is held."
+    preconditions: ["no roles defined", "user holds CREATE_ROLE"]
+    actions: ["switch to Roles tab"]
+    assertions: ["empty illustration shown", "Create-first control present (CREATE_ROLE held)"]
+    expected_outcome: "empty state with a permission-gated create CTA"
+    priority: medium
+
+  - id: control_plane_read_gated_readonly
+    description: "A read-only operator sees the rosters but cannot edit the grid or create."
+    preconditions: ["user holds READ_USER + READ_ROLE but not PERMISSIONS_ROLE / CREATE_USER / CREATE_ROLE"]
+    actions: ["open Users & Roles", "open a role"]
+    assertions: ["rosters visible", "permission-matrix cells read-only", "Save control hidden/disabled", "New-user + New-role controls hidden (onDenied HIDE)"]
+    expected_outcome: "read-only control-plane view; no mutating control enabled"
+    priority: high
+
+  - id: create_user_routes_through_forms_and_queues
+    description: "New user routes through dynamic-template-forms and queues CREATE_USER."
+    preconditions: ["user holds CREATE_USER"]
+    actions: ["tap New user", "fill office/staff/roles/password in the template form", "submit"]
+    assertions: ["navigates to dynamic-template-forms (entity=users)", "form rendered from GET /v1/users/template", "CREATE_USER enqueued to the offline outbox with an idempotency key"]
+    expected_outcome: "user create is queued; on reconnect POST /v1/users runs exactly-once"
+    priority: high
+
+  - id: reset_password_online
+    description: "Password reset submits online via PUT /v1/users/{id}."
+    preconditions: ["user holds UPDATE_USER", "a user selected"]
+    actions: ["tap Reset password", "confirm"]
+    assertions: ["confirm dialog shown", "PUT /v1/users/{userId} issued (password reset)", "maker-checkerable UPDATE_USER surfaces Submitted-for-approval"]
+    expected_outcome: "password reset accepted (or queued for approval)"
+    priority: high
+
+  - id: enable_disable_role
+    description: "Enable/disable a role via the command endpoint."
+    preconditions: ["user holds ENABLE_ROLE / DISABLE_ROLE"]
+    actions: ["toggle a role's enabled switch"]
+    assertions: ["POST /v1/roles/{roleId}?command=enable|disable issued", "disabled role no longer contributes permissions to member users"]
+    expected_outcome: "role status flips; member users' effective sets change accordingly"
+    priority: high
+
+  - id: edit_role_permission_grid_invalidates_cache
+    description: "Editing + saving the grid persists online and invalidates the runtime capability cache."
+    preconditions: ["user holds PERMISSIONS_ROLE", "network available", "a role's grid open"]
+    actions: ["toggle a permission cell", "tap Save permissions"]
+    assertions: ["editor marked dirty on toggle (Save enabled)", "PUT /v1/roles/{roleId}/permissions succeeds with the diff", "runtime PermissionSet cache invalidated (permissions_raw/fingerprint/capability_map)", "affected users' surface changes on next login"]
+    expected_outcome: "grid saved online; capability-capability-engine re-resolves affected users"
+    priority: high
+
+  - id: toggle_maker_checker_online
+    description: "Toggling maker-checker for a permission is online-only via PUT /v1/permissions."
+    preconditions: ["user holds UPDATE_PERMISSION", "network available"]
+    actions: ["toggle a permission's Requires-approval cell"]
+    assertions: ["PUT /v1/permissions issued with the makerCheckerable flag", "subsequent mutations for that code queue for approval (4-eye)"]
+    expected_outcome: "maker-checker contract updated; affected commands become checker-gated"
+    priority: high
+
+  - id: auth_config_blocked_offline
+    description: "Grid save + maker-checker toggle are blocked with no connectivity (online-only)."
+    preconditions: ["user holds PERMISSIONS_ROLE", "network unavailable"]
+    actions: ["edit the grid", "attempt Save permissions"]
+    assertions: ["save is blocked offline (auth config never defer-syncs)", "online-only reconnect prompt shown", "no outbox row is written for the grid"]
+    expected_outcome: "authorization change is refused offline; nothing queued"
+    priority: high
+
+  - id: error_and_permission_drift
+    description: "Fetch error retries; a 403 drift re-fetches permissions and prunes controls."
+    preconditions: ["a roster/grid fetch fails, or the server returns 403 on a save"]
+    actions: ["tap Retry"]
+    assertions: ["error state with server message + Retry", "403 drift re-fetches the PermissionSet and prunes now-denied controls live", "failed screen stays alive"]
+    expected_outcome: "recovers to content, or prunes access without crashing"
+    priority: high

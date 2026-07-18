@@ -1,0 +1,369 @@
+screen_id: m12-datatables-config
+name: "M12 · Data Tables & Configuration (custom datatables · global config · external services · entity checks)"
+status: designed
+archetype: master_detail
+cluster: back-office-module
+module: m12-datatables-config
+initial_state: loading
+
+# ─────────────────────────────────────────────────────────────────────────
+# The configuration control plane — the module that AUTHORS the schemas the
+# dynamic-template-forms engine renders and the global switches the whole
+# platform obeys. Five entity families in one master/detail:
+#   1. DATA TABLES — user-defined custom-field schemas (client_kyc_details,
+#      loan_additional_info, …) registered against a Fineract entity
+#      (m_client / m_loan / m_savings_account / m_group …). Define columns
+#      (string/number/date/dropdown-from-code/boolean), REGISTER against an
+#      entity (POST /v1/datatables/register/{datatable}/{entity}), DEREGISTER,
+#      drop a column. Once registered, the datatable's columns appear as extra
+#      fields on that entity's dynamic form next sync — no app release. Gated by
+#      *_DATATABLE (+REGISTER_/DEREGISTER_) and the dynamic {ACTION}_{table}.
+#   2. GLOBAL CONFIGURATION — the platform switches (maker-checker,
+#      grace-on-arrears-ageing, penalty-wait-period, reschedule-future-due-date,
+#      allow-transactions-on-holiday, …) from GET /v1/configurations; toggle /
+#      set-value one at a time via PUT /v1/configurations/{id}. Gated by
+#      *_CONFIGURATION. Some flip whether OTHER modules run maker-checker at all.
+#   3. ENTITY-DATATABLE CHECKS — rules that make a datatable MANDATORY at a
+#      given lifecycle status (e.g. "loan_additional_info required before
+#      APPROVE"). GET/POST/DELETE /v1/entityDatatableChecks. Gated by
+#      *_ENTITY_DATATABLE_CHECK.
+#   4. EXTERNAL SERVICES — the S3 / SMTP / SMS(-SMTP)/ NOTIFICATION connector
+#      credentials from GET /v1/externalservice/{name}; edit via
+#      PUT /v1/externalservice/{name}. Secret values are write-only (never read
+#      back); gated by *_EXTERNALSERVICES.
+#   5. FIELD CONFIGURATION — per-entity built-in field enable/mandatory rules
+#      (GET /v1/fieldconfiguration/{entity}); read-only vocabulary here.
+# EVERYTHING in this module is ONLINE-ONLY + maker-checker aware — a
+# configuration or schema change must NEVER deferred-sync (config drift, or a
+# half-applied schema, is dangerous per the per-domain offline policy). Reads
+# are cached CACHE_FIRST_SWR because the datatable SCHEMAS are the offline
+# vocabulary dynamic-template-forms needs to render custom fields offline; but
+# every WRITE funnels through the offline-sync-engine outbox (online-only
+# drain) with a DURABLE idempotency key so a retry never double-registers a
+# table or double-toggles a switch. A rejected command routes to
+# needs-attention-inbox, never silently dropped. Create/edit forms render from
+# the datatable column metadata + Fineract config schema via
+# dynamic-template-forms, never hardcoded.
+# ─────────────────────────────────────────────────────────────────────────
+
+# ── Business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-5) ──────────
+business_logic:
+  kind: crud
+  processing_kind: on_demand
+  description: "Loads the configuration families (custom datatables, global config flags, entity-datatable checks, external-service connectors, field configuration) CACHE_FIRST_SWR over Store5+Room so the datatable schemas dynamic-template-forms renders resolve offline. Every config/schema mutation renders from metadata, is gated by its permission, is ONLINE-ONLY, and carries a durable idempotency key."
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "openMF Fineract Client KMP SDK"
+    - "org.mobilenativefoundation.store.store5"
+    - "androidx.room"
+    - "kotlinx.serialization"
+    - "Fineract GET /v1/datatables (+/{name})"
+    - "Fineract POST /v1/datatables (+/register/{datatable}/{entity})"
+    - "Fineract GET/PUT /v1/configurations (+/{id})"
+    - "Fineract GET/POST/DELETE /v1/entityDatatableChecks"
+    - "Fineract GET/PUT /v1/externalservice/{name}"
+    - "Fineract GET /v1/fieldconfiguration/{entity}"
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T00:00:00Z"
+  required_modules:
+    - core/store
+    - core/data
+    - core/network
+    - core/database
+    - core/permissions
+
+# ── States (loading/content/empty/error + submitting + action-disabled) ──
+states:
+  loading:
+    description: "Fetching the configuration families (custom datatables + columns, global configuration flags, entity-datatable checks, external-service connectors) — Store5 Loading with a cached shimmer; on-device the last cached datatable schemas are preserved underneath so dynamic-template-forms keeps rendering custom fields while this refreshes."
+  content:
+    description: "The configuration admin surface rendered as an entity-tabbed master/detail — Data Tables (schema list per Fineract entity), Global Config (the platform switches list), Entity Checks (mandatory-datatable rules), External Services (S3/SMTP/SMS connectors), and Field Config (per-entity built-in field rules, read-only). Each 'Register' / 'New' / 'Edit' / 'Toggle' entry point is VISIBLE/enabled per the user's exact permission (fail-closed HIDE for the create/register entry points; DISABLE-with-reason where the capability is meaningful to see)."
+  empty:
+    description: "The selected configuration tab has no rows yet (e.g. no custom datatables registered, no entity-datatable checks defined) — shows an illustration + the tab's empty message + a 'Register …' / 'New …' CTA visible only if the user holds the matching REGISTER/CREATE permission."
+  submitting:
+    description: "A schema change (register/deregister a datatable, add/drop a column), a global-config toggle, an entity-datatable check add/remove, or an external-service credential edit was enqueued through the offline outbox with a durable idempotency key — the control shows a spinner and a 'Saving…' / 'Submitted for approval' chip. Config + schema edits are ONLINE-ONLY: when offline the control is disabled with a 'connect to change configuration' reason rather than queued for deferred sync (a half-applied schema is dangerous)."
+  action-disabled:
+    description: "A user without a specific mutation permission (e.g. lacking REGISTER_DATATABLE or UPDATE_CONFIGURATION) sees that control DISABLED with a reason chip ('Requires REGISTER_DATATABLE — ask your administrator') — configuration capability is operationally meaningful to SEE, so it is disabled-not-hidden per the permission model; the create/register FABs are HIDDEN fail-closed."
+  error:
+    description: "A configuration fetch failed, or a schema/config/external-service change was rejected by Fineract (validation / duplicate table name / column-in-use / optimistic-lock / 403 drift). Shows the server error verbatim + a Retry; a rejected command routes to needs-attention-inbox, never silently dropped; the last cached datatable schemas stay usable so dynamic-template-forms keeps rendering custom fields."
+
+# ── Shell (M12 nav root; permission-gated at the module root on the datatable + configuration groups) ──
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  fab_visible: true
+  snackbar_visible: true
+
+# ── Components ──────────────────────────────────────────────────────────
+components:
+  - id: header
+    type: header
+    label: "{strings.m12_title}"
+    testTag: "m12-datatables-config_header"
+    visible_states: [loading, content, empty, submitting, action-disabled, error]
+
+  - id: config_tabs
+    type: content_area
+    label: "{strings.m12_config_tabs}"
+    testTag: "m12-datatables-config_tabs"
+    visible_states: [content, empty, submitting, action-disabled]
+    description: "The entity selector across the 5 configuration families: Data Tables · Global Config · Entity Checks · External Services · Field Config. A tab is shown only if the user can READ that family (READ_DATATABLE / READ_CONFIGURATION / READ_ENTITY_DATATABLE_CHECK / READ_EXTERNALSERVICES / READ_FIELDCONFIGURATION); a user with only READ_CONFIGURATION sees just the Global Config tab."
+
+  - id: config_content
+    type: content_area
+    label: "{strings.m12_content_label}"
+    testTag: "m12-datatables-config_content"
+    visible_states: [content]
+    empty_label: "{strings.m12_empty}"
+    description: "The active configuration tab's body — Data Tables renders each registered custom datatable (name + attached entity + column count + registered/multi-row badge); Global Config renders each switch (name + current value + enabled/disabled toggle); Entity Checks renders each mandatory-datatable rule (datatable + entity + status); External Services renders each connector (S3/SMTP/SMS + configured badge, secrets masked). Rendered CACHE_FIRST_SWR from the Store5 stream; read-only for personas without the matching REGISTER/CREATE/UPDATE permission."
+
+  - id: datatable_row
+    type: list_item
+    label: "{strings.m12_datatable_row}"
+    testTag: "m12-datatables-config_datatable_row"
+    visible_states: [content]
+    on_click:
+      action: open_datatable_detail
+      target: m12-datatables-config
+      action_contract:
+        effect: navigate
+        description: "Opens the custom datatable detail (name, attached entity, one-to-one vs one-to-many, full column list with each column's type/length/code-source/mandatory) from GET /v1/datatables/{name} — read CACHE_FIRST_SWR, available offline. Add-column / Deregister controls render only if the user holds CREATE_DATATABLE / DEREGISTER_DATATABLE."
+
+  - id: config_row
+    type: list_item
+    label: "{strings.m12_config_row}"
+    testTag: "m12-datatables-config_config_row"
+    visible_states: [content]
+    on_click:
+      action: open_config_detail
+      target: m12-datatables-config
+      action_contract:
+        effect: navigate
+        description: "Opens a global configuration flag detail (name, description, current value, boolean-toggle vs numeric/date value, and affected modules — e.g. maker-checker gates whether other modules require approval) from GET /v1/configurations/{id} — read CACHE_FIRST_SWR, offline. The Toggle / Set-value control renders only if the user holds UPDATE_CONFIGURATION."
+
+  - id: external_service_row
+    type: list_item
+    label: "{strings.m12_external_service_row}"
+    testTag: "m12-datatables-config_external_service_row"
+    visible_states: [content]
+    on_click:
+      action: open_external_service_detail
+      target: m12-datatables-config
+      action_contract:
+        effect: navigate
+        description: "Opens an external-service connector detail (S3 bucket/region, or SMTP host/port/from-address, or SMS gateway url) from GET /v1/externalservice/{name} — read from cache; secret values (access keys, passwords, tokens) are write-only and shown masked as '••••'. The Edit-credentials control renders only if the user holds UPDATE_EXTERNALSERVICES."
+
+  # ── Data-table lifecycle (register / define new schema; HIDE fail-closed) ──
+  - id: register_datatable_button
+    type: button
+    label: "{strings.m12_register_datatable}"
+    testTag: "m12-datatables-config_register"
+    variant: primary
+    gated_permission: REGISTER_DATATABLE
+    on_denied: HIDE
+    visible_states: [content, empty]
+    on_click:
+      action: register_datatable
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/datatables"
+          - "Fineract POST /v1/datatables/register/{datatable}/{entity}"
+        reads_from: ["config_datatables", "config_field_config"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["config_datatables"]
+        description: "Open the register-datatable form (dynamic-template-forms) then enqueue a REGISTER_DATATABLE command (POST /v1/datatables + register/{datatable}/{entity}) through the outbox with a durable idempotency key. ONLINE-ONLY, maker-checker aware; once registered the columns drive that entity's dynamic form next sync; hidden fail-closed unless the user holds REGISTER_DATATABLE."
+
+  - id: add_column_button
+    type: button
+    label: "{strings.m12_add_column}"
+    testTag: "m12-datatables-config_add_column"
+    variant: secondary
+    gated_permission: CREATE_DATATABLE
+    on_denied: DISABLE
+    disabled_reason: "Requires CREATE_DATATABLE"
+    visible_states: [content]
+    enabled_states: [content]
+    on_click:
+      action: add_datatable_column
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract PUT /v1/datatables/{datatable}"
+        reads_from: ["config_datatables", "config_codes"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["config_datatables"]
+        description: "Open the add-column form (dynamic-template-forms — name, type, length, code-source, mandatory) for the selected datatable then enqueue a CREATE_DATATABLE schema-change command (PUT /v1/datatables/{datatable} addColumns) through the outbox with a durable idempotency key. ONLINE-ONLY, maker-checker aware; a dropdown column binds to an M09 code; DISABLE-with-reason without CREATE_DATATABLE."
+
+  - id: deregister_datatable_button
+    type: button
+    label: "{strings.m12_deregister_datatable}"
+    testTag: "m12-datatables-config_deregister"
+    variant: destructive
+    gated_permission: DEREGISTER_DATATABLE
+    on_denied: DISABLE
+    disabled_reason: "Requires DEREGISTER_DATATABLE"
+    visible_states: [content]
+    enabled_states: [content]
+    on_click:
+      action: deregister_datatable
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/datatables/deregister/{datatable}"
+        reads_from: ["config_datatables"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["config_datatables"]
+        description: "After a confirm dialog, enqueue a DEREGISTER_DATATABLE command (POST /v1/datatables/deregister/{datatable}) through the outbox with a durable idempotency key — detaches the datatable so its custom fields stop appearing on that entity's form (stored rows retained). ONLINE-ONLY; irreversible from the app; DISABLE-with-reason without DEREGISTER_DATATABLE; maker-checker aware."
+
+  # ── Global configuration toggle ──
+  - id: toggle_config_switch
+    type: switch
+    label: "{strings.m12_toggle_config}"
+    testTag: "m12-datatables-config_toggle_config"
+    gated_permission: UPDATE_CONFIGURATION
+    on_denied: DISABLE
+    disabled_reason: "Requires UPDATE_CONFIGURATION"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: toggle_global_config
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract PUT /v1/configurations/{id}"
+        reads_from: ["config_global_flags"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["config_global_flags"]
+        description: "Enqueue an UPDATE_CONFIGURATION command (PUT /v1/configurations/{id}, body: enabled + optional value/dateValue) through the outbox with a durable idempotency key when the admin flips a platform switch (e.g. maker-checker). ONLINE-ONLY; some flags change whether OTHER modules require approval, re-resolving the capability map next sync; DISABLE-with-reason without UPDATE_CONFIGURATION."
+
+  # ── Entity-datatable checks (make a datatable mandatory at a lifecycle status) ──
+  - id: new_entity_check_button
+    type: button
+    label: "{strings.m12_new_entity_check}"
+    testTag: "m12-datatables-config_new_entity_check"
+    variant: primary
+    gated_permission: CREATE_ENTITY_DATATABLE_CHECK
+    on_denied: HIDE
+    visible_states: [content, empty]
+    on_click:
+      action: create_entity_datatable_check
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/entityDatatableChecks/template"
+          - "Fineract POST /v1/entityDatatableChecks"
+        reads_from: ["config_entity_checks", "config_datatables"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["config_entity_checks"]
+        description: "Open the entity-check form (dynamic-template-forms from GET /v1/entityDatatableChecks/template — entity, lifecycle status, the mandatory datatable) then enqueue a CREATE_ENTITY_DATATABLE_CHECK command (POST /v1/entityDatatableChecks) through the outbox with a durable idempotency key. ONLINE-ONLY, maker-checker aware; hidden fail-closed unless the user holds CREATE_ENTITY_DATATABLE_CHECK."
+
+  - id: delete_entity_check_button
+    type: button
+    label: "{strings.m12_delete_entity_check}"
+    testTag: "m12-datatables-config_delete_entity_check"
+    variant: destructive
+    gated_permission: DELETE_ENTITY_DATATABLE_CHECK
+    on_denied: DISABLE
+    disabled_reason: "Requires DELETE_ENTITY_DATATABLE_CHECK"
+    visible_states: [content]
+    enabled_states: [content]
+    on_click:
+      action: delete_entity_datatable_check
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract DELETE /v1/entityDatatableChecks/{id}"
+        reads_from: ["config_entity_checks"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["config_entity_checks"]
+        description: "After a confirm dialog, enqueue a DELETE_ENTITY_DATATABLE_CHECK command (DELETE /v1/entityDatatableChecks/{id}) through the outbox with a durable idempotency key — removes the rule so the datatable is no longer mandatory at that lifecycle step. ONLINE-ONLY; DISABLE-with-reason without DELETE_ENTITY_DATATABLE_CHECK; maker-checker aware."
+
+  # ── External-service connector edit (secrets write-only) ──
+  - id: edit_external_service_button
+    type: button
+    label: "{strings.m12_edit_external_service}"
+    testTag: "m12-datatables-config_edit_external_service"
+    variant: secondary
+    gated_permission: UPDATE_EXTERNALSERVICES
+    on_denied: DISABLE
+    disabled_reason: "Requires UPDATE_EXTERNALSERVICES"
+    visible_states: [content]
+    enabled_states: [content]
+    on_click:
+      action: edit_external_service
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/externalservice/{name}"
+          - "Fineract PUT /v1/externalservice/{name}"
+        reads_from: ["config_external_services"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["config_external_services"]
+        description: "Open the external-service form (dynamic-template-forms — S3, SMTP, or SMS connector fields) then enqueue an UPDATE_EXTERNALSERVICES command (PUT /v1/externalservice/{name}) through the outbox with a durable idempotency key. Secret fields are write-only (never read back, shown masked); ONLINE-ONLY; DISABLE-with-reason without UPDATE_EXTERNALSERVICES."
+
+  # ── Empty / error recovery ──
+  - id: empty_register_cta
+    type: button
+    label: "{strings.m12_register_datatable}"
+    testTag: "m12-datatables-config_empty_cta"
+    variant: primary
+    gated_permission: REGISTER_DATATABLE
+    on_denied: HIDE
+    visible_states: [empty]
+    on_click:
+      action: register_datatable
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/datatables"
+          - "Fineract POST /v1/datatables/register/{datatable}/{entity}"
+        reads_from: ["config_datatables"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["config_datatables"]
+        description: "From the empty state of the Data Tables tab, opens the register-datatable form (dynamic-template-forms) then enqueues a REGISTER_DATATABLE command through the outbox with a durable idempotency key. ONLINE-ONLY; hidden (fail-closed) unless the user holds REGISTER_DATATABLE; once registered the new custom fields drive that entity's dynamic form next sync."
+
+  - id: retry_button
+    type: button
+    label: "{strings.m12_retry}"
+    testTag: "m12-datatables-config_retry"
+    variant: primary
+    visible_states: [error]
+    on_click:
+      action: retry_load
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/datatables"
+          - "Fineract GET /v1/configurations"
+        reads_from: ["config_datatables", "config_global_flags", "config_entity_checks"]
+        produces_state: loading
+        invalidates: ["config_datatables", "config_global_flags", "config_entity_checks", "config_external_services", "config_field_config"]
+        description: "Re-fetch the configuration families via the Store5 stream.refreshFresh() path (forces a fresh GET over CACHE_FIRST_SWR) after a fetch failure. On a 403 drift it routes to the permission-refresh protocol instead of blindly retrying; the last cached datatable schemas stay visible so dynamic-template-forms keeps rendering custom fields offline."

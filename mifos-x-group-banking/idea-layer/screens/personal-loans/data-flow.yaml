@@ -5,55 +5,113 @@ feature_id: personal-loans
 entries:
   - screen_id: personalLoansScreen
     trigger: on_mount
+    description: >
+      Load the signed-in member's own loans (active, pending, closed) from Fineract /self/loans
+      scoped to their clientId, with associations=repaymentSchedule so each loan card can expand
+      its schedule locally without an extra call. Cache-first via SQLDelight (stale-while-revalidate,
+      180s TTL); revalidated over the Fineract REST client only when cmp-network-monitor reports
+      connectivity. Produces the Content state (or Empty when the member has no loans).
     endpoints:
       - { api_id: get_self_loans, transport: rest, method: get }
+    tables:
+      - name: loans
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: LoanDto, role: response, api_id: get_self_loans }
       - { name: LoanStatusDto, role: response, api_id: get_self_loans }
       - { name: RepaymentScheduleDto, role: response, api_id: get_self_loans }
       - { name: LoanSummaryDto, role: response, api_id: get_self_loans }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: stale_while_revalidate
       ttl_seconds: 180
       key_template: "personal_loans:{clientId}"
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
       - { error_code: "503", behavior: fallback_cache, message_key: error_network }
       - { error_code: "network.offline", behavior: fallback_cache, message_key: error_network }
+    notes: >
+      Empty loans list → Empty state (empty_state CTA to loan-request).
+      repaymentSchedule is fetched inline via the associations param — no per-card call on expand.
 
   - screen_id: personalLoansScreen
     trigger: on_refresh
+    description: >
+      Pull-to-refresh — bypasses the SQLDelight cache and re-fetches /self/loans fresh for the
+      current clientId. Offline pulls surface a snackbar and keep the last cached rows.
     endpoints:
       - { api_id: get_self_loans, transport: rest, method: get }
+    tables:
+      - name: loans
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: LoanDto, role: response, api_id: get_self_loans }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: bypass_and_refresh
+      ttl_seconds: 180
       key_template: "personal_loans:{clientId}"
     error_paths:
       - { error_code: "network.offline", behavior: snackbar, message_key: error_network }
-      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
 
   - screen_id: personalLoansScreen
     trigger: on_interact
     interaction: filter_chip_tap
+    description: >
+      OnFilterChange — client-side filter of the already-loaded loans list by LoanStatusFilter
+      (ALL, ACTIVE, CLOSED). Pure in-memory PersonalLoansState transition; no endpoint, no cache write.
     endpoints: []
+    tables: []
     dtos: []
+    produces_state: Content
     auth_required: false
     cache:
       strategy: none
-    notes: "Client-side filtering by LoanStatusFilter — no API call"
+    notes: "Client-side filtering by LoanStatusFilter — no API call."
     error_paths: []
 
   - screen_id: personalLoansScreen
     trigger: on_interact
     interaction: loan_card_expand
+    description: >
+      OnLoanExpand — toggles the expanded repayment-schedule panel for the tapped loan by setting
+      selectedLoanId. The repaymentSchedule was pre-fetched on mount via associations=repaymentSchedule,
+      so this is a pure state transition with no additional call.
     endpoints: []
+    tables: []
     dtos: []
+    produces_state: Content
     auth_required: false
     cache:
       strategy: none
-    notes: "Repayment schedule is pre-fetched on mount via associations=repaymentSchedule — no additional call"
+    notes: "Repayment schedule is pre-fetched on mount via associations=repaymentSchedule — no additional call."
     error_paths: []
+
+tables:
+  - name: loans
+    description: >
+      SQLDelight cache of LoanDto rows (with nested LoanStatusDto, RepaymentScheduleDto, LoanSummaryDto)
+      for the member's own loans. Keyed by loan id; scoped per clientId. Written on mount and pull-to-refresh.
+    persistence_contract: sqldelight_entity
+    primary_key: "id"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+cache:
+  strategy: stale_while_revalidate
+  ttl_seconds: 180
+  notes: >
+    Member loans cached 3 min (stale_while_revalidate) keyed by clientId.
+    Pull-to-refresh uses bypass_and_refresh. Served stale when offline (use_sqldelight).
+    Filter and expand are pure client-side state transitions — no cache interaction.
+
+sync_queue:
+  entries: []
+  notes: >
+    Personal loans is read-only. Loan applications are handled by the loan-request child screen
+    (reached via the FAB / empty-state CTA), not this screen.

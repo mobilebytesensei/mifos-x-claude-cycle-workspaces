@@ -1,0 +1,242 @@
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: m02-clients
+
+# Client reads are CACHE_FIRST_SWR per-entity Store5 caches so the 360 renders offline. Onboarding
+# + every lifecycle/sub-resource write funnels through the durable outbox (draft_outbox, Room v11)
+# and replays via POST /v1/batches — the app never blocks on connectivity, and a rejected command
+# lands in needs-attention-inbox (never silently dropped).
+
+entries:
+  # ── 1. Office-scoped client list (on mount) ──────────────────────────
+  - screen_id: m02-clients
+    trigger: on_mount
+    produces_state: content
+    loading_state: loading
+    error_state: error
+    auth_required: true
+    endpoints:
+      - api_id: list_clients
+        transport: rest
+    tables:
+      - name: clients
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Per-client Room cache keyed by (client_id, external_id); office_id, display_name, status,
+          and payload_json columns. CACHE_FIRST_SWR — the list serves cached rows instantly and the
+          delta-pull (offline-sync-engine) revalidates against the FetchedAt watermark.
+    dtos:
+      - name: ClientListItem
+        role: response
+        api_id: list_clients
+    cache:
+      strategy: cache_first
+      ttl_seconds: 3600
+      key_template: "fineract:clients:{officeId}"
+      shape: flat
+    privacy_constraint:
+      scope: user_synced
+      notes: "Client rows are PII (KYC) — SQLCipher DB, PII-scrubbed logs, screenshot-block; scoped to the signed-in officer's office hierarchy."
+    error_paths:
+      - error_code: client_list_failed
+        behavior: retry
+        message_key: m02_list_failed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m02_showing_cached
+
+  # ── 2. Debounced search (on interact) ────────────────────────────────
+  - screen_id: m02-clients
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_clients
+        transport: rest
+      - api_id: search_clients_advanced
+        transport: rest
+    tables:
+      - name: clients
+        mutation: read
+    cache:
+      strategy: cache_first
+      ttl_seconds: 3600
+      key_template: "fineract:clients:{officeId}:{query}"
+      shape: flat
+    error_paths:
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m02_search_cached
+
+  # ── 3. Client 360 detail + sub-resources (on interact / drill-in) ────
+  - screen_id: m02-clients
+    trigger: on_interact
+    produces_state: content
+    loading_state: loading
+    error_state: error
+    auth_required: true
+    endpoints:
+      - api_id: get_client_detail
+        transport: rest
+      - api_id: get_client_accounts
+        transport: rest
+      - api_id: get_client_subresource
+        transport: rest
+    tables:
+      - name: clients
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+      - name: client_subresources
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Per-client sub-resource collections (identifiers/documents/addresses/family/charges/notes/
+          account summaries) cached keyed by (client_id, sub_resource, item_id). Lazily loaded on tab
+          open, CACHE_FIRST_SWR so each tab renders offline.
+    dtos:
+      - name: ClientDetail
+        role: response
+        api_id: get_client_detail
+      - name: ClientAccountsSummary
+        role: response
+        api_id: get_client_accounts
+      - name: ClientSubResourceItem
+        role: response
+        api_id: get_client_subresource
+    privacy_constraint:
+      scope: user_synced
+      notes: "Identifiers + documents are sensitive KYC PII — encrypted at rest; documents stored as encrypted local media."
+    error_paths:
+      - error_code: client_detail_failed
+        behavior: retry
+        message_key: m02_detail_failed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m02_showing_cached
+
+  # ── 4. Onboarding + edit write (queued outbox) ───────────────────────
+  - screen_id: m02-clients
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: get_client_template
+        transport: rest
+      - api_id: create_client
+        transport: rest
+      - api_id: update_client
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          RoomSubmitOutbox (framework_submit_drafts, Room v11). The CREATE_CLIENT/UPDATE_CLIENT command
+          is queued with a client-generated externalId + durable idempotency_key + (action,entity);
+          PENDING never pruned; replayed exactly-once via POST /v1/batches.
+      - name: clients
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: "Optimistic local client row inserted on queue (status Pending, queued-offline flag) so the list reflects the onboarding immediately; reconciled by external-id on sync."
+    dtos:
+      - name: ClientTemplate
+        role: response
+        api_id: get_client_template
+      - name: CreateClientRequest
+        role: request
+        api_id: create_client
+      - name: UpdateClientRequest
+        role: request
+        api_id: update_client
+      - name: CommandProcessingResult
+        role: response
+        api_id: create_client
+    privacy_constraint:
+      scope: user_synced
+      notes: "Onboarding payloads carry full KYC — encrypted outbox; durable idempotency prevents duplicate client creation on replay."
+    side_effects:
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer drain — replays the CREATE/UPDATE command via POST /v1/batches on connectivity"
+      - kind: invalidate_cache
+        target: "clients list cache for the office — revalidated by the follow-on delta-pull"
+    error_paths:
+      - error_code: client.create_rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: m02_create_rejected
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m02_queued_offline
+      - error_code: auth.session_expired
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: m02_reauth_required
+
+  # ── 5. Lifecycle + sub-resource commands (queued outbox) ─────────────
+  - screen_id: m02-clients
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: client_lifecycle_command
+        transport: rest
+      - api_id: create_client_subresource
+        transport: rest
+      - api_id: upload_client_document
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Each lifecycle command (activate/close/reject/withdraw/reactivate/proposeTransfer) and
+          sub-resource write (identifier/document/note/address/family/charge) queued with its own
+          durable idempotency key + (action,entity); date-bearing commands carry dateFormat + locale.
+      - name: client_subresources
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+    dtos:
+      - name: ClientCommandRequest
+        role: request
+        api_id: client_lifecycle_command
+      - name: ClientSubResourceRequest
+        role: request
+        api_id: create_client_subresource
+      - name: DocumentUpload
+        role: request
+        api_id: upload_client_document
+      - name: CommandProcessingResult
+        role: response
+        api_id: client_lifecycle_command
+    side_effects:
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer drain via POST /v1/batches"
+      - kind: notification
+        target: "'Submitted for approval' badge when the command is maker-checkerable (queued, not applied)"
+    error_paths:
+      - error_code: client.command_rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: m02_command_rejected
+      - error_code: permission.revoked
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: m02_access_changed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m02_queued_offline

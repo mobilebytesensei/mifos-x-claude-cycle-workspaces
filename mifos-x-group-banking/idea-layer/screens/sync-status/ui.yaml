@@ -1,3 +1,4 @@
+requires_stitch: true   # opt-in backfilled (RULE-STITCH-OPTIN-CONSISTENCY-001)
 sibling: ui
 schema_version: "4.0"
 feature_id: sync-status
@@ -55,10 +56,24 @@ state_model:
       - SyncManager
       - NetworkMonitor
 
+business_logic:
+  kind: processor
+  description: "Drains the offline SyncQueue to Fineract on demand: reads pending SyncQueueItem rows from the local SQLDelight database, batches them into one Fineract /batches request, and applies the response to advance each item pending→in_progress→synced or failed. Online reachability comes from cmp-network-monitor; a Store5 MutableStore + Bookkeeper coordinate the drain so conflicts surface for review."
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - SQLDelight
+    - Store5
+    - "Fineract batch API"
+  description_hash: "fc768525417de59d50c3039a5966cab08cacb890a7cf1b453c203b38cb1b6886"
+  description_author: "claude-via-idea-enrich"
+  description_authored_at: "2026-07-17T00:00:00Z"
+
 components:
   - id: top_bar
     type: top-app-bar
-    title: "Sync Status"
+    title: "{strings.screen_title}"
+    accessibility_label: "{strings.a11y_top_bar}"
     style: { background: primary, text_color: onPrimary }
 
   - id: overall_status_card
@@ -73,6 +88,7 @@ components:
         type: icon
         size: 48dp
         value: "{{overallStatus}}"
+        accessibility_label: "{strings.a11y_status_icon}"
         style:
           SYNCED: { icon: cloud_done, color: "#2E7D32" }
           PENDING: { icon: cloud_sync, color: "#E65100" }
@@ -85,19 +101,20 @@ components:
           PENDING: { color: "#E65100" }
           FAILED: { color: "#B71C1C" }
         value_by_status:
-          SYNCED: "All Synced"
-          PENDING: "Sync Pending"
-          FAILED: "Sync Failed"
+          SYNCED: "{strings.status_synced}"
+          PENDING: "{strings.status_pending}"
+          FAILED: "{strings.status_failed}"
       - id: last_sync_text
         type: text
         style: { text_style: bodySmall, color: onSurfaceVariant }
-        value: "Last synced: {{lastSyncAt | timeAgo}}"
-        fallback_when_null: "Never synced"
+        value: "{strings.last_sync_label}"
+        fallback_when_null: "{strings.never_synced}"
 
   - id: conflict_chip
     type: chip
     visible_when: "conflictCount > 0"
-    label: "{{conflictCount}} conflict(s) detected — review before syncing"
+    label: "{strings.conflict_label}"
+    accessibility_label: "{strings.a11y_conflict_chip}"
     style: { background: tertiaryContainer, text_color: onTertiaryContainer, corner_radius: 16dp }
 
   - id: pending_breakdown_card
@@ -105,35 +122,49 @@ components:
     visible_when: "pendingCount > 0"
     style: { background: surface, elevation: 2dp, corner_radius: 12dp, padding: 16dp }
     content:
-      - { type: text, value: "Pending Operations ({{pendingCount}})", style: { text_style: titleSmall, color: onSurface } }
+      - { type: text, value: "{strings.pending_title}", style: { text_style: titleSmall, color: onSurface } }
       - id: entity_breakdown_rows
         type: list
         items_source: pendingByType
         item_template:
           type: list-item
           content:
-            - { type: text, value: "{{entityType | humanize}}", style: { text_style: bodyMedium } }
+            - { type: text, value: "{strings.entity_row_label}", style: { text_style: bodyMedium } }
             - type: badge
               value: "{{count}}"
+              accessibility_label: "{strings.a11y_entity_count_badge}"
               style: { background: secondaryContainer, text_color: onSecondaryContainer }
 
   - id: sync_now_button
     type: button
     variant: filled
-    label: "Sync Now"
+    label: "{strings.sync_now}"
+    accessibility_label: "{strings.a11y_sync_now_button}"
     icon: sync
     enabled_when: "isOnline && !isSyncing"
     style: { background: primary, text_color: onPrimary, corner_radius: 24dp, min_touch_target: 56dp, full_width: true, loading_when: isSyncing }
     disabled_label_when: "!isOnline"
-    disabled_label: "Offline — Connect to sync"
-    on_click: { action: OnSyncNow }
+    disabled_label: "{strings.sync_now_offline}"
+    on_click:
+      action: OnSyncNow
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "Fineract batch API"
+          - Store5
+        description: "Flushes every pending SyncQueueItem to Fineract by POSTing the collected offline writes to the /batches endpoint; enabled only when cmp-network-monitor reports online. On success it advances queued rows to synced via the Store5 Bookkeeper and stamps last_synced_at; conflicts are surfaced for manual review."
+        action_contract_hash: "d5ba67cd538e68c9bb3480edb8b5ef1283e269262f9918f6fdd5794569f534b9"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
 
   - id: failed_operations_section
     type: card
     visible_when: "failedCount > 0"
     style: { background: errorContainer, corner_radius: 12dp, padding: 16dp }
     content:
-      - { type: text, value: "Failed Operations ({{failedCount}})", style: { text_style: titleSmall, color: onErrorContainer } }
+      - { type: text, value: "{strings.failed_title}", style: { text_style: titleSmall, color: onErrorContainer } }
       - id: failed_ops_list
         type: list
         items_source: failedOperations
@@ -141,25 +172,40 @@ components:
           type: list-item
           style: { padding: "8dp 0dp" }
           content:
-            - { type: text, value: "{{item.entityType | humanize}} — {{item.operation}}", style: { text_style: bodyMedium, color: onErrorContainer } }
-            - { type: text, value: "{{item.errorMessage}}", style: { text_style: bodySmall, color: onErrorContainer } }
+            - { type: text, value: "{strings.failed_item_title}", style: { text_style: bodyMedium, color: onErrorContainer } }
+            - { type: text, value: "{strings.failed_item_error}", style: { text_style: bodySmall, color: onErrorContainer } }
             - id: retry_button
               type: button
               variant: outlined
-              label: "Retry"
+              label: "{strings.retry}"
+              accessibility_label: "{strings.a11y_retry_button}"
               style: { corner_radius: 16dp, min_touch_target: 40dp, border_color: onErrorContainer, text_color: onErrorContainer }
-              on_click: { action: OnRetryOperation, params: { itemId: "{{item.id}}" } }
+              on_click:
+                action: OnRetryOperation
+                params: { itemId: "{{item.id}}" }
+                action_contract:
+                  effect: call_api
+                  library_refs:
+                    - cmp-network-monitor
+                  external_library_refs:
+                    - "Fineract batch API"
+                    - Store5
+                  description: "Re-submits one previously failed SyncQueueItem (by itemId) to the Fineract /batches endpoint via the Store5 Bookkeeper drain; requires cmp-network-monitor online. On success the row moves failed→synced; on failure it stays in the failed queue with its error message intact."
+                  action_contract_hash: "2632b46a8f182d7038674e2982378d38dc6b8d3e70d51a48b3901cb9ef4c28c9"
+                  action_contract_author: "claude-via-idea-enrich"
+                  action_contract_authored_at: "2026-07-17T00:00:00Z"
 
   - id: all_synced_empty
     type: empty-state
     icon: cloud_done
-    title: "All caught up!"
-    body: "No pending or failed operations."
+    title: "{strings.all_synced_title}"
+    body: "{strings.all_synced_body}"
     visible_when: "pendingCount == 0 && failedCount == 0"
 
   - id: shimmer_status
     type: shimmer
     count: 3
+    accessibility_label: "{strings.a11y_shimmer_status}"
     style: { height: 80dp, corner_radius: 12dp }
 
 states:
@@ -209,6 +255,16 @@ i18n:
     entity_attendance: "Attendance Records"
     entity_share_out: "Share-Out Records"
     entity_member: "Member Updates"
+    entity_row_label: "{{entityType | humanize}}"
+    failed_item_title: "{{item.entityType | humanize}} — {{item.operation}}"
+    failed_item_error: "{{item.errorMessage}}"
+    a11y_top_bar: "Sync status screen top bar"
+    a11y_status_icon: "Overall sync status indicator"
+    a11y_conflict_chip: "Sync conflicts detected; tap to review"
+    a11y_entity_count_badge: "Pending operation count for entity"
+    a11y_sync_now_button: "Start syncing all pending operations now"
+    a11y_retry_button: "Retry this failed sync operation"
+    a11y_shimmer_status: "Loading sync status"
   sw:
     screen_title: "Hali ya Usawazishaji"
     status_synced: "Imesawazishwa"

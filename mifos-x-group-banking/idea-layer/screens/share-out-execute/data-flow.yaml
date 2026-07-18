@@ -5,31 +5,120 @@ feature_id: share-out-execute
 entries:
   - screen_id: shareOutExecuteScreen
     trigger: on_mount
-    description: Initialize from nav params — no API call; data pre-populated from share-out-preview
+    description: >
+      Initialize from nav args passed by share-out-preview. No API call on mount.
+      Nav args include groupId, typeConfig (drives poolModel + shareoutFormula + labels),
+      totalPool, and memberPayouts[] (empty for ROTATING_PAYOUT — the single-recipient
+      row is derived from memberPayouts[0] at render time). ViewModel derives poolModel
+      + shareoutFormula from typeConfig on init, initializes memberExecutionStatus to
+      PENDING for every payout, and reads NetworkMonitor to seed isOnline.
     endpoints: []
+    tables: []
     dtos:
       - { name: MemberPayout, role: response, api_id: nav_params }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    local_sources:
+      - { source: NavArgs, keys: [groupId, typeConfig, totalPool, memberPayouts] }
+      - { source: NetworkMonitor, key: is_online, field: isOnline }
+    error_paths: []
+    notes: >
+      poolModel drives which UI branch renders on Content:
+        ACCUMULATING → per-member payout list + double-confirmation gate
+        ROTATING_PAYOUT → single-recipient card + double-confirmation gate
+      shareoutFormula ∈ {FIXED_ORDER, LOTTERY, AUCTION} triggers "Execute Rotation Payout"
+      label variant; all other formulas render "Execute Share-Out".
+
+  - screen_id: shareOutExecuteScreen
+    trigger: on_action
+    action: OnConfirmationTextChanged
+    description: >
+      Update confirmationText in ShareOutExecuteState on each keystroke and set
+      isConfirmed true only when the entry matches the exact phrase "SHARE OUT"
+      (trim + uppercase compare per flow.yaml on_confirmation_text_changed).
+      Pure ViewModel state transition — no persistence, no network, no side effect.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    notes: >
+      Gates the Execute button's enabled_when — isConfirmed must be true (either via
+      exact-phrase match here OR via successful biometric on OnBiometricSelected).
+
+  - screen_id: shareOutExecuteScreen
+    trigger: on_action
+    action: OnBiometricSelected
+    description: >
+      Alternative confirmation path. Emits ShowBiometricPrompt so BiometricManager
+      presents the platform fingerprint/face prompt as an alternative to typing
+      "SHARE OUT". A successful authentication sets isConfirmed true, satisfying the
+      double-confirmation gate; failure surfaces a snackbar with the fallback prompt.
+      No persistence or network call — the biometric result only flips the local
+      confirmation flag.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
     auth_required: false
     cache:
       strategy: no_cache
       ttl_seconds: 0
       key_template: ""
     local_sources:
-      - { source: NavArgs, keys: [groupId, centerId, cycleNumber, totalPool, memberPayouts] }
-      - { source: NetworkMonitor, key: is_online, field: isOnline }
-    error_paths: []
+      - { source: BiometricManager, key: biometric_available, field: isBiometricAvailable }
+    error_paths:
+      - { error_code: "biometric.unavailable", behavior: show_snackbar, message_key: error_biometric_unavailable }
+      - { error_code: "biometric.failed", behavior: show_snackbar, message_key: error_biometric_failed }
+    notes: >
+      When BiometricManager.isAvailable is false the flow falls back to showing a
+      snackbar directing the user to type "SHARE OUT" instead — see flow.yaml
+      on_biometric_selected branches.
 
   - screen_id: shareOutExecuteScreen
-    trigger: on_interact
-    description: Chairperson taps Execute Share-Out — records datatable entry then disburses sequentially per member
+    trigger: on_action
+    action: OnExecute
+    description: >
+      Execute the irreversible share-out after double-confirmation. The action
+      branches on poolModel:
+        ACCUMULATING (VSLA/ASCA/SHG/SILC) → POST memberPayouts[] to COMP-DIST-001
+          (/companion/groups/{groupId}/shareout/execute); records dt_share_out +
+          drains per-member savings withdrawal via Fineract in one transaction.
+          Per-member status streams PENDING → IN_PROGRESS → DONE/FAILED as the
+          response arrives.
+        ROTATING_PAYOUT (ROSCA/chit) → POST single recipient to COMP-DIST-002
+          (/companion/groups/{groupId}/rotation/execute); updates rosca_rotation
+          (marks slot paid, advances rotation position) + drains the single
+          savings withdrawal.
+      When offline the entire request is serialized to the HIGH-priority sync_queue
+      for later drain and set_screen_state_success_optimistic renders the queued
+      banner. Every attempt (success, fail, or offline-queued) writes one row to
+      shareout_execution_log for the offline audit view.
     endpoints:
-      - { api_id: post_share_out_record, transport: rest, method: post }
-      - { api_id: post_member_payout, transport: rest, method: post }
+      - { api_id: post_shareout_execute, transport: rest, method: post }
+      - { api_id: post_rotation_payout_execute, transport: rest, method: post }
+    tables:
+      - name: sync_queue
+        persistence_contract: sqldelight_entity
+        mutation: write
+      - name: shareout_execution_log
+        persistence_contract: sqldelight_entity
+        mutation: write
     dtos:
-      - { name: CreateShareOutRequest, role: request, api_id: post_share_out_record }
-      - { name: DataTableEntryResponse, role: response, api_id: post_share_out_record }
-      - { name: SavingsWithdrawalRequest, role: request, api_id: post_member_payout }
-      - { name: SavingsTransactionResponse, role: response, api_id: post_member_payout }
+      - { name: MemberPayoutRequest, role: request, api_id: post_shareout_execute }
+      - { name: ShareOutExecuteResponse, role: response, api_id: post_shareout_execute }
+      - { name: MemberExecutionStatus, role: response, api_id: post_shareout_execute }
+      - { name: RotationPayoutExecuteResponse, role: response, api_id: post_rotation_payout_execute }
+    produces_state: Executing
     auth_required: true
     cache:
       strategy: no_cache
@@ -38,34 +127,165 @@ entries:
     offline_behavior:
       strategy: enqueue_to_sync_queue
       priority: HIGH
-      entity_type: SHARE_OUT
-      show_state: queued_offline_banner
+      entity_type: SHARE_OUT_EXECUTE
+      show_state: Queued
+      rotation_entity_type: ROTATION_PAYOUT_EXECUTE
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
-      - { error_code: "403", behavior: navigate, nav_target: group-dashboard, message_key: error_forbidden }
-      - { error_code: "400", behavior: mark_member_failed, continue_sequence: true }
-      - { error_code: "5xx", behavior: mark_member_failed, continue_sequence: true }
-      - { error_code: "network.offline", behavior: enqueue_offline, message_key: error_offline }
-    execution_pattern:
-      type: sequential_per_member
-      on_member_success: update_status_DONE
-      on_member_failure: update_status_FAILED
-      on_complete: transition_to_success_or_partial_failure
+      - { error_code: "400", behavior: show_field_errors, message_key: error_validation }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "403", behavior: show_error, message_key: error_forbidden }
+      - { error_code: "409", behavior: show_error, message_key: error_shareout_already_done }
+      - { error_code: "network.offline", behavior: enqueue_sync, message_key: offline_queued }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    navigation:
+      - { condition: "executeSuccess && failedCount == 0 && poolModel == 'ACCUMULATING'", produces_state: Success }
+      - { condition: "executeSuccess && failedCount > 0 && poolModel == 'ACCUMULATING'", produces_state: PartialFailure }
+      - { condition: "rotationSuccess && poolModel == 'ROTATING_PAYOUT'", produces_state: Success }
+    notes: >
+      Single ShareOutExecuteAction.OnExecute value; runtime branch on poolModel is
+      the sole discriminator (see flow.yaml on_execute → decision route_by_pool_model).
+      COMP-DIST-001 response contains succeededCount, failedCount, failedMemberIds
+      for partial-failure rendering. COMP-DIST-002 response contains
+      newRotationPosition + nextRecipientId for group-dashboard to update rotation
+      state immediately. On network.offline the whole request is enqueued as either
+      SHARE_OUT_EXECUTE or ROTATION_PAYOUT_EXECUTE depending on poolModel; the
+      background sync worker drains on connectivity restoration.
 
   - screen_id: shareOutExecuteScreen
-    trigger: on_interact
-    description: Retry failed payouts — re-attempts only FAILED members
+    trigger: on_action
+    action: OnRetryFailed
+    description: >
+      Re-submit only the failedPayouts subset to COMP-DIST-001 after a
+      PartialFailure state. Only meaningful for ACCUMULATING (rotation is a
+      single-recipient atomic call — no partial-fail path). The idempotency key on
+      the sync_queue and companion 409 handling prevent double-paying members that
+      already succeeded. On success those rows move FAILED → DONE and
+      succeededCount increases.
     endpoints:
-      - { api_id: post_member_payout, transport: rest, method: post }
+      - { api_id: post_shareout_execute, transport: rest, method: post }
+    tables:
+      - name: shareout_execution_log
+        persistence_contract: sqldelight_entity
+        mutation: write
     dtos:
-      - { name: SavingsWithdrawalRequest, role: request, api_id: post_member_payout }
-      - { name: SavingsTransactionResponse, role: response, api_id: post_member_payout }
+      - { name: MemberPayoutRequest, role: request, api_id: post_shareout_execute }
+      - { name: ShareOutExecuteResponse, role: response, api_id: post_shareout_execute }
+    produces_state: Executing
     auth_required: true
     cache:
       strategy: no_cache
       ttl_seconds: 0
       key_template: ""
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
-      - { error_code: "5xx", behavior: mark_member_failed, continue_sequence: true }
-      - { error_code: "network.offline", behavior: enqueue_offline, message_key: error_offline }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
+      - { error_code: "403", behavior: show_error, message_key: error_forbidden }
+      - { error_code: "500", behavior: show_retry, message_key: error_server }
+    navigation:
+      - { condition: "retrySuccess && remainingFailedCount == 0", produces_state: Success }
+      - { condition: "retrySuccess && remainingFailedCount > 0", produces_state: PartialFailure }
+    notes: >
+      body_override sends only failedPayouts (per flow.yaml on_retry_failed) so the
+      companion API re-attempts just the errored subset. Retry is disabled offline;
+      the retry button is only rendered when failedPayouts.isNotEmpty() AND the
+      state is Completed (see ui.yaml retry_failed_button.visible_when).
+
+  - screen_id: shareOutExecuteScreen
+    trigger: on_action
+    action: OnDone
+    description: >
+      Leave the completed (or offline-queued) execute screen and return to the
+      group dashboard, which re-reads the advanced cycle/rotation state. Pure
+      navigation event with no further API call — the distribution has already
+      been executed or serialized to the sync_queue.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Success
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    navigation:
+      - { condition: "always", nav_target: group-dashboard, params: [groupId] }
+    notes: >
+      done_button is visible_when (isCompleted && failedPayouts.isEmpty()) OR
+      queuedOffline — same navigation regardless of which path completed the
+      distribution.
+
+  - screen_id: shareOutExecuteScreen
+    trigger: on_action
+    action: OnBack
+    description: >
+      Return to share-out-preview to abandon the un-executed distribution. Only
+      permitted while the back icon is enabled (nav_enabled_when
+      "!isExecuting && !isCompleted"); once execution starts or completes the
+      icon is disabled and the action is a no-op. Pure navigation event that does
+      not touch corpus, payouts, or the sync_queue.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: false
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+      key_template: ""
+    error_paths: []
+    navigation:
+      - { condition: "!isExecuting && !isCompleted", nav_target: share-out-preview, params: [groupId, typeConfig] }
+      - { condition: "isExecuting || isCompleted", action: noop }
+    notes: >
+      execution_state_guard branch (see flow.yaml on_back) — during Executing and
+      after completion the back gesture is intentionally swallowed to prevent the
+      operator from leaving the screen mid-atomic-transaction.
+
+tables:
+  - name: sync_queue
+    description: >
+      Offline sync queue for HIGH-priority financial operations. Accepts
+      SHARE_OUT_EXECUTE (ACCUMULATING) and ROTATION_PAYOUT_EXECUTE
+      (ROTATING_PAYOUT) payloads. Drained by background sync worker on
+      connectivity restoration.
+    persistence_contract: sqldelight_entity
+    primary_key: "id"
+    mutations: [write, read, delete]
+    offline_strategy: drain_on_connect
+
+  - name: shareout_execution_log
+    description: >
+      Local audit log of share-out execution results. Written on every attempt
+      (success or fail — including retry re-attempts). Preserves cycleNumber,
+      executedAt, succeededCount, failedCount for the offline audit view.
+      Keyed by groupId + cycleNumber.
+    persistence_contract: sqldelight_entity
+    primary_key: "groupId:cycleNumber"
+    mutations: [write, read]
+    offline_strategy: serve_stale
+
+cache:
+  strategy: no_cache
+  notes: >
+    Execute endpoints are write-only mutations — no response caching. Offline
+    payloads are serialized to sync_queue, not cached. No legacy api.yaml#cache;
+    this data-flow file is the single source.
+
+sync_queue:
+  entries:
+    - entity_type: SHARE_OUT_EXECUTE
+      table: sync_queue
+      priority: HIGH
+      idempotency_key: "groupId:{groupId}:cycleNumber:{cycleNumber}"
+      notes: >
+        ACCUMULATING share-out queued when offline. Idempotency key prevents
+        double-execution on sync retry. Companion API enforces 409 if already
+        executed this cycle.
+
+    - entity_type: ROTATION_PAYOUT_EXECUTE
+      table: sync_queue
+      priority: HIGH
+      idempotency_key: "groupId:{groupId}:cycleNumber:{cycleNumber}:recipientId:{recipientMemberId}"
+      notes: >
+        ROTATING_PAYOUT queued when offline. Companion API enforces 409 on
+        duplicate rotation execution per cycle round.

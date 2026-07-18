@@ -1,9 +1,14 @@
 name: ShareOutDto
-version: "1.0.0"
+version: "2.0.0"
 description: >
   Share-out cycle distribution DTO for CommonPurse. Sourced from dt_share_out
   datatable attached to m_center. Records the group's annual/cycle share-out
-  event: total pool, per-member distribution, and execution status.
+  event: total pool, per-member distribution, and execution status. Post self-signup
+  pivot the distribution is STRATEGY-AWARE, not pro-rata-hardcoded: the strategy
+  (pro-rata shares / pro-rata savings / rotation / auction / equal) is derived from the
+  group's GroupTypeConfig (pool_model + shareout_formula). ROTATING_PAYOUT groups (ROSCA)
+  produce a single-recipient rotation payout; ACCUMULATING groups (VSLA/ASCA/SHG) produce
+  a pro-rata memberAllocations breakdown.
 
 source:
   origin: datatable
@@ -21,6 +26,27 @@ fields:
   - name: cycleNumber
     type: Int
     description: Savings cycle number this share-out closes.
+  - name: poolModel
+    type: String
+    description: >
+      Axis A (pool disposition) of the group's GroupTypeConfig, driving which distribution
+      shape applies. ROTATING_PAYOUT → single rotation recipient; ACCUMULATING → pro-rata
+      memberAllocations.
+    values: [ROTATING_PAYOUT, ACCUMULATING, NONE]
+  - name: distributionStrategy
+    type: String
+    description: >
+      The concrete distribution algorithm used for this share-out event. Selected from the
+      group's GroupTypeConfig rather than hardcoded pro-rata: PRO_RATA_SHARES (VSLA/SILC),
+      PRO_RATA_SAVINGS (ASCA), ROTATION (ROSCA fixed-order/lottery), AUCTION (chit/hui
+      bid-based payout order), EQUAL (flat split), INVESTMENT_PROPORTIONAL.
+    values: [PRO_RATA_SHARES, PRO_RATA_SAVINGS, ROTATION, AUCTION, EQUAL, INVESTMENT_PROPORTIONAL]
+  - name: shareoutFormula
+    type: String
+    description: >
+      The GroupTypeConfig.shareout_formula that parameterizes distributionStrategy
+      (mirrors GroupTypeConfigDto.shareout_formula). NONE for pure rotation groups.
+    values: [NONE, PRORATA_SHARES, PRORATA_SAVINGS, EQUAL, INVESTMENT_PROPORTIONAL]
   - name: totalPool
     type: Double
     description: Total corpus fund to be distributed (savings + interest - loans outstanding).
@@ -35,9 +61,17 @@ fields:
   - name: memberAllocations
     type: { optional: { list_of: ShareOutAllocation } }
     required: false
-    description: Per-member allocation breakdown. Null until distribution calculated.
+    description: >
+      Per-member allocation breakdown for ACCUMULATING pool_model (pro-rata strategies).
+      Null for ROTATING_PAYOUT groups (see rotationPayout) or until distribution calculated.
+  - name: rotationPayout
+    type: { optional: RotationPayout }
+    required: false
+    description: >
+      Single-recipient payout detail for ROTATING_PAYOUT pool_model (ROSCA). Null for
+      ACCUMULATING groups. Populated when distributionStrategy ∈ {ROTATION, AUCTION}.
 
-  # Nested allocation type
+  # Nested allocation type (ACCUMULATING pro-rata distribution)
   - name: ShareOutAllocation
     type: nested
     fields:
@@ -47,6 +81,17 @@ fields:
       - { name: contributionPercentage, type: Double }
       - { name: deductions, type: Double }
       - { name: netShareOut, type: Double }
+
+  # Nested rotation-payout type (ROTATING_PAYOUT single-recipient distribution)
+  - name: RotationPayout
+    type: nested
+    fields:
+      - { name: rotationPosition, type: Int }
+      - { name: recipientMemberId, type: Long }
+      - { name: recipientName, type: String }
+      - { name: payoutAmount, type: Double }
+      - { name: payoutOrderMethod, type: String }   # FIXED_ORDER | LOTTERY | AUCTION | NEED_BASED
+      - { name: winningBidAmount, type: { optional: Double } }   # null unless AUCTION
 
 used_by:
   - feature: share-out
@@ -62,4 +107,4 @@ used_by:
 
 capabilities_used: [has_api, has_flow]
 tier: critical
-tags: [share-out, distribution, datatable, fineract, share-out-feature]
+tags: [share-out, distribution, strategy-aware, rotation, auction, datatable, fineract, share-out-feature]

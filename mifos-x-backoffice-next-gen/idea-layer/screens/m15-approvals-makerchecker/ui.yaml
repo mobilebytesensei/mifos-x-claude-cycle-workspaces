@@ -1,0 +1,391 @@
+schema_version: "1.0"
+screen_id: m15-approvals-makerchecker
+feature: m15-approvals-makerchecker
+name: "M15 · Approvals (Maker-Checker)"
+archetype: list
+status: designed
+module: m15-approvals-makerchecker
+initial_state: loading
+
+# ─────────────────────────────────────────────────────────────────────────
+# M15 · Approvals (Maker-Checker) — the dedicated four-eye checker queue. A
+# self-scoped inbox of queued Fineract commands awaiting a checker (each
+# command a maker submitted was QUEUED not executed under maker-checker),
+# grouped by entity / action / maker. The checker inspects a queued command's
+# payload, then approves (POST /v1/makercheckers/{id}?command=approve), rejects
+# (?command=reject), or deletes a stale pending command (DELETE
+# /v1/makercheckers/{id}); a bulk-approve applies the approve command across a
+# multi-selection. Every approve/reject/delete is enqueued through
+# offline-sync-engine (durable idempotency key → exactly-once via POST
+# /v1/batches — a command must NEVER be double-approved), and every control
+# renders VISIBLE / DISABLED(reason) / HIDDEN purely from the
+# permission-capability-engine resolution of the checker's canCheck(action,
+# entity) = CHECKER_SUPER_USER ∨ {ACTION}_{ENTITY}_CHECKER. No role branching —
+# an admin (ALL_FUNCTIONS) sees every entry; a supervisor holding only
+# CREATE_CLIENT_CHECKER sees only CREATE_CLIENT entries. This is the WRITE /
+# action counterpart to needs-attention-inbox (which aggregates + inline-approves
+# from a fan-in feed); M15 is the deep, filterable, bulk-capable approval queue.
+# ─────────────────────────────────────────────────────────────────────────
+
+requires_permission: []   # the queue root is gated on hasAnyChecker (∃ *_CHECKER ∨ CHECKER_SUPER_USER),
+                          # resolved in the shell nav filter; each ENTRY is further gated per-entry by
+                          # canCheck(entry.action, entry.entity) before its approve/reject/delete shows.
+
+consumes_capabilities:
+  - has_ui
+  - has_offline_cache
+  - has_flow
+  - requires_auth
+
+# ── Business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-5) ──────────
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  description: "Reads the self-scoped maker-checker queue (GET /v1/makercheckers) via a store5 SourceOfTruth over androidx.room (CACHE_FIRST_SWR), offline-readable and grouped by entity/action/maker. Approve/reject/delete enqueue to the offline outbox with a durable idempotency key for exactly-once /v1/batches replay, gated by core/permissions canCheck so no replay race double-approves."
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "org.mobilenativefoundation.store.store5"
+    - "androidx.room"
+    - "kotlinx.serialization"
+    - "Fineract /v1/makercheckers (+?command=approve|reject, DELETE, /searchtemplate)"
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T11:40:00Z"
+  required_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/permissions
+    - core-base/store
+    - core-base/network
+
+state_model:
+  fields:
+    - name: entries
+      type: "List<MakerCheckerEntry>"
+      description: "The self-scoped queued commands awaiting a checker (audit id, action, entity, maker, madeOn, processing status, payload), permission-filtered to entries the checker canCheck."
+    - name: groups
+      type: "List<MakerCheckerGroup>"
+      description: "Buckets over the entries keyed by the active grouping (entity | action | maker) each with a count; drives the grouped list headers."
+    - name: groupBy
+      type: "MakerCheckerGrouping"
+      description: "Active grouping dimension (entity | action | maker); pure in-VM re-bucketing, no refetch."
+    - name: actionFilter
+      type: "String?"
+      description: "Optional actionName filter from the searchtemplate (e.g. DISBURSE); null = all actions."
+    - name: entityFilter
+      type: "String?"
+      description: "Optional entityName filter from the searchtemplate (e.g. LOAN); null = all entities."
+    - name: selectedEntry
+      type: "MakerCheckerEntry?"
+      description: "The entry whose payload is open in the detail/inspect panel; null = list only."
+    - name: selectedIds
+      type: "Set<Long>"
+      description: "Audit ids checked for a bulk-approve; only entries the checker canCheck are selectable."
+    - name: resolvingId
+      type: "Long?"
+      description: "Audit id of the entry a single approve/reject/delete is currently applied to (drives the submitting state on that row)."
+    - name: uiState
+      type: "MakerCheckerScreenState"
+      description: "Loading | Content | Empty | Submitting | Error — the 5 declared states, mapping 1:1 to the Store5 read plus the in-flight command overlay."
+
+# ── STATES (5) — every data-loading + command phase covered ─────────────────
+states:
+  loading:
+    description: "Resolving the self-scoped maker-checker queue (GET /v1/makercheckers) — CACHE_FIRST_SWR serves any cached queued commands instantly while a background revalidation refreshes; a shimmer list of grouped placeholder rows shows until entries resolve."
+    is_default: true
+  content:
+    description: "One or more queued commands the checker can act on, grouped under entity/action/maker headers with per-group counts. Each row shows the action, target entity, maker, and made-on; tapping a row opens the payload inspect panel. Approve / Reject / Delete render on a row only when the checker canCheck(entry.action, entry.entity); a multi-select bar enables bulk-approve across the checked entries."
+  empty:
+    description: "No pending approvals in the checker's scope — every queued command in reach has been approved, rejected, or deleted (or the maker never triggered a checkable command). Shows an 'all caught up' illustration + last-synced timestamp; no create affordance (the checker does not author queued commands here)."
+  submitting:
+    description: "An approve, reject, delete, or bulk-approve command is in flight — it has been enqueued to the offline outbox with a durable idempotency key (replays exactly-once via POST /v1/batches). The affected row(s) show an inline progress/queued indicator and are locked from re-selection so a command can never be double-approved; the rest of the queue stays interactive."
+  error:
+    description: "The queue fetch failed and no cache exists (or the server returned a 4xx/5xx). An error message with a Retry CTA is shown; a 403 routes into the permission-drift refresh (the checker's access may have changed) rather than a crash — the checker is dropped to the nearest visible ancestor if approvals are no longer permitted."
+
+# ── Shell (reached as a permission-gated nav root; no bottom-nav tab — M15 is a
+#    should_have/P2 module surfaced in the drawer/rail only when the user holds
+#    >=1 *_CHECKER ∨ CHECKER_SUPER_USER) ─────────────────────────────────────
+shell:
+  bottom_navigation_visible: false
+  top_app_bar_visible: true
+  fab_visible: false
+  snackbar_visible: true
+
+# ── Components (id: FIRST) ──────────────────────────────────────────────────
+components:
+  - id: header
+    type: header
+    label: "{strings.m15_title}"
+    testTag: "m15-approvals-makerchecker_header"
+    visible_states: [loading, content, empty, submitting, error]
+
+  - id: group_by_selector
+    type: segmented_control
+    label: "{strings.m15_group_by}"
+    testTag: "m15-approvals-makerchecker_group_by"
+    visible_states: [content, submitting]
+    options: [entity, action, maker]
+    on_click:
+      action: switch_group_by
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Switch how the queued commands are bucketed — by target entity, by action, or by the maker who submitted them — a pure in-ViewModel groupBy state change that re-derives the group headers from the already-loaded entries with no refetch."
+        produces_state: content
+        invalidates:
+          - groups
+        action_contract_hash: "sha256:m15-switch-group-by"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:40:00Z"
+
+  - id: filter_bar
+    type: filter_chip_row
+    label: "{strings.m15_filter}"
+    testTag: "m15-approvals-makerchecker_filter"
+    visible_states: [content, submitting]
+    on_click:
+      action: apply_search_template_filter
+      state: loading
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract GET /v1/makercheckers/searchtemplate + GET /v1/makercheckers?actionName=&entityName="
+        reads_from:
+          - table: maker_checker_inbox
+        produces_state: content
+        invalidates:
+          - entries
+        description: "Open the action/entity filter (options from GET /v1/makercheckers/searchtemplate) and re-issue GET /v1/makercheckers?actionName=&entityName= through the Store5 SourceOfTruth to narrow the queue to a single action or entity family, refreshing the Room cache and the FetchedAt watermark before returning to content; clearing the chips re-fetches the full self-scoped queue."
+        action_contract_hash: "sha256:m15-apply-filter"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:40:00Z"
+
+  - id: content_area
+    type: content_area
+    label: "Self-scoped checker queue of pending commands, grouped by entity / action / maker"
+    testTag: "m15-approvals-makerchecker_content"
+    empty_label: "{strings.m15_empty}"
+
+  - id: group_header
+    type: group_header
+    label: "Group header with the grouping key (entity / action / maker) + pending count"
+    testTag: "m15-approvals-makerchecker_group_header"
+    visible_states: [content, submitting]
+
+  - id: command_row
+    type: list_item
+    label: "One queued command row: action, target entity, maker, made-on, and a pending-approval badge"
+    testTag: "m15-approvals-makerchecker_item"
+    visible_states: [content, submitting]
+    on_click:
+      action: open_command_payload
+      target: m15-approvals-makerchecker
+      state: content
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Open the tapped queued command's payload inspect panel — the maker, action, target entity, made-on, and the full command JSON body the checker must review before deciding — in the same master-detail surface; approve/reject/delete render inside the panel only when the checker canCheck(action,entity)."
+        action_contract_hash: "sha256:m15-open-payload"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:40:00Z"
+
+  - id: select_toggle
+    type: checkbox
+    label: "{strings.m15_select_entry}"
+    testTag: "m15-approvals-makerchecker_select"
+    visible_states: [content, submitting]
+    on_click:
+      action: toggle_entry_selection
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Add or remove this entry's audit id from the bulk-approve selection set; a pure in-ViewModel selectedIds change that enables the bulk-approve bar. Only entries the checker canCheck(action,entity) expose the checkbox, so a bulk-approve can never span an entry the checker is not authorized for."
+        produces_state: content
+        invalidates:
+          - selectedIds
+        action_contract_hash: "sha256:m15-toggle-select"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:40:00Z"
+
+  - id: priority_badge
+    type: badge
+    label: "Pending-approval badge (queued command awaiting a checker)"
+    testTag: "m15-approvals-makerchecker_pending_badge"
+    visible_states: [content, submitting]
+
+  - id: approve_button
+    type: button
+    label: "{strings.m15_approve}"
+    testTag: "m15-approvals-makerchecker_approve"
+    variant: primary
+    visible_states: [content, submitting]
+    gated_permission: CHECKER_SUPER_USER
+    description: "Shown on a row/panel only when the checker canCheck(entry.action, entry.entity) — CHECKER_SUPER_USER or the entry's {ACTION}_{ENTITY}_CHECKER; otherwise HIDDEN."
+    on_click:
+      action: approve_entry
+      state: submitting
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/makercheckers/{auditId}?command=approve"
+        reads_from:
+          - table: maker_checker_inbox
+        writes_to:
+          - table: draft_outbox
+        produces_state: content
+        invalidates:
+          - entries
+        description: "Enqueue an approve command (POST /v1/makercheckers/{auditId}?command=approve) for the selected queued command through the offline outbox with a durable idempotency key so approval works offline and replays EXACTLY-ONCE via POST /v1/batches — the entry is locked from re-selection while in flight so a command can never be double-approved. The checker's canCheck(action,entity) is re-verified in the domain layer before dispatch; on replay a revoked permission surfaces BLOCKED_PERMISSION_REVOKED rather than approving. On success the underlying command executes and the entry leaves the queue."
+        action_contract_hash: "sha256:m15-approve-entry"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:40:00Z"
+
+  - id: reject_button
+    type: button
+    label: "{strings.m15_reject}"
+    testTag: "m15-approvals-makerchecker_reject"
+    variant: secondary
+    visible_states: [content, submitting]
+    gated_permission: CHECKER_SUPER_USER
+    description: "Shown alongside Approve only when the checker canCheck(entry.action, entry.entity)."
+    on_click:
+      action: reject_entry
+      state: submitting
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/makercheckers/{auditId}?command=reject"
+        reads_from:
+          - table: maker_checker_inbox
+        writes_to:
+          - table: draft_outbox
+        produces_state: content
+        invalidates:
+          - entries
+        description: "Enqueue a reject command (POST /v1/makercheckers/{auditId}?command=reject) for the selected queued command through the offline outbox with a durable idempotency key so the rejection replays exactly-once via POST /v1/batches; the maker is notified that their command was declined. Requires the checker's canCheck(action,entity), re-checked in the domain layer; the entry is locked while in flight and leaves the queue on success — the underlying command is discarded, never executed."
+        action_contract_hash: "sha256:m15-reject-entry"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:40:00Z"
+
+  - id: delete_button
+    type: button
+    label: "{strings.m15_delete}"
+    testTag: "m15-approvals-makerchecker_delete"
+    variant: destructive
+    visible_states: [content, submitting]
+    gated_permission: CHECKER_SUPER_USER
+    description: "Shown in the payload panel for a stale/obsolete pending command; requires an explicit confirm dialog before it enqueues."
+    on_click:
+      action: delete_entry
+      state: submitting
+      action_contract:
+        effect: delete
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract DELETE /v1/makercheckers/{auditId}"
+        reads_from:
+          - table: maker_checker_inbox
+        writes_to:
+          - table: draft_outbox
+        produces_state: content
+        invalidates:
+          - entries
+        description: "After an explicit confirm dialog, enqueue a DELETE /v1/makercheckers/{auditId} for a stale or obsolete pending command (e.g. the target entity was already actioned another way) through the offline outbox with a durable idempotency key so the removal replays exactly-once via POST /v1/batches — the queued command is purged, neither approved nor executed, and is never silently dropped. Requires the checker's canCheck(action,entity), re-checked in the domain layer; the entry is locked while in flight and leaves the queue on success."
+        action_contract_hash: "sha256:m15-delete-entry"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:40:00Z"
+
+  - id: bulk_approve_button
+    type: button
+    label: "{strings.m15_bulk_approve}"
+    testTag: "m15-approvals-makerchecker_bulk_approve"
+    variant: primary
+    visible_states: [content, submitting]
+    gated_permission: CHECKER_SUPER_USER
+    description: "Shown in the multi-select bar only when >=1 entry is selected; every selected entry is already canCheck-gated at selection time."
+    on_click:
+      action: bulk_approve_selected
+      state: submitting
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/batches (enclosingTransaction=false — approve each selected auditId)"
+        reads_from:
+          - table: maker_checker_inbox
+        writes_to:
+          - table: draft_outbox
+        produces_state: content
+        invalidates:
+          - selectedIds
+          - entries
+        description: "Enqueue an approve command for every audit id in the bulk selection as an Independent batch (POST /v1/batches, one approve per selected entry) through the offline outbox with per-entry durable idempotency keys so a bulk approval replays exactly-once and a single failed entry never aborts the rest. Each entry's canCheck(action,entity) was verified at selection time and is re-checked per-command in the domain layer; every selected entry is locked while in flight so none can be double-approved, and any that later fail surface individually in needs-attention-inbox."
+        action_contract_hash: "sha256:m15-bulk-approve"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:40:00Z"
+
+  - id: open_needs_attention_link
+    type: text_link
+    label: "{strings.m15_open_needs_attention}"
+    testTag: "m15-approvals-makerchecker_open_needs_attention"
+    variant: text
+    visible_states: [content, empty, submitting]
+    description: "Read-only cross-link into the unified needs-attention-inbox; M15 never mutates that feed."
+    on_click:
+      action: open_needs_attention
+      target: needs-attention-inbox
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Navigate to the unified needs-attention-inbox (the fan-in 'what needs me' feed) so the checker can see approvals alongside their failed replays, overdue tasks, and alerts; a pure read-only cross-link — M15 is the deep approval queue and the inbox aggregates it, this jump never modifies the inbox."
+        action_contract_hash: "sha256:m15-open-needs-attention"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:40:00Z"
+
+  - id: retry_button
+    type: button
+    label: "{strings.m15_retry}"
+    testTag: "m15-approvals-makerchecker_retry"
+    variant: text
+    visible_states: [error]
+    enabled_states: [error]
+    on_click:
+      action: retry_load
+      state: loading
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract GET /v1/makercheckers"
+        reads_from:
+          - table: maker_checker_inbox
+        produces_state: loading
+        invalidates:
+          - listFetchedAt
+        description: "Re-issue the self-scoped GET /v1/makercheckers through the Store5 SourceOfTruth to rebuild the checker queue after a fetch failure, refreshing the Room cache and the FetchedAt watermark, then transition back to content when entries resolve. On a 403 this routes into the permission-drift refresh (the checker's access may have changed) instead of retrying blind."
+        action_contract_hash: "sha256:m15-retry"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:40:00Z"

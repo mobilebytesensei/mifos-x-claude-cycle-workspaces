@@ -1,0 +1,88 @@
+schema_version: v1.0.0
+feature: m04-loan-portfolio
+scenarios:
+  # ── Behavior: financial-correctness + permission keystones ────────────
+  - id: repayment_posts_exactly_once_offline
+    description: "A repayment queued offline and replayed twice (network flap) posts EXACTLY ONCE via the durable idempotency key — money is never double-posted."
+    preconditions: ["user holds REPAYMENT_LOAN", "loan #482910 is Active", "network unavailable", "repayment queued, then retried twice on reconnect"]
+    actions: ["record repayment ₹1,500", "restore connectivity", "force a retry of the same command"]
+    assertions: ["POST /v1/loans/482910/transactions?command=repayment replays with the SAME Idempotency-Key both times", "Fineract shows one repayment posting, zero duplicates", "outbox row ends SUBMITTED", "loan balance decremented exactly once"]
+    priority: high
+
+  - id: approve_disabled_for_maker_without_permission
+    description: "A maker persona sees Approve DISABLED-with-reason (not hidden) while Repayment stays enabled — same binary, permission-driven."
+    preconditions: ["user holds READ_LOAN + REPAYMENT_LOAN but NOT APPROVE_LOAN", "loan is Pending Approval"]
+    actions: ["open the loan 360° detail"]
+    assertions: ["Record repayment control enabled", "Approve control visible but disabled with reason 'Requires APPROVE_LOAN — ask your supervisor'", "no APPROVE_LOAN request is dispatchable"]
+    priority: high
+
+  - id: approve_queues_as_pending_approval_under_maker_checker
+    description: "Under a maker-checkerable APPROVE_LOAN, approving queues a command (PENDING_APPROVAL) rather than applying optimistically."
+    preconditions: ["user holds APPROVE_LOAN", "APPROVE_LOAN is maker-checkerable on this tenant", "loan is Pending Approval"]
+    actions: ["tap Approve", "confirm the approve form"]
+    assertions: ["response is a queued commandId with empty changes", "row shows 'Submitted for approval' (third state, not success)", "loan status NOT optimistically flipped to Approved", "checker inbox shows the queued command"]
+    priority: high
+
+  - id: backdated_repayment_requires_inpast
+    description: "A backdated repayment is blocked for a user without REPAYMENTINPAST_LOAN — the date picker's past range is a capability."
+    preconditions: ["user holds REPAYMENT_LOAN but NOT REPAYMENTINPAST_LOAN"]
+    actions: ["open the repayment form", "attempt to pick a past transaction date"]
+    assertions: ["the past date range is locked/disabled", "a backdated repayment cannot be submitted", "reason surfaced ('Requires REPAYMENTINPAST_LOAN')"]
+    priority: high
+
+  - id: live_schedule_preview_recomputes
+    description: "During a loan application the repayment schedule preview recomputes live from entered principal/term/rate via calculateLoanSchedule."
+    preconditions: ["user holds CREATE_LOAN", "loan application wizard open"]
+    actions: ["enter principal 50000, term 12, rate 18%", "change term to 24", "wait for the debounced recalculation"]
+    assertions: ["POST /v1/loans?command=calculateLoanSchedule fires with the updated inputs", "installment breakdown (principal/interest/fees/total) re-renders live", "no loan is created by the preview"]
+    priority: high
+
+  - id: disburse_only_on_approved_loan
+    description: "Disburse is only actionable on an Approved loan; on a Pending Approval loan it is stage-gated off."
+    preconditions: ["user holds DISBURSE_LOAN", "loan is Pending Approval (not yet approved)"]
+    actions: ["open the loan detail"]
+    assertions: ["Disburse control is disabled by lifecycle-state (not by permission)", "after approval, Disburse enables", "disbursement opens the template form (GET /v1/loans/{id}/template?command=disburse)"]
+    priority: high
+
+  - id: rejected_command_routes_to_needs_attention
+    description: "A loan command the server rejects lands in Needs-Attention with the server error, never silently dropped."
+    preconditions: ["user holds WRITEOFF_LOAN", "a writeoff is queued that the server rejects (validation)"]
+    actions: ["queue a writeoff", "trigger sync", "wait for the batch response"]
+    assertions: ["rejected command marked FAILED with the Fineract server error", "row appears in needs-attention-inbox for Retry/Edit/Discard", "error state shows the verbatim server message", "never silently dropped"]
+    priority: high
+
+  # ── State coverage (one per ui.yaml state) ────────────────────────────
+  - id: loading_state_shows_cached_shimmer
+    description: "The loading state shows a shimmer with the last cached content preserved underneath."
+    preconditions: ["loan list cached from a prior session", "a fresh fetch is in flight"]
+    actions: ["open the Loans module"]
+    assertions: ["loading shimmer shown", "last cached loans remain visible during revalidation (CACHE_FIRST_SWR)"]
+    priority: medium
+
+  - id: content_state_lists_loans
+    description: "The content state lists loan accounts with client, product, principal, status, outstanding, PAR days."
+    preconditions: ["user holds READ_LOAN", "3 loans in the office/portfolio"]
+    actions: ["open the Loans module"]
+    assertions: ["3 loan rows visible", "each row shows client, product, status chip, outstanding, PAR days", "tapping a row opens the 360° detail"]
+    priority: medium
+
+  - id: empty_state_offers_new_loan_cta_when_permitted
+    description: "The empty state shows the illustration + message, and the 'New loan application' CTA only if the user holds CREATE_LOAN."
+    preconditions: ["no loans in the office/portfolio"]
+    actions: ["open the Loans module as a CREATE_LOAN holder, then as a read-only user"]
+    assertions: ["empty message shown in both", "New loan CTA visible for the CREATE_LOAN holder", "New loan CTA HIDDEN (fail-closed) for the read-only user"]
+    priority: medium
+
+  - id: no_network_repayment_stays_queued
+    description: "Offline, a repayment stays queued with a persistent banner and auto-drains on regain (via offline-sync-engine)."
+    preconditions: ["device offline", "user holds REPAYMENT_LOAN"]
+    actions: ["record a repayment offline", "restore connectivity"]
+    assertions: ["repayment enters the outbox as PENDING with a durable idempotency key", "a 'queued · will sync when online' indication is shown", "on regain OfflineSubmitSyncer auto-drains it exactly-once"]
+    priority: medium
+
+  - id: error_state_403_drift_refreshes_permissions
+    description: "A 403 NoAuthorization on a loan action refreshes permissions and re-resolves the surface rather than blind-retrying."
+    preconditions: ["a queued command replays and the server returns 403 NoAuthorization (access changed)"]
+    actions: ["observe after the 403"]
+    assertions: ["the command is NOT blindly retried", "permission-capability-engine refresh is triggered", "the now-denied control is pruned from the loan detail", "a single 'your access has changed' notice is shown"]
+    priority: low

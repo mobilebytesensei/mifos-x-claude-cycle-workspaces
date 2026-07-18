@@ -1,0 +1,141 @@
+feature: m16-communications
+# Reads (campaign list + recipient reports, template library, hooks, email config) ride
+# CACHE_FIRST_SWR Store5 over a Room communications table: the cached row emits instantly
+# (offline-safe) and a background revalidation replaces it when FreshnessBands mark it Stale.
+# Campaign lifecycle commands (create/activate/close) and management commands (create template /
+# register hook / save email config) are command-shaped and side-effecting: they are assembled as
+# command JsonObjects and written to the durable framework_submit_drafts outbox (offline-sync-engine)
+# with an idempotency key, then replayed exactly-once via POST /v1/batches — never a direct online
+# call that could double-activate a campaign.
+entries:
+  - trigger: on_mount
+    source: api.list_sms_campaigns
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: campaigns_read_failed
+    tables:
+      - name: communications
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Room communications cache (entity_type, entity_id, name, status, payload_json, fetched_at)
+          keyed by entity_type=campaign|template|hook|email_config. CACHE_FIRST_SWR — the campaign list
+          renders instantly from cache offline; validator.markFresh() follows every successful fetch so
+          TTL starts.
+
+  - trigger: on_open_campaign
+    source: api.get_campaign_recipient_report
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: recipient_report_read_failed
+    tables:
+      - name: communications
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          The per-recipient delivery report for the selected campaign (campaign_id, message_id, recipient,
+          delivery_status, sent_at) upserted under the campaign row. Cached per campaign_id so the report
+          renders offline; switch_comms_tab re-projects over cached rows without a refetch.
+
+  - trigger: on_view_templates
+    source: api.list_templates
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: templates_read_failed
+    tables:
+      - name: communications
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          The message / UGD document template library (template_id, name, entity, type, mustache_body)
+          upserted as entity_type=template rows. Read-only, CACHE_FIRST_SWR so the library renders instantly
+          offline and feeds the create-campaign template picker.
+
+  - trigger: on_view_hooks
+    source: api.list_hooks
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: hooks_read_failed
+    tables:
+      - name: communications
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Registered outbound webhooks (hook_id, name, is_active, events_json, payload_url) upserted as
+          entity_type=hook rows. CACHE_FIRST_SWR so the hooks list renders offline.
+
+  - trigger: on_command
+    source: api.activate_sms_campaign
+    target_state: submitting
+    loading_state: submitting
+    error_state: error
+    on_error:
+      nav_target: needs-attention-inbox
+      error_code: campaign_command_rejected
+    tables:
+      - name: draft_outbox
+        mutation: write
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          RoomSubmitOutbox over framework_submit_drafts (Room v11). Every campaign lifecycle command
+          (create / activate / close) and management command (create template / register hook / save email
+          config) is serialized as a command JsonObject with a DURABLE idempotency_key + (action, entity)
+          composite key BEFORE it is sent — the local system-of-record until replayed exactly-once via
+          POST /v1/batches. PENDING never pruned; a killed-mid-submit activation reuses its stored
+          idempotency key on replay so a campaign never double-activates. A server rejection routes the
+          entry to needs-attention-inbox with the Fineract server_error; the (action, entity) permission is
+          re-checked before replay.
+      - name: communications
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Optimistic campaign-status update (Pending -> Active, Active -> Closed) marked pending-sync until
+          the outbox replay confirms; reconciled against the server on delta-pull.
+
+# Reads consumed by the ui.yaml action_contracts (reads_from) + writes (writes_to).
+reads:
+  - name: communications
+    source: api.list_sms_campaigns
+    cache: room
+    note: "The campaigns + recipient reports + templates + hooks + email-config working set keyed by (entity_type, entity_id); read by every action_contract's reads_from and re-projected by switch_comms_tab."
+writes:
+  - name: draft_outbox
+    target: api.activate_sms_campaign
+    cache: room
+    note: "The durable command outbox (framework_submit_drafts) that every create/activate/close-campaign, create-template, register-hook and save-email-config action_contract writes_to for exactly-once replay."
+
+cache:
+  strategy: cache_first
+  ttl_seconds: 900
+  key_template: "fineract:communications:{entityType}"
+  shape: list
+  note: >-
+    Campaigns, recipient reports, templates, hooks and email config are CACHE_FIRST_SWR over the Room
+    communications table: the cached row emits immediately and a background revalidation refreshes it only
+    when FreshnessBands mark it Stale. validator.markFresh() follows every successful fetch so TTL starts;
+    offline the cached campaign list is the source of truth and the offline banner is shown, while any
+    queued create/activate/close command carries an optimistic pending-sync marker until it replays.

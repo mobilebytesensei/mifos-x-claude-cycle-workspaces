@@ -1,0 +1,92 @@
+schema_version: v1.0.0
+feature: m14-reports-search-audit
+
+entry_points:
+  - type: nav_root
+    description: "Reports, Search & Audit module root — gated on the report/audit permission groups; the Reports pane needs a READ_{report}/REPORTING_SUPER_USER report, the Audit pane needs READ_AUDIT (hidden otherwise), Search is available to any authenticated operator. Hidden entirely when the operator holds none of these."
+  - type: from_accounting
+    description: "The report runner is reached from the accounting-close flow (m07-accounting) to run a period/GL report before closing."
+
+transitions:
+  # ── initial load ──
+  - from: loading
+    to: content
+    trigger: "report catalog (+ first audit page) loaded"
+  - from: loading
+    to: empty
+    trigger: "active pane resolved to zero rows (no runnable reports / empty audit filter)"
+  - from: loading
+    to: error
+    trigger: "catalog/audit fetch failed and no cache present"
+
+  # ── pane navigation ──
+  - from: content
+    to: content
+    trigger: "select_tab (Reports <-> Search <-> Audit)"
+  - from: empty
+    to: content
+    trigger: "tab switched to a populated pane"
+
+  # ── report parameters routed through dynamic-template-forms ──
+  - from: content
+    to: dynamic-template-forms
+    trigger: "open_report_params"
+    nav: dynamic-template-forms
+
+  # ── report execution ──
+  - from: content
+    to: running
+    trigger: "run_report"
+  - from: running
+    to: result
+    trigger: "report returns (fresh online run, or cached result for same params offline)"
+  - from: running
+    to: error
+    trigger: "report run failed (400 param validation / 403 authorization / no cache offline)"
+
+  # ── global search ──
+  - from: content
+    to: content
+    trigger: "run_global_search (hits rendered into the Search pane)"
+  - from: content
+    to: empty
+    trigger: "run_global_search matched nothing"
+  - from: content
+    to: m02-clients
+    trigger: "open_search_hit (deep-link into the owning module: client/loan/group/savings)"
+    nav: m02-clients
+
+  # ── audit trail ──
+  - from: content
+    to: content
+    trigger: "apply_audit_filter (re-fetch the trail with the chosen filter)"
+  - from: content
+    to: result
+    trigger: "open_audit_detail (expand a trail entry to its full detail)"
+
+  # ── export (local file -> share sheet, no server write) ──
+  - from: result
+    to: result
+    trigger: "export_report (render CSV/PDF and hand to the share sheet)"
+
+  # ── recovery ──
+  - from: error
+    to: loading
+    trigger: "retry_load"
+  - from: error
+    to: content
+    trigger: "403 drift: permissions re-fetched, denied panes/reports pruned, retry succeeded"
+
+cross_links:
+  - to: permission-capability-engine
+    relationship: read-only
+    note: "Every pane + report is gated by the runtime PermissionEvaluator; a report is listed only when READ_{reportName}/REPORTING_SUPER_USER is held and the Audit pane only when READ_AUDIT is held. A 403 drift on any fetch re-resolves the surface."
+  - to: dynamic-template-forms
+    relationship: renders_forms
+    note: "Report parameter entry (date range, office, currency, R_ params) is rendered by dynamic-template-forms before GET /v1/runreports/{reportName} runs."
+  - to: m02-clients
+    relationship: deep_link
+    note: "A client search hit deep-links into the client module (loan/group/savings hits deep-link into their own modules)."
+  - to: m07-accounting
+    relationship: entered_from
+    note: "The report runner is entered from the accounting-close flow to run a period/GL report."

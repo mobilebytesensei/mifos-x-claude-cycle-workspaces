@@ -5,49 +5,239 @@ feature_id: member-list
 entries:
   - screen_id: memberListScreen
     trigger: on_mount
+    description: >
+      Load the first page of members for the current group via the Fineract companion API.
+      get_group_members returns paginated clients with role, savings balance, and loan status
+      resolved server-side. Offset-based pagination, page_size 20. Auth token is applied by
+      the shared HTTP client; groupId is taken from nav_params. Fresh SQLDelight rows are
+      revalidated in the background; cached rows are served immediately if within TTL.
+      cmp-network-monitor gates the fetch — offline visits serve cached rows and surface a
+      snackbar rather than an error state.
     endpoints:
       - { api_id: get_group_members, transport: rest, method: get }
+    tables:
+      - name: member_list_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: Member, role: response, api_id: get_group_members }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: stale_while_revalidate
       ttl_seconds: 120
-      key_template: "member_list:{groupId}"
+      key_template: "member_list:{groupId}:page:{offset}"
     error_paths:
-      - { error_code: "401", behavior: navigate, nav_target: login }
+      - { error_code: "401", behavior: navigate, nav_target: login-signup }
       - { error_code: "403", behavior: snackbar, message_key: error_server }
       - { error_code: "404", behavior: error_state, message_key: error_server }
       - { error_code: "500", behavior: error_state, message_key: error_server }
-      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_network }
+    notes: >
+      cmp-network-monitor gates whether to attempt the network fetch or serve cached rows.
+      Empty pageItems on first page → Empty screen state (surfaces "No members yet" CTA to
+      member-add). role and loanStatus enums are validated against the DTO closed sets
+      (CHAIRPERSON/TREASURER/SECRETARY/MEMBER and ACTIVE/NONE/OVERDUE respectively);
+      unknown values fall back to MEMBER / NONE so the row still renders.
 
   - screen_id: memberListScreen
     trigger: on_refresh
+    action: OnRefresh
+    description: >
+      Pull-to-refresh resets pagination to offset 0 and forces a fresh fetch, bypassing
+      stale_while_revalidate. Existing cached rows for this groupId are replaced on success.
+      isRefreshing flips true for the duration of the fetch to drive the pull-to-refresh
+      spinner; errors surface as a snackbar so the existing list stays visible.
     endpoints:
       - { api_id: get_group_members, transport: rest, method: get }
+    tables:
+      - name: member_list_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: Member, role: response, api_id: get_group_members }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: bypass_and_refresh
-      key_template: "member_list:{groupId}"
+      ttl_seconds: 120
+      key_template: "member_list:{groupId}:page:0"
     error_paths:
-      - { error_code: "network.offline", behavior: fallback_cache, message_key: error_offline }
+      - { error_code: "network.offline", behavior: snackbar, message_key: error_network }
       - { error_code: "500", behavior: snackbar, message_key: error_server }
+    notes: >
+      Invalidates all paginated cache pages for this groupId and re-primes page 0.
+      error_state is NOT shown on refresh — errors surface via snackbar so the existing
+      list stays visible on screen.
 
   - screen_id: memberListScreen
     trigger: on_interact
-    interaction: scroll_to_end
+    action: OnLoadMore
+    description: >
+      Pagination load-next-page fires when the list is scrolled to the end and hasMorePages
+      is true. Increments currentOffset by page_size (20) and appends returned rows to the
+      SQLDelight cache. isLoadingMore drives the linear load_more_indicator at the list foot.
     endpoints:
       - { api_id: get_group_members, transport: rest, method: get }
     params_override:
       offset: "{{currentOffset + pageSize}}"
+    tables:
+      - name: member_list_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
     dtos:
       - { name: Member, role: response, api_id: get_group_members }
+    produces_state: Content
     auth_required: true
     cache:
       strategy: append_to_existing
-      key_template: "member_list:{groupId}:offset:{offset}"
+      ttl_seconds: 120
+      key_template: "member_list:{groupId}:page:{offset}"
     error_paths:
-      - { error_code: "network.offline", behavior: snackbar, message_key: error_offline }
+      - { error_code: "network.offline", behavior: snackbar, message_key: error_network }
       - { error_code: "500", behavior: snackbar, message_key: error_server }
+    notes: >
+      hasMorePages is computed from totalFilteredRecords vs current row count. Duplicate
+      client ids (rare; server-side pagination window overlaps) are collapsed by the
+      SQLDelight primary key on (groupId, memberId). Errors do NOT block already-loaded
+      rows — the list keeps rendering and a retry snackbar action re-issues this trigger.
+
+  - screen_id: memberListScreen
+    trigger: on_interact
+    action: Retry
+    description: >
+      Retry from the error_state re-issues the initial get_group_members call, resetting
+      pagination to offset 0 and clearing any cached error. cmp-network-monitor is consulted
+      first — an offline retry surfaces the offline snackbar rather than a fresh network fetch.
+    endpoints:
+      - { api_id: get_group_members, transport: rest, method: get }
+    tables:
+      - name: member_list_cache
+        persistence_contract: sqldelight_entity
+        mutation: upsert
+    dtos:
+      - { name: Member, role: response, api_id: get_group_members }
+    produces_state: Content
+    auth_required: true
+    cache:
+      strategy: bypass_and_refresh
+      ttl_seconds: 120
+      key_template: "member_list:{groupId}:page:0"
+    error_paths:
+      - { error_code: "network.offline", behavior: snackbar, message_key: error_network }
+      - { error_code: "500", behavior: error_state, message_key: error_server }
+    notes: >
+      Retry is offered on the error_state only; the empty state has its own CTA (Add Member).
+      A successful retry transitions Error → Loading → Content; a failed retry stays on
+      Error and re-arms the CTA.
+
+  - screen_id: memberListScreen
+    trigger: on_mount
+    action: ZeroMembersReceived
+    description: >
+      When get_group_members returns totalFilteredRecords=0 on the first page, the
+      ViewModel transitions to the Empty screen state, surfacing the empty_state component
+      with the Add Member CTA. This is a legitimate API success, not an error path.
+    endpoints:
+      - { api_id: get_group_members, transport: rest, method: get }
+    tables:
+      - name: member_list_cache
+        persistence_contract: sqldelight_entity
+        mutation: read
+    dtos:
+      - { name: Member, role: response, api_id: get_group_members }
+    produces_state: Empty
+    auth_required: true
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 120
+      key_template: "member_list:{groupId}:page:0"
+    error_paths: []
+    notes: >
+      Cache is populated with zero rows so an offline visit also renders the Empty state.
+      The top_bar stays visible and the add_member_fab is replaced by the empty_state CTA
+      (which routes to the same member-add destination with the same groupId param).
+
+  - screen_id: memberListScreen
+    trigger: on_interact
+    action: OnMemberClick
+    description: >
+      Row-tap and swipe both dispatch OnMemberClick which navigates to the member-profile
+      screen with memberId and groupId route params. Read-only nav — no server call or
+      cache mutation runs from this screen; downstream member-profile owns its own fetch.
+    endpoints: []
+    tables: []
+    dtos:
+      - { name: Member, role: request, api_id: get_group_members }
+    produces_state: Content
+    auth_required: true
+    error_paths: []
+    notes: >
+      In-flight pagination requests are NOT cancelled on nav-forward; they resolve into
+      the SQLDelight cache in the background so returning to this screen shows the
+      full roster.
+
+  - screen_id: memberListScreen
+    trigger: on_interact
+    action: OnAddMember
+    description: >
+      FAB tap and empty-state CTA both dispatch OnAddMember which navigates to member-add
+      with groupId as a route param. Read-only nav — no server call or cache mutation
+      runs from this screen.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: true
+    error_paths: []
+    notes: >
+      member-add owns roster mutation. On successful add-member return, member-list
+      re-issues the OnRefresh trigger to refresh the list with the newly-added member.
+
+  - screen_id: memberListScreen
+    trigger: on_interact
+    action: OnBack
+    description: >
+      Pops the member-list via NavController back to the group-dashboard. Read-only roster
+      screen so no persistence or roster mutation runs on back navigation. Any in-flight
+      pagination fetch is cancelled.
+    endpoints: []
+    tables: []
+    dtos: []
+    produces_state: Content
+    auth_required: true
+    error_paths: []
+    notes: >
+      OnBack surfaces the parent group-dashboard with the current member count preserved.
+
+tables:
+  - name: member_list_cache
+    description: >
+      SQLDelight cache of Member rows scoped to a single groupId. Composite primary key
+      (groupId, memberId). Supports paginated upsert (append) and full-refresh replace.
+      role and loanStatus are stored as TEXT with a check constraint against the closed
+      enum set (CHAIRPERSON/TREASURER/SECRETARY/MEMBER, ACTIVE/NONE/OVERDUE). Offline
+      visits serve stale rows without an expiry gate.
+    persistence_contract: sqldelight_entity
+    primary_key: "(groupId, memberId)"
+    mutations: [upsert, read]
+    offline_strategy: serve_stale
+
+cache:
+  strategy: stale_while_revalidate
+  ttl_seconds: 120
+  notes: >
+    Members cached 2 min (stale_while_revalidate). Pull-to-refresh and Retry override to
+    bypass_and_refresh. Paginated cache keyed per (groupId, offset). api.yaml#cache mirrors
+    the same 120s TTL — single source of truth is this file.
+
+sync_queue:
+  entries: []
+  notes: >
+    Member list is read-only from this screen; roster mutation happens on member-add /
+    member-profile. No sync-queue entries needed for member-list itself.
+
+last_generate:
+  timestamp: "2026-07-18T07:30:00Z"
+  generator: idea-data-flow
+  framework_version: "2.86.0"

@@ -35,20 +35,24 @@ CommonPurse provides a Kotlin Multiplatform mobile app that digitizes every step
 
 ## Target Users
 
-### Admin Client (Staff Auth)
+> **One unified identity — anyone can self-sign-up.** No up-front "admin vs member" choice. After login, capabilities are **auto-resolved per group** from the roles the user holds. The same person can organize one group and be a plain member of another. (Global self-signup pivot, 2026-07-17.)
+
+### Roles (resolved per group, after login)
+| Role | Scope | Key Capabilities |
+|---|---|---|
+| **Organizer** | creates & owns a group; acts as its loan officer | create/approve loans, schedule + run meetings, record savings, execute share-out, invite members |
+| Treasurer | delegated by organizer | record savings, repayments, fines, attendance |
+| Chairperson | delegated | approve/reject loans, run meetings, initiate share-out |
+| Secretary | delegated | meeting notes, action items |
+| **Member** | any group participant | view own savings/loans, group summary, request loans, participate in votes |
+
+> A user with **zero groups** lands on "create your first group / join with an invite code" — never rejected.
+
+### Optional supervisory tier (opt-in, NOT the default identity)
 | Persona | Role | Key Capabilities |
 |---------|------|-----------------|
-| Amina | Group Treasurer / Secretary | Record savings (group-linked + individual), track loans, calculate share-out, mark attendance |
-| Joseph | Group Chairperson | Conduct meetings, approve/reject loans, initiate share-out, manage group parameters |
-| David | MFI Field Officer | Read-only cross-group monitoring, force sync, reports |
+| David | MFI Field Officer | Read-only cross-group monitoring, reports |
 | Sarah | NGO Program Manager | Read-only analytics, donor reports, program metrics |
-
-### End User Client (Self-Service Auth)
-| Persona | Role | Key Capabilities |
-|---------|------|-----------------|
-| Grace | Regular Group Member | View own savings/loans (group-linked + individual), group summary, request loans, see share-out projection |
-
-> **Two client types**: Admin (manages groups via staff auth) vs End User (sees own data via self-service auth). Different navigation graphs, different screens, different permissions.
 
 ## Success Metrics
 
@@ -62,6 +66,11 @@ CommonPurse provides a Kotlin Multiplatform mobile app that digitizes every step
 ## Scope
 
 ### In Scope (v1.0.0)
+- **Global self-signup**: anyone downloads → self-registers → creates or joins a group (no back-office provisioning)
+- **Single login/signup** screen with post-login capability auto-resolution (organizer vs member, per group)
+- **Config-driven group types** — VSLA · ASCA · ROSCA · SILC · SHG · SACCO/Credit-Union · CBO/Village-Banking · Burial/Welfare-Society · JLG — extensible to ANY type via config (see `ARCHITECTURE.md`)
+- **Pluggable distribution** — pro-rata share-out (VSLA/ASCA/SILC) · rotation payout (ROSCA) · auction/bid (chit/hui)
+- **Invite members** via link/code
 - Group creation, member onboarding, role assignment
 - Meeting lifecycle (schedule, attendance, agenda) with enhanced step-by-step flow
 - Dual savings: Group-Linked (mandatory, min/max enforced) + Individual (voluntary)
@@ -92,6 +101,38 @@ CommonPurse provides a Kotlin Multiplatform mobile app that digitizes every step
 | Backend | Mifos Fineract |
 | Local DB | SQLDelight |
 | Platform Targets | Android, iOS, Desktop |
+
+## Backend — Companion API (mcp-mifosx)
+
+The app consumes a **Companion API** layer that sits between the KMP client and Apache Fineract Core.
+This layer is implemented as an **extension of the existing `mcp-mifosx` Go server** — no Supabase, no
+standalone DDD service.
+
+**Why a companion layer?** Fineract's self-service scope grants only one privilege class. The companion
+API bridges self-signed-up users into Fineract's office-scoped model (COMP-AUTH-001..003), orchestrates
+group back-office operations with a service credential (COMP-GRP-001..005, COMP-CAL-001..003), and
+provides generic datatable CRUD for all group-type state (COMP-DT-001..005, COMP-DIST-001/002).
+
+### Build tiers (mcp-mifosx Go extension)
+
+| Tier | Tools | What to build |
+|---|---|---|
+| **TIER-1** | COMP-AUTH-001..003, COMP-GRP-001..005, COMP-CAL-001..003 (9 tools) | Thin `BaseToolDef` wraps over existing Fineract endpoints in `go/tools/companion_*.go` |
+| **TIER-2** | COMP-DT-001..005, COMP-DIST-001/002 (7 tools) | Generic datatable-CRUD + distribution-execute in `go/tools/datatables.go` |
+| **P0 auth-model** | — | Per-call user credential + service-credential group orchestration (the one structural lift) |
+
+### Companion datatables to provision (once at deploy)
+
+`dt_group_type_config` · `dt_companion_invitations` · `dt_rosca_rotation` · `dt_rosca_auction` · `dt_vsla_cycle` · `dt_welfare_fund` (all attached to `m_group`)
+
+### Deploy gate (external, blocks device-verify)
+
+Until the companion API is built and deployed:
+- Implemented features **compile + build-green**
+- `/device-test` returns **`pending-device-verify`** (not a failure — the honest external gate)
+- `matrix-green` is gated on this spec being executed
+
+**Full spec**: `server-layer/COMPANION_API_BUILD_DEPLOY.md` · **Contracts**: `server-layer/API_CONTRACT.yaml` (companion section)
 
 ## Branding
 

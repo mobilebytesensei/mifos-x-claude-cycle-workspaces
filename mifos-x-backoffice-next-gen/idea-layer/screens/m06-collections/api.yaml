@@ -1,0 +1,67 @@
+feature: m06-collections
+# Fineract Collections surface — meeting-based collection sheets for group/center
+# lending. The generate read produces the sheet (center → groups → clients →
+# per-client dues) and is CACHE_FIRST_SWR cacheable so a 30-member sheet renders
+# offline. The save command is enqueued through the offline outbox (durable
+# idempotency) and replayed as ONE atomic batch via POST /v1/batches
+# (enclosingTransaction) — never posted straight to a domain table. Each op
+# declares its exact {ACTION}_{ENTITY} permission code; ALL_FUNCTIONS_READ grants
+# the generate read only, never the save command.
+endpoints:
+  # ── Reads (CACHE_FIRST_SWR — the sheet with per-client dues) ─────────────
+  - id: generate_collection_sheet
+    method: POST
+    path: "/v1/collectionsheet?command=generate"
+    description: "Generate an individual/JLG collection sheet for a staff/office + meeting date — returns the clients and their loan-repayment + savings-deposit dues. Cached for offline capture; the POST is a read (command=generate returns data, mutates nothing)."
+    response_type: "CollectionSheet"
+    requires_auth: true
+    requires_permission: [READ_COLLECTIONSHEET]
+    cacheable: true
+
+  - id: generate_center_collection_sheet
+    method: POST
+    path: "/v1/centers/{centerId}?command=generateCollectionSheet"
+    description: "Generate the collection sheet for a specific center meeting (its groups → clients → dues); /v1/groups/{groupId}?command=generateCollectionSheet for a single group"
+    response_type: "CollectionSheet"
+    requires_auth: true
+    requires_permission: [READ_COLLECTIONSHEET]
+    cacheable: true
+
+  - id: collection_sheet_template
+    method: GET
+    path: "/v1/collectionsheet/template?officeId={officeId}&staffId={staffId}"
+    description: "Context template for the sheet picker — office, staff, and meeting-date option lists (rendered by dynamic-template-forms; scoped to the officer's staffId/office)"
+    response_type: "CollectionSheetTemplate"
+    requires_auth: true
+    requires_permission: [READ_COLLECTIONSHEET]
+    cacheable: true
+
+  # ── Mutation (?command=save, enqueued via offline outbox + batch replay) ──
+  - id: save_collection_sheet
+    method: POST
+    path: "/v1/collectionsheet?command=save"
+    description: "Save the captured individual collection sheet — bulkRepaymentTransactions[] + bulkDisbursementTransactions[] with transactionDate, dateFormat, locale; enqueued through the outbox with a durable idempotency key"
+    response_type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [SAVECOLLECTIONSHEET_CENTER, SAVECOLLECTIONSHEET_GROUP]
+    idempotency: durable
+    maker_checker: true
+
+  - id: save_center_collection_sheet
+    method: POST
+    path: "/v1/centers/{centerId}?command=saveCollectionSheet"
+    description: "Save a center collection sheet (its group meetings' transactions); /v1/groups/{groupId}?command=saveCollectionSheet for a single group — the field-officer workhorse"
+    response_type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: [SAVECOLLECTIONSHEET_CENTER, SAVECOLLECTIONSHEET_GROUP]
+    idempotency: durable
+    maker_checker: true
+
+  - id: batch_submit
+    method: POST
+    path: "/v1/batches?enclosingTransaction=true"
+    description: "Bulk atomic submit of the captured sheet as one all-or-nothing transaction (BatchRequest[] chaining the per-client repayment/deposit steps); rolls back entirely on any failure — the offline-sync keystone that makes the whole sheet post exactly-once"
+    response_type: "BatchResponse[]"
+    requires_auth: true
+    requires_permission: []
+    idempotency: durable

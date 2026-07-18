@@ -1,0 +1,297 @@
+sibling: docs
+schema_version: v2
+contract_version: 2.2.0
+id: m10-users-roles-permissions
+name: M10 · Users, Roles & Permissions
+feature: m10-users-roles-permissions
+flow: admin-setup
+status: approved
+cluster: back-office-module
+module: m10-users-roles-permissions
+priority: should_have
+is_primary_flow: false
+auth_required: true
+has_ui: true
+has_api: true
+has_server: false
+capabilities:
+  - has_ui
+  - has_api
+  - has_offline_cache
+  - has_form_input
+  - has_flow
+  - requires_auth
+consumes_tables:
+  - users_roles
+  - role_permissions
+  - draft_outbox
+journey:
+  persona: Tenant authoriser (USER_ADMINISTRATION_SUPER_USER) provisioning staff access and shaping the permission model
+  goal: >-
+    Create app users and assign office/staff/roles, manage roles, edit the role->permission grid and toggle
+    maker-checker per action — the admin control plane that authors the very permission bundles the whole app gates on
+  success_metric: >-
+    A new user is provisioned + role-assigned end-to-end, and a role's permission grid is edited and saved online such
+    that affected users re-resolve their capability surface on next login
+  screen_sequence:
+    - m10-users-roles-permissions
+    - dynamic-template-forms
+    - permission-capability-engine
+  expected_outcome: >-
+    The user/role create queues to the durable outbox (idempotency key); the role->permission grid save (online-only)
+    persists via PUT /v1/roles/{id}/permissions and invalidates the runtime PermissionSet cache
+requires_features:
+  - permission-capability-engine
+  - dynamic-template-forms
+  - offline-sync-engine
+  - needs-attention-inbox
+provides_to:
+  - permission-capability-engine
+contracts:
+  apis:
+    - id: list_users
+      method: GET
+      path: /v1/users
+      note: office-scoped user roster; CACHE_FIRST_SWR
+    - id: get_user_template
+      method: GET
+      path: /v1/users/template
+      note: office/staff/roles/send-password option lists for dynamic-template-forms
+    - id: create_user
+      method: POST
+      path: /v1/users
+      idempotency: durable
+      note: create + assign roles; queued
+    - id: update_user
+      method: PUT
+      path: /v1/users/{userId}
+      idempotency: durable
+      note: edit roles/office/staff OR reset password; own-user exempt from READ_USER
+    - id: list_roles
+      method: GET
+      path: /v1/roles
+      note: role roster; CACHE_FIRST_SWR
+    - id: create_role
+      method: POST
+      path: /v1/roles
+      idempotency: durable
+      note: create role (empty grid); queued
+    - id: toggle_role_status
+      method: POST
+      path: /v1/roles/{roleId}?command={cmd}
+      idempotency: durable
+      note: enable|disable (ENABLE_ROLE/DISABLE_ROLE)
+    - id: get_role_permissions
+      method: GET
+      path: /v1/roles/{roleId}/permissions
+      note: role->permission grid; also password-less refresh fallback
+    - id: update_role_permissions
+      method: PUT
+      path: /v1/roles/{roleId}/permissions
+      online_only: true
+      note: save grid diff ONLINE-ONLY; invalidates runtime PermissionSet cache
+    - id: list_permissions
+      method: GET
+      path: /v1/permissions
+      note: full catalog; ?makerCheckerable=true badges 4-eye
+    - id: update_permission_maker_checker
+      method: PUT
+      path: /v1/permissions
+      online_only: true
+      note: toggle makerCheckerable ONLINE-ONLY
+  tables:
+    - name: users_roles
+      backend: room
+      keys:
+        - entity_type
+        - entity_id
+        - name
+        - payload_json
+      note: Shared user + role read cache (CACHE_FIRST_SWR). User/role writes queue in draft_outbox, not written here.
+    - name: role_permissions
+      backend: room
+      keys:
+        - role_id
+        - code
+        - selected
+        - maker_checkerable
+      note: Per-role permission grid read cache; grid saves + maker-checker toggles are ONLINE-ONLY, never queued.
+    - name: draft_outbox
+      backend: room
+      version: 11
+      keys:
+        - formKey
+        - uniqueKey
+      note: >-
+        Shared offline-sync-engine outbox — CREATE_USER / UPDATE_USER / CREATE_ROLE / enable|disable replay via POST
+        /v1/batches. Auth grid + maker-checker are excluded (online-only).
+  dtos:
+    - name: AppUser
+      role: response
+    - name: AppUserTemplate
+      role: response
+    - name: Role
+      role: response
+    - name: RolePermissions
+      role: response
+    - name: Permission
+      role: response
+    - name: CreateUserRequest
+      role: request
+    - name: UpdateUserRequest
+      role: request
+    - name: CreateRoleRequest
+      role: request
+    - name: RoleCommandRequest
+      role: request
+    - name: RolePermissionsRequest
+      role: request
+    - name: PermissionMakerCheckerRequest
+      role: request
+    - name: CommandProcessingResult
+      role: response
+libraries:
+  cmp_modules:
+    - cmp-network-monitor
+  core_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/network
+    - core/permissions
+  external:
+    - org.mobilenativefoundation.store.store5
+    - androidx.room (Room 3)
+    - kotlinx.serialization
+    - >-
+      Fineract /v1/users (+ template, + /pwd), /v1/roles (+ ?command=enable|disable), /v1/roles/{id}/permissions,
+      /v1/permissions (?makerCheckerable=true, PUT)
+    - Fineract POST /v1/batches
+  training_surfaces:
+    - training-layer/instructions/stream-first/latest/CORE_STORE.md
+    - training-layer/instructions/stream-first/latest/CORE_DATA.md
+    - training-layer/instructions/stream-first/latest/CORE_DATABASE.md
+    - training-layer/instructions/stream-first/latest/CORE_NETWORK.md
+vm_actions:
+  - action: OnTabSelected
+    maps_to_on_click: select_tab
+    handler: Set selectedTab (Users|Roles); lazily hydrate that pane's roster from the cache-first Store.
+  - action: OnUserRowClick
+    maps_to_on_click: open_user_detail
+    handler: sendEvent(NavigateToForm(entity=users, mode=view, userId)) so the user can be reviewed before edit/reset/enable.
+  - action: OnRoleRowClick
+    maps_to_on_click: open_role_permission_grid
+    handler: >-
+      Guard READ_PERMISSION → GET /v1/roles/{id}/permissions via the Store; set selectedRoleId; render grouped grid
+      (editable iff PERMISSIONS_ROLE).
+  - action: OnNewUserClick
+    maps_to_on_click: create_user
+    handler: Guard CREATE_USER → NavigateToForm(entity=users, command=create); form queues CREATE_USER via the outbox.
+  - action: OnEditUserClick
+    maps_to_on_click: edit_user
+    handler: Guard UPDATE_USER (own-user exempt) → NavigateToForm(entity=users, command=edit, userId); queues UPDATE_USER.
+  - action: OnResetPasswordClick
+    maps_to_on_click: reset_user_password
+    handler: >-
+      Guard UPDATE_USER → confirm dialog → PUT /v1/users/{userId} (password reset); maker-checker →
+      Submitted-for-approval.
+  - action: OnNewRoleClick
+    maps_to_on_click: create_role
+    handler: Guard CREATE_ROLE → NavigateToForm(entity=roles, command=create); queues CREATE_ROLE (empty grid).
+  - action: OnToggleRoleEnabled
+    maps_to_on_click: toggle_role_enabled
+    handler: >-
+      Guard ENABLE_ROLE/DISABLE_ROLE → POST /v1/roles/{id}?command=enable|disable; disabled role stops contributing
+      permissions.
+  - action: OnPermissionCellToggle
+    maps_to_on_click: toggle_role_permission
+    handler: >-
+      Guard PERMISSIONS_ROLE → flip the cell in permissionGrid, record into pendingGridChanges, mark dirty (enables
+      Save). Pure in-memory, nothing persisted.
+  - action: OnMakerCheckerCellToggle
+    maps_to_on_click: toggle_maker_checker
+    handler: >-
+      Guard UPDATE_PERMISSION + online → PUT /v1/permissions with the makerCheckerable flag; refuse offline (auth config
+      never defer-syncs).
+  - action: OnSaveMatrixClick
+    maps_to_on_click: save_permission_matrix
+    handler: >-
+      Guard PERMISSIONS_ROLE + online → PUT /v1/roles/{id}/permissions with pendingGridChanges; on success clear diff +
+      invalidate PermissionSet cache (permissions_raw/fingerprint/capability_map).
+  - action: OnRetryClick
+    maps_to_on_click: retry_load
+    handler: Re-issue the failed list/grid fetch; 403 → refreshPermissions() drift protocol, prune denied controls.
+  - action: Internal.ReceiveUsersRoles
+    handler: Fold the users/roles Store Flows into ScreenState (loading/content/empty/error); stamp fromCache on cache hits.
+  - action: Internal.ReceivePermissionGrid
+    handler: Fold the selected role's grid Flow into permissionGrid grouped by grouping; reset pendingGridChanges.
+  - action: Internal.ReceiveCommandResult
+    handler: >-
+      On queued result stamp queued-offline; on maker-checker result show Submitted-for-approval; on grid save success
+      invalidate the capability cache; on rejection route to needs-attention.
+error_cases:
+  - code: users_read_failed
+    ux: Error state with the server message + Retry; the cached roster is served instead when present (offline banner).
+  - code: role_permissions_read_failed
+    ux: Grid area shows an error with Retry; a cached read-only grid is served when present.
+  - code: auth_config_offline_blocked
+    ux: >-
+      Grid save / maker-checker toggle refused with no connectivity → 'Permission changes need a connection' prompt; no
+      outbox row written.
+  - code: permission.revoked
+    ux: >-
+      403 drift on read or save → refreshPermissions(); denied controls pruned live, 'Your access has changed' toast;
+      screen stays alive.
+  - code: command_rejected
+    ux: >-
+      A queued user/role command rejected by the server → routed to needs-attention-inbox with the reason; never
+      silently dropped.
+  - code: maker_checker.queued
+    ux: >-
+      CREATE_USER / UPDATE_USER / role command returns commandId with empty changes → 'Submitted for approval' (a third
+      state).
+  - code: role_permissions_conflict
+    ux: >-
+      409 optimistic-lock on grid save (grid changed server-side since load) → prompt to reload the grid before
+      re-saving; the edit is preserved.
+test_fixtures:
+  - cached users + roles → open a role grid offline → cells render read-only from cache
+  - offline New-user → CREATE_USER queued with an idempotency key → reconnect → one user created, zero duplicates
+  - user holds READ_USER/READ_ROLE but not PERMISSIONS_ROLE → grid cells read-only, Save + New-role hidden/disabled
+  - >-
+    user holds PERMISSIONS_ROLE, online → toggle a cell → Save → PUT /v1/roles/{id}/permissions → capability cache
+    invalidated → member users re-resolve on next login
+  - user holds PERMISSIONS_ROLE, offline → attempt Save → refused (online-only), nothing queued
+  - >-
+    user holds UPDATE_PERMISSION → toggle Requires-approval → PUT /v1/permissions → that code's mutations become
+    checker-gated
+  - enable a disabled role → POST /v1/roles/{id}?command=enable → member users regain its permissions on next refresh
+acceptance_refs:
+  - >-
+    Create users, assign roles, edit the role->permission matrix, toggle maker-checker per action — the admin control
+    plane
+review_package: idea-layer/exports/m10-users-roles-permissions/REVIEW.md
+plan_ref: idea-plan.yaml#features[m10-users-roles-permissions]
+summary: >-
+  M10 · Users, Roles & Permissions — the admin control plane and ADMIN editor twin of permission-capability-engine (the
+  runtime evaluator). Authorisers create application users and assign office/staff/roles, reset passwords, manage roles
+  (create/enable/disable), edit the role->permission grid, and toggle maker-checker per action. Rosters + grid read
+  CACHE_FIRST_SWR; user/role create+edit route through dynamic-template-forms (GET /v1/users/template) and queue via the
+  offline outbox; but the role->permission grid save and maker-checker config are ONLINE-ONLY (the control plane must
+  never defer-sync an authorization change) and saving the grid (PUT /v1/roles/{id}/permissions) invalidates the runtime
+  PermissionSet cache so affected users re-resolve their capability surface on next login. Every entry point + command
+  is gated (USER_ADMINISTRATION_SUPER_USER tier).
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T11:20:00Z'
+enriched_by: /idea-feature-enrich
+approve_hash: "sha256:b9230e1d544eb4426dc364a6d0b268fedf9b1fba85a5cb2f1c512b8dc54a8f17"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+status_history:
+  - from: designed
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

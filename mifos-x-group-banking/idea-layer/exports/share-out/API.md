@@ -1,6 +1,19 @@
 # Share-Out — API Reference
 **Feature**: share-out | **Requirement**: FR-007
-**Backend**: Mifos Fineract REST API + dt_share_out custom datatable
+**Backend**: Mifos Fineract REST API + dt_share_out custom datatable + Companion API (COMP-DIST)
+
+> **Companion API note (global self-signup pivot, 2026-07-17):** The distribution execute step
+> (pro-rata share-out and ROSCA rotation payout) routes through **COMP-DIST-001/002** in mcp-mifosx
+> (`go/tools/datatables.go`). The client computes the payout distribution locally; the companion server
+> re-validates corpus sufficiency and executes GSIM withdrawal / account-transfer + journal entries
+> (CK4 security contract). The Fineract direct endpoints below handle read operations and the
+> individual savings withdrawals that the companion dispatch drives.
+> Build spec: `server-layer/COMPANION_API_BUILD_DEPLOY.md §1b (COMP-DIST-001/002)`
+
+| Contract | Method | Path | Description |
+|----------|--------|------|-------------|
+| COMP-DIST-001 | POST | `/companion/groups/{id}/shareout/execute` | Pro-rata share-out: server re-validates + executes payouts |
+| COMP-DIST-002 | POST | `/companion/groups/{id}/rotation/execute` | ROSCA rotation payout: drives next-recipient withdrawal |
 
 ---
 

@@ -1,0 +1,363 @@
+sibling: docs
+schema_version: v2
+contract_version: 2.2.0
+id: m07-accounting
+name: M07 · Accounting & GL
+feature: m07-accounting
+flow: accounting
+status: approved
+cluster: back-office-module
+module: m07-accounting
+priority: should_have
+is_primary_flow: false
+auth_required: true
+has_ui: true
+has_api: true
+has_server: false
+offline_policy: durable-outbox-exactly-once
+capabilities:
+  - has_ui
+  - has_api
+  - has_offline_cache
+  - has_form_input
+  - has_flow
+  - requires_auth
+consumes_tables:
+  - gl_accounts
+  - journal_entries
+  - gl_closures
+  - financial_activity_accounts
+  - draft_outbox
+journey:
+  persona: >-
+    Accountant closing the books — chart of accounts, balanced manual journal entries, reversals, period closures,
+    accrual runs
+  goal: >-
+    Browse the chart of accounts offline, compose a BALANCED manual journal entry (debits == credits), and post it
+    exactly-once (never a duplicate posting), then close the GL period
+  success_metric: >-
+    A balanced journal entry is posted with zero duplicate postings even under network retry; an unbalanced entry can
+    never be submitted; a closed period rejects back-dated entries
+  screen_sequence:
+    - m07-accounting
+    - dynamic-template-forms
+    - needs-attention-inbox
+  expected_outcome: >-
+    The CREATE_JOURNALENTRY command is queued to the durable outbox with a durable idempotency key, posts exactly-once
+    via POST /v1/batches (or surfaces Submitted-for-approval under maker-checker), and a server-rejected posting lands
+    in Needs-Attention
+requires_features:
+  - permission-capability-engine
+  - dynamic-template-forms
+  - offline-sync-engine
+  - needs-attention-inbox
+provides_to:
+  - m01-dashboard
+  - m14-reports-search-audit
+contracts:
+  apis:
+    - id: list_gl_accounts
+      method: GET
+      path: /v1/glaccounts
+      note: chart of accounts; CACHE_FIRST_SWR
+    - id: get_gl_account_template
+      method: GET
+      path: /v1/glaccounts/template
+      note: options for the Create-GL-account form
+    - id: create_gl_account
+      method: POST
+      path: /v1/glaccounts
+      idempotency: durable
+      note: queued through the outbox
+    - id: list_journal_entries
+      method: GET
+      path: /v1/journalentries
+      note: journal history; paged; CACHE_FIRST_SWR
+    - id: get_journal_entry_template
+      method: GET
+      path: /v1/journalentries/template
+      note: GL/payment-type options for the composer
+    - id: post_journal_entry
+      method: POST
+      path: /v1/journalentries
+      idempotency: durable
+      note: BALANCED entry (debits == credits); exactly-once
+    - id: reverse_journal_entry
+      method: POST
+      path: /v1/journalentries/{transactionId}?command=reverse
+      idempotency: durable
+      note: reverse a posted entry; exactly-once
+    - id: get_gl_closure_template
+      method: GET
+      path: /v1/glclosures/template
+      note: office options for the closure form
+    - id: create_gl_closure
+      method: POST
+      path: /v1/glclosures
+      idempotency: durable
+      note: close a GL period; queued
+    - id: get_financial_activity_template
+      method: GET
+      path: /v1/financialactivityaccounts/template
+      note: financial-activity + GL options
+    - id: map_financial_activity
+      method: POST
+      path: /v1/financialactivityaccounts
+      idempotency: durable
+      note: map a financial activity to a GL account
+    - id: run_periodic_accruals
+      method: POST
+      path: /v1/runaccruals
+      idempotency: durable
+      note: periodic accrual run; exactly-once
+  tables:
+    - name: gl_accounts
+      backend: room
+      keys:
+        - gl_account_id
+        - gl_code
+      columns:
+        - name
+        - type
+        - usage
+        - parent_id
+        - enabled
+        - running_balance
+        - payload_json
+      note: Chart-of-accounts cache; CACHE_FIRST_SWR read, grouped into an Asset/Liability/Equity/Income/Expense tree.
+    - name: journal_entries
+      backend: room
+      keys:
+        - transaction_id
+        - entry_id
+      columns:
+        - reference
+        - entry_date
+        - description
+        - gl_account_id
+        - debit_amount
+        - credit_amount
+        - office_id
+        - status
+        - payload_json
+        - queued_offline
+      note: Per-entry journal-history cache; each row is one GL debit or credit leg of a transaction.
+    - name: gl_closures
+      backend: room
+      keys:
+        - closure_id
+        - office_id
+      columns:
+        - closing_date
+        - comments
+        - created_by
+      note: Cached GL period closures; used to warn before back-dating a journal entry into a closed period.
+    - name: financial_activity_accounts
+      backend: room
+      keys:
+        - mapping_id
+        - financial_activity_id
+      columns:
+        - gl_account_id
+        - gl_account_name
+      note: Cached financial-activity → GL-account mappings.
+    - name: draft_outbox
+      backend: room
+      version: 11
+      keys:
+        - formKey
+        - uniqueKey
+      note: >-
+        Shared offline-sync-engine outbox — every m07 posting/reversal/closure/mapping/accrual run is a queued command
+        with a durable idempotency key, replayed exactly-once via POST /v1/batches.
+  dtos:
+    - name: GLAccountNode
+      role: response
+    - name: GLAccountTemplate
+      role: response
+    - name: JournalEntryRow
+      role: response
+    - name: JournalEntryTemplate
+      role: response
+    - name: GLClosureTemplate
+      role: response
+    - name: FinancialActivityTemplate
+      role: response
+    - name: CreateGLAccountRequest
+      role: request
+    - name: PostJournalEntryRequest
+      role: request
+    - name: ReverseJournalEntryRequest
+      role: request
+    - name: CreateGLClosureRequest
+      role: request
+    - name: FinancialActivityRequest
+      role: request
+    - name: RunAccrualsRequest
+      role: request
+    - name: CommandProcessingResult
+      role: response
+libraries:
+  cmp_modules:
+    - cmp-network-monitor
+  core_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/network
+    - core/permissions
+  external:
+    - org.mobilenativefoundation.store.store5
+    - androidx.room (Room 3)
+    - kotlinx.serialization
+    - >-
+      Fineract /v1/glaccounts, /v1/journalentries (+ ?command=reverse), /v1/glclosures, /v1/financialactivityaccounts,
+      /v1/runaccruals
+    - Fineract POST /v1/batches
+  training_surfaces:
+    - training-layer/instructions/stream-first/latest/CORE_STORE.md
+    - training-layer/instructions/stream-first/latest/CORE_DATA.md
+    - training-layer/instructions/stream-first/latest/CORE_DATABASE.md
+    - training-layer/instructions/stream-first/latest/CORE_NETWORK.md
+vm_actions:
+  - action: OnTypeFilterClick
+    maps_to_on_click: filter_gl_type
+    handler: Toggle selectedType and re-slice the cached GL tree in memory (no network).
+  - action: OnGLAccountClick
+    maps_to_on_click: open_gl_account
+    handler: sendEvent(NavigateToGLAccountDetail(glAccountId)); detail served from cache offline.
+  - action: OnJournalEntryClick
+    maps_to_on_click: open_journal_entry
+    handler: sendEvent(NavigateToJournalDetail(transactionId)); Reverse control gated on REVERSE_JOURNALENTRY.
+  - action: OnCreateGLAccountClick
+    maps_to_on_click: create_gl_account
+    handler: Guard CREATE_GLACCOUNT → NavigateToForm(entity=glaccounts, command=create); queues CREATE_GLACCOUNT.
+  - action: OnStartJournalEntryClick
+    maps_to_on_click: start_journal_entry
+    handler: Guard CREATE_JOURNALENTRY → NavigateToForm(entity=journalentries) → enter balancing state with an empty draft.
+  - action: OnAddDebitLine
+    maps_to_on_click: add_debit_line
+    handler: Append an empty debit line to draftEntry.debitLines; recompute debitTotal; refresh the balance indicator.
+  - action: OnAddCreditLine
+    maps_to_on_click: add_credit_line
+    handler: Append an empty credit line to draftEntry.creditLines; recompute creditTotal; refresh the balance indicator.
+  - action: OnLineAmountChanged
+    handler: >-
+      Recompute debitTotal/creditTotal; isBalanced = (debitTotal == creditTotal AND debitTotal > 0) toggles the Post
+      control's enabled state.
+  - action: OnPostJournalEntryClick
+    maps_to_on_click: post_journal_entry
+    handler: >-
+      Guard CREATE_JOURNALENTRY + re-assert isBalanced → enqueue CREATE_JOURNALENTRY
+      (glDebits[]+glCredits[]+transactionDate+dateFormat+locale) to the durable outbox with a durable idempotency key;
+      maker-checker → Submitted-for-approval.
+  - action: OnReverseJournalEntryClick
+    maps_to_on_click: reverse_journal_entry
+    handler: >-
+      Guard REVERSE_JOURNALENTRY + status==Posted → confirm dialog → enqueue REVERSE_JOURNALENTRY
+      (comments+reversalDate) exactly-once.
+  - action: OnCreateGLClosureClick
+    maps_to_on_click: create_gl_closure
+    handler: >-
+      Guard CREATE_GLCLOSURE → confirm → NavigateToForm(entity=glclosures); queues CREATE_GLCLOSURE
+      (office+closingDate+comments).
+  - action: OnMapFinancialActivityClick
+    maps_to_on_click: map_financial_activity
+    handler: >-
+      Guard CREATE_ACCOUNTINGRULE → NavigateToForm(entity=financialactivityaccounts); queues the mapping
+      (financialActivityId+glAccountId).
+  - action: OnRunAccrualsClick
+    maps_to_on_click: run_periodic_accruals
+    handler: >-
+      Guard EXECUTE_PERIODICACCRUALACCOUNTING → confirm → enqueue EXECUTE_PERIODICACCRUALACCOUNTING
+      (tillDate+dateFormat+locale) exactly-once.
+  - action: OnRetryClick
+    maps_to_on_click: retry_load
+    handler: Re-issue the failed chart/journal fetch; 403 → refreshPermissions() drift protocol.
+  - action: Internal.ReceiveGLAccounts
+    handler: >-
+      Fold the glaccounts Store Flow into ScreenState (loading/content/empty/no-network/error); build the
+      Asset/Liability/Equity/Income/Expense tree.
+  - action: Internal.ReceiveJournalEntries
+    handler: Fold the paged journalentries Store Flow into journalEntries.
+  - action: Internal.ReceiveCommandResult
+    handler: >-
+      On queued result stamp the queued-offline chip; on maker-checker result show Submitted-for-approval; on rejection
+      (unbalanced/closed period/invalid GL) route to needs-attention.
+error_cases:
+  - code: gl_read_failed
+    ux: >-
+      Error state with the server message + Retry CTA; a cached chart/journal history is served instead when present
+      (no-network).
+  - code: journal.unbalanced
+    ux: >-
+      The Post control is disabled and the balance indicator shows 'Out of balance by X' in red; posting is blocked
+      client-side before the network — an unbalanced entry can never be submitted.
+  - code: journal.command_rejected
+    ux: >-
+      Queued posting marked FAILED with the Fineract server_error (unbalanced / closed period / invalid GL) → routed to
+      needs-attention-inbox; never silently dropped.
+  - code: journal.period_closed
+    ux: >-
+      The server rejects a journal entry dated on/before a GL closure → surfaced in needs-attention with 'period
+      closed'; the entry stays unposted.
+  - code: permission.revoked
+    ux: >-
+      403 drift → refreshPermissions(); denied controls (Post/Reverse/Close) pruned live, 'Your access has changed'
+      toast; failed screen stays alive.
+  - code: network.offline
+    ux: >-
+      no-network state; cached chart/journal served; a balanced posting still queues with a 'queued offline' chip and
+      posts exactly-once on reconnect.
+  - code: maker_checker.queued
+    ux: >-
+      Posting returns commandId with empty changes → 'Submitted for approval' badge (a third state, not success/error);
+      the entry is not optimistically shown as Posted.
+test_fixtures:
+  - >-
+    cached chart of accounts + journal history → browse the GL tree and a journal entry's debit/credit lines fully
+    offline
+  - >-
+    compose a manual journal entry with debits != credits → the Post control stays disabled and the balance indicator
+    shows the out-of-balance delta
+  - >-
+    compose a BALANCED entry (debits == credits) → Post enqueues CREATE_JOURNALENTRY with a durable idempotency key →
+    reconnect → exactly one posting, zero duplicates even if the batch is retried
+  - >-
+    user holds READ_GLACCOUNT + READ_JOURNALENTRY but not CREATE_JOURNALENTRY → the Post/Start-journal controls are
+    absent (onDenied: HIDE)
+  - >-
+    post a journal entry under maker-checker → command queued → 'Submitted for approval' badge, not shown as Posted
+    until a checker approves
+  - >-
+    post a back-dated entry into a closed GL period → the server rejects it → it lands in Needs-Attention with 'period
+    closed'
+acceptance_refs:
+  - Chart of accounts, balanced manual journal entries, closures, provisioning — gated by the accounting group
+review_package: idea-layer/exports/m07-accounting/REVIEW.md
+plan_ref: idea-plan.yaml#features[m07-accounting]
+summary: >-
+  M07 · Accounting & GL. A Chart-of-Accounts tree (Asset/Liability/Equity/Income/Expense) plus manual journal entries,
+  GL period closures, financial-activity mappings, and the periodic-accrual run. Reads are CACHE_FIRST_SWR (fully
+  browsable offline); a manual journal entry is postable only when debits == credits (client-side balance gate), and
+  every posting/reversal/closure/accrual run flows through the durable outbox with a durable idempotency key so it
+  replays exactly-once via POST /v1/batches — accounting never double-posts. Forms come from GET /{entity}/template
+  (dynamic-template-forms); every entry point + command is gated (permission-capability-engine).
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T11:20:00Z'
+enriched_by: /idea-feature-enrich
+approve_hash: "sha256:d8c9b249b5779a6d04662b557e4aa25ba1347a8782a9922bfe58a4bc80ab8fcf"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+status_history:
+  - from: designed
+    to: design_partial
+    at: '2026-07-17T20:41:30.893Z'
+    by: /idea-feature-stitch
+  - from: design_partial
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

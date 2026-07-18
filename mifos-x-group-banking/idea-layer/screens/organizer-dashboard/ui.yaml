@@ -1,0 +1,574 @@
+requires_stitch: true   # opt-in backfilled (RULE-STITCH-OPTIN-CONSISTENCY-001)
+sibling: ui
+schema_version: "4.0"
+feature_id: organizer-dashboard
+
+route: /dashboard/organizer
+entry_points:
+  - source: app_launch
+    condition: "user_authenticated && isOrganizerInAnyGroup"   # unified identity — no admin login type
+nav_params: {}   # organizerName resolved from session; groupIds resolved from dt_member_role
+
+screens:
+  - id: organizer-dashboard-screen
+    title: "{strings.screen_title}"
+    type: dashboard
+    description: >
+      Organizer-per-group hub surface. The "admin" concept is gone — this screen is reached by
+      any user who holds the organizer (or treasurer/chairperson) role in at least one group,
+      resolved from dt_member_role via companion API. KPIs show "my groups" totals (not
+      all-branch totals). Quick-nav to group-list and optional field-officer tile (v1.1 tier,
+      shown only when fieldOfficerEnabled flag is true). Data from companion API; no raw
+      Fineract /staff or /journal-entries calls.
+
+business_logic:
+  kind: crud
+  description: "Fetches organizer dashboard summary from companion API /companion/organizer/dashboard via cmp-network-monitor-aware OrganizerDashboardRepository; caches response with stale-while-revalidate via SQLDelight; maps OrganizerDashboardSummary to KPI fields scoped to groups where the user holds organizer/treasurer/chairperson role."
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - SQLDelight
+    - Store5
+  description_hash: "405b4a42f2f0b6e4d1ee0bae77b26351c8ffdf9c603c0f0e5ccde1d07100f988"
+  description_author: "claude-via-idea-enrich"
+  description_authored_at: "2026-07-17T00:00:00Z"
+
+state_model:
+  OrganizerDashboardViewModel:
+    state:
+      name: OrganizerDashboardState
+      fields:
+        isLoading: { type: Boolean, default: "true" }
+        organizerName: { type: String, default: '""' }    # replaces staffName — from session.displayName
+        myGroupCount: { type: Int, default: "0" }         # groups where user holds organizer/treasurer/chairperson
+        totalMembers: { type: Int, default: "0" }
+        pendingShareOutCount: { type: Int, default: "0" } # replaces overdueLoansCount (pivot away from loans)
+        meetingsTodayCount: { type: Int, default: "0" }
+        fieldOfficerEnabled: { type: Boolean, default: "false" }  # v1.1 tier — hidden when false
+        todaySchedule: { type: "List<ScheduledMeeting>", default: "emptyList()" }
+        recentActivity: { type: "List<ActivityItem>", default: "emptyList()" }
+        error: { type: "OrganizerDashboardError?", default: "null" }
+        isRefreshing: { type: Boolean, default: "false" }
+    screen_state:
+      name: OrganizerDashboardScreenState
+      members: [Loading, Content, Error, Empty]
+    errors:
+      name: OrganizerDashboardError
+      types:
+        - { type: Network, retry: true, message_key: error_network }
+        - { type: Server, retry: true, message_key: error_server }
+        - { type: Auth, retry: false, message_key: error_auth, redirect: group-list }
+    events:
+      name: OrganizerDashboardEvent
+      members:
+        - { name: NavigateToGroupList }
+        - { name: NavigateToFieldOfficerDashboard }
+        - { name: ShowSnackbar, params: { message: String } }
+    actions:
+      name: OrganizerDashboardAction
+      members:
+        - { name: OnViewAllGroups, trigger: "Tap Groups KPI card or 'View All Groups' quick-nav" }
+        - { name: OnViewFieldOfficer, trigger: "Tap Field Officer quick-nav card (v1.1 tier only)" }
+        - { name: OnMeetingGroupClick, params: { groupId: String }, trigger: "Tap a meeting row in Today's Schedule" }
+        - { name: OnRefresh, trigger: "Pull to refresh" }
+        - { name: Retry, trigger: "Tap retry button on error state" }
+    di:
+      - OrganizerDashboardRepository   # companion API /companion/organizer/dashboard (replaces AdminRepository)
+      - GroupRepository
+      - SessionManager
+      - NetworkMonitor
+
+components:
+  - id: top_bar
+    type: top-bar
+    title: "{strings.top_bar_title}"
+    style:
+      background: primary
+      text_color: onPrimary
+    actions:
+      - icon: notifications
+        content_description: "{strings.notifications_cd}"
+        on_click:
+          action: OnOpenNotifications
+          action_contract:
+            effect: emit_event
+            description: "Emits a NotificationsDeferred event that shows a snackbar informing the organizer the in-app notifications centre arrives in a later release (deferred per release_plan.deferred[]); no navigation until that screen ships."
+            action_contract_hash: "47fc6e9fa076cd136f148e9a34e64178aaadd18f90ff8a2485be09dd723015f2"
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-07-17T00:00:00Z"
+    test_context:
+      purpose: "Main app bar for organizer dashboard; static title with notification icon"
+      interaction_type: tap
+      data_driven: false
+      required_fields: []
+
+  - id: welcome_header
+    type: card
+    style:
+      background: primaryContainer
+      elevation: 0dp
+      corner_radius: 0dp
+      padding: "16dp 16dp 12dp 16dp"
+    content:
+      - id: welcome_greeting_text
+        type: text
+        style: { text_style: headlineSmall, color: onPrimaryContainer }
+        value: "{strings.welcome_greeting}"    # organizerName from session.displayName
+      - id: welcome_subtitle_text
+        type: text
+        style: { text_style: bodyMedium, color: onPrimaryContainer }
+        value: "{strings.welcome_subtitle}"
+    test_context:
+      purpose: "Personalised greeting shown to organizer/treasurer/chairperson; organizerName from unified session"
+      interaction_type: static
+      data_driven: true
+      required_fields: [staffName]
+
+  - id: kpi_summary_row
+    type: row
+    style:
+      padding: "12dp 16dp"
+      gap: 12dp
+    content:
+      - id: kpi_total_groups
+        type: card
+        style:
+          background: surface
+          elevation: 2dp
+          corner_radius: 12dp
+          padding: 14dp
+          flex: 1
+        content:
+          - id: kpi_groups_value
+            type: text
+            style: { text_style: headlineMedium, color: primary }
+            value: "{{myGroupCount}}"
+          - id: kpi_groups_label
+            type: text
+            style: { text_style: labelSmall, color: onSurfaceVariant }
+            value: "{strings.kpi_my_groups}"    # renamed from "Total Groups" — scoped to organizer role
+        on_click:
+          action: OnViewAllGroups
+          target: group-list
+          action_contract:
+            effect: navigate
+            description: "Navigates to the group-list screen, displaying all groups where the authenticated user holds an organizer, treasurer, or chairperson role."
+            action_contract_hash: "e93f7322630e7318a6272acb77868270e16f0bfa44af240aca06ac6e3503f902"
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-07-17T00:00:00Z"
+        test_context:
+          purpose: "KPI card showing groups where user is organizer/treasurer/chairperson; tapping navigates to group list"
+          interaction_type: tap
+          data_driven: true
+          required_fields: [totalGroups]
+
+      - id: kpi_total_members
+        type: card
+        style:
+          background: surface
+          elevation: 2dp
+          corner_radius: 12dp
+          padding: 14dp
+          flex: 1
+        content:
+          - id: kpi_members_value
+            type: text
+            style: { text_style: headlineMedium, color: primary }
+            value: "{{totalMembers}}"
+          - id: kpi_members_label
+            type: text
+            style: { text_style: labelSmall, color: onSurfaceVariant }
+            value: "{strings.kpi_members}"
+        on_click:
+          action: OnViewAllGroups
+          target: group-list
+          action_contract:
+            effect: navigate
+            description: "Navigates to the group-list screen, displaying all groups where the authenticated user holds an organizer, treasurer, or chairperson role."
+            action_contract_hash: "e93f7322630e7318a6272acb77868270e16f0bfa44af240aca06ac6e3503f902"
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-07-17T00:00:00Z"
+        test_context:
+          purpose: "KPI card showing total member count across all managed groups"
+          interaction_type: tap
+          data_driven: true
+          required_fields: [totalMembers]
+
+      - id: kpi_overdue_loans
+        type: card
+        style:
+          background: surface
+          elevation: 2dp
+          corner_radius: 12dp
+          padding: 14dp
+          flex: 1
+          border_overdue:
+            condition: "overdueLoansCount > 0"
+            color: error
+            width: 1dp
+        content:
+          - id: kpi_pending_shareout_value
+            type: text
+            style:
+              text_style: headlineMedium
+              color_normal: primary
+              color_nonzero: error
+            value: "{{pendingShareOutCount}}"
+          - id: kpi_pending_shareout_label
+            type: text
+            style: { text_style: labelSmall, color: onSurfaceVariant }
+            value: "{strings.kpi_pending_shareout}"    # replaces "Overdue Loans" — savings-group context
+        on_click:
+          action: OnViewAllGroups
+          target: group-list
+          action_contract:
+            effect: navigate
+            description: "Navigates to the group-list screen, displaying all groups where the authenticated user holds an organizer, treasurer, or chairperson role."
+            action_contract_hash: "e93f7322630e7318a6272acb77868270e16f0bfa44af240aca06ac6e3503f902"
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-07-17T00:00:00Z"
+        test_context:
+          purpose: "KPI card for pending share-outs/rotations; card border turns error-red when count > 0"
+          interaction_type: tap
+          data_driven: true
+          required_fields: [overdueLoansCount]
+
+      - id: kpi_meetings_today
+        type: card
+        style:
+          background: surface
+          elevation: 2dp
+          corner_radius: 12dp
+          padding: 14dp
+          flex: 1
+        content:
+          - id: kpi_meetings_value
+            type: text
+            style: { text_style: headlineMedium, color: secondary }
+            value: "{{meetingsTodayCount}}"
+          - id: kpi_meetings_label
+            type: text
+            style: { text_style: labelSmall, color: onSurfaceVariant }
+            value: "{strings.kpi_meetings_today}"
+        on_click:
+          action: OnViewAllGroups
+          target: group-list
+          action_contract:
+            effect: navigate
+            description: "Navigates to the group-list screen, displaying all groups where the authenticated user holds an organizer, treasurer, or chairperson role."
+            action_contract_hash: "e93f7322630e7318a6272acb77868270e16f0bfa44af240aca06ac6e3503f902"
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-07-17T00:00:00Z"
+        test_context:
+          purpose: "KPI card for meetings scheduled today; secondary colour highlights urgency"
+          interaction_type: tap
+          data_driven: true
+          required_fields: [meetingsTodayCount]
+
+  - id: quick_nav_section
+    type: card
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 16dp
+      padding: 16dp
+      margin: "0dp 16dp 8dp 16dp"
+    content:
+      - id: quick_nav_label
+        type: text
+        style: { text_style: titleSmall, color: onSurfaceVariant }
+        value: "{strings.quick_nav_label}"
+      - id: quick_nav_grid
+        type: grid
+        columns: 2
+        gap: 12dp
+        children:
+          - id: nav_group_list_card
+            type: card
+            style:
+              background: primaryContainer
+              corner_radius: 12dp
+              padding: 16dp
+              elevation: 0dp
+            content:
+              - id: nav_group_icon
+                type: icon
+                icon: groups
+                style: { tint: onPrimaryContainer, size: 28dp }
+              - id: nav_group_label
+                type: text
+                style: { text_style: titleSmall, color: onPrimaryContainer }
+                value: "{strings.nav_all_groups}"
+              - id: nav_group_sublabel
+                type: text
+                style: { text_style: bodySmall, color: onPrimaryContainer }
+                value: "{strings.nav_all_groups_sub}"
+            on_click:
+              action: OnViewAllGroups
+              target: group-list
+              action_contract:
+                effect: navigate
+                description: "Navigates to the group-list screen, displaying all groups where the authenticated user holds an organizer, treasurer, or chairperson role."
+                action_contract_hash: "e93f7322630e7318a6272acb77868270e16f0bfa44af240aca06ac6e3503f902"
+                action_contract_author: "claude-via-idea-enrich"
+                action_contract_authored_at: "2026-07-17T00:00:00Z"
+            test_context:
+              purpose: "Quick-nav tile to group list screen; shows live group count"
+              interaction_type: tap
+              data_driven: true
+              required_fields: [totalGroups]
+
+          - id: nav_field_officer_card
+            type: card
+            visible: "{{fieldOfficerEnabled}}"    # optional tier — hidden when not enabled (v1.1)
+            style:
+              background: secondaryContainer
+              corner_radius: 12dp
+              padding: 16dp
+              elevation: 0dp
+              badge: { label: "{strings.badge_optional}", style: { background: secondary, text_color: onSecondary } }
+            content:
+              - id: nav_fo_icon
+                type: icon
+                icon: person_pin_circle
+                style: { tint: onSecondaryContainer, size: 28dp }
+              - id: nav_fo_label
+                type: text
+                style: { text_style: titleSmall, color: onSecondaryContainer }
+                value: "{strings.nav_field_officers}"
+              - id: nav_fo_sublabel
+                type: text
+                style: { text_style: bodySmall, color: onSecondaryContainer }
+                value: "{strings.nav_field_officers_sub}"
+            on_click:
+              action: OnViewFieldOfficer
+              target: field-officer-dashboard
+              action_contract:
+                effect: navigate
+                description: "Navigates to the field-officer dashboard; only dispatched when fieldOfficerEnabled flag is true in the companion API response."
+                action_contract_hash: "05ff599729d9995db118ad4590941b403d9ab4f026f9011858aa25fba652ad56"
+                action_contract_author: "claude-via-idea-enrich"
+                action_contract_authored_at: "2026-07-17T00:00:00Z"
+            test_context:
+              purpose: "Optional quick-nav tile to field-officer dashboard; hidden when fieldOfficerEnabled=false"
+              interaction_type: tap
+              data_driven: true
+              required_fields: [fieldOfficerEnabled]
+
+  - id: todays_schedule_section
+    type: card
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 16dp
+      padding: 16dp
+      margin: "0dp 16dp 8dp 16dp"
+    content:
+      - id: schedule_header_row
+        type: row
+        style: { justify: space-between, align: center }
+        children:
+          - id: schedule_label
+            type: text
+            style: { text_style: titleMedium, color: onSurface }
+            value: "{strings.todays_schedule_label}"
+          - id: schedule_count_chip
+            type: chip
+            label: "{strings.schedule_count_chip}"
+            style: { background: tertiaryContainer, text_color: onTertiaryContainer }
+      - id: schedule_list_item
+        type: list-item
+        leading: calendar_today_icon
+        headline: "{{meeting.groupName}}"    # i18n: skip — pure data binding
+        supporting: "{strings.schedule_supporting}"
+        trailing_icon: arrow_forward_ios
+        style: { min_touch_target: 56dp, divider: true }
+        on_click:
+          action: OnMeetingGroupClick
+          params: { groupId: "{{meeting.groupId}}" }
+          target: group-list
+          action_contract:
+            effect: navigate
+            description: "Navigates to the group-list screen pre-filtered to the selected group, passing the groupId from the tapped meeting row in Today's Schedule."
+            action_contract_hash: "3b241d111e6c9db72b0f5711b4fa13f731db45ffff336aea8ba897920ff8dc45"
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-07-17T00:00:00Z"
+        test_context:
+          purpose: "List row for a group with a meeting today; tap navigates to group list filtered by that group"
+          interaction_type: tap
+          data_driven: true
+          required_fields: [meeting.groupName, meeting.meetingTime, meeting.memberCount, meeting.groupId]
+
+      - id: schedule_empty_label
+        type: text
+        visible: "{{todaySchedule.isEmpty()}}"
+        style: { text_style: bodyMedium, color: onSurfaceVariant, align: center, padding: "12dp 0dp" }
+        value: "{strings.no_meetings_today}"
+
+  - id: recent_activity_section
+    type: card
+    style:
+      background: surface
+      elevation: 2dp
+      corner_radius: 16dp
+      padding: 16dp
+      margin: "0dp 16dp 16dp 16dp"
+    content:
+      - id: activity_label
+        type: text
+        style: { text_style: titleMedium, color: onSurface }
+        value: "{strings.activity_label}"
+      - id: activity_list_item
+        type: list-item
+        leading: activity_type_icon
+        headline: "{{activity.description}}"    # i18n: skip — pure data binding
+        supporting: "{{activity.date}} • {{activity.groupName}}"    # i18n: skip — pure data binding
+        trailing: "{{activity.amount | currency: KES}}"    # i18n: skip — currency-formatter template
+        style: { min_touch_target: 56dp }
+        test_context:
+          purpose: "Recent transaction or event row across all groups"
+          interaction_type: static
+          data_driven: true
+          required_fields: [activity.description, activity.date]
+
+  - id: shimmer_dashboard
+    type: shimmer
+    count: 4
+    style: { height: 100dp, corner_radius: 16dp, background: surfaceVariant }
+    test_context:
+      purpose: "Loading skeleton while parallel API calls complete"
+      interaction_type: static
+      data_driven: false
+      required_fields: []
+
+  - id: empty_state
+    type: empty-state
+    icon: dashboard_customize
+    title: "{strings.empty_no_data_title}"
+    body: "{strings.empty_no_data_body}"
+    cta_label: "{strings.empty_cta}"
+    on_click:
+      action: OnViewAllGroups
+      target: group-list
+      action_contract:
+        effect: navigate
+        description: "Navigates to the group-list screen, displaying all groups where the authenticated user holds an organizer, treasurer, or chairperson role."
+        action_contract_hash: "e93f7322630e7318a6272acb77868270e16f0bfa44af240aca06ac6e3503f902"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
+    test_context:
+      purpose: "Shown when staff has no groups assigned yet"
+      interaction_type: tap
+      data_driven: false
+      required_fields: []
+
+  - id: error_state
+    type: error-state
+    icon: cloud_off
+    title: "{strings.error_title}"
+    body: "{{error.message}}"    # i18n: skip — runtime-formatted error message
+    cta_label: "{strings.error_cta_retry}"
+    on_click:
+      action: Retry
+      target: organizer-dashboard
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        description: "Re-fetches the organizer dashboard summary from /companion/organizer/dashboard via cmp-network-monitor-aware OrganizerDashboardRepository, bypassing the stale-while-revalidate cache to force a fresh response."
+        action_contract_hash: "e23e42bfe792843ddef4d0ba32da6d30fa83015ecfce944adc94b63ffb4ccf69"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
+    test_context:
+      purpose: "Full-screen error with retry when API calls fail"
+      interaction_type: tap
+      data_driven: true
+      required_fields: [error.message]
+
+states:
+  initial_state: loading
+  loading:
+    components: [top_bar, welcome_header, shimmer_dashboard]
+    description: "Parallel API calls in-flight; shimmer shown below the welcome header"
+  content:
+    components: [top_bar, welcome_header, kpi_summary_row, quick_nav_section, todays_schedule_section, recent_activity_section]
+    description: "All KPI and schedule data loaded; bottom nav visible with home tab selected"
+    demo_data:
+      organizerName: "Jane Wanjiru"    # from session.displayName (unified identity)
+      myGroupCount: 3                  # groups where Jane holds organizer/treasurer/chairperson role
+      totalMembers: 42
+      pendingShareOutCount: 1          # share-outs due across my groups
+      fieldOfficerEnabled: false       # optional tier hidden in default state
+      meetingsTodayCount: 2
+      todaySchedule:
+        - groupId: "ctr-001"
+          groupName: "Mwangaza Women's Group"
+          meetingTime: "10:00 AM"
+          memberCount: 5
+          location: "Community Hall, Nairobi"
+        - groupId: "ctr-002"
+          groupName: "Tumaini Savings Circle"
+          meetingTime: "2:00 PM"
+          memberCount: 12
+          location: "Kipande House, Nairobi"
+      recentActivity:
+        - id: "act-001"
+          type: "DEPOSIT"
+          description: "Contribution collected"
+          amount: 500.00
+          date: "2026-05-07"
+          memberName: "Mary Achieng"
+          groupName: "Mwangaza Women's Group"
+        - id: "act-002"
+          type: "LOAN"
+          description: "Loan disbursed"
+          amount: 3000.00
+          date: "2026-05-06"
+          memberName: "Peter Otieno"
+          groupName: "Tumaini Savings Circle"
+        - id: "act-003"
+          type: "NEW_MEMBER"
+          description: "New member joined"
+          amount: null
+          date: "2026-05-05"
+          memberName: "Grace Njoki"
+          groupName: "Mwangaza Women's Group"
+  empty:
+    components: [top_bar, welcome_header, empty_state]
+    description: "Staff has no groups assigned; empty state with CTA to groups screen"
+  error:
+    components: [top_bar, error_state]
+    description: "API failed; full-screen error with retry button"
+
+i18n:
+  en:
+    screen_title: "My Groups"
+    top_bar_title: "Dashboard"
+    notifications_cd: "Notifications"
+    welcome_greeting: "Welcome back, {{organizerName}}"
+    welcome_subtitle: "Here's your overview for today"
+    kpi_my_groups: "My Groups"          # organizer-scoped, not all-branch
+    kpi_members: "Members"
+    kpi_pending_shareout: "Share-Outs Due"
+    kpi_meetings_today: "Meetings Today"
+    quick_nav_label: "Quick Navigation"
+    nav_all_groups: "All Groups"
+    nav_all_groups_sub: "{{n}} groups"
+    nav_field_officers: "Field Officers"
+    nav_field_officers_sub: "Officer overview"
+    badge_optional: "Optional"
+    todays_schedule_label: "Today's Schedule"
+    schedule_count_chip: "{{n}} meetings"
+    schedule_supporting: "{{meetingTime}} • {{memberCount}} members"
+    no_meetings_today: "No meetings scheduled for today"
+    activity_label: "Recent Activity"
+    empty_title: "No groups yet"
+    empty_body: "Groups you organize will appear here."
+    empty_cta: "View Groups"
+    empty_no_data_title: "No data yet"
+    empty_no_data_body: "Your groups and activity will appear here once set up."
+    error_title: "Could not load dashboard"
+    error_cta_retry: "Retry"
+    error_network: "No internet connection. Showing cached data."
+    error_server: "Server error. Please try again."
+    error_auth: "Session expired. Please log in again."

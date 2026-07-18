@@ -1,0 +1,506 @@
+screen_id: m05-savings-deposits-shares
+name: "M05 · Savings, Deposits & Shares"
+status: designed
+archetype: master_detail
+initial_state: loading
+description: >-
+  The deposit & shares back-office module: a filterable list of savings, fixed-deposit,
+  recurring-deposit and share accounts, and a per-account detail (balance, transactions,
+  charges, on-hold funds) with the full Fineract command lifecycle — open (template form),
+  approve/activate/close, deposit/withdrawal/hold-amount/post-interest on savings, FD/RD
+  premature-close + maturity, share subscribe(applyAdditionalShares)/redeem. Reads ride
+  CACHE_FIRST_SWR Store5; every money-movement command flows through the durable outbox
+  (offline-sync-engine) with an exactly-once idempotency key; every control renders through
+  PermissionEvaluator.Gated so each button is VISIBLE-enabled / VISIBLE-disabled / HIDDEN by
+  the exact {ACTION}_{ENTITY} code the user holds.
+
+# ── States (Store5 ScreenState + the command-submit lifecycle) ───────────
+states:
+  loading:
+    description: "Fetching the account list or a selected account's detail (no cache yet). Store5 Loading."
+    is_default: true
+  content:
+    description: >-
+      Account list (savings/FD/RD/share, grouped by type with balance + status chips) OR a
+      selected account detail (balance header, transactions, charges, on-hold funds, and the
+      permission-gated command bar). Store5 Content — served instantly from cache, revalidated
+      in background per FreshnessBands.
+  empty:
+    description: "No accounts in the current scope (office/client/product filter or a client with no deposit accounts). Empty state offers 'Open an account'."
+  submitting:
+    description: >-
+      A command (deposit/withdrawal/hold/approve/activate/close/post-interest/subscribe/redeem/
+      transfer/SI) is being posted ONLINE — the command bar is disabled and a per-command progress
+      indicator shows PENDING→SUBMITTED. On maker-checker tenants a 2xx-with-commandId lands in
+      pending_approval instead.
+  queued_offline:
+    description: >-
+      Offline (or a transient failure): the command was written to the durable RoomSubmitOutbox with
+      its idempotency key and will replay exactly-once on reconnect. A persistent 'N queued · will
+      sync when online' banner shows; the optimistic balance/transaction row is marked pending-sync.
+  pending_approval:
+    description: >-
+      A maker-checker tenant queued the command (2xx with commandId, empty changes) — a third,
+      non-error 'Submitted for approval' state; the account is NOT optimistically mutated and the
+      row shows a 'pending approval' badge routing to M15.
+  error:
+    description: >-
+      List/detail fetch failed with no cache, OR a command was rejected by the server (400 validation
+      / 409 optimistic-lock / 403 permission-drift). Rejected commands surface the Fineract server
+      error and a 'Review failed' CTA into needs-attention-inbox; a Retry CTA re-drains.
+  no_network:
+    description: "Offline with no cached account data for the requested scope; captive-portal aware; cached reads (if any) are still served."
+
+# ── Business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-5) ──────────
+business_logic:
+  kind: composite
+  processing_kind: batch
+  description: "Folds four CACHE_FIRST_SWR Store5 streams (savings/FD/RD/share accounts plus a selected-account detail) into one master-detail ScreenState, and drives the Fineract command lifecycle. Every mutation (deposit, withdrawal, approve/activate/close, share apply/redeem) is enqueued to RoomSubmitOutbox with an idempotency key and replayed exactly-once. Controls are gated by PermissionEvaluator."
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "org.mobilenativefoundation.store.store5"
+    - "androidx.room"
+    - "kotlinx.serialization"
+    - "Fineract POST /v1/savingsaccounts/{id}/transactions"
+    - "Fineract POST /v1/savingsaccounts/{id}?command="
+  required_modules:
+    - core/model
+    - core/network
+    - core/database
+    - core/store
+    - core/data
+    - core-base/store
+    - core-base/network
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T03:20:00Z"
+
+# ── Shell (module root; permission-gated at the savings group) ──────────
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  fab_visible: true            # "Open account" FAB — HIDDEN unless CREATE_SAVINGSACCOUNT/_SHAREACCOUNT
+  snackbar_visible: true
+
+# ── Components ──────────────────────────────────────────────────────────
+components:
+  - id: m05_header
+    type: header
+    label: "{strings.m05_title}"
+    testTag: "m05-savings-deposits-shares_header"
+    visible_states: [loading, content, empty, no_network, error]
+
+  - id: account_type_tabs
+    type: chip
+    label: "{strings.m05_tabs}"
+    testTag: "m05-savings-deposits-shares_type_tabs"
+    visible_states: [content, empty]
+    on_click:
+      action: switch_account_type
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+        reads_from:
+          - table: deposit_accounts
+        produces_state: content
+        description: "Switch the visible account-type facet (savings/fixed-deposit/recurring/share) — a pure in-ViewModel re-projection over the already-folded Store5 account streams; no refetch and no network call, works fully offline over cached rows."
+
+  - id: account_list
+    type: content_area
+    label: "{strings.m05_list_label}"
+    testTag: "m05-savings-deposits-shares_content"
+    empty_label: "{strings.m05_empty}"
+    label_states:
+      content: "Savings/FD/RD/share accounts grouped by type (client · product · balance · status chip), or the open account detail with its transaction ledger, charges, on-hold funds and gated command bar"
+
+  - id: account_row
+    type: list_item
+    label: "{strings.m05_account_row}"
+    testTag: "m05-savings-deposits-shares_item"
+    visible_states: [content]
+    on_click:
+      action: open_account_detail
+      target: m05-savings-deposits-shares
+      action_contract:
+        effect: navigate
+        reads_from:
+          - table: deposit_accounts
+        produces_state: content
+        description: "Open the account detail (balance header, transaction ledger, charges, on-hold funds). The command bar renders only the controls whose {ACTION}_{ENTITY} permission the user holds; a read-only account still shows its ledger."
+
+  - id: open_account_button
+    type: fab
+    label: "{strings.m05_open_account}"
+    testTag: "m05-savings-deposits-shares_open_account"
+    variant: primary
+    gated_permission: CREATE_SAVINGSACCOUNT
+    visible_states: [content, empty]
+    on_click:
+      action: open_account_form
+      target: dynamic-template-forms
+      action_contract:
+        effect: navigate
+        library_refs:
+          - dynamic-template-forms
+        description: "Launch the create-account form rendered by dynamic-template-forms from GET /v1/savingsaccounts/template?clientId=&productId= (or fixeddeposit/recurringdeposit/share) — field defaults + product-driven option lists come from the server payload, never hardcoded."
+
+  - id: edit_account_button
+    type: button
+    label: "{strings.m05_edit_account}"
+    testTag: "m05-savings-deposits-shares_edit_account"
+    variant: secondary
+    gated_permission: UPDATE_SAVINGSACCOUNT
+    visible_states: [content]
+    on_click:
+      action: edit_account_form
+      target: dynamic-template-forms
+      action_contract:
+        effect: navigate
+        library_refs:
+          - dynamic-template-forms
+        description: "Open the edit form (dynamic-template-forms) pre-filled from the account's current values plus the GET template; only fields mutable in the current status are editable; submit enqueues an update command through the outbox."
+
+  - id: approve_account_button
+    type: button
+    label: "{strings.m05_approve}"
+    testTag: "m05-savings-deposits-shares_approve"
+    variant: primary
+    gated_permission: APPROVE_SAVINGSACCOUNT
+    visible_states: [content]           # only when status == submitted_and_pending_approval
+    on_click:
+      action: approve_account
+      action_contract:
+        effect: call_api
+        library_refs:
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "Fineract POST /v1/savingsaccounts/{id}?command=approve"
+        reads_from:
+          - table: deposit_accounts
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - accountStatus
+        description: "Approve a pending savings/FD/RD/share account (POST /savingsaccounts/{id}?command=approve with approvedOnDate + dateFormat + locale). Enqueued through the durable outbox with an idempotency key; maker-checker tenants land in pending_approval; APPROVE_SAVINGSACCOUNT re-checked at replay."
+
+  - id: activate_account_button
+    type: button
+    label: "{strings.m05_activate}"
+    testTag: "m05-savings-deposits-shares_activate"
+    variant: primary
+    gated_permission: ACTIVATE_SAVINGSACCOUNT
+    visible_states: [content]           # only when status == approved
+    on_click:
+      action: activate_account
+      action_contract:
+        effect: call_api
+        library_refs:
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "Fineract POST /v1/savingsaccounts/{id}?command=activate"
+        reads_from:
+          - table: deposit_accounts
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - accountStatus
+          - balance
+        description: "Activate an approved account (POST /savingsaccounts/{id}?command=activate with activatedOnDate + dateFormat + locale) so it can accept transactions. Queued via the durable outbox with an idempotency key; shares route to /accounts/share?command=activate."
+
+  - id: deposit_button
+    type: button
+    label: "{strings.m05_deposit}"
+    testTag: "m05-savings-deposits-shares_deposit"
+    variant: primary
+    gated_permission: DEPOSIT_SAVINGSACCOUNT
+    visible_states: [content]           # only when status == active
+    on_click:
+      action: record_deposit
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/savingsaccounts/{id}/transactions?command=deposit"
+        reads_from:
+          - table: deposit_accounts
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - balance
+          - transactions
+        description: "Record a deposit — assemble the transaction JsonObject (transactionAmount, transactionDate, paymentTypeId from the template + dateFormat + locale) and enqueue to RoomSubmitOutbox with a DURABLE idempotency key so it posts exactly-once even if the app is killed mid-submit (POST /savingsaccounts/{id}/transactions?command=deposit); RD via /recurringdepositaccounts."
+
+  - id: withdrawal_button
+    type: button
+    label: "{strings.m05_withdrawal}"
+    testTag: "m05-savings-deposits-shares_withdrawal"
+    variant: secondary
+    gated_permission: WITHDRAWAL_SAVINGSACCOUNT
+    visible_states: [content]           # only when status == active
+    on_click:
+      action: record_withdrawal
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/savingsaccounts/{id}/transactions?command=withdrawal"
+        reads_from:
+          - table: deposit_accounts
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - balance
+          - transactions
+        description: "Record a withdrawal (POST /savingsaccounts/{id}/transactions?command=withdrawal) — same durable-outbox exactly-once path as deposit, gated by WITHDRAWAL_SAVINGSACCOUNT. A client-side available-balance guard runs before enqueue; the server stays the final authority (409 → error → Needs-Attention)."
+
+  - id: hold_amount_button
+    type: button
+    label: "{strings.m05_hold}"
+    testTag: "m05-savings-deposits-shares_hold"
+    variant: text
+    gated_permission: HOLDAMOUNT_SAVINGSACCOUNT
+    visible_states: [content]
+    on_click:
+      action: hold_amount
+      action_contract:
+        effect: call_api
+        library_refs:
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "Fineract POST /v1/savingsaccounts/{id}/transactions?command=holdAmount"
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - onHoldFunds
+          - balance
+        description: "Place an amount-on-hold / block (POST /savingsaccounts/{id}/transactions?command=holdAmount) reserving funds against the available balance; enqueued through the outbox with an idempotency key. Releasing it is the paired RELEASEAMOUNT_SAVINGSACCOUNT control on the on-hold row."
+
+  - id: post_interest_button
+    type: button
+    label: "{strings.m05_post_interest}"
+    testTag: "m05-savings-deposits-shares_post_interest"
+    variant: text
+    gated_permission: POSTINTEREST_SAVINGSACCOUNT
+    visible_states: [content]           # only when status == active
+    on_click:
+      action: post_interest
+      action_contract:
+        effect: call_api
+        library_refs:
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "Fineract POST /v1/savingsaccounts/{id}?command=postInterestAsOn"
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - balance
+          - transactions
+        description: "Post accrued interest as-on a date (POST /savingsaccounts/{id}?command=postInterestAsOn with transactionDate + dateFormat + locale) — capitalizes interest into the balance and appends an interest-posting ledger row. Queued via the durable outbox exactly-once."
+
+  - id: premature_close_button
+    type: button
+    label: "{strings.m05_premature_close}"
+    testTag: "m05-savings-deposits-shares_premature_close"
+    variant: secondary
+    gated_permission: PREMATURECLOSE_FIXEDDEPOSITACCOUNT
+    visible_states: [content]           # FD/RD only, status == active
+    on_click:
+      action: premature_close_deposit
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "Fineract POST /v1/fixeddepositaccounts/{id}?command=prematureClose"
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - accountStatus
+          - balance
+        description: "Prematurely close a fixed/recurring deposit (POST /fixeddepositaccounts/{id}?command=prematureClose, RD via /recurringdepositaccounts) — the penalty/maturity amount is previewed via calculatePrematureAmount, then the close command (onAccountClosureId + toSavingsAccountId/withdrawal + dateFormat + locale) is enqueued through the outbox."
+
+  - id: subscribe_shares_button
+    type: button
+    label: "{strings.m05_subscribe_shares}"
+    testTag: "m05-savings-deposits-shares_subscribe_shares"
+    variant: primary
+    gated_permission: APPLYADDITIONALSHARES_SHAREACCOUNT
+    visible_states: [content]           # share accounts only
+    on_click:
+      action: subscribe_shares
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "Fineract POST /v1/accounts/share/{id}?command=applyadditionalshares"
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - shareCount
+          - balance
+        description: "Subscribe additional shares on a share account (POST /accounts/share/{id}?command=applyadditionalshares with requestedShares + requestedDate + dateFormat + locale) — enqueued through the durable outbox and, on approval, added to the member's holding."
+
+  - id: redeem_shares_button
+    type: button
+    label: "{strings.m05_redeem_shares}"
+    testTag: "m05-savings-deposits-shares_redeem_shares"
+    variant: secondary
+    gated_permission: REDEEMSHARES_SHAREACCOUNT
+    visible_states: [content]           # share accounts only
+    on_click:
+      action: redeem_shares
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "Fineract POST /v1/accounts/share/{id}?command=redeemshares"
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - shareCount
+          - balance
+        description: "Redeem shares from a share account (POST /accounts/share/{id}?command=redeemshares with requestedShares + requestedDate + dateFormat + locale) — enqueued through the durable outbox with an idempotency key so a retried redemption is applied exactly-once."
+
+  - id: account_transfer_button
+    type: button
+    label: "{strings.m05_transfer}"
+    testTag: "m05-savings-deposits-shares_transfer"
+    variant: text
+    gated_permission: CREATE_ACCOUNTTRANSFER
+    visible_states: [content]
+    on_click:
+      action: account_transfer
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "Fineract POST /v1/accounttransfers"
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - balance
+          - transactions
+        description: "Transfer funds to/from this account (POST /v1/accounttransfers with from/to office+client+account type/id + transferAmount + transferDate + dateFormat + locale) — the transfer command is enqueued through the durable outbox for exactly-once replay."
+
+  - id: standing_instruction_button
+    type: button
+    label: "{strings.m05_standing_instruction}"
+    testTag: "m05-savings-deposits-shares_standing_instruction"
+    variant: text
+    gated_permission: CREATE_STANDINGINSTRUCTION
+    visible_states: [content]
+    on_click:
+      action: create_standing_instruction
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "Fineract POST /v1/standinginstructions"
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - standingInstructions
+        description: "Create/edit a standing instruction (POST /v1/standinginstructions with from/to accounts + amount + recurrence + validFrom/validTill + dateFormat + locale) for scheduled transfers; enqueued through the durable outbox."
+
+  - id: close_account_button
+    type: button
+    label: "{strings.m05_close}"
+    testTag: "m05-savings-deposits-shares_close"
+    variant: text
+    gated_permission: CLOSE_SAVINGSACCOUNT
+    visible_states: [content]
+    on_click:
+      action: close_account
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "Fineract POST /v1/savingsaccounts/{id}?command=close"
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - accountStatus
+        description: "Close an active account (POST /savingsaccounts/{id}?command=close with closedOnDate + withdrawBalance/transferToSavings + dateFormat + locale) — enqueued through the durable outbox; shares close via /accounts/share?command=close."
+
+  - id: review_failed_button
+    type: button
+    label: "{strings.m05_review_failed}"
+    testTag: "m05-savings-deposits-shares_review_failed"
+    variant: text
+    visible_states: [error]
+    on_click:
+      action: open_needs_attention
+      target: needs-attention-inbox
+      action_contract:
+        effect: navigate
+        description: "Navigate to needs-attention-inbox where a rejected deposit/withdrawal/lifecycle command is triaged (Retry / Edit / Discard) with the Fineract server error and explicit conflict resolution — the rejected command never silently disappears."
+
+  - id: retry_button
+    type: button
+    label: "{strings.m05_retry}"
+    testTag: "m05-savings-deposits-shares_retry"
+    variant: text
+    visible_states: [error, no_network]
+    on_click:
+      action: retry_load
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+        reads_from:
+          - table: deposit_accounts
+        produces_state: loading
+        description: "Re-run the failed account list/detail fetch — calls stream.refreshFresh() to force a fresh Store5 fetch past the cache (the streamFresh cold-start dual path), returning to loading then content/error."

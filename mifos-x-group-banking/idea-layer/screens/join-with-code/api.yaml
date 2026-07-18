@@ -1,0 +1,158 @@
+sibling: api
+schema_version: "4.0"
+feature_id: join-with-code
+
+api:
+  - id: validate_invite_token
+    function: validate_invite_token
+    method: get
+    endpoint: "/companion/datatables/invitations/{entityId}"
+    description: >
+      Validate an invite token against the companion invitations datatable. Returns the full
+      invitation row including group_id, inviter_client_id, invited_email/phone, role_to_assign,
+      expires_at, and accepted_at. A non-null accepted_at means the code was already used.
+    params:
+      entityId: { type: String, required: true, description: "The 6-char invite code used as the datatable row key" }
+    response:
+      type: object
+      fields:
+        token: String
+        group_id: Long
+        inviter_client_id: Long
+        invited_email_phone: String
+        role_to_assign: String
+        expires_at: String   # ISO-8601 date
+        accepted_at: "String | null"
+    writable: false
+    errors:
+      401: Unauthorized — session expired; redirect to login-signup
+      404: Invite token not found — map to JoinError.InvalidCode
+      500: Server error
+    cache:
+      ttl: 30
+      strategy: no-cache
+      offline: show_error
+
+  - id: get_group_preview
+    function: get_group_preview
+    method: get
+    endpoint: "/companion/groups/{groupId}"
+    description: >
+      Fetch minimal group details (name, type, organizer name, member count) to populate
+      the group preview card shown to the invitee before they confirm joining. Called
+      immediately after a successful token validation using the group_id from the
+      invitations datatable row.
+    params:
+      groupId: { type: Long, required: true, source: validate_invite_token_response.group_id }
+    response:
+      type: object
+      fields:
+        groupId: Long
+        groupName: String
+        groupType: String
+        organizerName: String
+        memberCount: Int
+        officeId: Long
+    writable: false
+    errors:
+      401: Unauthorized
+      404: Group not found
+      500: Server error
+    cache:
+      ttl: 60
+      strategy: stale-while-revalidate
+      offline: show_cached
+
+  - id: associate_client_to_group
+    function: associate_client_to_group
+    method: post
+    endpoint: "/companion/groups/{groupId}/associate-clients"
+    description: >
+      Auto-associate the authenticated invitee to the group as a member with the role
+      specified in the invitation row. Called after the user taps Join Group on the
+      preview card and is confirmed to be authenticated.
+    params:
+      groupId: { type: Long, required: true, source: validate_invite_token_response.group_id }
+    body:
+      clientIds: "List<Long>"
+      roleToAssign: String
+    response:
+      type: object
+      fields:
+        resourceId: Long
+        groupId: Long
+        clientIds: "List<Long>"
+    writable: true
+    errors:
+      400: >
+        Validation error — client already a member (map to JoinError.AlreadyMember) or
+        invalid role
+      401: Unauthorized
+      403: Forbidden — group closed to new members
+      500: Server error
+
+  - id: mark_invitation_accepted
+    function: mark_invitation_accepted
+    method: put
+    endpoint: "/companion/datatables/invitations/{entityId}/{rowId}"
+    description: >
+      Update the invitations datatable row to record the accepted_at timestamp,
+      marking the invite code as consumed so it cannot be reused. Called after
+      associate_client_to_group succeeds.
+    params:
+      entityId: { type: String, required: true, description: "The 6-char invite code" }
+      rowId: { type: Long, required: true, source: validate_invite_token_response.id }
+    body:
+      accepted_at: String   # ISO-8601 datetime of acceptance
+    response:
+      type: object
+      fields:
+        resourceId: Long
+        changes:
+          accepted_at: String
+    writable: true
+    errors:
+      401: Unauthorized
+      404: Datatable row not found
+      500: Server error
+    pagination: null
+
+cache_strategy:
+  default: no-cache
+  offline: show_error
+
+dtos:
+  InvitationRow:
+    token: String
+    group_id: Long
+    inviter_client_id: Long
+    invited_email_phone: String
+    role_to_assign: String
+    expires_at: String
+    accepted_at: "String | null"
+
+  GroupPreview:
+    groupId: Long
+    groupName: String
+    groupType: String
+    organizerName: String
+    memberCount: Int
+    officeId: Long
+    roleToAssign: String
+
+  AssociateClientsRequest:
+    clientIds: "List<Long>"
+    roleToAssign: String
+
+  AssociateClientsResponse:
+    resourceId: Long
+    groupId: Long
+    clientIds: "List<Long>"
+
+  MarkAcceptedRequest:
+    accepted_at: String
+
+  MarkAcceptedResponse:
+    resourceId: Long
+    changes:
+      accepted_at: String

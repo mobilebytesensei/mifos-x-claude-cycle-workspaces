@@ -1,0 +1,238 @@
+feature: m11-tellers-cash
+# Fineract teller & cash-management surface. Reads (tellers, cashiers, transactions,
+# template) are CACHE_FIRST_SWR-cacheable so the teller list, cash position and ledger
+# render offline. Cash movements (allocate/settle) and management commands (create teller,
+# assign cashier) are durable-idempotent — they flow through offline-sync-engine's outbox and
+# replay exactly-once via POST /v1/batches, never a direct online call that could double-move
+# cash. Every call sends the global Fineract-Platform-TenantId header.
+endpoints:
+  - id: list_tellers
+    method: GET
+    path: "/v1/tellers"
+    description: >-
+      Teller list backing the module root — each teller carries its office, name, status, and vault
+      cash position. Scoped to the user's office hierarchy server-side. Gates on READ_TELLER (or an
+      umbrella).
+    query_params:
+      - name: officeId
+        type: integer
+        required: false
+        description: "Restrict to a single office; defaults to the signed-in user's office hierarchy."
+    response_type: "Teller[]"
+    response:
+      shape: list
+      dto: TellerDto
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+    requires_auth: true
+    requires_permission: [READ_TELLER]
+    tenant_header: true
+    cacheable: true
+
+  - id: get_teller_template
+    method: GET
+    path: "/v1/tellers/template"
+    description: >-
+      Create/edit-teller form template — office option list plus name/description/status/start-end-date
+      field defaults. dynamic-template-forms renders the teller form FROM this payload (never hardcoded
+      options) and caches it CACHE_FIRST_SWR so the form works offline.
+    response_type: "TellerTemplate"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [READ_TELLER]
+    tenant_header: true
+    cacheable: true
+
+  - id: create_teller
+    method: POST
+    path: "/v1/tellers"
+    description: >-
+      Create a teller (name, officeId, description, status, startDate + dateFormat + locale). Assembled
+      as a command JsonObject by dynamic-template-forms and enqueued through the durable outbox for
+      exactly-once replay. Command gates on CREATE_TELLER.
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [CREATE_TELLER]
+    idempotency: durable
+    tenant_header: true
+    cacheable: false
+
+  - id: update_teller
+    method: PUT
+    path: "/v1/tellers/{tellerId}"
+    description: >-
+      Update a teller's mutable fields (name, description, status, dates). Enqueued through the durable
+      outbox; command gates on UPDATE_TELLER.
+    query_params:
+      - name: tellerId
+        type: integer
+        required: true
+        description: "The teller being edited."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [UPDATE_TELLER]
+    idempotency: durable
+    tenant_header: true
+    cacheable: false
+
+  - id: list_cashiers
+    method: GET
+    path: "/v1/tellers/{tellerId}/cashiers"
+    description: >-
+      Cashiers assigned to a teller for a date range, each with their allocated-cash position. Backs the
+      teller-detail cashier list; scoped by the date_range_filter (startDate/endDate). Gates on
+      READ_TELLER.
+    query_params:
+      - name: tellerId
+        type: integer
+        required: true
+        description: "The teller whose cashiers are listed."
+      - name: fromDate
+        type: string
+        required: false
+        description: "Start of the assignment date range (sent with dateFormat + locale); defaults to today."
+      - name: toDate
+        type: string
+        required: false
+        description: "End of the assignment date range."
+    response_type: "Cashier[]"
+    response:
+      shape: list
+      dto: CashierDto
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+    requires_auth: true
+    requires_permission: [READ_TELLER]
+    tenant_header: true
+    cacheable: true
+
+  - id: get_cashier_template
+    method: GET
+    path: "/v1/tellers/{tellerId}/cashiers/template"
+    description: >-
+      Assign-cashier form template — the staff option list eligible to be a cashier for this teller plus
+      start/end-date + isFullDay defaults. dynamic-template-forms renders the assign-cashier form from
+      this payload and caches it offline. Gates on READ_TELLER.
+    query_params:
+      - name: tellerId
+        type: integer
+        required: true
+        description: "The teller a cashier is being assigned to."
+    response_type: "CashierTemplate"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [READ_TELLER]
+    tenant_header: true
+    cacheable: true
+
+  - id: assign_cashier
+    method: POST
+    path: "/v1/tellers/{tellerId}/cashiers"
+    description: >-
+      Assign a staff member as a cashier to this teller for a date range (staffId + startDate + endDate +
+      isFullDay + dateFormat + locale). Enqueued through the durable outbox for exactly-once replay.
+      Command gates on ALLOCATECASHIER_TELLER.
+    query_params:
+      - name: tellerId
+        type: integer
+        required: true
+        description: "The teller the cashier is assigned to."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [ALLOCATECASHIER_TELLER]
+    idempotency: durable
+    tenant_header: true
+    cacheable: false
+
+  - id: allocate_cash
+    method: POST
+    path: "/v1/tellers/{tellerId}/cashiers/{cashierId}/allocate"
+    description: >-
+      Allocate cash from the teller vault to a cashier (txnAmount + txnDate + currencyCode + notes +
+      dateFormat + locale). Money-sensitive — assembled as a command JsonObject and enqueued to the
+      durable outbox with an idempotency key so it posts EXACTLY once even across an app kill/retry.
+      Command gates on ALLOCATECASHTOCASHIER_TELLER.
+    query_params:
+      - name: tellerId
+        type: integer
+        required: true
+        description: "The teller (vault) the cash moves from."
+      - name: cashierId
+        type: integer
+        required: true
+        description: "The cashier the cash is allocated to."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [ALLOCATECASHTOCASHIER_TELLER]
+    idempotency: durable
+    tenant_header: true
+    cacheable: false
+
+  - id: settle_cash
+    method: POST
+    path: "/v1/tellers/{tellerId}/cashiers/{cashierId}/settle"
+    description: >-
+      Settle cash from a cashier back to the teller vault (txnAmount + txnDate + currencyCode +
+      dateFormat + locale). Same durable-outbox exactly-once path as allocate; a client-side guard
+      refuses settling more than the cashier's allocated cash before enqueue, the server stays the final
+      authority. Command gates on SETTLECASHFROMCASHIER_TELLER.
+    query_params:
+      - name: tellerId
+        type: integer
+        required: true
+        description: "The teller (vault) the cash returns to."
+      - name: cashierId
+        type: integer
+        required: true
+        description: "The cashier the cash is settled from."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [SETTLECASHFROMCASHIER_TELLER]
+    idempotency: durable
+    tenant_header: true
+    cacheable: false
+
+  - id: list_teller_transactions
+    method: GET
+    path: "/v1/tellers/{tellerId}/transactions"
+    description: >-
+      Teller-transaction ledger — allocate/settle cash movements and cash-in/cash-out entries with
+      running totals for the selected teller. Read-only, CACHE_FIRST_SWR so the ledger renders offline.
+      Gates on READ_TELLER.
+    query_params:
+      - name: tellerId
+        type: integer
+        required: true
+        description: "The teller whose transaction ledger is fetched."
+      - name: dateRange
+        type: string
+        required: false
+        description: "Optional date filter for the ledger window (sent with dateFormat + locale)."
+    response_type: "TellerTransaction[]"
+    response:
+      shape: list
+      dto: TellerTransactionDto
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+    requires_auth: true
+    requires_permission: [READ_TELLER]
+    tenant_header: true
+    cacheable: true

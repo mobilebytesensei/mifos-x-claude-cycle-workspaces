@@ -1,0 +1,326 @@
+feature: m08-products-charges
+status: approved
+cluster: back-office-module
+module: m08-products-charges
+priority: should_have
+new_infra: false
+is_primary_flow: false
+has_ui: true
+has_api: true
+has_server: false
+offline_policy: online-only
+capabilities:
+  - has_ui
+  - has_api
+  - has_offline_cache
+  - has_form_input
+  - has_search
+  - has_data_migration
+  - requires_auth
+requires_features:
+  - permission-capability-engine
+  - offline-sync-engine
+  - dynamic-template-forms
+  - needs-attention-inbox
+requires_permission:
+  - READ_LOANPRODUCT
+  - CREATE_LOANPRODUCT
+  - UPDATE_LOANPRODUCT
+  - DELETE_LOANPRODUCT
+  - READ_SAVINGSPRODUCT
+  - CREATE_SAVINGSPRODUCT
+  - UPDATE_SAVINGSPRODUCT
+  - READ_CHARGE
+  - CREATE_CHARGE
+  - UPDATE_CHARGE
+  - READ_FUND
+  - CREATE_FUND
+  - READ_TAXGROUP
+  - CREATE_TAXGROUP
+  - READ_FLOATINGRATE
+  - READ_DELINQUENCY_BUCKET
+permissions_gate: >-
+  *_LOANPRODUCT/_SAVINGSPRODUCT/_FIXEDDEPOSITPRODUCT/_SHAREPRODUCT, *_CHARGE, *_FUND, *_TAXGROUP, floating rates,
+  delinquency buckets
+acceptance_refs:
+  - Full product + charge lifecycle via template-driven forms; product-admin persona
+plan_ref: idea-plan.yaml#features[m08-products-charges]
+summary: >-
+  M08 · Products & Charges — the heaviest template-driven CONFIG module. A tabbed catalog (Loan / Savings / FD / Share
+  products, Charges, Funds, Tax, Floating rates, Delinquency buckets) → per-item detail → a create/edit surface rendered
+  ENTIRELY by dynamic-template-forms from the LARGEST GET /{entity}/template payloads in the API
+  (interest/terms/accounting-rule/ charge-assignment/GL-mapping option lists), never hardcoded. Catalog + templates read
+  CACHE_FIRST_SWR (offline) and feed the option lists of every loan/savings origination form. Every mutating command is
+  gated by its exact {ACTION}_{ENTITY} permission (fail-closed HIDE for the root + create FABs; DISABLE-with-reason for
+  a maker without the action). Product/charge config is ADMIN-TIER and ONLINE-ONLY + maker-checker — a GL-affecting
+  config change is deliberately never offline-queued for silent later replay; the write still carries a durable
+  idempotency key through the offline-sync-engine so it is exactly-once and checker-routable, but BLOCKS
+  (config-online-only state) with no connectivity.
+metadata:
+  category: back-office-domain
+  implementation_ready: true
+  impl_ready_at: '2026-07-17T00:00:00Z'
+  impl_ready_schema: v2
+contracts:
+  - capability: product_charge_catalog_read
+    platform_spec: >-
+      Store<PageKey,List<CatalogItem>> over Room (ProductChargeEntity, unified by entity_type) +
+      asPagingScreenStream(CACHE_FIRST_SWR); GET /v1/loanproducts + /v1/savingsproducts + /v1/charges + /v1/funds +
+      /v1/taxes/group; renders all ScreenState variants via PagingScreenContent; the cached rows also supply
+      loan/savings origination option lists offline
+    permission: READ_LOANPRODUCT
+    error_cases:
+      - product_catalog_failed
+      - product_catalog_offline_no_cache
+  - capability: entity_template_read
+    platform_spec: >-
+      GET /v1/{loanproducts|savingsproducts|charges|taxes/group}/template — the largest template envelopes in the API;
+      cached per (entity, command) in cached_templates (CACHE_FIRST_SWR); rendered by dynamic-template-forms
+    permission: READ_LOANPRODUCT
+    error_cases:
+      - product_template_failed
+  - capability: product_create_edit
+    platform_spec: >-
+      POST /v1/{loanproducts|savingsproducts} + PUT /v1/{...}/{id} — assembled JsonObject from dynamic-template-forms;
+      ONLINE-ONLY (config never offline-queued) through DraftSubmitHandler with a durable idempotency key; maker-checker
+      aware (queued commandId + empty changes -> PENDING_APPROVAL); offline attempt -> config-online-only blocked state
+    permission: CREATE_LOANPRODUCT
+    error_cases:
+      - config_command_rejected
+      - config_online_only_blocked
+      - permission_drift_403
+      - command_pending_approval
+  - capability: product_delete
+    platform_spec: >-
+      DELETE /v1/{loanproducts|savingsproducts}/{id} — destructive confirm; server 409-rejects when accounts reference
+      the product (surfaced verbatim); ONLINE-ONLY + maker-checker
+    permission: DELETE_LOANPRODUCT
+    error_cases:
+      - product_in_use_409
+      - config_command_rejected
+  - capability: charge_create_edit
+    platform_spec: >-
+      POST /v1/charges + PUT /v1/charges/{id} (incl. active toggle) — assembled JsonObject from dynamic-template-forms
+      (applies-to, calc type, amount, GL income account, tax group); ONLINE-ONLY + maker-checker; the created charge
+      feeds product charge-assignment option lists
+    permission: CREATE_CHARGE
+    error_cases:
+      - config_command_rejected
+      - config_online_only_blocked
+  - capability: fund_create
+    platform_spec: POST /v1/funds — name + externalId; ONLINE-ONLY + maker-checker; feeds loan-product/loan-account fund option lists
+    permission: CREATE_FUND
+    error_cases:
+      - config_command_rejected
+  - capability: tax_group_create
+    platform_spec: >-
+      POST /v1/taxes/group — composed from GET /v1/taxes/group/template tax components (percentage -> GL liability
+      account, dated); ONLINE-ONLY + maker-checker; feeds charge tax-group option lists
+    permission: CREATE_TAXGROUP
+    error_cases:
+      - config_command_rejected
+reads:
+  - >-
+    GET /v1/loanproducts + /v1/savingsproducts + /v1/charges + /v1/funds + /v1/taxes/group — product/charge/fund/tax
+    catalog (CACHE_FIRST_SWR)
+  - >-
+    GET /v1/{entity}/template — the large product/charge/tax create-form envelopes (defaults + *Options[] allowed-value
+    lists)
+  - GET /v1/floatingrates + /v1/delinquency/buckets — loan-product config inputs
+writes:
+  - >-
+    POST /v1/loanproducts | /v1/savingsproducts | /v1/charges | /v1/funds | /v1/taxes/group — create (ONLINE-ONLY +
+    maker-checker)
+  - >-
+    PUT /v1/loanproducts/{id} | /v1/savingsproducts/{id} | /v1/charges/{id} — edit / active toggle (ONLINE-ONLY +
+    maker-checker)
+  - DELETE /v1/loanproducts/{id} — delete when unreferenced (ONLINE-ONLY + maker-checker)
+consumes_tables:
+  - products_charges
+  - cached_templates
+  - framework_submit_drafts
+libraries:
+  external:
+    - name: openMF Fineract Client KMP SDK
+      role: >-
+        Ktorfit-style client for the loanproducts/savingsproducts/charges/funds/taxes endpoints + their /template
+        payloads.
+    - name: org.mobilenativefoundation.store.store5
+      role: >-
+        CACHE_FIRST_SWR SourceOfTruth over Room for the catalog + templates so the console + downstream option lists
+        read offline.
+    - name: androidx.room
+      role: Local cache of the unified products_charges catalog + cached_templates + framework_submit_drafts outbox.
+    - name: kotlinx.serialization
+      role: Deserialize catalog/template JSON into the typed model and serialize the config-command JsonObject body.
+  cmp:
+    - name: cmp-network-monitor
+      role: >-
+        Connectivity signal that gates config writes — online -> submit, offline -> config-online-only blocked state
+        (config is never offline-queued).
+  required_modules:
+    - core/store
+    - core/data
+    - core/network
+    - core/database
+    - core/permissions
+vm_actions:
+  - name: LoadCatalog
+    signature: private fun loadCatalog()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Success(pagedCatalog) | Empty | Error
+    side_effects:
+      - ProductChargeRepository.catalogStream(CACHE_FIRST_SWR)
+    error_handling:
+      NetworkError: uiState=Error; keep last cached catalog; offer Retry
+      Unauthorized403: route to permission-capability-engine (drift protocol)
+  - name: SwitchCatalogTab
+    signature: 'private fun onSwitchCatalogTab(tab: CatalogTab)'
+    state_mutations:
+      - activeTab=tab; catalog=<filtered in-memory>
+    side_effects: []
+    error_handling: {}
+  - name: SearchCatalog
+    signature: 'private fun onSearchCatalog(query: String)'
+    state_mutations:
+      - catalog=<filtered in-memory>
+    side_effects: []
+    error_handling: {}
+  - name: OpenProductDetail
+    signature: 'private fun onOpenProductDetail(entityType: String, id: String)'
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToProductEditor(entityType, id))
+    error_handling: {}
+  - name: CreateLoanProduct
+    signature: 'private fun createLoanProduct(payload: LoanProductPayload)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - if offline -> uiState=ConfigOnlineOnly (blocked, no enqueue-drain)
+      - ProductOutboxRepository.enqueueOnline(CREATE_LOANPRODUCT, payload, idempotencyKey)
+    error_handling:
+      ConfigCommandRejected: route entry to needs-attention-inbox; uiState=Error
+      Queued: uiState=Submitting -> row 'Submitted for approval' (maker-checker)
+      Offline: uiState=ConfigOnlineOnly — blocked, config never offline-queued
+  - name: CreateSavingsProduct
+    signature: 'private fun createSavingsProduct(payload: SavingsProductPayload)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - ProductOutboxRepository.enqueueOnline(CREATE_SAVINGSPRODUCT, payload, idempotencyKey)
+    error_handling:
+      Offline: uiState=ConfigOnlineOnly
+      ConfigCommandRejected: route to needs-attention-inbox
+  - name: CreateCharge
+    signature: 'private fun createCharge(payload: ChargePayload)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - ProductOutboxRepository.enqueueOnline(CREATE_CHARGE, payload, idempotencyKey)
+    error_handling:
+      Offline: uiState=ConfigOnlineOnly
+      ConfigCommandRejected: route to needs-attention-inbox
+  - name: CreateFund
+    signature: 'private fun createFund(payload: FundPayload)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - ProductOutboxRepository.enqueueOnline(CREATE_FUND, payload, idempotencyKey)
+    error_handling:
+      Offline: uiState=ConfigOnlineOnly
+  - name: CreateTaxGroup
+    signature: 'private fun createTaxGroup(payload: TaxGroupPayload)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - ProductOutboxRepository.enqueueOnline(CREATE_TAXGROUP, payload, idempotencyKey)
+    error_handling:
+      Offline: uiState=ConfigOnlineOnly
+  - name: EditProduct
+    signature: 'private fun editProduct(entityType: String, id: String, payload: JsonObject)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - ProductOutboxRepository.enqueueOnline(UPDATE_{PRODUCT}, id, payload, idempotencyKey)
+    error_handling:
+      Offline: uiState=ConfigOnlineOnly
+      ConfigCommandRejected: route to needs-attention-inbox
+  - name: EditCharge
+    signature: 'private fun editCharge(id: String, payload: JsonObject)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - ProductOutboxRepository.enqueueOnline(UPDATE_CHARGE, id, payload, idempotencyKey)
+    error_handling:
+      Offline: uiState=ConfigOnlineOnly
+  - name: ToggleChargeActive
+    signature: 'private fun toggleChargeActive(id: String, active: Boolean)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - ProductOutboxRepository.enqueueOnline(UPDATE_CHARGE, id, {active}, idempotencyKey)
+    error_handling:
+      Offline: uiState=ConfigOnlineOnly
+  - name: DeleteProduct
+    signature: 'private fun deleteProduct(entityType: String, id: String)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - ProductOutboxRepository.enqueueOnline(DELETE_{PRODUCT}, id, idempotencyKey)
+    error_handling:
+      ProductInUse409: uiState=Error; server message verbatim; product retained
+      Offline: uiState=ConfigOnlineOnly
+  - name: DismissConfigOfflineBanner
+    signature: private fun onDismissConfigOfflineBanner()
+    state_mutations:
+      - uiState=Success (back to read-only catalog)
+    side_effects: []
+    error_handling: {}
+  - name: RetryLoad
+    signature: private fun onRetryLoad()
+    state_mutations:
+      - uiState=Loading
+    side_effects:
+      - ProductChargeRepository.catalogStream.refreshFresh()
+    error_handling:
+      Unauthorized403: route to permission-capability-engine
+error_cases:
+  - product_catalog_failed
+  - product_catalog_offline_no_cache
+  - product_template_failed
+  - config_command_rejected
+  - config_online_only_blocked
+  - product_in_use_409
+  - permission_drift_403
+  - command_pending_approval
+test_fixtures:
+  source: screens/m08-products-charges/tests.yaml
+  scenario_count: 10
+  priority_distribution:
+    high: 6
+    medium: 4
+    low: 0
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T00:00:00Z'
+enriched_by: /idea-feature-enrich
+approve_hash: "sha256:3b020621c63cd45cc736880419e764594eb78def9467bf41707ee01e64f8950b"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+status_history:
+  - from: designed
+    to: design_partial
+    at: '2026-07-17T20:51:25.769Z'
+    by: /idea-feature-stitch
+  - from: design_partial
+    to: designed
+    at: '2026-07-17T22:42:55.428Z'
+    by: /idea-feature-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

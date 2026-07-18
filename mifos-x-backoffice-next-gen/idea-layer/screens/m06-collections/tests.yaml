@@ -1,0 +1,77 @@
+schema_version: v1.0.0
+feature: m06-collections
+scenarios:
+  # ── content (offline-first read) ──────────────────────────────────────
+  - id: sheet_with_dues_offline
+    description: "A cached 30-member center sheet renders offline via CACHE_FIRST_SWR under 1s"
+    preconditions: ["user holds READ_COLLECTIONSHEET", "the center meeting sheet was previously generated + cached", "network unavailable"]
+    actions: ["open the center's collection sheet offline"]
+    assertions: ["per-client loan + savings dues render from the Room cache", "the 30-member sheet loads under 1s", "the offline · cached sheet banner is shown"]
+    priority: high
+
+  - id: pick_meeting_context_generates_sheet
+    description: "Picking a center/group + meeting date generates the sheet via command=generate"
+    preconditions: ["user holds READ_COLLECTIONSHEET", "network available"]
+    actions: ["open the meeting-context picker", "select the center + meeting date", "confirm"]
+    assertions: ["POST /v1/collectionsheet?command=generate (or center generateCollectionSheet) is issued", "the sheet renders with per-client dues + the cache is hydrated"]
+    priority: high
+
+  - id: empty_when_nothing_due
+    description: "A meeting with no outstanding dues shows the empty state, not a sheet"
+    preconditions: ["the selected meeting has no outstanding loan/savings dues"]
+    actions: ["generate the sheet"]
+    assertions: ["the empty 'nothing due for this meeting' state renders", "the officer can pick another center/group or date"]
+    priority: medium
+
+  # ── capture + atomic batch submit (offline-first write, exactly-once) ──
+  - id: bulk_atomic_submit_exactly_once
+    description: "The whole captured sheet submits as one atomic batch exactly-once offline"
+    preconditions: ["user holds SAVECOLLECTIONSHEET_CENTER", "amounts captured for 28 of 30 clients", "network unavailable", "the submit is retried"]
+    actions: ["capture the per-client amounts", "tap Submit sheet", "force a retry"]
+    assertions: ["the whole sheet enqueues as one AllOrNothing batch with a durable idempotency_key", "it replays exactly-once (POST /v1/batches enclosingTransaction — no double post)", "the queued-offline confirmation is shown"]
+    priority: high
+
+  - id: capture_and_submit_gated_by_permission
+    description: "Capture fields + Submit are gated by SAVECOLLECTIONSHEET_CENTER"
+    preconditions: ["user holds READ_COLLECTIONSHEET but NOT SAVECOLLECTIONSHEET_CENTER/_GROUP"]
+    actions: ["open a generated sheet"]
+    assertions: ["the per-row amount-collected fields + the Submit-sheet button are hidden or disabled with a reason", "the sheet remains readable"]
+    priority: high
+
+  - id: queued_sheet_survives_restart
+    description: "A queued sheet survives app kill + restart with its idempotency key intact"
+    preconditions: ["a captured sheet is queued in the outbox", "network unavailable"]
+    actions: ["kill and restart the app", "regain connectivity"]
+    assertions: ["the sheet payload + durable idempotency_key survive (Room)", "the sheet replays exactly-once on connectivity regain"]
+    priority: high
+
+  # ── partial reject → needs-attention ──────────────────────────────────
+  - id: partial_reject_routes_to_needs_attention
+    description: "A server-rejected sheet row lands in needs-attention-inbox; accepted rows stay posted"
+    preconditions: ["a queued sheet with one repayment against a since-closed loan", "the server rejects that row on replay"]
+    actions: ["sync drains the outbox", "tap Review failed"]
+    assertions: ["the rejected row surfaces in needs-attention-inbox with the Fineract server_error", "the other captured rows stay posted", "the rejected row is never silently dropped"]
+    priority: high
+
+  # ── receipts ──────────────────────────────────────────────────────────
+  - id: receipts_generated
+    description: "PDF receipts are generated per captured client after a successful submit"
+    preconditions: ["the sheet submitted successfully"]
+    actions: ["tap View receipts"]
+    assertions: ["one PDF transaction receipt per captured client is written to local storage", "each receipt carries the amount, meeting date, and reference"]
+    priority: medium
+
+  # ── recovery ──────────────────────────────────────────────────────────
+  - id: error_generate_failure_retry
+    description: "A failed sheet generation with no cache shows the error state + Retry"
+    preconditions: ["POST /v1/collectionsheet?command=generate returns 500", "no cached sheet"]
+    actions: ["generate the sheet", "tap Retry"]
+    assertions: ["the error state renders with a Retry CTA", "Retry re-issues the generation"]
+    priority: medium
+
+  - id: permission_drift_403_refreshes
+    description: "A 403 during generate triggers the permission-drift refresh, not a crash"
+    preconditions: ["the officer's SAVECOLLECTIONSHEET_CENTER was revoked server-side"]
+    actions: ["generate the sheet"]
+    assertions: ["the 403 routes into the permission-capability-engine refresh + re-resolve", "now-denied controls prune", "the surface stays alive"]
+    priority: medium

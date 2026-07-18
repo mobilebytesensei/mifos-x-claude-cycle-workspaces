@@ -1,0 +1,278 @@
+sibling: docs
+schema_version: v2
+contract_version: 2.2.0
+id: m14-reports-search-audit
+name: M14 · Reports, Search & Audit
+feature: m14-reports-search-audit
+flow: back-office
+status: approved
+cluster: back-office-module
+module: m14-reports-search-audit
+priority: should_have
+is_primary_flow: false
+auth_required: true
+offline_policy: online-only
+has_ui: true
+has_api: true
+has_server: false
+capabilities:
+  - has_ui
+  - has_api
+  - has_offline_cache
+  - has_file_operation
+  - has_form_input
+  - has_flow
+  - requires_auth
+consumes_tables:
+  - report_catalog_cache
+  - report_results_cache
+  - search_results_cache
+  - audit_trail_cache
+journey:
+  persona: Branch supervisor / auditor with a report code + READ_AUDIT reviewing portfolio health and the audit trail
+  goal: >-
+    Run a parameterized report and export it, search across resources to jump to a record, and inspect the filterable
+    audit trail — a read-only insight surface where every pane + report is permission-gated and office-scoped
+  success_metric: >-
+    A report is run end-to-end (params entered -> GET /v1/runreports -> result rendered -> exported to the share sheet),
+    a search hit deep-links into its owning module, and the audit trail loads filtered by the chosen
+    user/action/entity/date
+  screen_sequence:
+    - m14-reports-search-audit
+    - dynamic-template-forms
+    - m02-clients
+  expected_outcome: >-
+    Report catalog/results/search/audit read CACHE_FIRST_SWR (a prior run serves offline for the same params); report
+    execution/search/audit fetch run online; export renders a local CSV/PDF to the OS share sheet; no server mutation
+    occurs anywhere on this surface
+requires_features:
+  - permission-capability-engine
+  - dynamic-template-forms
+provides_to:
+  - m07-accounting
+contracts:
+  apis:
+    - id: list_reports
+      method: GET
+      path: /v1/reports
+      note: report catalog (Table|Pentaho|Chart); CACHE_FIRST_SWR; client-filtered to runnable reports
+    - id: run_report
+      method: GET
+      path: /v1/runreports/{reportName}
+      note: >-
+        execute with R_ params (+ exportCSV/output-type); READ_{reportName}/REPORTING_SUPER_USER; online run, cached
+        same-params offline
+    - id: global_search
+      method: POST
+      path: /v1/search/advance
+      note: adhoc search across clients/loans/groups/savings; office-scoped; CACHE_FIRST_SWR
+    - id: get_audits
+      method: GET
+      path: /v1/audits
+      note: audit trail, filterable by action/entity/maker/date; READ_AUDIT; paged; CACHE_FIRST_SWR
+    - id: get_audit_search_template
+      method: GET
+      path: /v1/audits/searchtemplate
+      note: allowed-value lists for the audit filter (never hardcoded)
+  tables:
+    - name: report_catalog_cache
+      backend: room
+      keys:
+        - report_id
+        - report_name
+        - report_type
+        - report_category
+        - permission_code
+      note: Report catalog read cache (CACHE_FIRST_SWR). Read-only.
+    - name: report_results_cache
+      backend: room
+      keys:
+        - report_name
+        - params_hash
+        - result_json
+        - run_at
+      note: Per-(report,params) result read cache; fresh run online, same params served offline. Read-only.
+    - name: search_results_cache
+      backend: room
+      keys:
+        - query_hash
+        - entity_type
+        - entity_id
+        - label
+        - sub_label
+      note: Adhoc-search hit read cache (CACHE_FIRST_SWR). Read-only.
+    - name: audit_trail_cache
+      backend: room
+      keys:
+        - audit_id
+        - action
+        - entity
+        - maker
+        - checker
+        - resource
+        - made_on
+        - filter_hash
+      note: Audit trail read cache (CACHE_FIRST_SWR), gated on READ_AUDIT. Read-only.
+  dtos:
+    - name: Report
+      role: response
+    - name: ReportResult
+      role: response
+    - name: ReportColumn
+      role: response
+    - name: AdhocSearchRequest
+      role: request
+    - name: SearchHit
+      role: response
+    - name: AuditEntry
+      role: response
+    - name: AuditSearchTemplate
+      role: response
+    - name: AuditFilter
+      role: request
+libraries:
+  cmp_modules:
+    - cmp-network-monitor
+  core_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/network
+    - core/permissions
+  external:
+    - org.mobilenativefoundation.store.store5
+    - androidx.room (Room 3)
+    - kotlinx.serialization
+    - io.github.vinceglb.filekit (CSV/PDF export -> OS share sheet)
+    - Fineract /v1/reports, /v1/runreports/{reportName}, /v1/search/advance, /v1/audits (+ /searchtemplate)
+  training_surfaces:
+    - training-layer/instructions/stream-first/latest/CORE_STORE.md
+    - training-layer/instructions/stream-first/latest/CORE_DATA.md
+    - training-layer/instructions/stream-first/latest/CORE_DATABASE.md
+    - training-layer/instructions/stream-first/latest/CORE_NETWORK.md
+vm_actions:
+  - action: OnTabSelected
+    maps_to_on_click: select_tab
+    handler: >-
+      Set selectedTab (Reports|Search|Audit); lazily hydrate that pane from its cache-first Store. Audit pane is present
+      only when READ_AUDIT is held.
+  - action: OnReportRowClick
+    maps_to_on_click: open_report_params
+    handler: >-
+      sendEvent(NavigateToForm(mode=report_params, reportName, R_ descriptors)) so report parameters are entered in
+      dynamic-template-forms before the run.
+  - action: OnRunReportClick
+    maps_to_on_click: run_report
+    handler: >-
+      Guard canRunReport(reportName) → GET /v1/runreports/{reportName} with the entered params via the Store (online
+      run, cached same-params offline); uiState=running → result with the ReportResult.
+  - action: OnExportClick
+    maps_to_on_click: export_report
+    handler: >-
+      Render reportResult to CSV/PDF via FileKit and launch the OS share sheet; a local file write + share intent, no
+      server call.
+  - action: OnSearchSubmit
+    maps_to_on_click: run_global_search
+    handler: >-
+      POST /v1/search/advance with searchQuery via the Store (office-scoped, CACHE_FIRST_SWR); fold hits into
+      searchResults; empty pane when nothing matched.
+  - action: OnSearchHitClick
+    maps_to_on_click: open_search_hit
+    handler: >-
+      Resolve the hit's entityType → sendEvent(NavigateTo(owning module, entityId)) — client/loan/group/savings
+      deep-link.
+  - action: OnApplyAuditFilter
+    maps_to_on_click: apply_audit_filter
+    handler: >-
+      Guard READ_AUDIT → GET /v1/audits with the chosen filter (values from /searchtemplate) via the Store; refresh
+      auditEntries.
+  - action: OnAuditRowClick
+    maps_to_on_click: open_audit_detail
+    handler: >-
+      Select the tapped audit entry into state and transition to result to show its maker/checker/command-JSON/resource
+      detail. Pure in-memory.
+  - action: OnRetryClick
+    maps_to_on_click: retry_load
+    handler: >-
+      Re-issue the failed catalog/run/search/audit call; 403 → refreshPermissions() drift protocol, prune denied
+      panes/reports.
+  - action: Internal.ReceiveCatalog
+    handler: >-
+      Fold the report-catalog Store Flow into ScreenState (loading/content/empty/error); client-filter to runnable
+      reports; stamp fromCache on cache hits.
+  - action: Internal.ReceiveReportResult
+    handler: >-
+      Fold the report-run Flow into reportResult; on cache-serve stamp fromCache; error_code=report_run_failed on
+      failure with no cache.
+  - action: Internal.ReceiveSearchHits
+    handler: Fold the search Flow into searchResults; empty when zero hits.
+  - action: Internal.ReceiveAuditPage
+    handler: Fold the audit-trail Flow into auditEntries for the active filter; stamp fromCache on cache hits.
+error_cases:
+  - code: reports_read_failed
+    ux: Error state with the server message + Retry; the cached catalog is served instead when present (offline banner).
+  - code: report_run_failed
+    ux: >-
+      Error state with the server 400 param-validation or 403 authorization message + Retry; a cached result for the
+      same params is served when present.
+  - code: search_failed
+    ux: Search pane shows an error with Retry; a cached result set for the same query is served when present.
+  - code: audit_read_failed
+    ux: Audit pane shows an error with Retry; a cached audit page is served when present.
+  - code: permission.revoked
+    ux: >-
+      403 drift on any read → refreshPermissions(); a pane/report the operator can no longer read is pruned live, 'Your
+      access has changed' toast; the screen stays alive.
+  - code: export_failed
+    ux: >-
+      CSV/PDF render or share-sheet launch failed → non-blocking error toast; the report result stays displayed and
+      Export can be retried.
+test_fixtures:
+  - >-
+    user holds READ_'Active Loans - Summary' but not READ_'Portfolio at Risk' → only the Active Loans report is
+    listed/runnable
+  - run a report online → GET /v1/runreports/{name} → result table rendered → Export → CSV handed to the OS share sheet
+  - re-run the same report offline with identical params → last cached result served (CACHE_FIRST_SWR), no network call
+  - user lacks READ_AUDIT → the Audit tab is hidden entirely (onDenied HIDE)
+  - >-
+    global search 'Njeri' → POST /v1/search/advance → a client hit → tap → deep-links into the client module with that
+    client id
+  - >-
+    apply an audit filter (action=DISBURSE_LOAN, date range) → GET /v1/audits with those params → filtered trail
+    rendered
+  - 403 drift on the audit fetch → refreshPermissions() → Audit pane pruned live without a crash
+acceptance_refs:
+  - Run parameterized reports (export/share), global search, full audit trail — gated per report
+review_package: idea-layer/exports/m14-reports-search-audit/REVIEW.md
+plan_ref: idea-plan.yaml#features[m14-reports-search-audit]
+summary: >-
+  M14 · Reports, Search & Audit — the read-only insight surface. Three panes behind one module root: run parameterized
+  reports (Table|Pentaho|Chart) from a per-report-gated catalog then export the result to the OS share sheet; global
+  adhoc search across clients/loans/groups/savings that deep-links into the owning module; and the filterable audit
+  trail. Catalog, results, search hits and audit pages read CACHE_FIRST_SWR (a prior run serves offline for the same
+  params); report execution/search/audit fetch run online. Report parameters render via dynamic-template-forms; every
+  pane + report is gated by permission-capability-engine (READ_{report}/REPORTING_SUPER_USER, READ_AUDIT, search) and
+  scoped to the operator's office. There are no mutating controls, no outbox — export is a local CSV/PDF render handed
+  to the platform share sheet, not a server write.
+approve_hash: "sha256:09678af8a8f724ffbcb1d28a5de89595c9103ae7e26bf28428bdd131f9e0dd6c"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T12:00:00Z'
+enriched_by: /idea-feature-enrich
+status_history:
+  - from: designed
+    to: design_partial
+    at: '2026-07-17T21:38:39.425Z'
+    by: /idea-feature-stitch
+  - from: design_partial
+    to: designed
+    at: '2026-07-17T22:48:04.661Z'
+    by: /idea-feature-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

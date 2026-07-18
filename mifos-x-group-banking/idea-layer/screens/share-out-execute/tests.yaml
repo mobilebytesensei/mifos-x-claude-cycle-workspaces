@@ -1,114 +1,83 @@
 sibling: tests
 schema_version: "4.0"
 feature_id: share-out-execute
+generated_at: "2026-07-18T00:00:00Z"
 
 testing:
   coverage_targets:
     ViewModel: "90%+"
     Screen: "80%+"
-    UseCase: "85%+"
+    Repository: "85%+"
 
   scenarios:
     - id: TC-SOE-001
-      scenario: "On mount — nav params populated, content state shown with member payout list"
+      scenario: "On mount, share-out plan loads from ShareOutRepository with groupId"
       type: ViewModel
       priority: P0
-      given: "groupId=1, centerId=1, cycleNumber=1, totalPool=24000, 5 memberPayouts passed as nav args"
+      given: "groupId=1; network online"
       when: "ShareOutExecuteScreen enters composition"
-      then: "5 member rows visible, summary card shows 'KES 24,000', execute button disabled (not confirmed)"
+      then: "ShareOutRepository.getShareOutPlan(1) called; per-member distribution list populated; ShareOutExecuteScreenState=Content"
 
     - id: TC-SOE-002
-      scenario: "Execute button remains disabled until confirmation text matches exactly"
-      type: ViewModel
+      scenario: "ACCUMULATING pool uses COMP-DIST-001 and shows prorata per-member amounts"
+      type: Screen
       priority: P0
-      given: "Content state, isConfirmed=false"
-      when: "OnConfirmationTextChanged('SHARE')"
-      then: "isConfirmed=false, execute_button disabled, error_text 'Must type exactly SHARE OUT'"
+      given: "Content state; poolModel=ACCUMULATING; members=[{name:'Ali', payout:8000}, {name:'Zara', payout:6500}]"
+      when: "DistributionList renders"
+      then: "COMP-DIST-001 strategy label shown; per-member rows with prorata KES amounts visible"
 
     - id: TC-SOE-003
-      scenario: "Typing 'SHARE OUT' exactly enables execute button"
-      type: ViewModel
+      scenario: "ROTATING_PAYOUT pool uses COMP-DIST-002 and shows current beneficiary receiving full pool"
+      type: Screen
       priority: P0
-      given: "confirmationText=''"
-      when: "OnConfirmationTextChanged('SHARE OUT')"
-      then: "isConfirmed=true, execute_button enabled"
+      given: "Content state; poolModel=ROTATING_PAYOUT; currentBeneficiary={name:'Peter', payout:50000}"
+      when: "DistributionList renders"
+      then: "COMP-DIST-002 strategy label shown; only 'Peter' shows KES 50,000 payout; others show KES 0"
 
     - id: TC-SOE-004
-      scenario: "Execute — transitions to Executing state, back button disabled"
-      type: ViewModel
+      scenario: "First confirm step requires explicit OnConfirmReview before OnExecute is available"
+      type: Screen
       priority: P0
-      given: "isConfirmed=true"
-      when: "OnExecute action"
-      then: "isExecuting=true, post_share_out_record called, then post_member_payout called sequentially per member"
+      given: "Content state; reviewConfirmed=false"
+      when: "ShareOutExecuteScreen renders"
+      then: "Execute button disabled until OnConfirmReview fires; double-confirm pattern enforced"
 
     - id: TC-SOE-005
-      scenario: "Sequential execution — progress indicator advances per member"
+      scenario: "OnConfirmReview enables Execute button and shows final confirmation dialog"
       type: ViewModel
       priority: P0
-      given: "Executing state, totalCount=5"
-      when: "Each post_member_payout completes"
-      then: "executedCount increments 0→1→2→3→4→5, progress_indicator.value matches ratio"
+      given: "reviewConfirmed=false"
+      when: "OnConfirmReview fires"
+      then: "reviewConfirmed=true; ShowFinalConfirmDialog event emitted"
 
     - id: TC-SOE-006
-      scenario: "All payouts succeed — completion banner shown, Done button visible"
+      scenario: "OnExecuteShareOut calls COMP-DIST-001 POST and transitions to per-member execution status"
       type: ViewModel
       priority: P0
-      given: "Executing state, all 5 members"
-      when: "All post_member_payout calls return 200"
-      then: "isCompleted=true, failedPayouts.isEmpty(), completion_banner visible, done_button visible"
+      given: "poolModel=ACCUMULATING; reviewConfirmed=true; network online"
+      when: "OnExecuteShareOut fires"
+      then: "isExecuting=true; POST /companion/groups/1/share-out/execute called; on success per-member executionStatus updated; NavigateToShareOutComplete emitted"
 
     - id: TC-SOE-007
-      scenario: "Partial failure — partial_failure_banner and retry button shown"
-      type: ViewModel
-      priority: P0
-      given: "Executing state, 5 members"
-      when: "3 succeed, 2 fail (5xx)"
-      then: "succeededCount=3, failedPayouts.size=2, partial_failure_banner visible, retry_failed_button visible"
+      scenario: "Per-member execution status rows update in real time during execution"
+      type: Screen
+      priority: P1
+      given: "isExecuting=true; members=[{id:1, status:PENDING}, {id:2, status:COMPLETED}]"
+      when: "ExecutionStatusList renders"
+      then: "member 1 shows PENDING spinner; member 2 shows COMPLETED checkmark"
 
     - id: TC-SOE-008
-      scenario: "Offline — share-out queued, queued_offline_banner shown"
+      scenario: "OnSubmit when offline queues entire share-out to sync_queue"
       type: ViewModel
       priority: P1
-      given: "isOnline=false, isConfirmed=true"
-      when: "OnExecute action"
-      then: "queuedOffline=true, SyncQueueRepository.enqueue() called with priority=HIGH, queued_offline_banner visible"
+      given: "cmp-network-monitor offline; reviewConfirmed=true"
+      when: "OnExecuteShareOut fires"
+      then: "sync_queue share-out entry created; ShareOutExecuteScreenState=OfflineQueued; banner shown"
 
     - id: TC-SOE-009
-      scenario: "Retry failed payouts — only FAILED members re-attempted"
+      scenario: "Server error during execution shows partial-failure state with retry"
       type: ViewModel
       priority: P1
-      given: "PartialFailure state, failedPayouts=[member104, member105]"
-      when: "OnRetryFailed action"
-      then: "post_member_payout called for member104 and member105 only, not successful members"
-
-    - id: TC-SOE-010
-      scenario: "Biometric auth — biometric prompt shown, on success isConfirmed=true"
-      type: ViewModel
-      priority: P1
-      given: "Content state, isConfirmed=false"
-      when: "OnBiometricSelected action"
-      then: "ShowBiometricPrompt event emitted; on biometric success isConfirmed=true"
-
-    - id: TC-SOE-011
-      scenario: "401 during execution — navigate to login"
-      type: ViewModel
-      priority: P0
-      given: "Executing state"
-      when: "post_share_out_record returns 401"
-      then: "isExecuting=false, NavigateToGroupDashboard NOT emitted, NavigateBack emitted with login redirect"
-
-    - id: TC-SOE-012
-      scenario: "Done button navigates to group-dashboard with groupId"
-      type: Screen
-      priority: P0
-      given: "Success state"
-      when: "Done button tapped"
-      then: "OnDone action emitted, nav target is group-dashboard with groupId=1"
-
-    - id: TC-SOE-013
-      scenario: "MemberExecutionStatus badge shows correct icon per state"
-      type: Screen
-      priority: P1
-      given: "Executing state with mixed member statuses"
-      when: "Member row rendered for each status"
-      then: "PENDING=circle icon, IN_PROGRESS=animated spinner, DONE=checkmark_circle green, FAILED=error_circle red"
+      given: "server returns 500 mid-execution"
+      when: "OnExecuteShareOut fires"
+      then: "isExecuting=false; failedMembers list populated; retry CTA shown"

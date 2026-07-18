@@ -5,15 +5,17 @@ feature_id: share-out-execute
 navigates_to:
   - target: group-dashboard
     condition: user_taps_done_after_completion
-    params: { groupId: Long }
+    params: { groupId: String }
   - target: share-out-preview
     condition: user_taps_back_before_execution
-    params: { groupId: Long, centerId: Long }
+    params: { groupId: String, typeConfig: GroupTypeConfig }
 
 flow_logic:
   on_load:
     - action: initialize_from_nav_params
-      fields: [memberPayouts, totalPool, cycleNumber, groupId, centerId]
+      fields: [memberPayouts, totalPool, groupId, typeConfig]
+    - action: derive_pool_model_and_formula
+      description: "Set poolModel and shareoutFormula from typeConfig nav-arg"
     - action: set_totalCount
       value: "memberPayouts.size"
     - action: initialize_member_execution_status
@@ -50,26 +52,26 @@ flow_logic:
           action: set_screen_state_executing
           then:
             - action: disable_back_navigation
-            - api_call: post_share_out_record
-              on_success:
-                - action: execute_member_payouts_sequential
-                  for_each: memberPayouts
-                  steps:
-                    - action: set_member_status_in_progress
-                    - api_call: post_member_payout
-                      on_success:
-                        - action: set_member_status_done
-                        - action: increment_succeeded_count
-                      on_error:
-                        - action: set_member_status_failed
-                        - action: add_to_failed_payouts
-                  on_all_complete:
+            - decision: route_by_pool_model   # COMP-DIST-001 vs COMP-DIST-002
+              branches:
+                - condition: "poolModel == 'ACCUMULATING'"
+                  api_call: post_shareout_execute   # COMP-DIST-001
+                  on_success:
+                    - action: map_failed_members_from_response
                     - decision: partial_failure_check
                       branches:
-                        - condition: "failedPayouts.isEmpty()"
+                        - condition: "response.failedCount == 0"
                           action: set_screen_state_success
-                        - condition: "failedPayouts.isNotEmpty()"
+                        - condition: "response.failedCount > 0"
                           action: set_screen_state_partial_failure
+                  on_error:
+                    - action: set_screen_state_error
+                - condition: "poolModel == 'ROTATING_PAYOUT'"
+                  api_call: post_rotation_payout_execute   # COMP-DIST-002
+                  on_success:
+                    - action: set_screen_state_success
+                  on_error:
+                    - action: set_screen_state_error
         - condition: "isConfirmed && !isOnline"
           action: enqueue_all_to_sync_queue
           then:
@@ -80,15 +82,12 @@ flow_logic:
   on_retry_failed:
     - decision: online_guard
       branches:
-        - condition: "failedPayouts.isNotEmpty() && isOnline"
-          action: retry_failed_payouts_sequential
-          steps:
-            - action: reset_failed_member_status_pending
-            - api_call: post_member_payout
-              on_success:
-                - action: remove_from_failed_payouts
-                - action: check_if_all_done
-                  on_empty: set_screen_state_success
+        - condition: "failedPayouts.isNotEmpty() && isOnline && poolModel == 'ACCUMULATING'"
+          api_call: post_shareout_execute
+          body_override: { memberPayouts: "{{failedPayouts}}" }
+          on_success:
+            - action: clear_failed_payouts_on_success
+            - action: set_screen_state_success
 
   on_done:
     - navigate: group-dashboard
@@ -99,7 +98,7 @@ flow_logic:
       branches:
         - condition: "!isExecuting && !isCompleted"
           navigate: share-out-preview
-          params: { groupId: "{{groupId}}", centerId: "{{centerId}}" }
+          params: { groupId: "{{groupId}}", typeConfig: "{{typeConfig}}" }
         - condition: "isExecuting || isCompleted"
           action: noop
           description: "Back disabled during and after execution"

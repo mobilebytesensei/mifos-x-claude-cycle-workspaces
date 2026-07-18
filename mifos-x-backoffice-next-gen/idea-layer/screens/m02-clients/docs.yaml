@@ -1,0 +1,293 @@
+sibling: docs
+schema_version: v2
+contract_version: 2.2.0
+id: m02-clients
+name: M02 · Clients & KYC
+feature: m02-clients
+flow: clients
+status: approved
+approve_hash: "sha256:7bf428373a218595583e6078765a1ca863b92fbd7bddd319d6f03bd39d406a81"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+cluster: back-office-module
+module: m02-clients
+priority: must_have
+is_primary_flow: true
+auth_required: true
+has_ui: true
+has_api: true
+has_server: false
+capabilities:
+  - has_ui
+  - has_api
+  - has_offline_cache
+  - has_form_input
+  - has_search
+  - has_file_operation
+  - has_flow
+  - requires_auth
+consumes_tables:
+  - clients
+  - client_subresources
+  - draft_outbox
+journey:
+  persona: Loan officer (maker) onboarding + servicing clients in the field
+  goal: >-
+    Find or onboard a client, view their 360, and drive lifecycle/KYC actions — fully offline, every action gated by
+    permissions
+  success_metric: >-
+    A client is onboarded + activated (or a KYC action completed) end-to-end with no connectivity, then replays
+    exactly-once on reconnect with zero duplicates
+  screen_sequence:
+    - m02-clients
+    - client-detail-360
+    - dynamic-template-forms
+    - needs-attention-inbox
+  expected_outcome: >-
+    The onboarding/lifecycle command is queued to the durable outbox with a client-generated externalId, the list/360
+    reflects it optimistically, and it syncs once online (or lands in Needs-Attention if the server rejects it)
+requires_features:
+  - permission-capability-engine
+  - dynamic-template-forms
+  - offline-sync-engine
+  - needs-attention-inbox
+provides_to:
+  - m04-loan-portfolio
+  - m03-groups-centers
+contracts:
+  apis:
+    - id: list_clients
+      method: GET
+      path: /v1/clients
+      note: office-scoped paged list; CACHE_FIRST_SWR
+    - id: search_clients_advanced
+      method: POST
+      path: /v2/clients/search
+      note: advanced multi-filter search
+    - id: get_client_detail
+      method: GET
+      path: /v1/clients/{clientId}
+      note: base 360 profile
+    - id: get_client_accounts
+      method: GET
+      path: /v1/clients/{clientId}/accounts
+      note: loan/savings/share summaries
+    - id: get_client_subresource
+      method: GET
+      path: /v1/clients/{clientId}/{subResource}
+      note: identifiers/documents/addresses/family/charges/notes
+    - id: get_client_template
+      method: GET
+      path: /v1/clients/template
+      note: field defaults + option lists for dynamic-template-forms
+    - id: create_client
+      method: POST
+      path: /v1/clients
+      idempotency: durable
+      note: client-generated externalId; queued
+    - id: update_client
+      method: PUT
+      path: /v1/clients/{clientId}
+      idempotency: durable
+      note: edit profile; queued
+    - id: client_lifecycle_command
+      method: POST
+      path: /v1/clients/{clientId}?command={cmd}
+      idempotency: durable
+      note: activate/close/reject/withdraw/reactivate/proposeTransfer
+    - id: create_client_subresource
+      method: POST
+      path: /v1/clients/{clientId}/{subResource}
+      idempotency: durable
+      note: identifier/note/address/family/charge
+    - id: upload_client_document
+      method: POST
+      path: /v1/clients/{clientId}/documents
+      idempotency: durable
+      note: multipart KYC document
+  tables:
+    - name: clients
+      backend: room
+      keys:
+        - client_id
+        - external_id
+      columns:
+        - display_name
+        - office_id
+        - status
+        - staff_id
+        - legal_form
+        - payload_json
+        - queued_offline
+      note: Per-client cache; CACHE_FIRST_SWR read, optimistic insert on onboarding queue.
+    - name: client_subresources
+      backend: room
+      keys:
+        - client_id
+        - sub_resource
+        - item_id
+      note: Identifiers/documents/addresses/family/charges/notes/account summaries; lazily hydrated per 360 tab.
+    - name: draft_outbox
+      backend: room
+      version: 11
+      keys:
+        - formKey
+        - uniqueKey
+      note: Shared offline-sync-engine outbox — every m02 write is a queued command replayed via POST /v1/batches.
+  dtos:
+    - name: ClientListItem
+      role: response
+    - name: ClientDetail
+      role: response
+    - name: ClientAccountsSummary
+      role: response
+    - name: ClientSubResourceItem
+      role: response
+    - name: ClientTemplate
+      role: response
+    - name: CreateClientRequest
+      role: request
+    - name: UpdateClientRequest
+      role: request
+    - name: ClientCommandRequest
+      role: request
+    - name: ClientSubResourceRequest
+      role: request
+    - name: DocumentUpload
+      role: request
+    - name: CommandProcessingResult
+      role: response
+libraries:
+  cmp_modules:
+    - cmp-network-monitor
+  core_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/network
+    - core/permissions
+  external:
+    - org.mobilenativefoundation.store.store5
+    - androidx.room (Room 3)
+    - kotlinx.serialization
+    - Fineract /v1/clients (+ template, + external-id, + sub-resources, ?command=)
+    - Fineract POST /v1/batches
+  training_surfaces:
+    - training-layer/instructions/stream-first/latest/CORE_STORE.md
+    - training-layer/instructions/stream-first/latest/CORE_DATA.md
+    - training-layer/instructions/stream-first/latest/CORE_DATABASE.md
+    - training-layer/instructions/stream-first/latest/CORE_NETWORK.md
+vm_actions:
+  - action: OnSearchChanged
+    maps_to_on_click: search_clients
+    handler: >-
+      Debounce query → re-query GET /v1/clients (or POST /v2/clients/search) via the paged Store; empty result → Empty
+      state.
+  - action: OnClientRowClick
+    maps_to_on_click: open_client_360
+    handler: sendEvent(NavigateToClientDetail(clientId)).
+  - action: OnNewClientClick
+    maps_to_on_click: start_client_onboarding
+    handler: >-
+      Guard CREATE_CLIENT → sendEvent(NavigateToForm(entity=clients, command=create)); form queues CREATE_CLIENT with a
+      minted externalId.
+  - action: OnTabSelected
+    maps_to_on_click: select_360_tab
+    handler: Set selectedTab; guard the tab's READ permission; lazily fetch the sub-resource via its GET (cache-first).
+  - action: OnEditClick
+    maps_to_on_click: edit_client
+    handler: Guard UPDATE_CLIENT → NavigateToForm(entity=clients, command=edit, clientId); queues UPDATE_CLIENT.
+  - action: OnAddIdentifierClick
+    maps_to_on_click: add_client_identifier
+    handler: Guard CREATE_CLIENTIDENTIFIER → NavigateToForm(entity=clientidentifier); queues CREATE_CLIENTIDENTIFIER.
+  - action: OnUploadDocumentClick
+    maps_to_on_click: upload_client_document
+    handler: Guard CREATE_DOCUMENT → stage picked file to encrypted media; enqueue CREATE_DOCUMENT (multipart on sync).
+  - action: OnAddNoteClick
+    maps_to_on_click: add_client_note
+    handler: Guard CREATE_CLIENTNOTE → enqueue CREATE_CLIENTNOTE for POST /v1/clients/{id}/notes.
+  - action: OnActivateClick
+    maps_to_on_click: activate_client
+    handler: >-
+      Guard ACTIVATE_CLIENT + status==Pending → enqueue ACTIVATE_CLIENT (activationDate+dateFormat+locale);
+      maker-checker → Submitted-for-approval.
+  - action: OnCloseClick
+    maps_to_on_click: close_client
+    handler: Guard CLOSE_CLIENT + status==Active → confirm dialog → enqueue CLOSE_CLIENT (closureDate+reasonId).
+  - action: OnRejectClick
+    maps_to_on_click: reject_client
+    handler: Guard REJECT_CLIENT + status==Pending → confirm → enqueue REJECT_CLIENT.
+  - action: OnWithdrawClick
+    maps_to_on_click: withdraw_client
+    handler: Guard WITHDRAW_CLIENT + status==Pending → confirm → enqueue WITHDRAW_CLIENT.
+  - action: OnProposeTransferClick
+    maps_to_on_click: propose_client_transfer
+    handler: Guard PROPOSETRANSFER_CLIENT + status==Active → NavigateToForm(transfer); queues PROPOSETRANSFER_CLIENT.
+  - action: OnRetryClick
+    maps_to_on_click: retry_load
+    handler: Re-issue the failed list/360 fetch; 403 → refreshPermissions() drift protocol.
+  - action: Internal.ReceiveClients
+    handler: Fold the paged clients Store Flow into ScreenState (loading/content/empty/no-network/error).
+  - action: Internal.ReceiveClientDetail
+    handler: Fold the 360 detail + sub-resource Flows into selectedClient.
+  - action: Internal.ReceiveCommandResult
+    handler: >-
+      On queued result stamp the queued-offline chip; on maker-checker result show Submitted-for-approval; on rejection
+      route to needs-attention.
+error_cases:
+  - code: client_list_failed
+    ux: Error state with the server message + Retry CTA; a cached list is served instead when present (no-network).
+  - code: client.command_rejected
+    ux: >-
+      Queued command marked FAILED with the Fineract server_error → routed to needs-attention-inbox; never silently
+      dropped.
+  - code: permission.revoked
+    ux: >-
+      403 drift → refreshPermissions(); denied controls pruned live, 'Your access has changed' toast; failed screen
+      stays alive.
+  - code: network.offline
+    ux: no-network state; cached list/360 served; writes stay queued with a 'queued offline' chip.
+  - code: maker_checker.queued
+    ux: Command returns commandId with empty changes → 'Submitted for approval' badge (a third state, not success/error).
+  - code: client.close_with_open_accounts
+    ux: >-
+      Server rejects CLOSE_CLIENT while accounts are open → surfaced in needs-attention with the reason; the client
+      stays Active.
+test_fixtures:
+  - cached client list + accounts → open a 360 offline → identifiers/documents/accounts render from cache
+  - offline onboarding → CREATE_CLIENT queued with a minted externalId → reconnect → one client created, zero duplicates
+  - user holds READ_CLIENT but not CLOSE_CLIENT → the Close control is visible-but-disabled with a reason
+  - 'user lacks CREATE_CLIENT → the New-client FAB is absent (onDenied: HIDE)'
+  - >-
+    activate a Pending client under maker-checker → command queued → 'Submitted for approval' badge, client still
+    Pending until a checker approves
+acceptance_refs:
+  - Client 360 offline; onboarding queues with client-generated externalId; every sub-resource + lifecycle command gated
+review_package: idea-layer/exports/m02-clients/REVIEW.md
+plan_ref: idea-plan.yaml#features[m02-clients]
+summary: >-
+  M02 · Clients & KYC. Office-scoped client list/search drilling into a Client 360 (accounts, identifiers, documents,
+  addresses, family, charges, notes) that renders offline (CACHE_FIRST_SWR); onboarding + every lifecycle
+  (activate/close/reject/withdraw/reactivate/transfer) and sub-resource write queues through the durable outbox with a
+  client-generated externalId + idempotency key and replays exactly-once via POST /v1/batches. Create/edit forms come
+  from GET /v1/clients/template (dynamic-template-forms); every entry point + tab + command is gated
+  (permission-capability-engine).
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T03:10:00Z'
+enriched_by: /idea-feature-enrich
+status_history:
+  - from: designed
+    to: design_partial
+    at: '2026-07-17T20:05:31.019Z'
+    by: /idea-feature-stitch
+  - from: design_partial
+    to: designed
+    at: '2026-07-17T20:06:52.888Z'
+    by: /idea-feature-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

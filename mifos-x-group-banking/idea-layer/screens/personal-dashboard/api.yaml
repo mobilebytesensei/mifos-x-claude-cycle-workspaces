@@ -3,111 +3,59 @@ schema_version: "4.0"
 feature_id: personal-dashboard
 
 api:
-  - id: get_client_accounts
-    function: get_client_accounts
-    method: get
-    endpoint: "/self/clients/{clientId}/accounts"
-    description: Get all accounts (savings + loans) for the authenticated self-service client
+  - id: get_member_dashboard
+    function: get_member_dashboard
+    method: GET
+    endpoint: "/companion/member/dashboard"    # companion API — unified identity, no clientId param
+    description: >
+      Fetch member dashboard data. Companion API resolves the user's groups from auth token
+      via dt_member_role. Returns all groups the user belongs to, and per-selected-group:
+      savings balances, share-out projection (ACCUMULATING) or rotation position (ROTATING_PAYOUT),
+      and recent transactions. Replaces /self/clients/{id}/accounts + /self/savingsaccounts/{id}
+      SelfService path. No clientId or selfServiceToken in params.
     params:
-      clientId: { type: Long, required: true, source: nav_params }
+      selectedGroupId: { type: "String?", required: false, source: state }   # null = first group
     response:
       type: object
       fields:
-        savingsAccounts:
-          type: array
-          items:
-            savingsProductId: Long
-            savingsProductName: String
-            id: Long
-            accountNo: String
-            status: object
-            balance: Double
-        loanAccounts:
-          type: array
-          items:
-            loanProductId: Long
-            loanProductName: String
-            id: Long
-            accountNo: String
-            status: object
-            loanBalance: Double
+        memberName: String
+        myGroups: "List<GroupSummary>"
+        selectedGroup: GroupSummary
+        poolModel: String          # from selectedGroup.typeConfig
+        groupLinkedSavingsBalance: Double
+        individualSavingsBalance: Double
+        shareOutProjection: "Double?"   # ACCUMULATING only
+        rotationPosition: "Int?"        # ROTATING_PAYOUT only
+        nextRecipientEta: "String?"     # ROTATING_PAYOUT only
+        recentTransactions: "List<SavingsTransactionDto>"
     errors:
-      401: Session expired — navigate to login
-      404: Client not found
-      503: Server unavailable — use cache
-    cache: { ttl: 300, strategy: stale-while-revalidate, offline: use_sqldelight }
-
-  - id: get_savings_account
-    function: get_savings_account
-    method: get
-    endpoint: "/self/savingsaccounts/{savingsId}"
-    description: Get detailed savings account balance and summary for a specific account
-    params:
-      savingsId: { type: Long, required: true, source: api.get_client_accounts }
-    response:
-      type: object
-      fields:
-        id: Long
-        accountNo: String
-        savingsProductName: String
-        currency:
-          code: String
-          displaySymbol: String
-        summary:
-          totalDeposits: Double
-          totalWithdrawals: Double
-          accountBalance: Double
-          availableBalance: Double
-        status:
-          active: Boolean
-    errors:
-      401: Session expired
-      404: Account not found
-      503: Server unavailable — use cache
+      401: Unauthorized — session expired
+      404: Member not found in any group
+      500: Server error
     cache: { ttl: 300, strategy: stale-while-revalidate, offline: use_sqldelight }
 
 dtos:
-  ClientAccountsResponse:
-    savingsAccounts: "List<SavingsAccountSummaryDto>"
-    loanAccounts: "List<LoanAccountSummaryDto>"
+  GroupSummary:
+    groupId: String
+    name: String
+    poolModel: String     # ACCUMULATING | ROTATING_PAYOUT | NONE
 
-  SavingsAccountSummaryDto:
-    id: Long
-    accountNo: String
-    savingsProductId: Long
-    savingsProductName: String
-    balance: Double
-    status: AccountStatusDto
-
-  LoanAccountSummaryDto:
-    id: Long
-    accountNo: String
-    loanProductId: Long
-    loanProductName: String
-    loanBalance: Double
-    status: AccountStatusDto
-
-  SavingsAccountDetailDto:
-    id: Long
-    accountNo: String
-    savingsProductName: String
-    currency: CurrencyDto
-    summary: SavingsSummaryDto
-    status: AccountStatusDto
-
-  LoanSummary:
-    loanId: Long
-    productName: String
-    principalAmount: Double
-    outstandingBalance: Double
-    nextRepaymentDate: String
-    nextRepaymentAmount: Double
-    isOverdue: Boolean
+  MemberDashboardResponse:
+    memberName: String
+    myGroups: "List<GroupSummary>"
+    selectedGroup: GroupSummary
+    poolModel: String
+    groupLinkedSavingsBalance: Double
+    individualSavingsBalance: Double
+    shareOutProjection: "Double?"
+    rotationPosition: "Int?"
+    nextRecipientEta: "String?"
+    recentTransactions: "List<SavingsTransactionDto>"
 
   SavingsTransactionDto:
-    id: Long
+    id: String
     date: String
-    type: String
+    type: String          # DEPOSIT | WITHDRAWAL
     amount: Double
 
 cache_strategy:
@@ -117,21 +65,14 @@ cache_strategy:
 
 dependencies:
   repositories:
-    - name: SelfServiceRepository
+    - name: MemberDashboardRepository    # companion API /companion/member/dashboard
       methods:
-        - "getClientAccounts(clientId: Long): Flow<ClientAccountsResponse>"
-        - "getSavingsAccountDetail(savingsId: Long): Flow<SavingsAccountDetailDto>"
-    - name: SavingsRepository
-      methods:
-        - "getRecentTransactions(savingsId: Long, limit: Int): Flow<List<SavingsTransactionDto>>"
-    - name: LoanRepository
-      methods:
-        - "getActiveLoanSummary(clientId: Long): Flow<LoanSummary?>"
+        - "getMemberDashboard(selectedGroupId: String?): Flow<MemberDashboardResponse>"
   services:
     - SessionManager
     - NetworkMonitor
   local_db:
-    - table: client_accounts
-      schema: SQLDelight client accounts entity
+    - table: member_dashboard_cache
+      schema: SQLDelight MemberDashboardResponse entity
     - table: savings_transactions
-      schema: SQLDelight savings transaction entity
+      schema: SQLDelight SavingsTransaction entity
