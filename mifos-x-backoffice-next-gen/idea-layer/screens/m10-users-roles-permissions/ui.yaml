@@ -1,0 +1,310 @@
+schema_version: v1.0.0
+screen_id: m10-users-roles-permissions
+feature: m10-users-roles-permissions
+name: "M10 · Users, Roles & Permissions"
+archetype: master_detail
+cluster: back-office-module
+module: m10-users-roles-permissions
+status: designed
+initial_state: loading
+
+# ─────────────────────────────────────────────────────────────────────────
+# The admin control plane — the ADMIN editor twin of permission-capability-engine
+# (which is the RUNTIME evaluator). Here an authoriser creates app users, assigns
+# office + staff + roles, resets passwords, manages roles (create / enable / disable),
+# edits the role→permission grid, and toggles maker-checker per action. Create/edit
+# forms are rendered by dynamic-template-forms from GET /v1/users/template; user +
+# role writes queue through offline-sync-engine; every entry point + command is gated
+# by permission-capability-engine (this module is USER_ADMINISTRATION_SUPER_USER tier).
+# The role→permission grid and maker-checker config are ONLINE-ONLY: the control plane
+# must never defer-sync an authorization change. Saving the grid invalidates the
+# runtime capability cache so affected users re-resolve their surface on next login.
+# ─────────────────────────────────────────────────────────────────────────
+
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  library_refs: []
+  external_library_refs: ["ktorfit", "kotlinx-serialization", "androidx-room", "kotlinx-coroutines"]
+  required_modules:
+    - "core/network"
+    - "core/database"
+    - "core/data"
+    - "core/store"
+    - "core/permissions"
+  description: "Admin control plane for application users, roles, the role->permission grid, and maker-checker config. Lists users/roles CACHE_FIRST_SWR; routes create+edit through dynamic-template-forms; queues user+role writes via the offline outbox. Grid edits run ONLINE-ONLY, and saving invalidates the PermissionSet cache so users re-resolve on next login. Gated at USER_ADMINISTRATION_SUPER_USER tier."
+  description_hash: "human-edited"
+  description_author: "claude-via-idea-enrich"
+  description_authored_at: "2026-07-17T11:20:00Z"
+
+states:
+  loading:
+    description: "Fetching the user list, role list and (for the selected role) its permission grid via GET /v1/users, GET /v1/roles and GET /v1/roles/{id}/permissions (CACHE_FIRST_SWR — cached rosters serve instantly, revalidate in the background)."
+  content:
+    description: "Users tab, Roles tab, and the role->permission grid editor rendered. Rows and controls are gated: an authoriser holding PERMISSIONS_ROLE can edit the grid; a READ_USER/READ_ROLE-only operator sees the rosters with the grid cells read-only and every create/edit/save control hidden or disabled."
+  empty:
+    description: "The selected tab resolved to zero rows in this office scope (no application users provisioned yet, or no roles defined) — an illustration plus a Create CTA that is present only when the matching CREATE_USER / CREATE_ROLE permission is held."
+  submitting:
+    description: "A user or role create/edit/enable/disable command was assembled and is being queued to the durable offline outbox (with an idempotency key) for POST /v1/users, PUT /v1/roles/{id}, or POST /v1/roles/{id}?command=enable|disable — surfaced as Submitted-for-approval when the action is maker-checkerable."
+  saving:
+    description: "The edited role->permission grid or a maker-checker toggle is being persisted ONLINE-ONLY via PUT /v1/roles/{id}/permissions or PUT /v1/permissions (authorization config is never deferred to the offline queue); on success the runtime capability cache is invalidated."
+  error:
+    description: "A roster/grid fetch failed with no cached copy, or the server rejected a submission with a 400 validation / 403 authorization / 409 conflict body — Retry re-issues the failed call; on a 403 the PermissionSet is re-fetched (drift protocol) and denied controls are pruned live."
+
+state_model:
+  fields:
+    - name: users
+      type: List<AppUserRow>
+      notes: "Application users in the office scope — username, display name, office, assigned staff, role names, enabled/locked status."
+    - name: roles
+      type: List<RoleRow>
+      notes: "Roles defined for the tenant — name, description, disabled flag, member-user count, permission count."
+    - name: selectedRoleId
+      type: String
+      notes: "The role whose permission grid is loaded into the editor; null until a role is opened."
+    - name: permissionGrid
+      type: List<PermissionGroupRow>
+      notes: "Resolved role->permission grid grouped by Fineract grouping (authorisation, portfolio, transaction_loan, accounting, ...); each cell carries code, selected, and makerCheckerable flags."
+    - name: pendingGridChanges
+      type: Map<String, Boolean>
+      notes: "In-memory permission-code -> selected diff for the open role; non-empty enables Save and drives the dirty indicator."
+    - name: selectedTab
+      type: UserRoleTab
+      notes: "Which pane is active — Users | Roles (the grid editor opens from a Roles-tab row)."
+    - name: fromCache
+      type: Boolean
+      notes: "True when the rendered rosters came from the Room cache rather than a fresh fetch (drives the offline banner)."
+
+components:
+  - id: header
+    type: header
+    label: "{strings.m10_title}"
+    testTag: "m10-users-roles-permissions_header"
+    visible_states: [loading, content, empty, submitting, saving, error]
+
+  - id: tab_strip
+    type: chip
+    label: "{strings.m10_tabs}"
+    testTag: "m10-users-roles-permissions_tabs"
+    visible_states: [content, empty]
+    on_click:
+      action: select_tab
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["kotlinx-serialization"]
+        description: "Switch the active pane between Users and Roles, set selectedTab in the serialized screen state, and lazily load that pane's roster from the cache-first Store if it has not been hydrated yet; the role->permission grid opens from a Roles-tab row, not from this strip."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: content_area
+    type: content_area
+    label: "{strings.m10_content}"
+    testTag: "m10-users-roles-permissions_content"
+    visible_states: [content]
+
+  - id: user_row
+    type: list_item
+    label: "{strings.m10_user_row}"
+    testTag: "m10-users-roles-permissions_user_row"
+    visible_states: [content]
+    gated_permission: READ_USER
+    on_click:
+      action: open_user_detail
+      target: dynamic-template-forms
+      action_contract:
+        effect: navigate
+        description: "Open the selected application user's detail so their office, assigned staff, roles and enabled/locked status can be reviewed before an edit, password reset, or enable/disable action is chosen."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: role_row
+    type: list_item
+    label: "{strings.m10_role_row}"
+    testTag: "m10-users-roles-permissions_role_row"
+    visible_states: [content]
+    gated_permission: READ_ROLE
+    on_click:
+      action: open_role_permission_grid
+      action_contract:
+        effect: call_api
+        library_refs: []
+        external_library_refs: ["ktorfit"]
+        reads_from: ["role_permissions"]
+        description: "Load the tapped role's permission grid via GET /v1/roles/{roleId}/permissions, set selectedRoleId, and render the grouped grid editor; read-only unless the operator holds PERMISSIONS_ROLE, in which case cells become editable."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: new_user_button
+    type: button
+    label: "{strings.m10_new_user}"
+    testTag: "m10-users-roles-permissions_new_user"
+    visible_states: [content, empty]
+    gated_permission: CREATE_USER
+    on_click:
+      action: create_user
+      target: dynamic-template-forms
+      action_contract:
+        effect: navigate
+        description: "Route to dynamic-template-forms in create mode for entity=users (rendered from GET /v1/users/template — office, staff, roles, password-policy and send-password options); submitting the form queues CREATE_USER through the offline outbox."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: edit_user_button
+    type: button
+    label: "{strings.m10_edit_user}"
+    testTag: "m10-users-roles-permissions_edit_user"
+    visible_states: [content]
+    gated_permission: UPDATE_USER
+    on_click:
+      action: edit_user
+      target: dynamic-template-forms
+      action_contract:
+        effect: navigate
+        description: "Route to dynamic-template-forms in edit mode for the selected user (entity=users, prefilled from their current office, staff and role assignment); submitting queues UPDATE_USER via the offline outbox. Own-user edits are exempt from the READ_USER gate per the Fineract self-service rule."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: reset_password_button
+    type: button
+    label: "{strings.m10_reset_password}"
+    testTag: "m10-users-roles-permissions_reset_password"
+    visible_states: [content]
+    gated_permission: UPDATE_USER
+    on_click:
+      action: reset_user_password
+      action_contract:
+        effect: call_api
+        library_refs: []
+        external_library_refs: ["ktorfit"]
+        reads_from: ["users_roles"]
+        description: "After a confirm dialog, submit a password reset for the selected user via PUT /v1/users/{userId} (password + repeatPassword or a server-generated password); this is an authorization mutation and runs online, surfacing Submitted-for-approval when UPDATE_USER is maker-checkerable."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: new_role_button
+    type: button
+    label: "{strings.m10_new_role}"
+    testTag: "m10-users-roles-permissions_new_role"
+    visible_states: [content, empty]
+    gated_permission: CREATE_ROLE
+    on_click:
+      action: create_role
+      target: dynamic-template-forms
+      action_contract:
+        effect: navigate
+        description: "Route to dynamic-template-forms in create mode for entity=roles (name + description); submitting queues CREATE_ROLE via the offline outbox. The new role starts with an empty permission grid that is populated from its Roles-tab row."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: toggle_role_enabled_switch
+    type: switch
+    label: "{strings.m10_role_enabled}"
+    testTag: "m10-users-roles-permissions_role_enabled"
+    visible_states: [content]
+    gated_permission: UPDATE_ROLE
+    on_click:
+      action: toggle_role_enabled
+      action_contract:
+        effect: call_api
+        library_refs: []
+        external_library_refs: ["ktorfit"]
+        reads_from: ["users_roles"]
+        description: "Enable or disable the selected role via POST /v1/roles/{roleId}?command=enable|disable (guarded by ENABLE_ROLE / DISABLE_ROLE); a disabled role stops contributing its permissions to any member user's set. Runs online and surfaces Submitted-for-approval when the command is maker-checkerable."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: permission_matrix_cell
+    type: checkbox
+    label: "{strings.m10_matrix_cell}"
+    testTag: "m10-users-roles-permissions_matrix_cell"
+    visible_states: [content]
+    gated_permission: PERMISSIONS_ROLE
+    on_click:
+      action: toggle_role_permission
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["kotlinx-serialization"]
+        description: "Toggle a permission code for the open role in the in-memory permissionGrid, record the delta into the serialized pendingGridChanges map, and mark the editor dirty so Save is enabled; nothing is persisted until Save is pressed. Editable only for an operator holding PERMISSIONS_ROLE, otherwise the cell is read-only."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: toggle_maker_checker_cell
+    type: checkbox
+    label: "{strings.m10_maker_checker_cell}"
+    testTag: "m10-users-roles-permissions_maker_checker_cell"
+    visible_states: [content]
+    gated_permission: UPDATE_PERMISSION
+    on_click:
+      action: toggle_maker_checker
+      action_contract:
+        effect: call_api
+        library_refs: []
+        external_library_refs: ["ktorfit"]
+        reads_from: ["users_roles"]
+        description: "Toggle whether a permission is maker-checkerable (4-eye) via PUT /v1/permissions with the code's makerCheckerable flag; guarded by UPDATE_PERMISSION and applied ONLINE-ONLY so the maker-checker contract can never drift offline. Affected mutations thereafter queue for approval instead of executing."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: save_matrix_button
+    type: button
+    label: "{strings.m10_save_matrix}"
+    testTag: "m10-users-roles-permissions_save"
+    visible_states: [content]
+    gated_permission: PERMISSIONS_ROLE
+    on_click:
+      action: save_permission_matrix
+      action_contract:
+        effect: call_api
+        library_refs: []
+        external_library_refs: ["ktorfit"]
+        reads_from: ["role_permissions"]
+        invalidates: ["permissions_raw", "permission_fingerprint", "capability_map"]
+        description: "Persist the edited role->permission grid ONLINE-ONLY via PUT /v1/roles/{roleId}/permissions with the pendingGridChanges diff (authorization config is never deferred to the offline outbox); on success clear the diff and invalidate the runtime PermissionSet cache so affected users re-resolve their capability surface on next login (cross-links permission-capability-engine, read-only)."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: create_first_role_button
+    type: button
+    label: "{strings.m10_create_first}"
+    testTag: "m10-users-roles-permissions_create_first"
+    visible_states: [empty]
+    gated_permission: CREATE_ROLE
+    on_click:
+      action: create_role
+      target: dynamic-template-forms
+      action_contract:
+        effect: navigate
+        description: "From the empty state, route to dynamic-template-forms in create mode for the active tab's entity (users or roles) so the first application user or role can be provisioned; shown only when the matching CREATE_USER / CREATE_ROLE permission is held."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"
+
+  - id: retry_button
+    type: button
+    label: "{strings.m10_retry}"
+    testTag: "m10-users-roles-permissions_retry"
+    visible_states: [error]
+    on_click:
+      action: retry_load
+      action_contract:
+        effect: call_api
+        library_refs: []
+        external_library_refs: ["ktorfit"]
+        reads_from: ["users_roles", "role_permissions"]
+        description: "Re-issue the failed GET /v1/users, GET /v1/roles or GET /v1/roles/{id}/permissions call and transition back to content when a roster resolves; on a 403 authorization drift, re-fetch the PermissionSet and prune any controls the operator can no longer use before retrying."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T11:20:00Z"

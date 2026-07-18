@@ -1,0 +1,423 @@
+screen_id: m09-organization
+name: "M09 · Organization (offices · staff · currencies · holidays · working days · funds · payment types · codes)"
+status: designed
+archetype: master_detail
+cluster: back-office-module
+module: m09-organization
+initial_state: loading
+
+# ─────────────────────────────────────────────────────────────────────────
+# The organization / reference-data control plane: offices (hierarchy),
+# staff/employees, currencies, holidays, working days, funds, payment types,
+# codes + code-values, and the bulk loan-officer reassignment tool. Two roles
+# in one module:
+#   1. ADMIN surface — offices/staff/currencies/holidays/working-days/funds/
+#      payment-types/codes CRUD, each entry-point gated by its exact
+#      {ACTION}_{ENTITY} permission (*_OFFICE / *_STAFF / *_CURRENCY /
+#      *_HOLIDAY / *_FUND / *_PAYMENTTYPE / *_CODE / *_CODEVALUE). Edits are
+#      ONLINE-ONLY + maker-checker aware (config changes must never deferred-sync
+#      per the per-domain offline policy — reference-data drift is dangerous).
+#   2. VOCABULARY source — the READ side (offices, staff, currencies, codes,
+#      payment types) is cached CACHE_FIRST_SWR and is the offline dropdown
+#      backbone every dynamic-template-forms screen consumes (a loan-purpose
+#      code, a payment type, a fund, an office hierarchy) — so reads work fully
+#      offline even though writes do not.
+# All create/edit forms are rendered by dynamic-template-forms from the Fineract
+# entity template (GET /{entity}/template + /datatables), never hardcoded. Every
+# write funnels through the offline-sync-engine outbox (online-only drain) with a
+# durable idempotency key + maker-checker; a rejected command routes to
+# needs-attention-inbox, never silently dropped. Data-scope: server filters
+# offices/staff by the signed-in user's office hierarchy (officeId) — you edit
+# the org sub-tree you are scoped to.
+# ─────────────────────────────────────────────────────────────────────────
+
+# ── Business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-5) ──────────
+business_logic:
+  kind: crud
+  processing_kind: on_demand
+  description: "Loads the 8 reference-data collections (offices, staff, currencies, holidays, working days, funds, payment types, codes) CACHE_FIRST_SWR over Store5+Room so every dynamic form's dropdown vocabulary resolves offline. Create/edit forms render from GET /{entity}/template. Every mutation is gated by its permission, is ONLINE-ONLY, and carries a durable idempotency key through the outbox."
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "openMF Fineract Client KMP SDK"
+    - "org.mobilenativefoundation.store.store5"
+    - "androidx.room"
+    - "kotlinx.serialization"
+    - "Fineract GET /v1/offices (+/template)"
+    - "Fineract GET /v1/staff (+/template)"
+    - "Fineract GET /v1/currencies (+/template)"
+    - "Fineract GET /v1/holidays (+/template)"
+    - "Fineract GET /v1/workingdays"
+    - "Fineract GET /v1/funds"
+    - "Fineract GET /v1/paymenttypes (+/template)"
+    - "Fineract GET /v1/codes + /codevalues"
+    - "Fineract POST /v1/loans/loanreassignment"
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T00:00:00Z"
+  required_modules:
+    - core/store
+    - core/data
+    - core/network
+    - core/database
+    - core/permissions
+
+# ── States (loading/content/empty/error + submitting) ────────────────────
+states:
+  loading:
+    description: "Fetching the organization reference-data collections (offices, staff, currencies, holidays, working days, funds, payment types, codes) — Store5 Loading with a cached shimmer; on-device the last cached reference data is preserved underneath so dropdowns stay populated."
+  content:
+    description: "The organization admin surface rendered as an entity-tabbed master/detail — Offices (as a hierarchy tree), Staff, Currencies, Holidays, Working Days, Funds, Payment Types, Codes & Code-Values, plus the Bulk Loan Reassignment tool. Each 'New' / 'Edit' entry point is VISIBLE/enabled per the user's exact {ACTION}_{ENTITY} permission (fail-closed HIDE for the create FABs; DISABLE-with-reason where a stage is meaningful to see)."
+  empty:
+    description: "The selected reference-data tab has no rows yet in the user's office scope (e.g. no holidays defined, no funds configured) — shows an illustration + the tab's empty message + a 'New …' CTA (visible only if the user holds the matching CREATE_{ENTITY} permission)."
+  submitting:
+    description: "A reference-data create/edit (office, staff, currency-add, holiday, working-days, fund, payment type, code value) or a bulk loan reassignment was enqueued through the offline outbox with a durable idempotency key — the control shows a spinner and a 'Saving…' / 'Submitted for approval' chip. Reference edits are ONLINE-ONLY: when offline the control is disabled with a 'connect to edit configuration' reason rather than queued for deferred sync."
+  action-disabled:
+    description: "A user without a specific mutation permission (e.g. lacking BULKREASSIGN_LOAN or ACTIVATE_HOLIDAY) sees that control DISABLED with a reason chip ('Requires BULKREASSIGN_LOAN — ask your supervisor') — the capability is operationally meaningful to SEE, so it is disabled-not-hidden per the permission model."
+  error:
+    description: "A reference-data fetch failed, or a create/edit/reassignment was rejected by Fineract (validation / duplicate / optimistic-lock / 403 drift). Shows the server error verbatim + a Retry; a rejected command is routed to needs-attention-inbox, never silently dropped; the last cached reference data stays usable so offline dropdowns keep working."
+
+# ── Shell (M09 nav root; permission-gated at the module root on the organisation group) ──
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  fab_visible: true
+  snackbar_visible: true
+
+# ── Components ──────────────────────────────────────────────────────────
+components:
+  - id: header
+    type: header
+    label: "{strings.m09_title}"
+    testTag: "m09-organization_header"
+    visible_states: [loading, content, empty, submitting, error]
+
+  - id: entity_tabs
+    type: content_area
+    label: "{strings.m09_entity_tabs}"
+    testTag: "m09-organization_tabs"
+    visible_states: [content, empty, submitting]
+    description: "The entity selector across the 8 reference-data collections + the reassignment tool: Offices · Staff · Currencies · Holidays · Working Days · Funds · Payment Types · Codes · Reassign Loans. A tab is shown only if the user can READ that entity (READ_OFFICE / READ_STAFF / READ_CURRENCY / READ_HOLIDAY / READ_FUND / READ_PAYMENTTYPE / READ_CODE); a user with only READ_OFFICE sees just the Offices tab."
+
+  - id: org_content
+    type: content_area
+    label: "{strings.m09_content_label}"
+    testTag: "m09-organization_content"
+    visible_states: [content]
+    empty_label: "{strings.m09_empty}"
+    description: "The active reference-data tab's body — Offices renders as an indented hierarchy tree (parent → sub-office), the rest as lists; each row shows the entity's key fields (office name + parent + opening date; staff name + office + is-loan-officer; currency code + name; holiday name + date + status; code name + value count). Rendered CACHE_FIRST_SWR from the Store5 stream; read-only for personas without the matching CREATE/UPDATE permission."
+
+  - id: office_row
+    type: list_item
+    label: "{strings.m09_office_row}"
+    testTag: "m09-organization_office_row"
+    visible_states: [content]
+    on_click:
+      action: open_office_detail
+      target: m09-organization
+      action_contract:
+        effect: navigate
+        description: "Opens the office detail (name, parent office, opening date, external id, hierarchy path, staff count, sub-offices) from GET /v1/offices/{id} — read from the CACHE_FIRST_SWR store, available offline. Edit / New-sub-office controls on the detail render only if the user holds UPDATE_OFFICE / CREATE_OFFICE."
+
+  - id: staff_row
+    type: list_item
+    label: "{strings.m09_staff_row}"
+    testTag: "m09-organization_staff_row"
+    visible_states: [content]
+    on_click:
+      action: open_staff_detail
+      target: m09-organization
+      action_contract:
+        effect: navigate
+        description: "Opens the staff/employee detail (first/last name, office, is-loan-officer flag, joining date, mobile, status) from GET /v1/staff/{id} — read from the CACHE_FIRST_SWR store, available offline. The staff list is the source of the 'loan officer' dropdown used by loan origination and the bulk reassignment tool."
+
+  - id: code_row
+    type: list_item
+    label: "{strings.m09_code_row}"
+    testTag: "m09-organization_code_row"
+    visible_states: [content]
+    on_click:
+      action: open_code_detail
+      target: m09-organization
+      action_contract:
+        effect: navigate
+        description: "Opens a code's code-values list (e.g. LoanPurpose → 'Working capital', 'Asset purchase', …) from GET /v1/codes/{id}/codevalues — the dropdown vocabulary every dynamic form consumes. Read offline from cache; Add/Edit code-value controls render only if the user holds CREATE_CODEVALUE / UPDATE_CODEVALUE."
+
+  # ── Create entry points (one FAB-style per reference entity; HIDE fail-closed) ──
+  - id: new_office_button
+    type: button
+    label: "{strings.m09_new_office}"
+    testTag: "m09-organization_new_office"
+    variant: primary
+    gated_permission: CREATE_OFFICE
+    on_denied: HIDE
+    visible_states: [content, empty]
+    on_click:
+      action: create_office
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/offices/template"
+          - "Fineract POST /v1/offices"
+        reads_from: ["org_offices", "org_reference_meta"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["org_offices"]
+        description: "Open the new-office form (dynamic-template-forms from GET /v1/offices/template — name, parent office, opening date, external id) then enqueue a CREATE_OFFICE command (POST /v1/offices, body incl. dateFormat + locale) through the outbox with a durable idempotency key. ONLINE-ONLY (config edit); hidden entirely (fail-closed) unless the user holds CREATE_OFFICE; maker-checker aware."
+
+  - id: new_staff_button
+    type: button
+    label: "{strings.m09_new_staff}"
+    testTag: "m09-organization_new_staff"
+    variant: primary
+    gated_permission: CREATE_STAFF
+    on_denied: HIDE
+    visible_states: [content, empty]
+    on_click:
+      action: create_staff
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/staff/template"
+          - "Fineract POST /v1/staff"
+        reads_from: ["org_staff", "org_offices"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["org_staff"]
+        description: "Open the new-staff form (dynamic-template-forms from GET /v1/staff/template — first/last name, office, is-loan-officer, joining date, mobile) then enqueue a CREATE_STAFF command (POST /v1/staff) through the outbox with a durable idempotency key. ONLINE-ONLY; office list scoped to the user's hierarchy; hidden (fail-closed) unless the user holds CREATE_STAFF; maker-checker aware."
+
+  - id: add_currency_button
+    type: button
+    label: "{strings.m09_add_currency}"
+    testTag: "m09-organization_add_currency"
+    variant: secondary
+    gated_permission: UPDATE_CURRENCY
+    on_denied: HIDE
+    visible_states: [content]
+    on_click:
+      action: configure_currencies
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/currencies/template"
+          - "Fineract PUT /v1/currencies"
+        reads_from: ["org_currencies"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["org_currencies"]
+        description: "Open the currency-selection form (dynamic-template-forms from GET /v1/currencies/template — full allowed catalogue + the tenant's selected set) then enqueue an UPDATE_CURRENCY command (PUT /v1/currencies, body: currencies[] of ISO codes) through the outbox with a durable idempotency key. ONLINE-ONLY; sets which currencies products/accounts may use; hidden unless the user holds UPDATE_CURRENCY."
+
+  - id: new_holiday_button
+    type: button
+    label: "{strings.m09_new_holiday}"
+    testTag: "m09-organization_new_holiday"
+    variant: primary
+    gated_permission: CREATE_HOLIDAY
+    on_denied: HIDE
+    visible_states: [content, empty]
+    on_click:
+      action: create_holiday
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/holidays/template"
+          - "Fineract POST /v1/holidays"
+        reads_from: ["org_holidays", "org_offices"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["org_holidays"]
+        description: "Open the new-holiday form (dynamic-template-forms from GET /v1/holidays/template — name, date, reschedule-to date, applicable offices) then enqueue a CREATE_HOLIDAY command (POST /v1/holidays) through the outbox with a durable idempotency key. ONLINE-ONLY; a holiday shifts repayment due-dates for the selected offices; hidden unless the user holds CREATE_HOLIDAY; maker-checker aware."
+
+  - id: activate_holiday_button
+    type: button
+    label: "{strings.m09_activate_holiday}"
+    testTag: "m09-organization_activate_holiday"
+    variant: secondary
+    gated_permission: ACTIVATE_HOLIDAY
+    on_denied: DISABLE
+    disabled_reason: "Requires ACTIVATE_HOLIDAY"
+    visible_states: [content]
+    enabled_states: [content]
+    on_click:
+      action: activate_holiday
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/holidays/{id}?command=activate"
+        reads_from: ["org_holidays"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["org_holidays"]
+        description: "Enqueue an ACTIVATE_HOLIDAY command (POST /v1/holidays/{id}?command=activate) through the outbox with a durable idempotency key — a draft holiday only shifts repayment schedules once activated. ONLINE-ONLY; DISABLE-with-reason for a user lacking ACTIVATE_HOLIDAY; maker-checker aware."
+
+  - id: edit_working_days_button
+    type: button
+    label: "{strings.m09_edit_working_days}"
+    testTag: "m09-organization_edit_working_days"
+    variant: secondary
+    gated_permission: UPDATE_WORKINGDAYS
+    on_denied: DISABLE
+    disabled_reason: "Requires UPDATE_WORKINGDAYS"
+    visible_states: [content]
+    enabled_states: [content]
+    on_click:
+      action: edit_working_days
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/workingdays/template"
+          - "Fineract PUT /v1/workingdays"
+        reads_from: ["org_working_days"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["org_working_days"]
+        description: "Open the working-days form (dynamic-template-forms from GET /v1/workingdays/template — the RRULE pattern + non-working-day reschedule behaviour + extend-term option) then enqueue an UPDATE_WORKINGDAYS command (PUT /v1/workingdays) through the outbox with a durable idempotency key. ONLINE-ONLY; controls how instalment due-dates fall on non-working days; DISABLE-with-reason without the permission."
+
+  - id: new_fund_button
+    type: button
+    label: "{strings.m09_new_fund}"
+    testTag: "m09-organization_new_fund"
+    variant: primary
+    gated_permission: CREATE_FUND
+    on_denied: HIDE
+    visible_states: [content, empty]
+    on_click:
+      action: create_fund
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/funds"
+        reads_from: ["org_funds"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["org_funds"]
+        description: "Open the new-fund form (dynamic-template-forms — fund name + external id) then enqueue a CREATE_FUND command (POST /v1/funds) through the outbox with a durable idempotency key. ONLINE-ONLY; a fund is a source-of-money tag attached to loans; hidden (fail-closed) unless the user holds CREATE_FUND."
+
+  - id: new_payment_type_button
+    type: button
+    label: "{strings.m09_new_payment_type}"
+    testTag: "m09-organization_new_payment_type"
+    variant: primary
+    gated_permission: CREATE_PAYMENTTYPE
+    on_denied: HIDE
+    visible_states: [content, empty]
+    on_click:
+      action: create_payment_type
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/paymenttypes"
+        reads_from: ["org_payment_types"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["org_payment_types"]
+        description: "Open the new-payment-type form (dynamic-template-forms — name, description, is-cash-payment flag, position) then enqueue a CREATE_PAYMENTTYPE command (POST /v1/paymenttypes) through the outbox with a durable idempotency key. ONLINE-ONLY; payment types populate the 'payment method' dropdown on every repayment/deposit form; hidden (fail-closed) unless the user holds CREATE_PAYMENTTYPE."
+
+  - id: add_code_value_button
+    type: button
+    label: "{strings.m09_add_code_value}"
+    testTag: "m09-organization_add_code_value"
+    variant: secondary
+    gated_permission: CREATE_CODEVALUE
+    on_denied: DISABLE
+    disabled_reason: "Requires CREATE_CODEVALUE"
+    visible_states: [content]
+    enabled_states: [content]
+    on_click:
+      action: add_code_value
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/codes/{codeId}/codevalues"
+        reads_from: ["org_codes"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["org_codes"]
+        description: "Open the add-code-value form (dynamic-template-forms — value name, description, position, is-active) for the selected code then enqueue a CREATE_CODEVALUE command (POST /v1/codes/{codeId}/codevalues) through the outbox with a durable idempotency key. ONLINE-ONLY; adds a dropdown-vocabulary option (e.g. a new LoanPurpose) every dynamic form picks up next sync; DISABLE-with-reason without it."
+
+  # ── Bulk loan-officer reassignment (moves a from-officer's loans to a to-officer) ──
+  - id: bulk_reassign_button
+    type: button
+    label: "{strings.m09_bulk_reassign}"
+    testTag: "m09-organization_bulk_reassign"
+    variant: primary
+    gated_permission: BULKREASSIGN_LOAN
+    on_denied: DISABLE
+    disabled_reason: "Requires BULKREASSIGN_LOAN — ask your supervisor"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: bulk_reassign_loans
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/loans/loanreassignment/template"
+          - "Fineract POST /v1/loans/loanreassignment"
+        reads_from: ["org_staff", "org_offices"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["org_staff"]
+        description: "Open the bulk-reassignment form (dynamic-template-forms from GET /v1/loans/loanreassignment/template — office, from officer, to officer, date) then enqueue a BULKREASSIGN_LOAN command (POST /v1/loans/loanreassignment) with a durable idempotency key — moves every active loan from the outgoing officer to the incoming one in one transaction when an officer leaves. ONLINE-ONLY; maker-checker aware."
+
+  # ── Empty / error recovery ──
+  - id: empty_new_cta
+    type: button
+    label: "{strings.m09_new_office}"
+    testTag: "m09-organization_empty_cta"
+    variant: primary
+    gated_permission: CREATE_OFFICE
+    on_denied: HIDE
+    visible_states: [empty]
+    on_click:
+      action: create_office
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/offices/template"
+          - "Fineract POST /v1/offices"
+        reads_from: ["org_offices"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["org_offices"]
+        description: "From the empty state of a reference-data tab, opens the matching create form (dynamic-template-forms) then enqueues the create command through the outbox with a durable idempotency key. ONLINE-ONLY; hidden (fail-closed) unless the user holds the matching CREATE_{ENTITY} permission (CREATE_OFFICE shown here)."
+
+  - id: retry_button
+    type: button
+    label: "{strings.m09_retry}"
+    testTag: "m09-organization_retry"
+    variant: primary
+    visible_states: [error]
+    on_click:
+      action: retry_load
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/offices"
+          - "Fineract GET /v1/codes"
+        reads_from: ["org_offices", "org_staff", "org_codes"]
+        produces_state: loading
+        invalidates: ["org_offices", "org_staff", "org_codes", "org_currencies", "org_holidays", "org_payment_types", "org_funds", "org_working_days"]
+        description: "Re-fetch the organization reference-data collections via the Store5 stream.refreshFresh() path (forces a fresh GET over CACHE_FIRST_SWR) after a fetch failure. On a 403 drift it routes to the permission-refresh protocol instead of blindly retrying; the last cached reference data stays visible so offline dropdowns keep working."

@@ -1,0 +1,401 @@
+schema_version: v1.0.0
+screen_id: m07-accounting
+feature: m07-accounting
+name: "M07 · Accounting & GL"
+archetype: list_screen
+status: designed
+initial_state: loading
+
+# ─────────────────────────────────────────────────────────────────────────
+# Accounting & General Ledger: the accountant's back office. A Chart-of-
+# Accounts tree (GL accounts by type: Asset / Liability / Equity / Income /
+# Expense) plus manual journal entries, GL period closures, accounting-rule
+# templates, financial-activity mappings, and the periodic-accrual run. Every
+# read is CACHE_FIRST_SWR so the chart of accounts + journal history render
+# offline. FINANCE-CRITICAL WRITE DISCIPLINE: a manual journal entry is only
+# postable when its debit total EQUALS its credit total (client-side balance
+# gate BEFORE the network), and it is posted through the durable outbox
+# (offline-sync-engine) with a durable idempotency key so a retry can NEVER
+# double-post — accounting must never duplicate a posting. Journal-entry +
+# closure forms are rendered by dynamic-template-forms from GET
+# /v1/journalentries (glaccounts + paymenttypes options). Every entry point +
+# command is gated through the permission-capability-engine (READ_/CREATE_
+# GLACCOUNT, CREATE_/REVERSE_JOURNALENTRY, CREATE_GLCLOSURE,
+# CREATE_ACCOUNTINGRULE, *_PROVISIONINGENTRIES,
+# EXECUTE_PERIODICACCRUALACCOUNTING); unmapped ids fail closed (HIDDEN).
+# ─────────────────────────────────────────────────────────────────────────
+
+states:
+  loading:
+    description: "Fetching the chart of accounts (GET /v1/glaccounts) and recent journal entries (GET /v1/journalentries). CACHE_FIRST_SWR serves the cached GL tree + journal history instantly and revalidates in the background."
+  content:
+    description: "The Accounting workspace rendered: the Chart-of-Accounts tree grouped by type (Asset / Liability / Equity / Income / Expense) with running balances, the recent-journal-entries list (reference, description, debit/credit totals, posted/pending-approval status), and the permission-gated command bar (Post journal · Reverse · Create GL account · Close period · Run accruals · Financial-activity mappings)."
+  empty:
+    description: "No GL accounts or journal entries exist yet for this office/tenant. Shows an illustration + 'No accounting data yet' message and, when the user holds CREATE_GLACCOUNT, a 'Create GL account' CTA to seed the chart of accounts."
+  balancing:
+    description: "A manual journal entry is being composed — debit lines and credit lines are entered/edited and the running debit-total vs credit-total is displayed live. The 'Post journal entry' control is DISABLED until debits == credits (the client-side balance gate); an unbalanced difference is shown in red with the delta amount."
+  submitting:
+    description: "A balanced journal entry (or a reversal / closure / accrual run) is being posted — the command has been enqueued to the durable outbox with a durable idempotency key and is replaying to POST /v1/journalentries; a progress indicator shows while the CommandProcessingResult is awaited. Under maker-checker it returns queued (Submitted-for-approval)."
+  no-network:
+    description: "Offline — the last-synced chart of accounts + journal history are served from the Room cache with a persistent 'Offline · showing cached accounting data' banner. A composed, balanced journal entry can still be queued to the outbox; it posts exactly-once (durable idempotency key) when connectivity returns."
+  error:
+    description: "GL/journal fetch failed and no cached copy exists, the server rejected a posting (400 unbalanced / invalid GL / closed period), or a reversal/closure failed. Shows the server error message + a Retry CTA; a 403 routes through the permission-drift refresh rather than crashing; a rejected posting is routed to Needs-Attention."
+
+state_model:
+  fields:
+    - name: glAccounts
+      type: List<GLAccountNode>
+      notes: "The chart of accounts as a tree grouped by GL type (Asset / Liability / Equity / Income / Expense); each node carries id, glCode, name, type, usage (detail/header), enabled, and the cached running balance."
+    - name: journalEntries
+      type: List<JournalEntryRow>
+      notes: "The recent journal-entry history (paged): transactionId, reference, entryDate, description, debitTotal, creditTotal, officeName, and status (Posted / Pending checker approval / Reversed / Queued offline)."
+    - name: draftEntry
+      type: JournalEntryDraft?
+      notes: "The manual journal entry being composed in the balancing state — officeId, entryDate, paymentTypeId, and the debitLines[] + creditLines[] (each glAccountId + amount). Drives the live balance check."
+    - name: debitTotal
+      type: BigDecimal
+      notes: "Live sum of the draft debit lines (used by the balance gate; recomputed on every line edit)."
+    - name: creditTotal
+      type: BigDecimal
+      notes: "Live sum of the draft credit lines. isBalanced = (debitTotal == creditTotal AND debitTotal > 0)."
+    - name: selectedType
+      type: GLAccountType?
+      notes: "Optional chart-of-accounts type filter (Asset / Liability / Equity / Income / Expense) applied to the GL tree view."
+    - name: pagePendingSync
+      type: Int
+      notes: "Count of accounting commands (postings / reversals / closures / accrual runs) still queued in the outbox — surfaces a 'queued offline' chip on rows and the command bar."
+    - name: fromCache
+      type: Boolean
+      notes: "True when the rendered chart/journal history came from the Room cache rather than a fresh fetch (drives the offline banner)."
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  fab_visible: true
+  snackbar_visible: true
+
+components:
+  - id: accounting_header
+    type: header
+    label: "{strings.m07_title}"
+    testTag: "m07-accounting_header"
+    visible_states: [loading, content, empty, balancing, submitting, no-network, error]
+
+  - id: accounting_type_filter
+    type: chip
+    label: "{strings.m07_type_filter}"
+    testTag: "m07-accounting_type_filter"
+    visible_states: [content, no-network]
+    description: "Chart-of-accounts type filter (Asset / Liability / Equity / Income / Expense) — a purely local view filter over the cached GL tree; no network round-trip."
+    on_click:
+      action: filter_gl_type
+      action_contract:
+        effect: transform_state
+        external_library_refs:
+          - "androidx.compose.runtime"
+        produces_state: content
+        description: "Toggle the active GL-account-type filter (Asset / Liability / Equity / Income / Expense) and re-slice the cached chart-of-accounts tree in memory — a pure VM-internal state transition with no network call, so it works identically offline."
+
+  - id: accounting_content
+    type: content_area
+    label: "{strings.m07_content_label}"
+    testTag: "m07-accounting_content"
+    empty_label: "{strings.m07_empty_label}"
+    label_states:
+      content: "Chart-of-Accounts tree (grouped by type, running balances) + the recent-journal-entries list + the permission-gated accounting command bar"
+      balancing: "Manual journal-entry composer — debit lines, credit lines, and the live debit-vs-credit balance indicator"
+
+  - id: gl_account_row
+    type: list_item
+    label: "{strings.m07_gl_row_label}"
+    testTag: "m07-accounting_gl_item"
+    on_click:
+      action: open_gl_account
+      action_contract:
+        effect: navigate
+        description: "Open the tapped GL account's detail (code, name, type, usage, description, running balance, and the recent journal entries that touch it); the detail is served from the Room cache when offline so the chart of accounts is fully browsable without connectivity."
+
+  - id: journal_entry_row
+    type: list_item
+    label: "{strings.m07_journal_row_label}"
+    testTag: "m07-accounting_journal_item"
+    on_click:
+      action: open_journal_entry
+      action_contract:
+        effect: navigate
+        description: "Open the tapped journal entry's detail (reference, entry date, description, the individual debit and credit lines with their GL accounts and amounts, and the posted / pending-approval / reversed status); served from cache offline, and the Reverse control is gated on REVERSE_JOURNALENTRY."
+
+  - id: journal_status_chip
+    type: chip
+    label: "{strings.m07_journal_status_chip}"
+    testTag: "m07-accounting_journal_status_chip"
+    description: "Per-row journal-entry status chip (Posted / Pending checker approval / Reversed). A 'queued offline' variant appears when the posting is still in the outbox awaiting exactly-once replay."
+
+  - id: create_gl_account_fab
+    type: fab
+    label: "{strings.m07_create_gl_account}"
+    testTag: "m07-accounting_create_gl_account"
+    gated_permission: CREATE_GLACCOUNT
+    on_denied: hide
+    on_click:
+      action: create_gl_account
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract GET /v1/glaccounts/template"
+          - "Fineract POST /v1/glaccounts"
+          - "Fineract POST /v1/batches (offline replay)"
+        writes_to:
+          - table: gl_accounts
+        produces_state: content
+        invalidates:
+          - gl_accounts
+        description: "Launch the template-driven Create-GL-account form (dynamic-template-forms over GET /v1/glaccounts/template — name, glCode, type, usage, parent, description) and enqueue a CREATE_GLACCOUNT command through the durable outbox for POST /v1/glaccounts, replaying exactly-once via POST /v1/batches with a durable idempotency key. Hidden entirely unless the user holds CREATE_GLACCOUNT."
+
+  - id: start_journal_entry_button
+    type: button
+    label: "{strings.m07_start_journal}"
+    testTag: "m07-accounting_start_journal"
+    variant: primary
+    visible_states: [content, no-network]
+    gated_permission: CREATE_JOURNALENTRY
+    on_denied: hide
+    on_click:
+      action: start_journal_entry
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract GET /v1/journalentries/template"
+          - "Fineract GET /v1/glaccounts (debit/credit account options)"
+        reads_from:
+          - table: gl_accounts
+        produces_state: balancing
+        description: "Open the manual journal-entry composer (dynamic-template-forms over GET /v1/journalentries/template — office, entry date, payment type, and the GL-account option list from GET /v1/glaccounts) and enter the balancing state where debit and credit lines are added. No posting happens here — this only builds the draft. Hidden entirely unless the user holds CREATE_JOURNALENTRY."
+
+  - id: add_debit_line_button
+    type: button
+    label: "{strings.m07_add_debit_line}"
+    testTag: "m07-accounting_add_debit_line"
+    variant: text
+    visible_states: [balancing]
+    on_click:
+      action: add_debit_line
+      action_contract:
+        effect: transform_state
+        external_library_refs:
+          - "androidx.compose.runtime"
+        produces_state: balancing
+        description: "Append an empty debit line (GL account + amount) to the journal-entry draft and recompute the live debitTotal, refreshing the debit-vs-credit balance indicator — a pure VM-internal state transition with no network call; the 'Post journal entry' control stays disabled until debits == credits."
+
+  - id: add_credit_line_button
+    type: button
+    label: "{strings.m07_add_credit_line}"
+    testTag: "m07-accounting_add_credit_line"
+    variant: text
+    visible_states: [balancing]
+    on_click:
+      action: add_credit_line
+      action_contract:
+        effect: transform_state
+        external_library_refs:
+          - "androidx.compose.runtime"
+        produces_state: balancing
+        description: "Append an empty credit line (GL account + amount) to the journal-entry draft and recompute the live creditTotal, refreshing the debit-vs-credit balance indicator — a pure VM-internal state transition with no network call; posting stays blocked until the credit total equals the debit total."
+
+  - id: balance_indicator
+    type: content_area
+    label: "{strings.m07_balance_indicator}"
+    testTag: "m07-accounting_balance_indicator"
+    visible_states: [balancing]
+    description: "The live finance-critical balance indicator: shows Debit total, Credit total, and the difference. Green + 'Balanced' when debits == credits (and > 0); red + the unbalanced delta ('Out of balance by X') otherwise. This is the visual anchor of the balance gate that guards posting."
+
+  - id: post_journal_entry_button
+    type: button
+    label: "{strings.m07_post_journal}"
+    testTag: "m07-accounting_post_journal"
+    variant: primary
+    visible_states: [balancing]
+    enabled_when: "draftEntry.debitTotal == draftEntry.creditTotal && draftEntry.debitTotal > 0"
+    gated_permission: CREATE_JOURNALENTRY
+    on_denied: disable
+    on_click:
+      action: post_journal_entry
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/journalentries"
+          - "Fineract POST /v1/batches (durable exactly-once replay)"
+        writes_to:
+          - table: draft_outbox
+          - table: journal_entries
+        produces_state: submitting
+        invalidates:
+          - journal_entries
+          - gl_accounts
+        description: "Re-assert the balance invariant (debits == credits AND total > 0) then enqueue a CREATE_JOURNALENTRY command (glDebits[] + glCredits[] + transactionDate + dateFormat + locale) to the durable outbox with a durable idempotency key, replaying exactly-once via POST /v1/batches so a retry can NEVER double-post. Disabled while unbalanced or without CREATE_JOURNALENTRY."
+
+  - id: reverse_journal_entry_button
+    type: button
+    label: "{strings.m07_reverse_journal}"
+    testTag: "m07-accounting_reverse_journal"
+    variant: destructive
+    visible_states: [content]
+    enabled_when: "selectedJournalEntry.status == Posted"
+    gated_permission: REVERSE_JOURNALENTRY
+    on_denied: disable
+    on_click:
+      action: reverse_journal_entry
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/journalentries/{transactionId}?command=reverse"
+          - "Fineract POST /v1/batches (durable exactly-once replay)"
+        writes_to:
+          - table: draft_outbox
+          - table: journal_entries
+        produces_state: submitting
+        invalidates:
+          - journal_entries
+          - gl_accounts
+        description: "Reverse a posted journal entry after an explicit confirm (comments + reversalDate) — enqueue a REVERSE_JOURNALENTRY command through the durable outbox for POST /v1/journalentries/{transactionId}?command=reverse with a durable idempotency key so the reversal replays exactly-once (never double-reversed). Gated on REVERSE_JOURNALENTRY; disabled unless the entry is Posted."
+
+  - id: create_gl_closure_button
+    type: button
+    label: "{strings.m07_create_closure}"
+    testTag: "m07-accounting_create_closure"
+    variant: secondary
+    visible_states: [content]
+    gated_permission: CREATE_GLCLOSURE
+    on_denied: disable
+    on_click:
+      action: create_gl_closure
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract GET /v1/glclosures/template"
+          - "Fineract POST /v1/glclosures"
+          - "Fineract POST /v1/batches (offline replay)"
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - gl_closures
+        description: "Open the GL period-closure form (dynamic-template-forms over GET /v1/glclosures/template — office + closing date + comments) after a confirm and enqueue a CREATE_GLCLOSURE command through the durable outbox for POST /v1/glclosures with a durable idempotency key; once closed, entries dated on/before it are server-rejected. Gated on CREATE_GLCLOSURE."
+
+  - id: financial_activity_mapping_button
+    type: button
+    label: "{strings.m07_financial_activity}"
+    testTag: "m07-accounting_financial_activity"
+    variant: secondary
+    visible_states: [content]
+    gated_permission: CREATE_ACCOUNTINGRULE
+    on_denied: disable
+    on_click:
+      action: map_financial_activity
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract GET /v1/financialactivityaccounts/template"
+          - "Fineract POST /v1/financialactivityaccounts"
+          - "Fineract POST /v1/batches (offline replay)"
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - financial_activity_accounts
+        description: "Open the financial-activity-to-GL-account mapping form (dynamic-template-forms over GET /v1/financialactivityaccounts/template — financialActivityId + glAccountId, e.g. Asset-transfer / Fund-source) and enqueue a CREATE_ACCOUNTINGRULE-gated command through the durable outbox for POST /v1/financialactivityaccounts, replaying exactly-once. Gated on CREATE_ACCOUNTINGRULE."
+
+  - id: run_accruals_button
+    type: button
+    label: "{strings.m07_run_accruals}"
+    testTag: "m07-accounting_run_accruals"
+    variant: secondary
+    visible_states: [content]
+    gated_permission: EXECUTE_PERIODICACCRUALACCOUNTING
+    on_denied: disable
+    on_click:
+      action: run_periodic_accruals
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/runaccruals"
+          - "Fineract POST /v1/batches (durable exactly-once replay)"
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - journal_entries
+        description: "Run the periodic-accrual accounting job after a confirm dialog (tillDate + dateFormat + locale) — enqueue an EXECUTE_PERIODICACCRUALACCOUNTING command through the durable outbox for POST /v1/runaccruals with a durable idempotency key so the accrual run replays exactly-once and never posts duplicate accrual entries. Gated on EXECUTE_PERIODICACCRUALACCOUNTING."
+
+  - id: retry_button
+    type: button
+    label: "{strings.m07_retry}"
+    testTag: "m07-accounting_retry"
+    variant: text
+    visible_states: [error, no-network]
+    on_click:
+      action: retry_load
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract GET /v1/glaccounts"
+          - "Fineract GET /v1/journalentries"
+        reads_from:
+          - table: gl_accounts
+          - table: journal_entries
+        produces_state: loading
+        invalidates:
+          - gl_accounts
+          - journal_entries
+        description: "Re-issue the failed chart-of-accounts / journal-history fetch (GET /v1/glaccounts + GET /v1/journalentries) after an error/offline state, deserialize with kotlinx.serialization, refresh the Room cache, and transition back to content when data resolves; a 403 routes through the permission-drift refresh instead of a hard error."
+
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "org.mobilenativefoundation.store.store5"
+    - "androidx.room"
+    - "kotlinx.serialization"
+    - "Fineract /v1/glaccounts (+ template)"
+    - "Fineract /v1/journalentries (+ ?command=reverse, template)"
+    - "Fineract /v1/glclosures, /v1/financialactivityaccounts, /v1/runaccruals"
+    - "Fineract POST /v1/batches (enclosingTransaction, durable idempotency)"
+  required_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/network
+    - core/permissions
+  description: "Loads the chart of accounts and journal-entry history through Store5 caches (CACHE_FIRST_SWR) so both render offline. A manual entry is composed as debit/credit lines; the FINANCE-CRITICAL invariant isBalanced (debitTotal == creditTotal AND > 0) gates Post. Balanced entries are enqueued to the durable outbox and replayed exactly-once, never double-posting. Gated by permission-capability-engine."
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T11:20:00Z"

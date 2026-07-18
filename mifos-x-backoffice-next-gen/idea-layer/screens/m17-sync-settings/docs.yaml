@@ -1,0 +1,178 @@
+feature: m17-sync-settings
+status: approved
+schema_version: v2
+cluster: back-office-module
+module: m17-sync-settings
+priority: must_have
+is_primary_flow: false
+has_ui: true
+has_api: true
+has_server: false
+capabilities:
+  - has_ui
+  - has_api
+  - has_offline_cache
+  - has_local_preferences
+  - has_system_integration
+  - has_flow
+  - requires_auth
+requires_features:
+  - offline-sync-engine
+  - needs-attention-inbox
+  - permission-capability-engine
+provides_to: []
+permissions_gate: no server permission gate — device/session settings + sync console are always available once authenticated
+contracts:
+  apis:
+    - id: get_instance_mode
+      method: GET
+      path: /v1/instance-mode
+      note: Instance mode surfaced in About/diagnostics; gates write-drain availability.
+    - id: sync_batches
+      method: POST
+      path: /v1/batches
+      idempotency: durable
+      note: Delegated to offline-sync-engine — sync console does not own the replay logic.
+    - id: delta_changelist
+      method: GET
+      path: /v1/audits
+      note: Pull latest → changeListSync delta feed (officeId + watermark).
+    - id: refresh_reference
+      method: GET
+      path: /v1/codes,/v1/offices
+      note: Reference-data cache refresh via CACHE_FIRST_SWR reference stores.
+  tables:
+    - name: app_settings
+      backend: multiplatform_settings
+      keys:
+        - active_tenant
+        - active_server_env
+        - locale
+        - theme_mode
+      note: Plain multiplatform-settings — device/session preferences.
+    - name: secure_prefs
+      backend: multiplatform_settings_encrypted
+      keys:
+        - biometric_lock_enabled
+      note: Encrypted variant (key store) — biometric app-lock flag only.
+    - name: reference_cache
+      backend: room
+      note: Cached codes/offices/products/charges (owned by their feature stores; cleared/refreshed from here).
+    - name: draft_outbox
+      backend: room
+      note: Read-only here — pending/failed counts derived; drain owned by offline-sync-engine.
+  dtos:
+    - name: InstanceMode
+      role: response
+    - name: BatchResponse
+      role: response
+    - name: AuditEntry
+      role: response
+    - name: ServerEnvironment
+      role: model
+    - name: AppPreferences
+      role: model
+libraries:
+  cmp_modules:
+    - cmp-network-monitor
+  core_modules:
+    - core/datastore
+    - core/store
+    - core/data
+    - core-base/network
+  external:
+    - com.russhwolf.settings.Settings (multiplatform-settings, plain + encrypted)
+    - androidx.compose.runtime
+    - org.jetbrains.compose.resources
+    - org.mobilenativefoundation.store.store5
+  training_surfaces:
+    - training-layer/instructions/stream-first/latest/CORE_STORE.md
+    - training-layer/instructions/stream-first/latest/CORE_DATA.md
+vm_actions:
+  - action: OnSyncNowClick
+    maps_to_on_click: trigger_sync
+    handler: >-
+      Delegate to offline-sync-engine: drain PENDING outbox via POST /v1/batches (durable idempotency), then delta-pull;
+      produces syncing state.
+  - action: OnPullLatestClick
+    maps_to_on_click: trigger_delta_pull
+    handler: Delegate to offline-sync-engine changeListSync over GET /v1/audits; advance FetchedAt watermark.
+  - action: OnNeedsAttentionClick
+    maps_to_on_click: open_needs_attention
+    handler: sendEvent(NavigateToNeedsAttention).
+  - action: OnSwitchServerClick
+    maps_to_on_click: switch_tenant_server
+    handler: Swap DynamicBaseUrlPlugin base URL + tenant header; persist active_tenant/active_server_env; force re-auth.
+  - action: OnClearCacheClick
+    maps_to_on_click: clear_reference_cache
+    handler: Confirm dialog → clear reference_cache Room tables; invalidate freshness watermarks.
+  - action: OnRefreshReferenceClick
+    maps_to_on_click: refresh_reference_data
+    handler: Re-run reference CACHE_FIRST_SWR stores with a fresh fetch; produces syncing state.
+  - action: OnThemeToggle
+    maps_to_on_click: toggle_theme
+    handler: Persist theme_mode to multiplatform-settings; recompose theme via CompositionLocal.
+  - action: OnLanguageChange
+    maps_to_on_click: change_language
+    handler: Persist locale; re-apply to Compose Resources string provider.
+  - action: OnBiometricToggle
+    maps_to_on_click: toggle_biometric_lock
+    handler: Persist biometric_lock_enabled to the encrypted settings store; enforced on next cold launch.
+  - action: OnAboutClick
+    maps_to_on_click: open_about_diagnostics
+    handler: sendEvent(NavigateToAboutDiagnostics).
+  - action: OnLogoutClick
+    maps_to_on_click: logout
+    handler: Confirm → clear session + outbox drafts + permission cache; sendEvent(NavigateToLogin).
+  - action: Internal.ReceiveSyncStatus
+    handler: >-
+      Fold outbox observe() + last-sync watermark into the sync banner state
+      (idle/content/syncing/needs-attention/error).
+  - action: Internal.ReceiveSettings
+    handler: Load persisted preferences (theme, locale, biometric, tenant, server) into state on mount.
+error_cases:
+  - code: settings.read_failed
+    ux: error state; 'Couldn't read sync status — pull to retry' banner; cached preferences still render.
+  - code: sync.rejected
+    ux: needs-attention state; failed count badge on the Needs-Attention entry; routes to needs-attention-inbox.
+  - code: network.offline
+    ux: sync CTAs disabled with 'Offline · showing your saved settings'; preferences remain editable.
+  - code: server_switch.reauth_required
+    ux: >-
+      after DynamicBaseUrlPlugin swap, route to permission-capability-engine login; 'sign in again to refresh your
+      access'.
+  - code: cache.clear_confirm
+    ux: confirm dialog before destructive clear; on cancel, no-op; on confirm, caches emptied + toast.
+test_fixtures:
+  - outbox with 3 PENDING → tap Sync now → offline-sync-engine drains → banner returns to 'Up to date'
+  - 1 rejected replay → Needs-Attention entry badged '1' → tap → lands in needs-attention-inbox
+  - switch sandbox→prod → base URL + tenant header change → re-auth screen shown → permissions re-resolved
+  - toggle biometric on → flag in encrypted store → kill+relaunch → lock prompt before any screen
+  - toggle dark theme → theme_mode persisted → app recomposes to dark immediately
+acceptance_refs:
+  - Sync console + Needs-Attention inbox; tenant/server switch (dev/sandbox/prod); i18n; diagnostics; biometric lock
+plan_ref: idea-plan.yaml#features[m17-sync-settings]
+summary: >-
+  M17 · Sync & Settings — the app-level control panel: a manual sync console (Sync now / Pull latest delegating to
+  offline-sync-engine) with a Needs-Attention entry, tenant/server switch (dev/sandbox/prod via DynamicBaseUrlPlugin,
+  re-auth on change), reference-data cache clear/refresh, local app preferences (theme, language, biometric app-lock via
+  multiplatform-settings — biometric flag encrypted), and About/diagnostics + logout. Visible to every authenticated
+  persona.
+approve_hash: "sha256:e511a90dbaed1db705cd19f27e3a6f009b247778c942d1b718a1c936deb728c3"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T00:00:00Z'
+enriched_by: /idea-feature-enrich
+status_history:
+  - from: enriched
+    to: design_partial
+    at: '2026-07-17T22:02:16.059Z'
+    by: /idea-feature-stitch
+  - from: design_partial
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

@@ -1,0 +1,326 @@
+schema_version: v1.0.0
+screen_id: m13-scheduler-jobs
+feature: m13-scheduler-jobs
+name: "M13 · Scheduler & Jobs (COB)"
+archetype: list_screen
+status: designed
+initial_state: loading
+
+# ─────────────────────────────────────────────────────────────────────────
+# Scheduler & Jobs (Close-of-Business): the ops persona's batch-administration
+# console. A list of Fineract scheduled jobs (display name · cron expression ·
+# next & previous run time · last-run status · active toggle · currently-running
+# flag) with a global scheduler on/off switch and the current COB business date.
+# Selecting a job opens its detail: the schedule + a paged run-history table
+# (each run's start/finish time, duration, status, and — on failure — the error
+# message + stack trace). Reads (job list, run history, scheduler status,
+# business date) are CACHE_FIRST_SWR so the roster + last-run outcomes render
+# instantly offline. Every mutating action is SERVER-SIDE BATCH work and is
+# therefore ONLINE-ONLY (NOT queued to the offline outbox — a COB run cannot be
+# deferred/replayed): run-now (POST /v1/jobs/{id}?command=executeJob), edit
+# schedule / enable-disable (PUT /v1/jobs/{id}), scheduler start/stop
+# (PUT /v1/scheduler?command=start|stop), and advance business date
+# (POST /v1/businessdate). Every entry point + command is resolved through the
+# permission-capability-engine (READ_SCHEDULER gates the module, UPDATE_SCHEDULER
+# gates the schedule/toggle/scheduler-switch edits, EXECUTEJOB_SCHEDULER gates
+# run-now); unmapped ids fail closed (HIDDEN). Schedule edits are rendered by
+# dynamic-template-forms. Admin/ops-tier.
+# ─────────────────────────────────────────────────────────────────────────
+
+states:
+  loading:
+    description: "Fetching the scheduled-job list (GET /v1/jobs), the scheduler on/off status (GET /v1/scheduler), and the current COB business date (GET /v1/businessdate) with no cache yet. CACHE_FIRST_SWR shows a shimmer skeleton for the job rows and revalidates in the background."
+    is_default: true
+  content:
+    description: "The scheduler console rendered: the global scheduler on/off switch + current COB business-date header, and the job list — each row showing the job's display name, cron expression, next & previous run time, last-run status chip (Success / Failed / Never run / Running), and an active/inactive toggle. Selecting a row reveals the job detail with its schedule and the paged run-history table. Served instantly from the Room cache and background-revalidated per FreshnessBands."
+  empty:
+    description: "The job roster came back empty for this tenant (no scheduled jobs registered). Shows an illustration + a 'No scheduled jobs configured' message; there is no create action (Fineract job definitions are server-registered, not created from the app)."
+  submitting:
+    description: "A scheduler command is being posted ONLINE (run a job now / edit a job schedule / enable-disable a job / toggle the global scheduler / advance the business date) — the affected control is disabled and a per-command progress indicator shows PENDING → SUBMITTED while the CommandProcessingResult is awaited. These are server-side batch operations and are NEVER queued to the offline outbox; there is no optimistic mutation."
+  no_network:
+    description: "Offline — the last-synced job roster, run history, scheduler status, and business date are served from the Room cache under a persistent 'Offline · showing cached scheduler data' banner. All mutating controls (run-now, edit schedule, toggles, scheduler switch) are DISABLED with a 'requires connection' reason because job execution is online-only and cannot be queued."
+  error:
+    description: "The job/scheduler/business-date fetch failed with no cached copy, OR a command was rejected by the server (400 invalid cron / 403 permission-drift / 409, or a run that failed to start). Shows the Fineract server error message + a Retry CTA that re-drains the list fetch; a 403 routes through the permission-drift refresh rather than crashing; a rejected run surfaces inline (there is no offline-queue triage because these commands never queue)."
+
+state_model:
+  fields:
+    - name: jobs
+      type: List<SchedulerJobRow>
+      notes: "The scheduled-job roster: jobId, displayName, cronExpression, nextRunTime, previousRunTime, lastRunStatus (Success/Failed/NeverRun/Running), active (schedulable), currentlyRunning, and the COB step count for COB jobs."
+    - name: schedulerRunning
+      type: Boolean
+      notes: "Whether the global scheduler is currently ON (GET /v1/scheduler). Drives the master scheduler on/off switch; when OFF, no scheduled job fires automatically (manual run-now still possible for authorized users)."
+    - name: businessDate
+      type: LocalDate?
+      notes: "The current COB business date (GET /v1/businessdate, type BUSINESS_DATE) — the effective date the batch/COB jobs operate against; advancing it is a gated online command."
+    - name: selectedJob
+      type: SchedulerJobRow?
+      notes: "The job whose detail (schedule + run history) is expanded; null in the list view."
+    - name: runHistory
+      type: List<JobRunHistoryEntry>
+      notes: "The paged run history for the selected job (GET /v1/jobs/{id}/runhistory): each entry's version, jobRunStartTime, jobRunEndTime, status, triggerType, and (on failure) errorMessage + errorLog stack trace."
+    - name: fromCache
+      type: Boolean
+      notes: "True when the rendered roster/scheduler status came from the Room cache rather than a fresh fetch (drives the offline banner + disables the online-only controls)."
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  fab_visible: false          # no create action — Fineract job definitions are server-registered
+  snackbar_visible: true
+
+components:
+  - id: scheduler_header
+    type: header
+    label: "{strings.m13_title}"
+    testTag: "m13-scheduler-jobs_header"
+    visible_states: [loading, content, empty, submitting, no_network, error]
+
+  - id: offline_banner
+    type: banner
+    label: "{strings.m13_offline_banner}"
+    testTag: "m13-scheduler-jobs_offline_banner"
+    visible_states: [no_network]
+    description: "A persistent banner shown while offline: the job roster, run history, scheduler status, and business date render from the last cached values, and every mutating control is disabled because job execution is a server-side batch operation that is online-only and cannot be queued for later replay."
+
+  - id: scheduler_master_switch
+    type: switch
+    label: "{strings.m13_scheduler_switch}"
+    testTag: "m13-scheduler-jobs_scheduler_switch"
+    variant: primary
+    gated_permission: UPDATE_SCHEDULER
+    on_denied: disable
+    visible_states: [content, submitting]
+    on_click:
+      action: toggle_scheduler
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+          - permission-capability-engine
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract PUT /v1/scheduler?command=start"
+          - "Fineract PUT /v1/scheduler?command=stop"
+        reads_from:
+          - table: scheduler_jobs
+        produces_state: submitting
+        invalidates:
+          - schedulerStatus
+        description: "Turn the global Fineract scheduler ON or OFF (PUT /v1/scheduler?command=start|stop) — an ONLINE-ONLY command (server-side switch, never queued to the outbox). When OFF, no scheduled job fires automatically. Gated on UPDATE_SCHEDULER; disabled-with-reason for users without it and while offline."
+
+  - id: business_date_header
+    type: content_area
+    label: "{strings.m13_business_date}"
+    testTag: "m13-scheduler-jobs_business_date"
+    visible_states: [content, submitting, no_network]
+    description: "The current COB business date (GET /v1/businessdate) shown as a read-only header chip — the effective date the batch/COB jobs operate against. An 'Advance business date' control appears beside it for UPDATE_SCHEDULER holders (online-only)."
+
+  - id: scheduler_content
+    type: content_area
+    label: "{strings.m13_content_label}"
+    testTag: "m13-scheduler-jobs_content"
+    empty_label: "{strings.m13_empty}"
+    label_states:
+      content: "Scheduled-job list — each row: display name · cron expression · next & previous run time · last-run status chip · active toggle · currently-running flag; selecting a row expands its schedule + paged run-history table"
+
+  - id: job_row
+    type: list_item
+    label: "{strings.m13_job_row}"
+    testTag: "m13-scheduler-jobs_job_item"
+    visible_states: [content]
+    on_click:
+      action: open_job_detail
+      action_contract:
+        effect: navigate
+        reads_from:
+          - table: scheduler_jobs
+        produces_state: content
+        description: "Open the selected job's detail — its cron schedule, next/previous run time, active state, and the paged run-history table (each run's start/finish, duration, status, and any error). Served from the Room cache when offline; the run-now / edit-schedule / enable-disable controls in the detail render only for the permissions the user holds."
+
+  - id: job_status_chip
+    type: chip
+    label: "{strings.m13_status_chip}"
+    testTag: "m13-scheduler-jobs_status_chip"
+    visible_states: [content]
+    description: "Per-row last-run status chip (Success / Failed / Never run / Running). A 'Running' variant with a small progress ring appears while a job's currentlyRunning flag is true; a 'Failed' variant is tappable to jump straight to that run's error in the run history."
+
+  - id: run_job_button
+    type: button
+    label: "{strings.m13_run_job}"
+    testTag: "m13-scheduler-jobs_run_job"
+    variant: primary
+    gated_permission: EXECUTEJOB_SCHEDULER
+    on_denied: hide
+    visible_states: [content, submitting]
+    on_click:
+      action: execute_job
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+          - permission-capability-engine
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/jobs/{jobId}?command=executeJob"
+        reads_from:
+          - table: scheduler_jobs
+        produces_state: submitting
+        invalidates:
+          - jobRunHistory
+          - schedulerJobs
+        description: "Run the selected scheduled job (or COB step) now after a confirm — POST /v1/jobs/{jobId}?command=executeJob. A SERVER-SIDE BATCH operation, ONLINE-ONLY: never queued to the offline outbox, never optimistically applied. The job's currentlyRunning flips true and a new run-history entry appears. HIDDEN (onDenied HIDE) unless the user holds EXECUTEJOB_SCHEDULER; disabled while offline."
+
+  - id: toggle_job_active_button
+    type: button
+    label: "{strings.m13_toggle_active}"
+    testTag: "m13-scheduler-jobs_toggle_active"
+    variant: secondary
+    gated_permission: UPDATE_SCHEDULER
+    on_denied: disable
+    visible_states: [content, submitting]
+    on_click:
+      action: toggle_job_active
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+          - permission-capability-engine
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract PUT /v1/jobs/{jobId}"
+        reads_from:
+          - table: scheduler_jobs
+        produces_state: submitting
+        invalidates:
+          - schedulerJobs
+        description: "Enable or disable automatic scheduling for the selected job (PUT /v1/jobs/{jobId} with active true|false) — an ONLINE-ONLY server-side edit (never queued). A disabled job no longer fires on its cron; a re-enabled job resumes. Gated on UPDATE_SCHEDULER; disabled-with-reason for users without it and while offline."
+
+  - id: edit_schedule_button
+    type: button
+    label: "{strings.m13_edit_schedule}"
+    testTag: "m13-scheduler-jobs_edit_schedule"
+    variant: secondary
+    gated_permission: UPDATE_SCHEDULER
+    on_denied: disable
+    target: dynamic-template-forms
+    visible_states: [content, submitting]
+    on_click:
+      action: edit_job_schedule
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - cmp-network-monitor
+          - permission-capability-engine
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract PUT /v1/jobs/{jobId}"
+        reads_from:
+          - table: scheduler_jobs
+        produces_state: submitting
+        invalidates:
+          - schedulerJobs
+        description: "Open the edit-schedule form (dynamic-template-forms) pre-filled with the job's current cron expression + active flag and submit a PUT /v1/jobs/{jobId} to change its schedule. The cron is validated client-side before submit and the server is the final authority (400 invalid cron surfaces inline). ONLINE-ONLY server-side edit — never queued. Gated on UPDATE_SCHEDULER; disabled while offline."
+
+  - id: advance_business_date_button
+    type: button
+    label: "{strings.m13_advance_business_date}"
+    testTag: "m13-scheduler-jobs_advance_business_date"
+    variant: secondary
+    gated_permission: UPDATE_SCHEDULER
+    on_denied: hide
+    target: dynamic-template-forms
+    visible_states: [content, submitting]
+    on_click:
+      action: advance_business_date
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - cmp-network-monitor
+          - permission-capability-engine
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/businessdate"
+        reads_from:
+          - table: scheduler_jobs
+        produces_state: submitting
+        invalidates:
+          - businessDate
+        description: "Advance the COB business date after an explicit confirm (dynamic-template-forms sources the type=BUSINESS_DATE + the new date; dateFormat + locale are sent) — POST /v1/businessdate. This is an ONLINE-ONLY server-side operation that shifts the effective date all batch/COB jobs run against; it is never queued. Hidden entirely unless the user holds UPDATE_SCHEDULER; disabled while offline."
+
+  - id: view_run_history_button
+    type: button
+    label: "{strings.m13_view_run_history}"
+    testTag: "m13-scheduler-jobs_view_run_history"
+    variant: text
+    gated_permission: READ_SCHEDULER
+    on_denied: disable
+    visible_states: [content]
+    on_click:
+      action: view_run_history
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract GET /v1/jobs/{jobId}/runhistory"
+        reads_from:
+          - table: job_run_history
+        produces_state: content
+        description: "Load the paged run history for the selected job (GET /v1/jobs/{jobId}/runhistory) — each run's start/finish time, duration, trigger type, status, and, on a failed run, the error message + stack trace. Served CACHE_FIRST_SWR so past run outcomes render instantly offline and background-revalidate when stale. Read-only; gated by READ_SCHEDULER."
+
+  - id: retry_button
+    type: button
+    label: "{strings.m13_retry}"
+    testTag: "m13-scheduler-jobs_retry"
+    variant: text
+    visible_states: [error, no_network]
+    on_click:
+      action: retry_load
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract GET /v1/jobs"
+          - "Fineract GET /v1/scheduler"
+        reads_from:
+          - table: scheduler_jobs
+        produces_state: loading
+        invalidates:
+          - schedulerJobs
+          - schedulerStatus
+        description: "Re-run the failed scheduler fetch — calls stream.refreshFresh() to force a fresh Store5 fetch past the cache for the job list + scheduler status + business date, returning to loading then content/error. A 403 routes through the permission-drift refresh instead of a hard error."
+
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - dynamic-template-forms
+    - permission-capability-engine
+    - "org.mobilenativefoundation.store.store5"
+    - "androidx.room"
+    - "kotlinx.serialization"
+    - "Fineract GET /v1/jobs (+ /runhistory)"
+    - "Fineract POST /v1/jobs/{id}?command=executeJob"
+    - "Fineract PUT /v1/jobs/{id}"
+    - "Fineract GET/PUT /v1/scheduler"
+    - "Fineract GET/POST /v1/businessdate"
+  required_modules:
+    - core/model
+    - core/network
+    - core/database
+    - core/store
+    - core/data
+    - core/permissions
+  description: "Folds CACHE_FIRST_SWR Store5 streams (jobs, run history, scheduler status, business date) into the list ScreenState so reads render offline. Every mutation is a server-side batch op and is strictly ONLINE-ONLY (run-now, edit-cron, enable-disable, scheduler start-stop, advance-date): never queued, disabled offline. Commands gated by the permission engine (READ/UPDATE/EXECUTEJOB_SCHEDULER)."
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T12:00:00Z"

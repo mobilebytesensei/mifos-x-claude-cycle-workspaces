@@ -1,0 +1,629 @@
+screen_id: m04-loan-portfolio
+name: "M04 · Loan Portfolio (origination · servicing · delinquency · reschedule)"
+status: designed
+archetype: master_detail
+cluster: back-office-module
+module: m04-loan-portfolio
+initial_state: loading
+
+# ─────────────────────────────────────────────────────────────────────────
+# The highest-value back-office module: the full loan lifecycle in one binary,
+# gated 100% by the signed-in user's permissions[]. List → 360° detail
+# (summary, repayment schedule, transactions, charges, guarantors, collateral,
+# documents) → application via GET /v1/loans/template with a LIVE schedule
+# preview (POST ?command=calculateLoanSchedule) → lifecycle commands
+# (approve / reject / withdraw / disburse / undo-approval / undo-disbursal) →
+# servicing (repayment / prepayment / waive-interest / write-off / foreclosure /
+# charges pay+waive) → reschedule. Every mutating control is gated by its exact
+# {ACTION}_LOAN permission (fail-closed HIDE for nav roots + create FABs;
+# DISABLE-with-reason for workflow-stage buttons on a visible detail); backdated
+# posting is a distinct capability (REPAYMENTINPAST_LOAN / DISBURSEINPAST_LOAN);
+# maker-checker aware (queued command → "Submitted for approval", third state).
+# Every monetary write funnels through the offline-sync-engine outbox with a
+# DURABLE idempotency key so field repayments post EXACTLY ONCE — money is never
+# double-posted, never lost. Application/edit forms are rendered by the
+# dynamic-template-forms engine from the Fineract entity template, not hardcoded.
+# ─────────────────────────────────────────────────────────────────────────
+
+# ── Business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-5) ──────────
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  description: "Loads loan list/detail CACHE_FIRST_SWR over Store5+Room; applications render from GET /v1/loans/template via dynamic-template-forms with a live calculateLoanSchedule preview. Every command (approve/disburse/repayment/waive/writeoff/foreclosure/reschedule) is gated by its {ACTION}_LOAN permission and enqueued through the offline outbox with a durable idempotency key (exactly-once)."
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "openMF Fineract Client KMP SDK"
+    - "org.mobilenativefoundation.store.store5"
+    - "androidx.room"
+    - "kotlinx.serialization"
+    - "Fineract POST /v1/loans (calculateLoanSchedule)"
+    - "Fineract POST /v1/loans/{id}?command=* (lifecycle)"
+    - "Fineract POST /v1/loans/{id}/transactions?command=* (servicing)"
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T00:00:00Z"
+  required_modules:
+    - core/store
+    - core/data
+    - core/network
+    - core/database
+    - core/permissions
+
+# ── States (loading/content/empty/error + submitting + schedule-preview + action-disabled) ──
+states:
+  loading:
+    description: "Fetching the loan list or a loan's 360° detail (schedule, transactions, charges) — Store5 Loading with a cached shimmer; on-device the last cached content is preserved underneath."
+  content:
+    description: "Loan list or 360° detail rendered — summary, repayment schedule, transactions, charges, guarantors, collateral, documents. Each workflow control is VISIBLE/enabled per the user's {ACTION}_LOAN permission and the loan's lifecycle state (Approve only on a Pending Approval loan, Disburse only on an Approved loan, Repayment only on an Active loan)."
+  empty:
+    description: "No loan accounts match this office/portfolio (or a filter). Shows an illustration + the empty message + a 'New loan application' CTA (visible only if the user holds CREATE_LOAN)."
+  action-disabled:
+    description: "A maker persona (or a user lacking the specific action) sees the workflow control DISABLED with a reason chip ('Requires APPROVE_LOAN — ask your supervisor') — the stage is operationally meaningful to SEE, so it is disabled-not-hidden per the permission model."
+  schedule-preview:
+    description: "During a loan application, the live repayment schedule preview (installments, principal/interest/fees split, total cost) recomputed from the entered principal/term/rate/disbursement date via calculateLoanSchedule — refreshes on every field change (debounced)."
+  submitting:
+    description: "A lifecycle or servicing command was queued through the offline outbox (with a durable idempotency key) — the control shows a spinner and the row shows a 'Queued' / 'Submitted for approval' chip; the write is not optimistically applied until SUBMITTED (or approved under maker-checker)."
+  error:
+    description: "Loan list/detail fetch failed, or a command was rejected by Fineract (validation / optimistic-lock / 403 drift). Shows the server error verbatim + a Retry; a rejected command is routed to needs-attention-inbox, never silently dropped; the last-known cached loan stays usable offline."
+
+# ── Shell (M04 nav root; permission-gated at the module root on the loan group) ──
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  fab_visible: true
+  snackbar_visible: true
+
+# ── Components ──────────────────────────────────────────────────────────
+components:
+  - id: header
+    type: header
+    label: "{strings.m04_title}"
+    testTag: "m04-loan-portfolio_header"
+    visible_states: [loading, content, empty, action-disabled, schedule-preview, submitting, error]
+
+  - id: loan_search_field
+    type: text_field
+    label: "{strings.m04_loan_search}"
+    testTag: "m04-loan-portfolio_search"
+    visible_states: [content, empty]
+    description: "Filters the loan list by client name, account number, or externalId within the user's office/portfolio scope. Search is offline over the cached working set; a 403 never appears here (read-gated by READ_LOAN at the module root)."
+    on_click:
+      action: search_loans
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["kotlinx.serialization"]
+        reads_from: ["loans"]
+        description: "Filters the in-memory CACHE_FIRST_SWR loan list by the entered query (client name / account no / externalId), scoped to the signed-in officer's office/portfolio. Pure VM-internal state transition over the already-cached @Serializable loan rows — no network call, works fully offline."
+
+  - id: loan_list
+    type: content_area
+    label: "{strings.m04_loan_list}"
+    testTag: "m04-loan-portfolio_content"
+    visible_states: [content]
+    empty_label: "{strings.m04_empty_body}"
+    description: "The loan account list — each row shows client, product, principal, status (Active / Overdue / Pending Approval / Closed), outstanding, and PAR days. Rendered via PagingScreenContent over Store<PageKey,List<Loan>> (offset/limit ≙ Fineract paging). Read-only for personas without CREATE/action permissions."
+
+  - id: loan_row
+    type: list_item
+    label: "{strings.m04_loan_row}"
+    testTag: "m04-loan-portfolio_item"
+    visible_states: [content]
+    on_click:
+      action: open_loan_detail
+      target: loan-detail
+      action_contract:
+        effect: navigate
+        description: "Opens the loan's 360° detail (summary, repayment schedule, transactions, charges, guarantors, collateral, documents). The detail's workflow controls are each gated by their {ACTION}_LOAN permission and the loan's lifecycle state, and disabled-with-reason for a maker without the action."
+
+  - id: new_loan_fab
+    type: fab
+    label: "{strings.m04_new_loan}"
+    testTag: "m04-loan-portfolio_new_loan"
+    gated_permission: CREATE_LOAN
+    on_denied: HIDE
+    visible_states: [content, empty]
+    on_click:
+      action: start_loan_application
+      target: loan-application-wizard
+      action_contract:
+        effect: navigate
+        description: "Opens the loan application wizard rendered from GET /v1/loans/template (dynamic-template-forms) with the live calculateLoanSchedule preview. Hidden entirely (fail-closed) unless the user holds CREATE_LOAN; the submission is queued through the outbox and is maker-checker aware."
+
+  # ── Detail: drill-through tabs (all navigate; all read-gated at the module root) ──
+  - id: view_schedule_tab
+    type: chip
+    label: "{strings.m04_repayment_schedule}"
+    testTag: "m04-loan-portfolio_schedule_tab"
+    visible_states: [content]
+    on_click:
+      action: view_repayment_schedule
+      target: loan-detail
+      action_contract:
+        effect: navigate
+        description: "Shows the loan's full repayment schedule (installments with due date, principal/interest/fees/penalties, paid vs outstanding, overdue markers) from GET /v1/loans/{id}?associations=repaymentSchedule — read from the CACHE_FIRST_SWR store, available offline."
+
+  - id: view_transactions_tab
+    type: chip
+    label: "{strings.m04_transactions}"
+    testTag: "m04-loan-portfolio_transactions_tab"
+    visible_states: [content]
+    on_click:
+      action: view_transactions
+      target: loan-detail
+      action_contract:
+        effect: navigate
+        description: "Shows the loan transaction ledger (repayments, waivers, write-offs, charge postings, disbursals) from GET /v1/loans/{id}?associations=transactions, plus any locally-queued transactions still in the outbox marked 'pending sync'."
+
+  - id: view_charges_tab
+    type: chip
+    label: "{strings.m04_charges}"
+    testTag: "m04-loan-portfolio_charges_tab"
+    visible_states: [content]
+    on_click:
+      action: view_charges
+      target: loan-detail
+      action_contract:
+        effect: navigate
+        description: "Shows the loan's charges (fees/penalties with amount, due date, paid/waived status) from GET /v1/loans/{id}/charges. Pay/Waive controls on each charge are gated by PAY_LOANCHARGE / WAIVE_LOANCHARGE."
+
+  - id: view_guarantors_tab
+    type: chip
+    label: "{strings.m04_guarantors}"
+    testTag: "m04-loan-portfolio_guarantors_tab"
+    visible_states: [content]
+    on_click:
+      action: view_guarantors
+      target: loan-detail
+      action_contract:
+        effect: navigate
+        description: "Shows the loan's guarantors (person / existing-client, guaranteed amount, status) from GET /v1/loans/{id}/guarantors — read-gated by READ_GUARANTOR at the module root."
+
+  - id: view_collateral_tab
+    type: chip
+    label: "{strings.m04_collateral}"
+    testTag: "m04-loan-portfolio_collateral_tab"
+    visible_states: [content]
+    on_click:
+      action: view_collateral
+      target: loan-detail
+      action_contract:
+        effect: navigate
+        description: "Shows the loan's pledged collateral (type, description, value, percentage) from GET /v1/loans/{id}/collaterals — read-gated by READ_COLLATERAL at the module root."
+
+  - id: view_documents_tab
+    type: chip
+    label: "{strings.m04_documents}"
+    testTag: "m04-loan-portfolio_documents_tab"
+    visible_states: [content]
+    on_click:
+      action: view_documents
+      target: loan-detail
+      action_contract:
+        effect: navigate
+        description: "Shows the loan's attached documents (agreements, KYC, receipts) from GET /v1/loans/{id}/documents — the entity-agnostic document module attached to this loan; download is gated by READ_DOCUMENT."
+
+  # ── Lifecycle commands (approve / reject / withdraw / disburse / undo) ──
+  - id: approve_loan_button
+    type: button
+    label: "{strings.m04_approve}"
+    testTag: "m04-loan-portfolio_approve"
+    variant: primary
+    gated_permission: APPROVE_LOAN
+    on_denied: DISABLE
+    disabled_reason: "Requires APPROVE_LOAN — ask your supervisor"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: approve_loan
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/loans/{id}?command=approve"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["loanStatus", "loanTimeline"]
+        description: "Enqueue an APPROVE_LOAN command (POST /v1/loans/{id}?command=approve, body: approvedOnDate + expectedDisbursementDate + dateFormat + locale) through the offline outbox with a durable idempotency key. Maker-checker aware — a queued commandId with empty changes lands PENDING_APPROVAL ('Submitted for approval'), not optimistically applied. DISABLE-with-reason for a maker lacking APPROVE_LOAN."
+
+  - id: reject_loan_button
+    type: button
+    label: "{strings.m04_reject}"
+    testTag: "m04-loan-portfolio_reject"
+    variant: secondary
+    gated_permission: REJECT_LOAN
+    on_denied: DISABLE
+    disabled_reason: "Requires REJECT_LOAN"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: reject_loan
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/loans/{id}?command=reject"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["loanStatus", "loanTimeline"]
+        description: "Enqueue a REJECT_LOAN command (POST /v1/loans/{id}?command=reject, body: rejectedOnDate + note + dateFormat + locale) through the outbox with a durable idempotency key. Only valid on a Pending Approval loan; maker-checker aware. Rejecting a submitted application terminates it (distinct from applicant-initiated withdraw)."
+
+  - id: withdraw_loan_button
+    type: button
+    label: "{strings.m04_withdraw}"
+    testTag: "m04-loan-portfolio_withdraw"
+    variant: text
+    gated_permission: WITHDRAW_LOAN
+    on_denied: DISABLE
+    disabled_reason: "Requires WITHDRAW_LOAN"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: withdraw_loan
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/loans/{id}?command=withdrawnByApplicant"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["loanStatus", "loanTimeline"]
+        description: "Enqueue a WITHDRAW_LOAN command (POST /v1/loans/{id}?command=withdrawnByApplicant, body: withdrawnOnDate + note + dateFormat + locale) through the outbox with a durable idempotency key — the applicant-initiated withdrawal of a Pending Approval loan. Maker-checker aware."
+
+  - id: disburse_loan_button
+    type: button
+    label: "{strings.m04_disburse}"
+    testTag: "m04-loan-portfolio_disburse"
+    variant: primary
+    gated_permission: DISBURSE_LOAN
+    on_denied: DISABLE
+    disabled_reason: "Requires DISBURSE_LOAN — ask your supervisor"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: disburse_loan
+      target: loan-application-wizard
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/loans/{id}?command=disburse"
+          - "Fineract GET /v1/loans/{id}/template?command=disburse"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["loanStatus", "loanTimeline", "loanBalance"]
+        description: "Open the disbursement form (dynamic-template-forms from GET /v1/loans/{id}/template?command=disburse — actual amount, disbursement date, payment type) then enqueue a DISBURSE_LOAN command (POST /v1/loans/{id}?command=disburse) through the outbox with a durable idempotency key. Only valid on an Approved loan; backdated disbursement additionally requires DISBURSEINPAST_LOAN. Maker-checker aware."
+
+  - id: undo_approval_button
+    type: button
+    label: "{strings.m04_undo_approval}"
+    testTag: "m04-loan-portfolio_undo_approval"
+    variant: text
+    gated_permission: UNDOAPPROVAL_LOAN
+    on_denied: DISABLE
+    disabled_reason: "Requires UNDOAPPROVAL_LOAN"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: undo_approval
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/loans/{id}?command=undoapproval"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["loanStatus", "loanTimeline"]
+        description: "Enqueue an UNDOAPPROVAL_LOAN command (POST /v1/loans/{id}?command=undoapproval) through the outbox with a durable idempotency key — reverts an Approved loan back to Pending Approval so it can be corrected or re-approved. Maker-checker aware."
+
+  - id: undo_disbursal_button
+    type: button
+    label: "{strings.m04_undo_disbursal}"
+    testTag: "m04-loan-portfolio_undo_disbursal"
+    variant: text
+    gated_permission: UNDODISBURSAL_LOAN
+    on_denied: DISABLE
+    disabled_reason: "Requires UNDODISBURSAL_LOAN"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: undo_disbursal
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/loans/{id}?command=undodisbursal"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["loanStatus", "loanTimeline", "loanBalance"]
+        description: "Enqueue an UNDODISBURSAL_LOAN command (POST /v1/loans/{id}?command=undodisbursal) through the outbox with a durable idempotency key — reverses the disbursement of an Active loan (only while no repayments have posted). Maker-checker aware; the durable key prevents a double-reverse on retry."
+
+  # ── Servicing / money movement (all EXACTLY-ONCE via durable-idempotency outbox) ──
+  - id: record_repayment_button
+    type: button
+    label: "{strings.m04_record_repayment}"
+    testTag: "m04-loan-portfolio_repayment"
+    variant: primary
+    gated_permission: REPAYMENT_LOAN
+    on_denied: DISABLE
+    disabled_reason: "Requires REPAYMENT_LOAN"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: record_repayment
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/loans/{id}/transactions?command=repayment"
+          - "Fineract GET /v1/loans/{id}/transactions/template?command=repayment"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["loanBalance", "repaymentSchedule", "transactions"]
+        description: "Open the repayment form (dynamic-template-forms) then enqueue a REPAYMENT_LOAN transaction (POST /v1/loans/{id}/transactions?command=repayment) through DraftSubmitHandler + RoomSubmitOutbox with a DURABLE idempotency key so a field repayment posts EXACTLY ONCE across network flaps, crashes, and reinstall-restore — money is never double-posted. Backdated posting requires REPAYMENTINPAST_LOAN."
+
+  - id: prepay_loan_button
+    type: button
+    label: "{strings.m04_prepay}"
+    testTag: "m04-loan-portfolio_prepay"
+    variant: secondary
+    gated_permission: REPAYMENT_LOAN
+    on_denied: DISABLE
+    disabled_reason: "Requires REPAYMENT_LOAN"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: make_prepayment
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/loans/{id}/transactions/template?command=prepayLoan"
+          - "Fineract POST /v1/loans/{id}/transactions?command=repayment"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["loanBalance", "repaymentSchedule", "transactions"]
+        description: "Fetch the prepayment quote (GET .../transactions/template?command=prepayLoan → full payoff incl. accrued interest) then enqueue the settling repayment (POST .../transactions?command=repayment) through the outbox with a durable idempotency key, so an early full payoff posts exactly-once. Closes the loan when the payoff clears the balance."
+
+  - id: waive_interest_button
+    type: button
+    label: "{strings.m04_waive_interest}"
+    testTag: "m04-loan-portfolio_waive_interest"
+    variant: text
+    gated_permission: WAIVEINTERESTPORTION_LOAN
+    on_denied: DISABLE
+    disabled_reason: "Requires WAIVEINTERESTPORTION_LOAN"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: waive_interest
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/loans/{id}/transactions?command=waiveinterest"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["loanBalance", "repaymentSchedule", "transactions"]
+        description: "Enqueue a WAIVEINTERESTPORTION_LOAN transaction (POST /v1/loans/{id}/transactions?command=waiveinterest, body: transactionDate + dateFormat + locale) through the outbox with a durable idempotency key — waives the outstanding interest portion on the current installment. Exactly-once on retry; maker-checker aware."
+
+  - id: write_off_button
+    type: button
+    label: "{strings.m04_write_off}"
+    testTag: "m04-loan-portfolio_write_off"
+    variant: text
+    gated_permission: WRITEOFF_LOAN
+    on_denied: DISABLE
+    disabled_reason: "Requires WRITEOFF_LOAN — ask your supervisor"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: write_off_loan
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/loans/{id}/transactions?command=writeoff"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["loanStatus", "loanBalance", "transactions"]
+        description: "Enqueue a WRITEOFF_LOAN transaction (POST /v1/loans/{id}/transactions?command=writeoff, body: transactionDate + writeoffReasonId + note + dateFormat + locale) through the outbox with a durable idempotency key — writes off the outstanding balance and closes the loan as written-off. A terminal, supervisor-level action; maker-checker aware; exactly-once on retry."
+
+  - id: foreclose_button
+    type: button
+    label: "{strings.m04_foreclose}"
+    testTag: "m04-loan-portfolio_foreclose"
+    variant: text
+    gated_permission: FORECLOSURE_LOAN
+    on_denied: DISABLE
+    disabled_reason: "Requires FORECLOSURE_LOAN — ask your supervisor"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: foreclose_loan
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/loans/{id}/transactions/template?command=foreclosure"
+          - "Fineract POST /v1/loans/{id}/transactions?command=foreclosure"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["loanStatus", "loanBalance", "repaymentSchedule", "transactions"]
+        description: "Fetch the foreclosure quote (GET .../transactions/template?command=foreclosure → outstanding principal + interest + charges to the foreclosure date) then enqueue a FORECLOSURE_LOAN transaction (POST .../transactions?command=foreclosure) through the outbox with a durable idempotency key — settles and closes the loan early in one posting, exactly-once. Maker-checker aware."
+
+  - id: reschedule_button
+    type: button
+    label: "{strings.m04_reschedule}"
+    testTag: "m04-loan-portfolio_reschedule"
+    variant: secondary
+    gated_permission: CREATE_RESCHEDULELOAN
+    on_denied: DISABLE
+    disabled_reason: "Requires CREATE_RESCHEDULELOAN"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: reschedule_loan
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/rescheduleloans/template"
+          - "Fineract POST /v1/rescheduleloans"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["repaymentSchedule", "loanTimeline"]
+        description: "Open the reschedule form (dynamic-template-forms from GET /v1/rescheduleloans/template — reason, from-installment date, new rate/grace/term) then enqueue a CREATE_RESCHEDULELOAN request (POST /v1/rescheduleloans) through the outbox with a durable idempotency key. Creates a reschedule REQUEST a supervisor approves separately (APPROVE_RESCHEDULELOAN); maker-checker aware."
+
+  # ── Charge servicing (pay / waive on a specific loan charge) ──
+  - id: add_charge_button
+    type: button
+    label: "{strings.m04_add_charge}"
+    testTag: "m04-loan-portfolio_add_charge"
+    variant: text
+    gated_permission: CREATE_LOANCHARGE
+    on_denied: DISABLE
+    disabled_reason: "Requires CREATE_LOANCHARGE"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: add_loan_charge
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/loans/{id}/charges/template"
+          - "Fineract POST /v1/loans/{id}/charges"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["charges", "loanBalance"]
+        description: "Open the add-charge form (dynamic-template-forms from GET /v1/loans/{id}/charges/template — charge type, amount, due date) then enqueue a CREATE_LOANCHARGE (POST /v1/loans/{id}/charges) through the outbox with a durable idempotency key. Adds a fee/penalty to the loan; exactly-once on retry."
+
+  - id: pay_charge_button
+    type: button
+    label: "{strings.m04_pay_charge}"
+    testTag: "m04-loan-portfolio_pay_charge"
+    variant: text
+    gated_permission: PAY_LOANCHARGE
+    on_denied: DISABLE
+    disabled_reason: "Requires PAY_LOANCHARGE"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: pay_loan_charge
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/loans/{id}/charges/{chargeId}?command=pay"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["charges", "loanBalance", "transactions"]
+        description: "Enqueue a PAY_LOANCHARGE command (POST /v1/loans/{id}/charges/{chargeId}?command=pay, body: transactionDate + dateFormat + locale) through the outbox with a durable idempotency key — pays a specific outstanding loan charge exactly-once. Maker-checker aware."
+
+  - id: waive_charge_button
+    type: button
+    label: "{strings.m04_waive_charge}"
+    testTag: "m04-loan-portfolio_waive_charge"
+    variant: text
+    gated_permission: WAIVE_LOANCHARGE
+    on_denied: DISABLE
+    disabled_reason: "Requires WAIVE_LOANCHARGE"
+    visible_states: [content, action-disabled]
+    enabled_states: [content]
+    on_click:
+      action: waive_loan_charge
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/loans/{id}/charges/{chargeId}?command=waive"
+        reads_from: ["loans"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["charges", "loanBalance"]
+        description: "Enqueue a WAIVE_LOANCHARGE command (POST /v1/loans/{id}/charges/{chargeId}?command=waive) through the outbox with a durable idempotency key — waives a specific outstanding loan charge exactly-once. Maker-checker aware."
+
+  # ── Application-time live schedule preview (recompute on field change) ──
+  - id: recalculate_schedule_button
+    type: button
+    label: "{strings.m04_schedule_preview}"
+    testTag: "m04-loan-portfolio_recalc_schedule"
+    variant: secondary
+    visible_states: [schedule-preview]
+    on_click:
+      action: recalculate_schedule
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/loans?command=calculateLoanSchedule"
+        reads_from: ["loan_templates"]
+        produces_state: schedule-preview
+        invalidates: ["schedulePreview"]
+        description: "Recompute the live repayment schedule preview (POST /v1/loans?command=calculateLoanSchedule with the entered principal, term, interest rate, disbursement date + product/template defaults) during the application. Read-only preview — no loan is created; debounced on field change. Falls back to the last cached preview when offline."
+
+  # ── Empty / error recovery ──
+  - id: empty_new_loan_cta
+    type: button
+    label: "{strings.m04_new_loan}"
+    testTag: "m04-loan-portfolio_empty_cta"
+    variant: primary
+    gated_permission: CREATE_LOAN
+    on_denied: HIDE
+    visible_states: [empty]
+    on_click:
+      action: start_loan_application
+      target: loan-application-wizard
+      action_contract:
+        effect: navigate
+        description: "From the empty state, opens the loan application wizard (dynamic-template-forms + live schedule preview). Hidden (fail-closed) unless the user holds CREATE_LOAN."
+
+  - id: retry_button
+    type: button
+    label: "{strings.m04_retry}"
+    testTag: "m04-loan-portfolio_retry"
+    variant: primary
+    visible_states: [error]
+    on_click:
+      action: retry_load
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/loans"
+        reads_from: ["loans"]
+        produces_state: loading
+        invalidates: ["loans"]
+        description: "Re-fetch the loan list/detail via the Store5 stream.refreshFresh() path (forces a fresh GET /v1/loans over CACHE_FIRST_SWR) after a fetch failure. On a 403 drift it routes to the permission-refresh protocol instead of blindly retrying; the last cached loan stays visible."

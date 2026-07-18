@@ -1,0 +1,291 @@
+screen_id: m17-sync-settings
+name: "M17 · Sync & Settings"
+status: designed
+archetype: settings_console
+initial_state: idle
+description: >-
+  The app-level Sync & Settings surface (the user-facing control panel that pairs with the
+  offline-sync-engine): a manual sync console (Sync now / Pull latest reading the outbox state),
+  a Needs-Attention entry for failed/rejected commands, tenant + server-environment selection
+  (dev/sandbox/prod via DynamicBaseUrlPlugin), reference-data cache management (clear / refresh),
+  local app preferences (theme, language, biometric app-lock), and About/diagnostics + logout.
+  Visible to EVERY authenticated persona — it is settings, not an admin module. Preferences persist
+  locally via multiplatform-settings (biometric flag in the encrypted key store); sync-now delegates
+  to the offline-sync-engine; server switch forces a re-auth so the permission-capability-engine
+  re-resolves the new tenant's permission set.
+
+# ── States (idle/content/empty/error + syncing; needs-attention overlay) ──
+states:
+  idle:
+    description: "Settings at rest — sync status banner shows last-synced watermark + 0 pending; all preference rows and the tenant/server row are enabled. Content-fresh."
+    is_default: true
+  content:
+    description: "N pending outbox commands surfaced in the sync banner with an enabled 'Sync now' CTA; the Needs-Attention entry shows its failed-command count. Cached-content state."
+  syncing:
+    description: "Sync in flight — the sync banner shows per-command drain progress (PENDING→RETRYING→SUBMITTED) and 'Sync now'/'Pull latest' are disabled until it settles."
+  empty:
+    description: "Fresh install / just logged in — no outbox commands and no delta ever pulled; the sync banner offers a first full 'Pull latest' and preference rows sit at their defaults."
+  needs-attention:
+    description: "One or more replays were rejected — the Needs-Attention entry is badged with the failed count and routes to needs-attention-inbox for Retry / Edit / Discard triage."
+  error:
+    description: "Reading settings or draining the outbox failed — an error banner with the server/local error and a Retry CTA; cached preferences still render (never a blank screen)."
+
+# ── Business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-5) ──────────
+business_logic:
+  kind: composite
+  processing_kind: mixed
+  description: >-
+    Hydrates device/session prefs (tenant, server env, locale, biometric flag) from multiplatform-settings
+    and derives sync status (last-synced watermark + pending/failed counts) from the offline-sync-engine
+    outbox. Toggles persist locally and apply immediately; Sync now / Pull latest delegate to the engine;
+    the server switch swaps DynamicBaseUrlPlugin's URL + tenant header and forces a re-auth.
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "com.russhwolf.settings.Settings (multiplatform-settings)"
+    - "androidx.compose.runtime"
+    - "org.mobilenativefoundation.store.store5"
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T00:00:00Z"
+  required_modules:
+    - core/datastore
+    - core/store
+    - core/data
+    - core-base/network
+
+# ── Shell (settings tab; always available once authenticated) ────────────
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  fab_visible: false
+  snackbar_visible: true
+
+# ── Components (`- id:` FIRST so every interactive on_click is gate-checked) ──
+components:
+  - id: sync_settings_header
+    type: header
+    label: "{strings.m17_title}"
+    testTag: "m17-sync-settings_header"
+
+  - id: sync_status_banner
+    type: status_banner
+    label: "{strings.m17_sync_status}"
+    testTag: "m17-sync-settings_status_banner"
+    state_bindings:
+      idle: "Up to date · last synced {lastSyncedRelative}"
+      content: "{pendingCount} pending · last synced {lastSyncedRelative}"
+      syncing: "Syncing… {syncedCount}/{totalCount} commands"
+      needs-attention: "{failedCount} failed · tap Needs Attention to review"
+      error: "Couldn't read sync status · last attempt {lastAttemptRelative}"
+
+  - id: settings_content
+    type: content_area
+    label: "{strings.m17_content}"
+    testTag: "m17-sync-settings_content"
+    empty_label: "{strings.m17_empty}"
+
+  - id: sync_now_button
+    type: button
+    label: "{strings.m17_sync_now}"
+    testTag: "m17-sync-settings_sync_now"
+    variant: primary
+    enabled_states: [idle, content, needs-attention, error]
+    on_click:
+      action: trigger_sync
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/batches"
+        reads_from:
+          - table: draft_outbox
+        writes_to:
+          - table: draft_outbox
+        produces_state: syncing
+        invalidates:
+          - pendingCount
+          - lastSyncedAt
+        description: "Delegate to the offline-sync-engine: drain the RoomSubmitOutbox by replaying every PENDING command via POST /v1/batches with its durable idempotency key, then run delta-pull; rejects route to the Needs-Attention inbox."
+
+  - id: pull_latest_button
+    type: button
+    label: "{strings.m17_pull_latest}"
+    testTag: "m17-sync-settings_pull_latest"
+    variant: secondary
+    enabled_states: [idle, content, empty, error]
+    on_click:
+      action: trigger_delta_pull
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract GET /v1/audits (lastModifiedSince)"
+        reads_from:
+          - table: fetched_at
+        writes_to:
+          - table: fetched_at
+        produces_state: syncing
+        invalidates:
+          - lastSyncedAt
+        description: "Ask the offline-sync-engine to run changeListSync delta-pull over the Fineract lastModifiedSince feed for the user's office/portfolio, refreshing each CACHE_FIRST_SWR source of truth without touching the write outbox."
+
+  - id: needs_attention_entry
+    type: list_item
+    label: "{strings.m17_needs_attention}"
+    testTag: "m17-sync-settings_needs_attention"
+    badge_binding: failedCount
+    on_click:
+      action: open_needs_attention
+      target: needs-attention-inbox
+      action_contract:
+        effect: navigate
+        description: "Navigate to needs-attention-inbox where every FAILED or server-rejected replay is triaged (Retry / Edit / Discard) with the Fineract server error and explicit conflict resolution."
+
+  - id: switch_server_row
+    type: list_item
+    label: "{strings.m17_switch_server}"
+    testTag: "m17-sync-settings_switch_server"
+    on_click:
+      action: switch_tenant_server
+      action_contract:
+        effect: transform_state
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "core-base/network DynamicBaseUrlPlugin"
+        writes_to:
+          - table: app_settings
+        produces_state: idle
+        invalidates:
+          - activeTenant
+          - activeServerEnv
+        description: "Switch the active tenant + server environment (dev/sandbox/prod) by swapping DynamicBaseUrlPlugin's base URL and the Fineract-Platform-TenantId header, then force a re-auth so permissions are re-resolved for the new tenant."
+
+  - id: clear_cache_row
+    type: list_item
+    label: "{strings.m17_clear_cache}"
+    testTag: "m17-sync-settings_clear_cache"
+    on_click:
+      action: clear_reference_cache
+      action_contract:
+        effect: delete
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "androidx.room (Room 3)"
+        writes_to:
+          - table: reference_cache
+        produces_state: idle
+        invalidates:
+          - referenceDataFreshAt
+        description: "Clear the cached reference data (codes, offices, products, templates) from the local Room store after a confirm dialog, so the next screen open re-fetches fresh reference data from the server."
+
+  - id: refresh_reference_row
+    type: list_item
+    label: "{strings.m17_refresh_reference}"
+    testTag: "m17-sync-settings_refresh_reference"
+    on_click:
+      action: refresh_reference_data
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract GET /v1/codes,/v1/offices,/v1/loanproducts"
+        writes_to:
+          - table: reference_cache
+        produces_state: syncing
+        invalidates:
+          - referenceDataFreshAt
+        description: "Force-refresh the reference-data caches (codes, offices, products, charges) by re-running their CACHE_FIRST_SWR stores with a fresh fetch, advancing each cache's freshness watermark."
+
+  - id: theme_toggle
+    type: switch
+    label: "{strings.m17_theme}"
+    testTag: "m17-sync-settings_theme"
+    on_click:
+      action: toggle_theme
+      action_contract:
+        effect: persist_file
+        library_refs: []
+        external_library_refs:
+          - "com.russhwolf.settings.Settings (multiplatform-settings)"
+          - "androidx.compose.runtime"
+        writes_to:
+          - table: app_settings
+        produces_state: idle
+        invalidates:
+          - themeMode
+        description: "Persist the light / dark / follow-system theme choice to the local multiplatform-settings store and recompose the app theme immediately via a CompositionLocal-backed theme provider."
+
+  - id: language_selector
+    type: list_item
+    label: "{strings.m17_language}"
+    testTag: "m17-sync-settings_language"
+    on_click:
+      action: change_language
+      action_contract:
+        effect: persist_file
+        library_refs: []
+        external_library_refs:
+          - "com.russhwolf.settings.Settings (multiplatform-settings)"
+          - "org.jetbrains.compose.resources"
+        writes_to:
+          - table: app_settings
+        produces_state: idle
+        invalidates:
+          - locale
+        description: "Persist the chosen app locale to multiplatform-settings and re-apply it to the Compose Resources string provider so every screen re-renders in the selected language on the next composition."
+
+  - id: biometric_lock_toggle
+    type: switch
+    label: "{strings.m17_biometric}"
+    testTag: "m17-sync-settings_biometric"
+    on_click:
+      action: toggle_biometric_lock
+      action_contract:
+        effect: persist_file
+        library_refs: []
+        external_library_refs:
+          - "com.russhwolf.settings.Settings (encrypted variant)"
+        writes_to:
+          - table: secure_prefs
+        produces_state: idle
+        invalidates:
+          - biometricLockEnabled
+        description: "Enable or disable the local passcode + biometric app-lock; the flag is written to the encrypted multiplatform-settings key store and enforced on the next cold launch before any screen renders."
+
+  - id: about_diagnostics_row
+    type: list_item
+    label: "{strings.m17_about}"
+    testTag: "m17-sync-settings_about"
+    on_click:
+      action: open_about_diagnostics
+      target: m17-sync-settings
+      action_contract:
+        effect: navigate
+        description: "Open the About / diagnostics detail (app version, build, active server + tenant, last-sync watermark, outbox depth, cache freshness) — a read-only support panel for field debugging."
+
+  - id: logout_button
+    type: button
+    label: "{strings.m17_logout}"
+    testTag: "m17-sync-settings_logout"
+    variant: text
+    on_click:
+      action: logout
+      target: login-tenant
+      action_contract:
+        effect: emit_event
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "com.russhwolf.settings.Settings (session clear)"
+        writes_to:
+          - table: secure_prefs
+        produces_state: idle
+        description: "Emit a Logout one-shot event after a confirm dialog: clear the outbox drafts and encrypted session, drop the cached permission set, and navigate back to the login-tenant screen."

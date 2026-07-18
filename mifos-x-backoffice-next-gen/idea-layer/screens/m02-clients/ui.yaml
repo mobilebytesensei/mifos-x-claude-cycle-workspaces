@@ -1,0 +1,455 @@
+schema_version: v1.0.0
+screen_id: m02-clients
+feature: m02-clients
+name: "M02 · Clients & KYC"
+archetype: list_screen
+status: designed
+initial_state: loading
+
+# ─────────────────────────────────────────────────────────────────────────
+# Client management: an office-scoped client list/search that drills into a
+# Client 360 (accounts, identifiers, documents, addresses, family, charges,
+# notes) plus the full lifecycle (activate / close / reject / withdraw /
+# reactivate / transfer). Every read is CACHE_FIRST_SWR so the 360 renders
+# offline; onboarding + every lifecycle command flows through the offline
+# outbox (offline-sync-engine) with a client-generated externalId + durable
+# idempotency key so work never blocks on connectivity. Create/edit forms are
+# rendered by dynamic-template-forms from GET /v1/clients/template — no field
+# is hardcoded. Every entry point + sub-resource + command is gated through
+# the permission-capability-engine (READ_/CREATE_/UPDATE_/DELETE_CLIENT +
+# ACTIVATE_/CLOSE_/REJECT_/WITHDRAW_/REACTIVATE_/PROPOSETRANSFER_CLIENT +
+# *_CLIENTIDENTIFIER / *_DOCUMENT / *_CLIENTNOTE / *_ADDRESS / *_FAMILYMEMBERS
+# / *_CLIENTCHARGE); unmapped ids fail closed (HIDDEN).
+# ─────────────────────────────────────────────────────────────────────────
+
+states:
+  loading:
+    description: "Fetching the office-scoped client page (GET /v1/clients) or a Client 360 (GET /v1/clients/{id} + /accounts). CACHE_FIRST_SWR serves the cached list/profile instantly and revalidates in the background."
+  content:
+    description: "Client list rendered (paged rows: display name, external id, office, account summary, status chip) OR the Client 360 detail with its permission-gated sub-resource tabs (accounts, identifiers, documents, addresses, family, charges, notes) and lifecycle command bar."
+  empty:
+    description: "No clients match the current office scope + search/status filter. Shows an illustration + 'No clients found' message and, when the user holds CREATE_CLIENT, a 'New client' CTA to start onboarding."
+  no-network:
+    description: "Offline — the last-synced client list / 360 profile is served from the Room cache with a persistent 'Offline · showing cached clients' banner. Onboarding + lifecycle commands still queue to the outbox; reads that were never cached show a scoped placeholder."
+  error:
+    description: "Client fetch failed and no cached copy exists, or the server returned a 400/409 on a lifecycle command. Shows the server error message + a Retry CTA; a 403 routes through the permission-drift refresh rather than crashing."
+
+state_model:
+  fields:
+    - name: clients
+      type: List<ClientListItem>
+      notes: "The current office-scoped page of client rows (paged); each carries id, externalId, displayName, officeName, statusEnum, accountsSummary."
+    - name: selectedClient
+      type: ClientDetail?
+      notes: "The Client 360 currently open (null on the list). Carries the base profile plus the loaded sub-resource collections (accounts, identifiers, documents, addresses, family, charges, notes)."
+    - name: query
+      type: String
+      notes: "Debounced free-text search bound to the GET /v1/clients name/externalId filter (and POST /v2/clients/search when advanced filters are set)."
+    - name: officeId
+      type: Long
+      notes: "The active office scope (defaults to the signed-in user's office; server filters rows by office hierarchy — a data scope, not a permission)."
+    - name: statusFilter
+      type: ClientStatus?
+      notes: "Optional lifecycle-status filter (Pending / Active / Closed / Rejected / Withdrawn / Transfer-in-progress)."
+    - name: selectedTab
+      type: ClientTab
+      notes: "Which 360 sub-resource tab is active (Accounts / Identifiers / Documents / Addresses / Family / Charges / Notes). Tabs render only for the permissions the user holds."
+    - name: pagePendingSync
+      type: Int
+      notes: "Count of this client's onboarding/lifecycle commands still queued in the outbox (surfaces a 'queued offline' chip on rows and the 360)."
+    - name: fromCache
+      type: Boolean
+      notes: "True when the rendered list/profile came from the Room cache rather than a fresh fetch (drives the offline banner)."
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  fab_visible: true
+  snackbar_visible: true
+
+components:
+  - id: clients_header
+    type: header
+    label: "{strings.m02_title}"
+    testTag: "m02-clients_header"
+    visible_states: [loading, content, empty, no-network, error]
+
+  - id: clients_search_field
+    type: input
+    input_kind: search
+    label: "{strings.m02_search_hint}"
+    testTag: "m02-clients_search"
+    visible_states: [content, empty, no-network]
+    validation: none
+    on_click:
+      action: search_clients
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract GET /v1/clients (name/externalId filter)"
+          - "Fineract POST /v2/clients/search (advanced filters)"
+        reads_from:
+          - table: clients
+        produces_state: content
+        invalidates:
+          - clients
+        description: "Debounce the entered text and re-query the office-scoped client list via GET /v1/clients (name/externalId filter) — or POST /v2/clients/search when advanced office/staff/status filters are set — serving cached rows first (CACHE_FIRST_SWR) and revalidating; an empty result drives the empty state."
+
+  - id: clients_content
+    type: content_area
+    label: "{strings.m02_content_label}"
+    testTag: "m02-clients_content"
+    empty_label: "{strings.m02_empty_label}"
+    label_states:
+      content: "Office-scoped client list (paged) OR the open Client 360 with its gated sub-resource tabs and lifecycle command bar"
+
+  - id: client_row
+    type: list_item
+    label: "{strings.m02_row_label}"
+    testTag: "m02-clients_item"
+    on_click:
+      action: open_client_360
+      target: client-detail-360
+      action_contract:
+        effect: navigate
+        description: "Open the Client 360 detail (base profile + accounts / identifiers / documents / addresses / family / charges / notes) for the tapped client; each sub-resource tab renders only for the permission the user holds (unmapped → HIDDEN), and the profile is served from cache when offline."
+
+  - id: client_status_chip
+    type: chip
+    label: "{strings.m02_status_chip}"
+    testTag: "m02-clients_status_chip"
+    description: "Per-row lifecycle-status chip (Pending / Active / Closed / Rejected / Withdrawn / Transfer). A 'queued offline' variant appears when the client has an onboarding/lifecycle command still in the outbox."
+
+  - id: new_client_fab
+    type: fab
+    label: "{strings.m02_new_client}"
+    testTag: "m02-clients_new_client"
+    gated_permission: CREATE_CLIENT
+    on_denied: hide
+    on_click:
+      action: start_client_onboarding
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract GET /v1/clients/template"
+          - "Fineract POST /v1/clients"
+          - "Fineract POST /v1/batches (offline replay)"
+        writes_to:
+          - table: clients
+        produces_state: content
+        invalidates:
+          - clients
+        description: "Launch the template-driven onboarding form (dynamic-template-forms over GET /v1/clients/template); on submit, mint a client-generated externalId and enqueue a CREATE_CLIENT command to the outbox with a durable idempotency key so onboarding completes fully offline and replays exactly-once via POST /v1/batches. Hidden entirely unless the user holds CREATE_CLIENT."
+
+  - id: client_360_tabs
+    type: tab_bar
+    label: "{strings.m02_tabs_label}"
+    testTag: "m02-clients_tabs"
+    visible_states: [content]
+    description: "The Client 360 sub-resource tabs — Accounts / Identifiers / Documents / Addresses / Family / Charges / Notes. Each tab is rendered only when the user holds its read permission (READ_CLIENT for accounts; READ_CLIENTIDENTIFIER / READ_DOCUMENT / READ_ADDRESS / READ_FAMILYMEMBERS / READ_CLIENTCHARGE / READ_CLIENTNOTE for the rest); denied tabs are hidden, unmapped fail closed."
+    on_click:
+      action: select_360_tab
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract GET /v1/clients/{clientId}/accounts"
+          - "Fineract GET /v1/clients/{clientId}/identifiers"
+          - "Fineract GET /v1/clients/{clientId}/documents"
+        reads_from:
+          - table: client_subresources
+        produces_state: content
+        description: "Switch the active 360 tab and lazily fetch that sub-resource (accounts / identifiers / documents / addresses / family / charges / notes) via its GET endpoint, serving the cached copy first (CACHE_FIRST_SWR) so the tab renders offline and revalidating in the background."
+
+  - id: client_edit_button
+    type: button
+    label: "{strings.m02_edit}"
+    testTag: "m02-clients_edit"
+    variant: secondary
+    visible_states: [content]
+    gated_permission: UPDATE_CLIENT
+    on_denied: disable
+    on_click:
+      action: edit_client
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract GET /v1/clients/template?clientId={id}"
+          - "Fineract PUT /v1/clients/{clientId}"
+          - "Fineract POST /v1/batches (offline replay)"
+        reads_from:
+          - table: clients
+        writes_to:
+          - table: clients
+        produces_state: content
+        invalidates:
+          - selectedClient
+        description: "Open the client edit form (dynamic-template-forms pre-filled from GET /v1/clients/template?clientId={id}); on submit enqueue an UPDATE_CLIENT command through the outbox (durable idempotency key) for PUT /v1/clients/{clientId}, replaying via POST /v1/batches when online. Visible-but-disabled with a 'Requires UPDATE_CLIENT' reason when the permission is absent."
+
+  - id: add_identifier_button
+    type: button
+    label: "{strings.m02_add_identifier}"
+    testTag: "m02-clients_add_identifier"
+    variant: text
+    visible_states: [content]
+    gated_permission: CREATE_CLIENTIDENTIFIER
+    on_denied: disable
+    on_click:
+      action: add_client_identifier
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract GET /v1/clients/{clientId}/identifiers/template"
+          - "Fineract POST /v1/clients/{clientId}/identifiers"
+          - "Fineract POST /v1/batches (offline replay)"
+        writes_to:
+          - table: client_subresources
+        produces_state: content
+        invalidates:
+          - selectedClient
+        description: "Open the KYC identifier form (documentType + value, options bound from GET /v1/clients/{clientId}/identifiers/template) and enqueue a CREATE_CLIENTIDENTIFIER command through the outbox for POST /v1/clients/{clientId}/identifiers, replaying via POST /v1/batches. Gated on CREATE_CLIENTIDENTIFIER."
+
+  - id: upload_document_button
+    type: button
+    label: "{strings.m02_upload_document}"
+    testTag: "m02-clients_upload_document"
+    variant: text
+    visible_states: [content]
+    gated_permission: CREATE_DOCUMENT
+    on_denied: disable
+    on_click:
+      action: upload_client_document
+      action_contract:
+        effect: persist_file
+        library_refs: []
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/clients/{clientId}/documents (multipart)"
+        writes_to:
+          - table: client_subresources
+        produces_state: content
+        invalidates:
+          - selectedClient
+        description: "Attach a KYC document to the client — stage the picked file to encrypted local media, register a CREATE_DOCUMENT outbox entry, and upload it multipart to POST /v1/clients/{clientId}/documents on the next sync (queued while offline). Gated on CREATE_DOCUMENT."
+
+  - id: add_note_button
+    type: button
+    label: "{strings.m02_add_note}"
+    testTag: "m02-clients_add_note"
+    variant: text
+    visible_states: [content]
+    gated_permission: CREATE_CLIENTNOTE
+    on_denied: disable
+    on_click:
+      action: add_client_note
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/clients/{clientId}/notes"
+          - "Fineract POST /v1/batches (offline replay)"
+        writes_to:
+          - table: client_subresources
+        produces_state: content
+        invalidates:
+          - selectedClient
+        description: "Append a free-text note to the client 360 — enqueue a CREATE_CLIENTNOTE command through the outbox for POST /v1/clients/{clientId}/notes so it is captured offline and replayed via POST /v1/batches. Gated on CREATE_CLIENTNOTE."
+
+  - id: activate_client_button
+    type: button
+    label: "{strings.m02_activate}"
+    testTag: "m02-clients_activate"
+    variant: primary
+    visible_states: [content]
+    enabled_when: "selectedClient.status == Pending"
+    gated_permission: ACTIVATE_CLIENT
+    on_denied: disable
+    on_click:
+      action: activate_client
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/clients/{clientId}?command=activate"
+          - "Fineract POST /v1/batches (offline replay)"
+        writes_to:
+          - table: clients
+        produces_state: content
+        invalidates:
+          - selectedClient
+          - clients
+        description: "Activate a Pending client — enqueue an ACTIVATE_CLIENT command (activationDate + dateFormat + locale) to the outbox for POST /v1/clients/{clientId}?command=activate, replayed exactly-once via POST /v1/batches. Under maker-checker it is queued for approval (Submitted-for-approval). Visible-but-disabled ('Requires ACTIVATE_CLIENT') when the permission is absent, hidden unless the client is Pending."
+
+  - id: close_client_button
+    type: button
+    label: "{strings.m02_close}"
+    testTag: "m02-clients_close"
+    variant: destructive
+    visible_states: [content]
+    enabled_when: "selectedClient.status == Active"
+    gated_permission: CLOSE_CLIENT
+    on_denied: disable
+    on_click:
+      action: close_client
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/clients/{clientId}?command=close"
+          - "Fineract POST /v1/batches (offline replay)"
+        writes_to:
+          - table: clients
+        produces_state: content
+        invalidates:
+          - selectedClient
+          - clients
+        description: "Close an Active client after an explicit confirm dialog (closureDate + closureReasonId from GET /v1/clients/template) — enqueue a CLOSE_CLIENT command through the outbox for POST /v1/clients/{clientId}?command=close, replaying via POST /v1/batches; maker-checker queues it for approval. Gated on CLOSE_CLIENT; a client with open accounts is rejected by the server and routed to Needs-Attention."
+
+  - id: reject_client_button
+    type: button
+    label: "{strings.m02_reject}"
+    testTag: "m02-clients_reject"
+    variant: destructive
+    visible_states: [content]
+    enabled_when: "selectedClient.status == Pending"
+    gated_permission: REJECT_CLIENT
+    on_denied: disable
+    on_click:
+      action: reject_client
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/clients/{clientId}?command=reject"
+          - "Fineract POST /v1/batches (offline replay)"
+        writes_to:
+          - table: clients
+        produces_state: content
+        invalidates:
+          - selectedClient
+          - clients
+        description: "Reject a Pending client application (rejectionDate + rejectionReasonId from the template) after a confirm — enqueue a REJECT_CLIENT command through the outbox for POST /v1/clients/{clientId}?command=reject, replaying via POST /v1/batches. Gated on REJECT_CLIENT."
+
+  - id: withdraw_client_button
+    type: button
+    label: "{strings.m02_withdraw}"
+    testTag: "m02-clients_withdraw"
+    variant: destructive
+    visible_states: [content]
+    enabled_when: "selectedClient.status == Pending"
+    gated_permission: WITHDRAW_CLIENT
+    on_denied: disable
+    on_click:
+      action: withdraw_client
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/clients/{clientId}?command=withdraw"
+          - "Fineract POST /v1/batches (offline replay)"
+        writes_to:
+          - table: clients
+        produces_state: content
+        invalidates:
+          - selectedClient
+          - clients
+        description: "Withdraw a Pending client application on the applicant's behalf (withdrawalDate + reason from the template) after a confirm — enqueue a WITHDRAW_CLIENT command through the outbox for POST /v1/clients/{clientId}?command=withdraw, replaying via POST /v1/batches. Gated on WITHDRAW_CLIENT."
+
+  - id: propose_transfer_button
+    type: button
+    label: "{strings.m02_propose_transfer}"
+    testTag: "m02-clients_propose_transfer"
+    variant: secondary
+    visible_states: [content]
+    enabled_when: "selectedClient.status == Active"
+    gated_permission: PROPOSETRANSFER_CLIENT
+    on_denied: disable
+    on_click:
+      action: propose_client_transfer
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract POST /v1/clients/{clientId}?command=proposeTransfer"
+          - "Fineract GET /v1/clients/{clientId}/transferproposaldate"
+          - "Fineract POST /v1/batches (offline replay)"
+        writes_to:
+          - table: clients
+        produces_state: content
+        invalidates:
+          - selectedClient
+        description: "Propose an inter-office transfer for an Active client (destinationOfficeId + transferDate, bounded by GET /v1/clients/{clientId}/transferproposaldate) — enqueue a PROPOSETRANSFER_CLIENT command through the outbox for POST /v1/clients/{clientId}?command=proposeTransfer, replaying via POST /v1/batches; the accept side is handled at the destination office. Gated on PROPOSETRANSFER_CLIENT."
+
+  - id: retry_button
+    type: button
+    label: "{strings.m02_retry}"
+    testTag: "m02-clients_retry"
+    variant: text
+    visible_states: [error, no-network]
+    on_click:
+      action: retry_load
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "kotlinx.serialization"
+          - "Fineract GET /v1/clients"
+        reads_from:
+          - table: clients
+        produces_state: loading
+        invalidates:
+          - clients
+          - selectedClient
+        description: "Re-issue the failed client-list or 360 fetch (GET /v1/clients or GET /v1/clients/{id}) after an error/offline state, deserialize with kotlinx.serialization, refresh the Room cache, and transition back to content when data resolves; a 403 routes through the permission-drift refresh instead of a hard error."
+
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "org.mobilenativefoundation.store.store5"
+    - "androidx.room"
+    - "kotlinx.serialization"
+    - "Fineract GET/POST /v1/clients (+ template, + external-id, + sub-resources)"
+    - "Fineract POST /v1/batches (enclosingTransaction)"
+  required_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/network
+    - core/permissions
+  description: "Loads an office-scoped client list and a Client 360 (profile plus accounts, identifiers, documents, addresses, family, charges, notes) through per-entity Store5 SourceOfTruth caches (CACHE_FIRST_SWR) so reads render offline. Onboarding and every lifecycle command are enqueued to the durable outbox with an idempotency key and replayed exactly-once, all gated by permission-capability-engine."
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T03:10:00Z"

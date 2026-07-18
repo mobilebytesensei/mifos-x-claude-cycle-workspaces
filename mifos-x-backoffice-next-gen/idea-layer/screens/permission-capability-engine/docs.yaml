@@ -1,0 +1,166 @@
+feature: permission-capability-engine
+status: approved
+cluster: foundation
+module: foundation
+priority: must_have
+new_infra: true
+is_primary_flow: false
+has_ui: true
+has_api: true
+has_server: false
+capabilities: []
+requires_features: []
+acceptance_refs:
+  - >-
+    Login permissions[] normalized to a PermissionSet w/ umbrella short-circuits; each of the 17 module roots gates on
+    its permission group
+  - >-
+    Nav filtered at build time; Gated{} hides/disables per onDenied; unmapped id = HIDDEN (fail closed); domain
+    double-enforces
+  - >-
+    Same binary renders admin vs teller vs field-officer surface purely from permissions (CapabilityMatrixTest golden
+    file green)
+plan_ref: idea-plan.yaml#features[permission-capability-engine]
+summary: >-
+  core/permissions — PermissionSet (O(1) lookup + sha256 fingerprint) + CapabilityMap (data, remote-updatable) +
+  PermissionEvaluator (the ONLY authorization authority the UI talks to) + Compose Gated{} + build-time nav filter.
+  Normalizes the flat opaque login permission codes into umbrella-aware capability decisions; no role `if`s anywhere in
+  app code.
+metadata:
+  category: native-capability
+  implementation_ready: true
+  impl_ready_at: '2026-07-17T02:40:00Z'
+  impl_ready_schema: v2
+contracts:
+  - capability: permission_normalize
+    platform_spec: >-
+      PermissionSet(codes:Set<String>) — HashSet exact-case whole-string lookup; umbrella flags
+      (allFunctions/allRead/checkerSuper/reportingSuper); fingerprint=sha256(sorted(codes)); persisted encrypted
+    permission: none
+    error_cases:
+      - malformed_permission_payload
+      - encrypted_store_read_failure
+  - capability: capability_map_resolve
+    platform_spec: >-
+      CapabilityMap{version,minAppVersion,entries} from capability-map.json (commonMain/composeResources),
+      checksum-verified, superseded by signed remote config; PermissionEvaluator.resolve(id,entityState?) →
+      HIDE|DISABLE|VISIBLE
+    permission: none
+    error_cases:
+      - capability_map_missing_or_checksum_invalid
+      - unmapped_capability_id
+  - capability: permission_refresh
+    platform_spec: >-
+      GET /v1/roles/{roleId}/permissions (password-less) union → rebuild PermissionSet; fingerprint-compare → atomic
+      swap + re-resolve on change; 403 NoAuthorization body → drift protocol
+    permission: READ_PERMISSION
+    error_cases:
+      - permission_refresh_failure
+      - permission_drift_403
+libraries:
+  - capability: permission_refresh
+    library: ktorfit
+    version: 2.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: permission_normalize
+    library: kotlinx-serialization
+    version: 1.7.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: capability_map_resolve
+    library: kotlinx-coroutines
+    version: 1.9.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: permission_normalize
+    library: multiplatform-settings
+    version: 1.2.x
+    targets:
+      - android
+      - ios
+      - desktop
+vm_actions:
+  - name: BootstrapCapabilities
+    signature: private fun bootstrapCapabilities()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Success(persona,umbrellas,resolvedModules)
+      - uiState=Unauthenticated
+    side_effects:
+      - PermissionEvaluator.resolveAll()
+    error_handling:
+      CapabilityMapMissing: uiState=Error; retain encrypted set; offer Retry
+  - name: RefreshPermissions
+    signature: private fun refreshPermissions()
+    state_mutations:
+      - uiState=Loading
+      - permissionSet=<rebuilt>
+      - capabilityMap=<re-resolved on fingerprint change>
+    side_effects:
+      - PermissionRepository.refreshFromRole()
+      - PermissionEvaluator.reResolve()
+    error_handling:
+      PermissionDriftSuspected: refresh; prune now-hidden UI; notify once; never crash
+      NetworkError: uiState=Error; keep last-known set
+  - name: RetryCapabilityBootstrap
+    signature: private fun retryCapabilityBootstrap()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Success | Error
+    side_effects:
+      - PermissionEvaluator.resolveAll()
+    error_handling:
+      RetainedSetAbsent: route to RefreshPermissions
+  - name: ViewPermissionSet
+    signature: private fun onViewPermissionSet()
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToPermissionSetDetail)
+    error_handling: {}
+  - name: ViewCapabilityMapMeta
+    signature: private fun onViewCapabilityMapMeta()
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToCapabilityMapDetail)
+    error_handling: {}
+  - name: GoToLogin
+    signature: private fun onGoToLogin()
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToLogin)
+    error_handling: {}
+error_cases:
+  - malformed_permission_payload
+  - encrypted_store_read_failure
+  - capability_map_missing_or_checksum_invalid
+  - unmapped_capability_id
+  - permission_refresh_failure
+  - permission_drift_403
+test_fixtures:
+  source: screens/permission-capability-engine/tests.yaml
+  scenario_count: 7
+  priority_distribution:
+    high: 5
+    medium: 2
+    low: 0
+approve_hash: "sha256:eed7f086daf1f70ec1090e82108c80d28e6b3e7e0d8bb80f69441dfb451b7d2d"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T02:40:00Z'
+enriched_by: /idea-feature-enrich
+status_history:
+  - from: designed
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

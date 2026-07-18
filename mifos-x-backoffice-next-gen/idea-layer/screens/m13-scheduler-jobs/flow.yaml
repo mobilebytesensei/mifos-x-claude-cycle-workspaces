@@ -1,0 +1,77 @@
+feature: m13-scheduler-jobs
+
+entry_points:
+  - type: nav_root
+    description: "Scheduler & Jobs module root (M13 'Scheduler' tab) — visible only when the permission-capability-engine resolves READ_SCHEDULER (or an umbrella); the ops/admin persona sees it, unmapped fails closed."
+  - type: from_dashboard
+    description: "Opened from the M01 dashboard system/ops tile (e.g. a failed-COB-run alert) for the ops persona."
+  - type: deep_link
+    description: "A notification about a failed scheduled job routes into that job's run history (guarded by the NavController permission interceptor)."
+
+transitions:
+  # ── job roster + scheduler-status load lifecycle ─────────────────────
+  - from: loading
+    to: content
+    trigger: "job roster + scheduler status + business date loaded (GET /v1/jobs + GET /v1/scheduler + GET /v1/businessdate — fresh or CACHE_FIRST_SWR)"
+  - from: loading
+    to: empty
+    trigger: "no scheduled jobs registered for this tenant"
+  - from: loading
+    to: no_network
+    trigger: "offline with a cached job roster + scheduler status available — cached data served, mutating controls disabled"
+  - from: loading
+    to: error
+    trigger: "fetch failed and no cached scheduler data exists"
+
+  # ── job browse + run-history drill-in ────────────────────────────────
+  - from: content
+    to: content
+    trigger: "open_job_detail — expand a job's schedule + run-history detail (served from cache offline)"
+  - from: content
+    to: content
+    trigger: "view_run_history — load the paged run history for the selected job (GET /v1/jobs/{id}/runhistory, CACHE_FIRST_SWR)"
+
+  # ── run a job now (ONLINE-ONLY server-side batch) ────────────────────
+  - from: content
+    to: submitting
+    trigger: "execute_job — confirm then POST /v1/jobs/{id}?command=executeJob (online-only; never queued)"
+
+  # ── edit schedule / enable-disable / scheduler switch / business date (ONLINE-ONLY) ──
+  - from: content
+    to: dynamic-template-forms
+    trigger: "edit_job_schedule — open the edit-schedule form (cron + active) rendered by dynamic-template-forms"
+  - from: content
+    to: dynamic-template-forms
+    trigger: "advance_business_date — open the advance-business-date confirm form (dynamic-template-forms)"
+  - from: dynamic-template-forms
+    to: submitting
+    trigger: "submit the schedule edit (PUT /v1/jobs/{id}) or business-date advance (POST /v1/businessdate) — online-only"
+  - from: content
+    to: submitting
+    trigger: "toggle_job_active — PUT /v1/jobs/{id} with active true|false (online-only)"
+  - from: content
+    to: submitting
+    trigger: "toggle_scheduler — PUT /v1/scheduler?command=start|stop (online-only)"
+
+  # ── command results ──────────────────────────────────────────────────
+  - from: submitting
+    to: content
+    trigger: "command succeeded (2xx / 202 CommandProcessingResult) — the roster / scheduler status / business date refreshes"
+  - from: submitting
+    to: error
+    trigger: "the server rejected the command (400 invalid cron / run failed to start / 409) — the Fineract error surfaces inline (no offline-queue triage; these commands never queue)"
+
+  # ── error / offline recovery ─────────────────────────────────────────
+  - from: error
+    to: loading
+    trigger: "retry_load — re-issue the failed job/scheduler/business-date fetch"
+  - from: no_network
+    to: loading
+    trigger: "retry_load OR connectivity regained — revalidate the cached roster + scheduler status"
+  - from: error
+    to: content
+    trigger: "a 403 resolved via the permission-drift refresh — surface re-resolved, denied controls pruned"
+
+navigates_to:
+  - dynamic-template-forms
+  - permission-capability-engine

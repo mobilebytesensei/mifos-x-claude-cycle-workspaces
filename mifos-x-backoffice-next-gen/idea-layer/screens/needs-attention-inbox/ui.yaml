@@ -1,0 +1,300 @@
+schema_version: "1.0"
+screen_id: needs-attention-inbox
+feature: needs-attention-inbox
+name: "Needs-Attention Inbox (unified what-needs-me)"
+archetype: list
+status: designed
+module: foundation
+initial_state: loading
+
+# The role-aware home surface: a single, permission-filtered inbox that aggregates
+# EVERYTHING that needs the signed-in user across all 17 back-office modules —
+# pending maker-checker approvals (this user is a valid checker for), failed/rejected
+# offline replays (their own outbox), overdue field/collections tasks, and unread
+# actionable alerts/notifications. Items are grouped by category, ranked by priority,
+# and every row drills through into the owning module screen. Nothing is ever silently
+# dropped; a source that fails to load degrades to a per-group error strip, never a blank inbox.
+
+requires_permission: []   # the inbox root is ungated (every authenticated user has a "what needs me");
+                          # each CATEGORY is permission-filtered at aggregation time (see business_logic)
+
+consumes_capabilities:
+  - has_offline_cache
+  - has_ui
+  - requires_auth
+
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "core/permissions.PermissionEvaluator"
+    - "core/database.DraftDao"
+    - "core/store.NeedsAttentionStore"
+  required_modules:
+    - core/permissions
+    - core/store
+    - core/database
+    - core/network
+  description: >-
+    Fan-in aggregator merging four permission-filtered sources into one ranked feed: maker-checker
+    approvals the user canCheck (GET /makercheckers), failed outbox commands (DraftDao.observeAllFailed),
+    overdue tasks the user owns, and unread alerts. Each source is gated before contributing rows; a
+    source error degrades to a per-group strip, never a blank screen. Rows sort by priority then recency.
+  description_hash: human-edited
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T03:10:00Z"
+
+state_model:
+  fields:
+    - name: items
+      type: "List<NeedsAttentionItem>"
+      description: "Aggregated, permission-filtered, priority-sorted inbox rows across all four sources."
+    - name: groups
+      type: "List<NeedsAttentionGroup>"
+      description: "Category buckets (approvals | failed_syncs | overdue_tasks | alerts) each with a count and an optional load-error strip."
+    - name: selectedFilter
+      type: "NeedsAttentionCategory?"
+      description: "Active category filter chip; null = All."
+    - name: resolvingItemId
+      type: "String?"
+      description: "Id of the row a bulk/inline resolution is currently applied to (drives the resolving state)."
+    - name: uiState
+      type: "NeedsAttentionScreenState"
+      description: "Loading | Content | Empty | Resolving | Error — the 5 declared states."
+
+# ── STATES (5) — every data-loading + resolution phase covered ──────────────
+states:
+  loading:
+    description: >-
+      Initial fan-in: reading DraftDao.observeAllFailed() from Room, resolving the maker-checker,
+      overdue-task, and alert sources, and evaluating each category against the PermissionSet.
+      Shows a shimmer list of grouped placeholder rows.
+  content:
+    description: >-
+      One or more items across ≥1 permitted category. Rows are grouped under category headers
+      (Approvals · Failed syncs · Overdue tasks · Alerts) with per-group counts and priority badges
+      (Critical/High/Normal). Category filter chips at the top narrow the feed. Each row is tappable
+      to drill into the owning module. A category whose source failed shows an inline retry strip
+      above its rows; the rest of the inbox still renders.
+  empty:
+    description: >-
+      All permitted sources returned zero items — every replay succeeded, no approvals await this
+      checker, no tasks overdue, no unread alerts. Shows an "All caught up" illustration + last-synced
+      timestamp + a "Sync now" affordance (routes to M17).
+  resolving:
+    description: >-
+      An inline or bulk resolution is in flight for the selected row(s) — Retry re-enqueues to the
+      outbox, Discard removes with an explicit ConflictStrategy, Approve/Reject posts to
+      /v1/makercheckers, Snooze defers an alert. The row shows a progress indicator; the rest of the
+      list stays interactive.
+  error:
+    description: >-
+      The whole aggregation failed to initialize (e.g. local Room read threw before any source
+      contributed). Shows an error icon + message + Retry that re-runs the full fan-in. NOTE: a
+      SINGLE source failing never reaches this state — it degrades to a per-group strip in `content`.
+
+# ── COMPONENTS — grouped inbox + category filters + drill-through + resolutions ──
+components:
+  - id: nai_header
+    type: header
+    label: "Needs Attention"
+    testTag: "needs-attention-inbox_header"
+
+  - id: nai_category_filters
+    type: filter_chip_row
+    label: "All · Approvals · Failed syncs · Overdue tasks · Alerts"
+    testTag: "needs-attention-inbox_filters"
+    on_click:
+      action: filter_by_category
+      target: needs-attention-inbox
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Narrow the aggregated feed to the tapped category (approvals | failed_syncs | overdue_tasks | alerts) or clear back to All; a pure in-VM filter over the already-aggregated items list, no refetch."
+        produces_state: content
+        invalidates:
+          - items
+        action_contract_hash: "sha256:nai-filter-category"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: nai_content
+    type: content_area
+    label: "Grouped, permission-filtered inbox of everything that needs the signed-in user"
+    testTag: "needs-attention-inbox_content"
+
+  - id: nai_group_header
+    type: group_header
+    label: "Category header with count + priority summary"
+    testTag: "needs-attention-inbox_group_header"
+
+  - id: nai_item
+    type: list_item
+    label: "Needs-attention row (approval | failed sync | overdue task | alert)"
+    testTag: "needs-attention-inbox_item"
+    on_click:
+      action: open_item_in_owning_module
+      target: needs-attention-inbox
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Drill through to the owning module screen for the tapped item: an approval opens the Approvals detail (M15), a failed sync opens the rejected-command detail, an overdue task opens Collections (M06) or the account, an alert opens its deep-link target resolved from the item's source + entity ref."
+        action_contract_hash: "sha256:nai-open-item"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: nai_priority_badge
+    type: badge
+    label: "Priority (Critical / High / Normal)"
+    testTag: "needs-attention-inbox_priority_badge"
+
+  - id: nai_retry
+    type: button
+    label: "Retry"
+    testTag: "needs-attention-inbox_retry"
+    variant: primary
+    description: "Shown on failed-sync rows only."
+    on_click:
+      action: retry_failed_command
+      target: needs-attention-inbox
+      state: resolving
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "core/database.DraftDao"
+        description: "Re-enqueue the rejected outbox command with a FRESH durable idempotency key so the next sync replays it via POST /v1/batches; replay revalidates the user's permission for the command. Available only when connectivity is up or the command is safe to re-queue."
+        produces_state: content
+        writes_to:
+          - table: draft_outbox
+        action_contract_hash: "sha256:nai-retry-command"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: nai_discard
+    type: button
+    label: "Discard"
+    testTag: "needs-attention-inbox_discard"
+    variant: destructive
+    description: "Shown on failed-sync rows; requires an explicit confirm + ConflictStrategy."
+    on_click:
+      action: discard_failed_command
+      target: needs-attention-inbox
+      state: resolving
+      action_contract:
+        effect: delete
+        library_refs: []
+        external_library_refs:
+          - "core/database.DraftDao"
+        description: "Remove a rejected outbox command that can never succeed (e.g. loan already closed) with an EXPLICIT ConflictStrategy=discard after a confirm dialog; the command is deleted from the draft_outbox and audit-noted, never silently dropped."
+        produces_state: content
+        writes_to:
+          - table: draft_outbox
+        action_contract_hash: "sha256:nai-discard-command"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: nai_approve
+    type: button
+    label: "Approve"
+    testTag: "needs-attention-inbox_approve"
+    variant: primary
+    gated_permission: CHECKER_SUPER_USER
+    description: "Shown on approval rows only, and only when the user canCheck(action,entity)."
+    on_click:
+      action: approve_inline
+      target: needs-attention-inbox
+      state: resolving
+      action_contract:
+        effect: call_api
+        library_refs: []
+        external_library_refs: ["ktorfit"]
+        description: "Inline-approve a queued maker-checker command straight from the inbox via POST /v1/makercheckers/{id}?command=approve; the control appears only for entries the user is authorized to check ({ACTION}_{ENTITY}_CHECKER or CHECKER_SUPER_USER). Deep approval workflow still lives in M15."
+        produces_state: content
+        action_contract_hash: "sha256:nai-approve-inline"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: nai_snooze
+    type: button
+    label: "Snooze"
+    testTag: "needs-attention-inbox_snooze"
+    variant: text
+    description: "Shown on alert/overdue rows; defers the item so it stops surfacing until its snooze window elapses."
+    on_click:
+      action: snooze_item
+      target: needs-attention-inbox
+      state: content
+      action_contract:
+        effect: persist_file
+        library_refs: []
+        external_library_refs: ["multiplatform-settings"]
+        description: "Defer an alert or overdue-task row until a chosen window elapses (e.g. later today, tomorrow); the snooze-until timestamp is persisted locally so the row is suppressed from the feed without being resolved or lost."
+        produces_state: content
+        invalidates:
+          - items
+        action_contract_hash: "sha256:nai-snooze-item"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: nai_group_retry
+    type: button
+    label: "Retry loading"
+    testTag: "needs-attention-inbox_group_retry"
+    variant: text
+    description: "Per-category error strip — retries JUST the failed source without touching loaded groups."
+    on_click:
+      action: retry_category_source
+      target: needs-attention-inbox
+      state: loading
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        description: "Re-run the fetch for a single category whose source errored (e.g. the maker-checker feed timed out) without discarding the already-loaded groups; on success the group's rows and count populate in place."
+        produces_state: content
+        action_contract_hash: "sha256:nai-retry-group"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: nai_empty_sync
+    type: button
+    label: "Sync now"
+    testTag: "needs-attention-inbox_empty_sync"
+    variant: primary
+    description: "Empty-state affordance — routes to the M17 sync console."
+    on_click:
+      action: go_to_sync_console
+      target: m17-sync-settings
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "From the 'all caught up' empty state, jump to the M17 Sync & Settings console to trigger a fresh delta-pull + outbox drain in case new work has arrived server-side."
+        action_contract_hash: "sha256:nai-empty-sync"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: nai_error_retry
+    type: button
+    label: "Retry"
+    testTag: "needs-attention-inbox_error_retry"
+    variant: primary
+    description: "Whole-screen error-state retry — re-runs the full fan-in aggregation."
+    on_click:
+      action: retry_aggregation
+      target: needs-attention-inbox
+      state: loading
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Re-run the entire needs-attention fan-in from scratch after a hard initialization failure; resets to loading and re-evaluates all four permission-filtered sources."
+        produces_state: loading
+        action_contract_hash: "sha256:nai-retry-aggregation"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"

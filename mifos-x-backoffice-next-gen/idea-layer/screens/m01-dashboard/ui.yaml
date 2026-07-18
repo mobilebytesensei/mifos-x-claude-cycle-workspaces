@@ -1,0 +1,198 @@
+screen_id: m01-dashboard
+name: "M01 · Role-adaptive Dashboard"
+status: designed
+archetype: detail_screen
+cluster: back-office-module
+module: m01-dashboard
+initial_state: loading
+
+# ─────────────────────────────────────────────────────────────────────────
+# The role-aware home surface. It is the canonical "same binary renders per
+# permission" screen: every KPI card, quick-action tile, and activity row is
+# resolved through core/permissions' PermissionEvaluator, so a tile is present
+# ONLY if the signed-in user holds its gating permission. No role branching —
+# a system admin sees every tile via the ALL_FUNCTIONS umbrella; a collections
+# field officer sees today's route; an accountant sees pending journals; an
+# auditor sees every read tile with zero mutating quick-actions. Each tile
+# hydrates independently (CACHE_FIRST_SWR), so one failing tile shows an inline
+# error placeholder and never blanks the rest (partial-tile-error).
+# Fineract sources: GET /v1/runreports/{reportName} (PAR / active-clients /
+# collections-due KPIs), /v1/makercheckers (pending-approvals count),
+# /v1/collectionsheet (today's route), /v1/notifications (recent activity).
+# ─────────────────────────────────────────────────────────────────────────
+
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  description: "Resolves the permitted dashboard tile roster via PermissionEvaluator (which KPI / quick-action / activity tiles are VISIBLE for the PermissionSet), then hydrates each visible tile independently from its Fineract source with CACHE_FIRST_SWR. Tile visibility is pure data; unmapped tiles fail closed; a single fetch failure isolates to its card."
+  library_refs: []
+  external_library_refs: ["ktorfit", "kotlinx-serialization", "kotlinx-coroutines", "multiplatform-settings"]
+  required_modules:
+    - "core/permissions"
+    - "core/store"
+    - "core/network"
+    - "core/database"
+
+states:
+  loading:
+    description: "Resolving the permitted tile roster (PermissionEvaluator) and fetching per-tile data. A shimmer skeleton is shown for each tile the user is permitted to see while its source loads."
+  content:
+    description: "Permitted tiles rendered as an IndependentCardLayout — permission-filtered KPI cards (portfolio at risk, active clients, collections due, pending approvals), quick-action tiles, and a recent-activity list. Each card shows its live/cached value; tapping navigates to the owning module."
+  empty:
+    description: "The user holds no permission for any dashboard tile (e.g. a freshly-provisioned account with an empty role) — a friendly 'no dashboard tiles available for your access' empty-state with a link to Access & Permissions is shown instead of a blank screen."
+  partial-tile-error:
+    description: "One or more tiles failed to load (e.g. a report endpoint returned 500) — the failing card shows an inline error state with a per-tile Retry, while every other permitted tile renders normally. One failing tile never blanks the rest."
+  no-network:
+    description: "Offline — every permitted tile shows its last cached value with an offline banner across the top; tiles whose data was never cached show a 'not synced yet' hint. Tapping a tile still navigates (target modules read from cache)."
+  error:
+    description: "The permitted tile roster itself could not be resolved (capability map unavailable or a malformed permission payload) — a full-screen retry is offered; the last-known encrypted PermissionSet is retained so the app stays usable."
+
+components:
+  - id: header
+    type: header
+    label: "{strings.m01_title}"
+    testTag: "m01-dashboard_header"
+    visible_states: [loading, content, empty, partial-tile-error, no-network, error]
+
+  - id: offline_banner
+    type: banner
+    label: "{strings.m01_offline_banner}"
+    testTag: "m01-dashboard_offline_banner"
+    visible_states: [no-network]
+    description: "A persistent banner shown while offline; tiles below it render their last cached values. Communicates that figures may be stale and will refresh on the next sync."
+
+  - id: tile_grid
+    type: content_area
+    label: "{strings.m01_tile_grid}"
+    testTag: "m01-dashboard_content"
+    visible_states: [content, partial-tile-error, no-network]
+    description: "IndependentCardLayout hosting the permission-filtered tiles — KPI cards, quick-action tiles, and the recent-activity list. Only tiles the user has permission to view are present; each is an independently-hydrating card (CACHE_FIRST_SWR)."
+
+  - id: kpi_portfolio_at_risk_card
+    type: card
+    label: "{strings.m01_kpi_par}"
+    testTag: "m01-dashboard_kpi_par"
+    visible_states: [content, partial-tile-error, no-network]
+    description: "Portfolio-at-Risk KPI (PAR30) for the user's office scope, sourced from GET /v1/runreports/{reportName}. Present only when canRunReport (READ_{report} OR REPORTING_SUPER_USER OR ALL_FUNCTIONS/READ) — a manager/supervisor sees it; a teller does not."
+    on_click:
+      action: open_portfolio_at_risk
+      target: report-runner
+      action_contract:
+        effect: navigate
+        description: "Navigate to the Reports & Audit report-runner (M14) pre-scoped to the Portfolio-at-Risk report so the manager can drill into the delinquent loans behind the headline PAR figure. Only present when the user can run reports."
+
+  - id: kpi_active_clients_card
+    type: card
+    label: "{strings.m01_kpi_active_clients}"
+    testTag: "m01-dashboard_kpi_active_clients"
+    visible_states: [content, partial-tile-error, no-network]
+    description: "Active-clients KPI for the user's office, derived from GET /v1/runreports/{reportName} (client-summary report). Present only when the user can view clients (READ_CLIENT OR an umbrella)."
+    on_click:
+      action: open_active_clients
+      target: client-list
+      action_contract:
+        effect: navigate
+        description: "Navigate to the Clients list (M02) filtered to active clients so the user can act on the portfolio behind the KPI. Present only when READ_CLIENT (or an umbrella) grants the Clients module."
+
+  - id: kpi_collections_due_card
+    type: card
+    label: "{strings.m01_kpi_collections_due}"
+    testTag: "m01-dashboard_kpi_collections_due"
+    visible_states: [content, partial-tile-error, no-network]
+    description: "Today's collections-due KPI (amount + due count) for the field officer's staffId-scoped route, sourced from GET /v1/collectionsheet. Present only when READ_COLLECTIONSHEET is held."
+    on_click:
+      action: open_todays_route
+      target: collection-sheet
+      action_contract:
+        effect: navigate
+        description: "Navigate to today's Collection Sheet (M06) for the officer's staffId-scoped route so they can capture repayments and deposits against the dues shown. Present only when READ_COLLECTIONSHEET is held."
+
+  - id: kpi_pending_approvals_card
+    type: card
+    label: "{strings.m01_kpi_pending_approvals}"
+    testTag: "m01-dashboard_kpi_pending_approvals"
+    visible_states: [content, partial-tile-error, no-network]
+    description: "Pending maker-checker approvals count from GET /v1/makercheckers, pre-flighted via ?makerCheckerable. Present only when the checker inbox is reachable (CHECKER_SUPER_USER OR any code ending in _CHECKER)."
+    on_click:
+      action: open_checker_inbox
+      target: checker-inbox
+      action_contract:
+        effect: navigate
+        description: "Navigate to the Maker-Checker Approvals inbox (M15), self-scoped to the entries this user can approve/reject. Present only when hasAnyChecker (CHECKER_SUPER_USER or a *_CHECKER code) resolves the inbox for the user."
+
+  - id: quick_action_new_client_tile
+    type: tappable_card
+    label: "{strings.m01_qa_new_client}"
+    testTag: "m01-dashboard_qa_new_client"
+    visible_states: [content, partial-tile-error, no-network]
+    description: "Quick-action tile that starts client onboarding. Present ONLY when CREATE_CLIENT is held (a loan-officer maker sees it; a collections officer and an auditor do not). A mutating quick-action is never shown to a read-only (ALL_FUNCTIONS_READ) user."
+    on_click:
+      action: quick_new_client
+      target: client-list
+      action_contract:
+        effect: navigate
+        description: "Navigate to the Clients module (M02) and open the new-client onboarding wizard so the maker can begin KYC capture. Gated on CREATE_CLIENT; hidden entirely (onDenied: HIDE) for users without it — the offline outbox and domain layer re-check the permission before any submit."
+
+  - id: quick_action_take_repayment_tile
+    type: tappable_card
+    label: "{strings.m01_qa_take_repayment}"
+    testTag: "m01-dashboard_qa_take_repayment"
+    visible_states: [content, partial-tile-error, no-network]
+    description: "Quick-action tile that jumps to loan repayment capture. Present ONLY when REPAYMENT_LOAN is held (teller / collections officer). Hidden for read-only and admin-only personas."
+    on_click:
+      action: quick_take_repayment
+      target: loan-detail
+      action_contract:
+        effect: navigate
+        description: "Navigate to the Loan Portfolio (M04) repayment capture so a teller or field officer can record a repayment — queued to the offline outbox with a durable idempotency key when offline. Gated on REPAYMENT_LOAN; the domain use case re-checks canDo before dispatch/replay."
+
+  - id: recent_activity_list
+    type: content_area
+    label: "{strings.m01_recent_activity}"
+    testTag: "m01-dashboard_recent_activity"
+    visible_states: [content, partial-tile-error, no-network]
+    description: "Recent-activity feed sourced from GET /v1/notifications (poll + mark-read) — approvals actioned, transactions posted, sync results. Always present for an authenticated user (notifications require no special permission); each row deep-links to the relevant entity."
+    on_click:
+      action: open_activity_item
+      target: needs-attention-inbox
+      action_contract:
+        effect: navigate
+        description: "Open the entity referenced by the tapped notification (a client, loan, or a failed sync command routed to Needs-Attention). Navigation-only; the destination screen re-resolves its own permission gate on entry."
+
+  - id: retry_tile_button
+    type: button
+    label: "{strings.m01_retry_tile}"
+    testTag: "m01-dashboard_retry_tile"
+    visible_states: [partial-tile-error]
+    on_click:
+      action: retry_failed_tile
+      action_contract:
+        effect: call_api
+        external_library_refs: ["ktorfit"]
+        reads_from: ["dashboard_tile_cache"]
+        description: "Re-fetch only the tile(s) whose source failed, leaving the successfully-loaded tiles untouched. Re-issues that tile's Fineract call (runreports / makercheckers / collectionsheet / notifications) and, on success, swaps the inline error card for the live value."
+
+  - id: retry_dashboard_button
+    type: button
+    label: "{strings.m01_retry_dashboard}"
+    testTag: "m01-dashboard_retry_dashboard"
+    visible_states: [error]
+    on_click:
+      action: retry_dashboard
+      action_contract:
+        effect: transform_state
+        external_library_refs: ["multiplatform-settings"]
+        reads_from: ["retained_permission_set"]
+        description: "Re-resolve the permitted tile roster from the retained encrypted PermissionSet (read back from secure settings) and re-attempt each tile's fetch. No re-login is required unless the retained set is absent, in which case the user is routed to re-authenticate."
+
+  - id: view_access_link
+    type: link
+    label: "{strings.m01_view_access}"
+    testTag: "m01-dashboard_view_access"
+    visible_states: [empty]
+    on_click:
+      action: view_access
+      target: permission-capability-engine
+      action_contract:
+        effect: navigate
+        description: "Navigate to the Access & Permissions surface (permission-capability-engine) so a user whose role currently grants no dashboard tiles can see exactly what access they hold and request the permissions they need."

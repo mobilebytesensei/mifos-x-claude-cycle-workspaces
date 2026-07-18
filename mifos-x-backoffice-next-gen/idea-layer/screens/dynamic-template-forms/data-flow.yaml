@@ -1,0 +1,60 @@
+feature: dynamic-template-forms
+
+# Read path: the entity template + datatable schemas are pulled on mount (CACHE_FIRST_SWR)
+# and cached in Room so forms render offline. Write path: the assembled command JsonObject
+# is persisted to the durable offline outbox (DraftEntity) for exactly-once batch replay —
+# NOT written straight to a domain table (the engine is entity-agnostic; the caller's command
+# endpoint owns the eventual server mutation).
+
+entries:
+  - trigger: on_mount
+    source: api.get_entity_template
+    target_state: content
+    loading_state: template-loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: template_fetch_failed
+    persistence_contract:
+      store: room
+      table: cached_templates
+      mutation: upsert
+      keys: [entity, command, template_json, fetched_at]
+      note: "Base GET /{entity}/template payload cached per (entity, command). CACHE_FIRST_SWR: the cached copy renders instantly, a background revalidate refreshes it — so a back-office field change appears on the next sync with no app release."
+
+  - trigger: on_mount
+    source: api.get_datatables
+    target_state: content
+    loading_state: template-loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: datatable_schema_fetch_failed
+    persistence_contract:
+      store: room
+      table: cached_datatable_schemas
+      mutation: upsert
+      keys: [entity, datatable_name, columns_json, fetched_at]
+      note: "Registered datatable (custom-field) schemas attached to the entity, cached so the extra field groups render offline alongside the base template."
+
+  - trigger: on_action
+    action: submit_form
+    source: api.submit_entity_command
+    target_state: submitting
+    fallback_state: queued-offline
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: command_rejected
+    persistence_contract:
+      store: room
+      table: framework_submit_drafts
+      mutation: write
+      keys: [formKey, uniqueKey, payload, action, entity, idempotency_key, status, created_at]
+      note: "The assembled command JsonObject is enqueued to the durable outbox with a UUIDv4 idempotency_key reused on retry. status PENDING → RETRYING → SUBMITTED | FAILED; replay via POST /v1/batches attaches the key as the Fineract Idempotency-Key header — exactly-once, zero double-post. A FAILED row surfaces in the Needs-Attention inbox."
+
+cache:
+  strategy: cache_first_swr
+  note: "Templates + datatable schemas are read-mostly reference data — serve stale from Room immediately, revalidate in the background. Freshness tracked via the shared FetchedAtEntity TTL."
+
+demo_source: demo-data.yaml

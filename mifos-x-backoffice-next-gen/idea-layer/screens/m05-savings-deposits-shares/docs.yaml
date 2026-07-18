@@ -1,0 +1,319 @@
+feature: m05-savings-deposits-shares
+status: approved
+approve_hash: "sha256:158f59c36ac22dbc355fba764af7605adfa043d57397c5ff91bcb3eef149ec1d"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+schema_version: v2
+cluster: back-office-module
+module: m05-savings-deposits-shares
+priority: must_have
+new_infra: false
+is_primary_flow: false
+has_ui: true
+has_api: true
+has_server: false
+capabilities:
+  - has_ui
+  - has_api
+  - has_offline_cache
+  - has_form_input
+  - has_flow
+  - requires_auth
+requires_features:
+  - dynamic-template-forms
+  - offline-sync-engine
+  - permission-capability-engine
+requires_permission:
+  - READ_SAVINGSACCOUNT
+  - READ_FIXEDDEPOSITACCOUNT
+  - READ_RECURRINGDEPOSITACCOUNT
+  - READ_SHAREACCOUNT
+  - DEPOSIT_SAVINGSACCOUNT
+  - WITHDRAWAL_SAVINGSACCOUNT
+  - HOLDAMOUNT_SAVINGSACCOUNT
+  - POSTINTEREST_SAVINGSACCOUNT
+  - APPROVE_SAVINGSACCOUNT
+  - ACTIVATE_SAVINGSACCOUNT
+  - CLOSE_SAVINGSACCOUNT
+  - PREMATURECLOSE_FIXEDDEPOSITACCOUNT
+  - APPLYADDITIONALSHARES_SHAREACCOUNT
+  - REDEEMSHARES_SHAREACCOUNT
+  - CREATE_ACCOUNTTRANSFER
+  - CREATE_STANDINGINSTRUCTION
+contracts:
+  apis:
+    - id: list_savings
+      method: GET
+      path: /v1/savingsaccounts
+      note: Paged; detail via ?associations=transactions,charges. CACHE_FIRST_SWR.
+    - id: savings_transaction
+      method: POST
+      path: /v1/savingsaccounts/{id}/transactions?command=deposit|withdrawal|holdAmount
+      idempotency: durable
+      note: Money-movement; outbox payload with durable idempotency key.
+    - id: savings_lifecycle
+      method: POST
+      path: /v1/savingsaccounts/{id}?command=approve|activate|close|postInterestAsOn
+      idempotency: durable
+    - id: fixed_deposit_lifecycle
+      method: POST
+      path: /v1/fixeddepositaccounts/{id}?command=approve|activate|prematureClose
+      idempotency: durable
+    - id: recurring_deposit_transaction
+      method: POST
+      path: /v1/recurringdepositaccounts/{id}/transactions?command=deposit|withdrawal
+      idempotency: durable
+    - id: share_lifecycle
+      method: POST
+      path: /v1/accounts/share/{id}?command=approve|activate|applyadditionalshares|redeemshares
+      idempotency: durable
+    - id: account_transfer
+      method: POST
+      path: /v1/accounttransfers
+      idempotency: durable
+    - id: standing_instruction
+      method: POST
+      path: /v1/standinginstructions
+      idempotency: durable
+  tables:
+    - name: deposit_accounts
+      backend: room
+      keys:
+        - account_id
+        - account_type
+      columns:
+        - account_id
+        - account_type
+        - client_id
+        - product_id
+        - status
+        - balance
+        - on_hold
+        - share_count
+        - maturity_date
+        - payload_json
+      note: CACHE_FIRST_SWR read cache for all four account types + their detail associations.
+    - name: draft_outbox
+      backend: room
+      version: 11
+      keys:
+        - formKey
+        - uniqueKey
+      durable_columns:
+        - idempotency_key
+        - action
+        - entity
+        - payload
+        - status
+        - created_at
+        - server_error
+      note: Shared RoomSubmitOutbox (owned by offline-sync-engine); m05 commands are its payloads.
+  dtos:
+    - name: SavingsAccountDto
+      role: response
+    - name: FixedDepositAccountDto
+      role: response
+    - name: RecurringDepositAccountDto
+      role: response
+    - name: ShareAccountDto
+      role: response
+    - name: SavingsTransactionRequest
+      role: request
+    - name: SavingsCommandRequest
+      role: request
+    - name: DepositCommandRequest
+      role: request
+    - name: ShareCommandRequest
+      role: request
+    - name: AccountTransferRequest
+      role: request
+    - name: StandingInstructionRequest
+      role: request
+    - name: CommandProcessingResult
+      role: response
+  consumes_tables:
+    - deposit_accounts
+    - draft_outbox
+    - fetched_at
+libraries:
+  cmp_modules:
+    - cmp-network-monitor
+  core_modules:
+    - core/model
+    - core/network
+    - core/database
+    - core/store
+    - core/data
+    - core-base/store
+    - core-base/network
+  external:
+    - org.mobilenativefoundation.store.store5
+    - androidx.room (Room 3)
+    - kotlinx.serialization
+    - >-
+      Apache Fineract REST (/v1/savingsaccounts, /v1/fixeddepositaccounts, /v1/recurringdepositaccounts,
+      /v1/accounts/share, /v1/accounttransfers, /v1/standinginstructions)
+  training_surfaces:
+    - training-layer/instructions/stream-first/latest/CORE_STORE.md
+    - training-layer/instructions/stream-first/latest/CORE_DATA.md
+    - training-layer/instructions/stream-first/latest/CORE_DATABASE.md
+    - training-layer/instructions/stream-first/latest/CORE_BASE_STORE.md
+vm_actions:
+  - action: OnSwitchAccountType
+    maps_to_on_click: switch_account_type
+    effect: transform_state
+    handler: In-VM filter of the four folded account streams to the chosen facet; no refetch.
+  - action: OnAccountRowClick
+    maps_to_on_click: open_account_detail
+    effect: navigate
+    handler: >-
+      Select account_id; fold its detail stream (transactions/charges/holds) into content; resolve the command bar via
+      PermissionEvaluator.
+  - action: OnOpenAccountFormClick
+    maps_to_on_click: open_account_form
+    effect: navigate
+    handler: sendEvent(NavigateToTemplateForm(entity=savingsaccounts, mode=create, clientId, productId)).
+  - action: OnEditAccountFormClick
+    maps_to_on_click: edit_account_form
+    effect: navigate
+    handler: sendEvent(NavigateToTemplateForm(entity, mode=edit, accountId)) — current values + template.
+  - action: OnApproveClick
+    maps_to_on_click: approve_account
+    effect: call_api
+    handler: >-
+      canDo(APPROVE, entity) re-check → assemble approve command → enqueue outbox (idempotency key) → submitting;
+      maker-checker → pending_approval.
+  - action: OnActivateClick
+    maps_to_on_click: activate_account
+    effect: call_api
+    handler: canDo(ACTIVATE, entity) → activate command → outbox → submitting.
+  - action: OnRecordDepositClick
+    maps_to_on_click: record_deposit
+    effect: call_api
+    handler: >-
+      Open /transactions/template form → assemble deposit JsonObject → enqueue outbox with durable idempotency key →
+      submitting (online) / queued_offline (offline).
+  - action: OnRecordWithdrawalClick
+    maps_to_on_click: record_withdrawal
+    effect: call_api
+    handler: Available-balance guard → assemble withdrawal JsonObject → enqueue outbox → submitting/queued_offline.
+  - action: OnHoldAmountClick
+    maps_to_on_click: hold_amount
+    effect: call_api
+    handler: Assemble holdAmount command → enqueue outbox; invalidates onHoldFunds + balance.
+  - action: OnPostInterestClick
+    maps_to_on_click: post_interest
+    effect: call_api
+    handler: Assemble postInterestAsOn command (transactionDate + dateFormat + locale) → enqueue outbox.
+  - action: OnPrematureCloseClick
+    maps_to_on_click: premature_close_deposit
+    effect: call_api
+    handler: calculatePrematureAmount preview → assemble prematureClose command → enqueue outbox (FD/RD).
+  - action: OnSubscribeSharesClick
+    maps_to_on_click: subscribe_shares
+    effect: call_api
+    handler: Assemble applyadditionalshares command (requestedShares + requestedDate) → enqueue outbox.
+  - action: OnRedeemSharesClick
+    maps_to_on_click: redeem_shares
+    effect: call_api
+    handler: Assemble redeemshares command → enqueue outbox with idempotency key (exactly-once redemption).
+  - action: OnAccountTransferClick
+    maps_to_on_click: account_transfer
+    effect: call_api
+    handler: Assemble AccountTransferRequest → enqueue outbox.
+  - action: OnStandingInstructionClick
+    maps_to_on_click: create_standing_instruction
+    effect: call_api
+    handler: Assemble StandingInstructionRequest → enqueue outbox.
+  - action: OnCloseAccountClick
+    maps_to_on_click: close_account
+    effect: call_api
+    handler: Assemble close command (withdrawBalance/transferToSavings) → enqueue outbox.
+  - action: OnReviewFailedClick
+    maps_to_on_click: open_needs_attention
+    effect: navigate
+    handler: sendEvent(NavigateToNeedsAttention) — triage the rejected command.
+  - action: OnRetryClick
+    maps_to_on_click: retry_load
+    effect: call_api
+    handler: stream.refreshFresh() — force fresh Store5 fetch past the cache; loading → content/error.
+  - action: Internal.ReceiveAccounts
+    handler: >-
+      Fold the four CACHE_FIRST_SWR streams into ScreenState (loading/content/empty/error/no_network) via
+      DecisionEngine.
+  - action: Internal.ReceiveCommandResult
+    handler: >-
+      On 200-with-resourceId → confirm optimistic row; on commandId-without-resourceId → pending_approval; on 4xx/5xx →
+      error + route to needs-attention.
+  - action: Internal.ReceiveNetworkStatus
+    handler: >-
+      On regain → OfflineSubmitSyncer drains queued m05 commands; on loss → queued commands stay PENDING (queued_offline
+      banner).
+error_cases:
+  - code: deposit_list_failed
+    when: GET account list fails AND no cache
+    ux: error state with Retry; cached list (if any) still served (CACHE_FIRST_SWR).
+  - code: command_rejected
+    when: server 400 validation / 409 optimistic-lock on a deposit/withdrawal/lifecycle command
+    ux: error state; rejected command → needs-attention-inbox with the Fineract server error + parameterName mapping.
+  - code: insufficient_balance
+    when: withdrawal amount exceeds available (client-side guard OR server 400)
+    ux: inline validation on the amount field; submit blocked; server remains final authority.
+  - code: maker_checker.queued
+    when: tenant has the command maker-checkerable → 2xx with commandId, empty changes
+    ux: >-
+      pending_approval state — 'Submitted for approval' (not error/success); account NOT optimistically mutated; badge
+      routes to M15.
+  - code: permission.drift
+    when: 403 NoAuthorization on a command (a revoked grant)
+    ux: >-
+      route to permission-capability-engine refreshPermissions(); prune the now-hidden command control; toast 'your
+      access has changed'.
+  - code: network.offline
+    when: a command issued while offline, or list fetch with no cache
+    ux: queued_offline state; 'N queued · will sync when online' banner; command stays PENDING (never dropped).
+test_fixtures:
+  - >-
+    savings_active_with_deposit — an active savings account; record a deposit offline → 1 PENDING outbox row → replay →
+    Fineract shows exactly 1 deposit posting
+  - >-
+    withdrawal_gated — user holds DEPOSIT_SAVINGSACCOUNT but not WITHDRAWAL_SAVINGSACCOUNT → deposit enabled, withdrawal
+    HIDDEN
+  - >-
+    fixed_deposit_premature_close — an active FD; calculatePrematureAmount preview then prematureClose enqueued through
+    the outbox
+  - >-
+    share_redeem_exactly_once — kill+restore app mid-redeem → idempotency key survives (Room v11) → redeemshares applied
+    exactly once
+  - >-
+    maker_checker_deposit — a maker-checker tenant deposit returns commandId-without-resourceId → pending_approval, no
+    optimistic balance change
+acceptance_refs:
+  - Full deposit lifecycle + transactions + holds/blocks + transfers + SI, gated + offline (AC-011)
+plan_ref: idea-plan.yaml#features[m05-savings-deposits-shares]
+summary: >-
+  M05 · Savings, Deposits & Shares. A master-detail deposit & shares module across savings/FD/RD/share accounts with the
+  full Fineract command lifecycle — open (template form), approve/activate/close,
+  deposit/withdrawal/hold-amount/post-interest, FD/RD premature-close, share subscribe/redeem, account transfers and
+  standing instructions. Reads ride CACHE_FIRST_SWR Store5; every money-movement command flows through the durable
+  outbox (offline-sync-engine) with an exactly-once idempotency key; every control is resolved through
+  PermissionEvaluator against its exact {ACTION}_{ENTITY} code and re-checked at replay.
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T03:20:00Z'
+enriched_by: /idea-feature-enrich
+status_history:
+  - from: enriched
+    to: design_partial
+    at: '2026-07-17T20:21:41.135Z'
+    by: /idea-feature-stitch
+  - from: design_partial
+    to: designed
+    at: '2026-07-17T22:08:04.569Z'
+    by: /idea-feature-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

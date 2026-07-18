@@ -1,0 +1,123 @@
+schema_version: v1.0.0
+feature: m15-approvals-makerchecker
+scenarios:
+  # ── state coverage ──
+  - id: loading_shows_grouped_shimmer
+    preconditions: ["the approvals queue is opened", "the queue has not resolved yet"]
+    actions: ["open the maker-checker queue"]
+    assertions: ["the loading state shows a grouped shimmer list", "no error is shown"]
+    priority: medium
+
+  - id: content_lists_queued_commands_grouped
+    preconditions: ["the checker canCheck several queued commands"]
+    actions: ["open the maker-checker queue"]
+    assertions:
+      - "rows appear grouped under entity / action / maker headers"
+      - "each group shows its pending count"
+      - "each row shows the action, target entity, maker, and made-on with a pending-approval badge"
+    priority: high
+
+  - id: empty_state_when_no_pending
+    preconditions: ["no pending approvals in the checker's scope"]
+    actions: ["open the maker-checker queue"]
+    assertions: ["the 'all caught up' empty state is shown", "no approve/reject controls are present"]
+    priority: medium
+
+  - id: submitting_state_locks_row_on_action
+    preconditions: ["a queued command the checker can approve is visible"]
+    actions: ["tap Approve on the row"]
+    assertions:
+      - "the row shows an inline queued/progress indicator"
+      - "the row is locked from re-selection while the command is in flight"
+      - "the rest of the queue stays interactive"
+    priority: high
+
+  - id: error_state_on_fetch_failure_no_cache
+    preconditions: ["GET /v1/makercheckers fails and no cache exists"]
+    actions: ["open the maker-checker queue"]
+    assertions: ["the whole-screen error state is shown", "a Retry re-issues the queue fetch"]
+    priority: medium
+
+  # ── self-scoping + permission gating ──
+  - id: queue_is_self_scoped_by_can_check
+    preconditions: ["the checker holds CREATE_CLIENT_CHECKER only"]
+    actions: ["open the maker-checker queue"]
+    assertions: ["only CREATE_CLIENT entries the checker canCheck are shown", "DISBURSE_LOAN / other entries are absent"]
+    priority: high
+
+  - id: approve_reject_delete_only_for_authorized_entries
+    preconditions: ["a queued command exists for an entry the checker is NOT authorized to check"]
+    actions: ["open that entry"]
+    assertions: ["that entry shows no Approve, Reject, or Delete control", "the checkbox for bulk-approve is absent"]
+    priority: high
+
+  # ── inspect payload ──
+  - id: row_opens_payload_inspect_panel
+    preconditions: ["a queued command row is visible"]
+    actions: ["tap the command row"]
+    assertions: ["the payload inspect panel opens", "it shows the maker, action, target entity, made-on, and the command JSON body"]
+    priority: high
+
+  # ── grouping + filtering ──
+  - id: group_by_rebuckets_without_refetch
+    preconditions: ["the queue is in content grouped by entity"]
+    actions: ["switch group-by to maker"]
+    assertions: ["the rows re-group by maker", "no network fetch is issued"]
+    priority: medium
+
+  - id: search_template_filter_narrows_queue
+    preconditions: ["the queue is in content"]
+    actions: ["open the filter", "pick actionName=DISBURSE and entityName=LOAN"]
+    assertions: ["GET /v1/makercheckers?actionName=DISBURSE&entityName=LOAN is issued", "only DISBURSE_LOAN entries remain"]
+    priority: medium
+
+  # ── command mutations (offline, exactly-once) ──
+  - id: approve_enqueues_exactly_once
+    preconditions: ["a queued command the checker can approve is visible"]
+    actions: ["tap Approve"]
+    assertions:
+      - "an approve command is enqueued to the outbox with a durable idempotency key"
+      - "it replays exactly-once via POST /v1/batches"
+      - "the entry cannot be approved a second time while it is in flight"
+      - "on success the entry leaves the queue and the underlying command executes"
+    priority: high
+
+  - id: reject_notifies_maker
+    preconditions: ["a queued command the checker can reject is visible"]
+    actions: ["tap Reject"]
+    assertions: ["a reject command is enqueued", "the maker is notified", "the underlying command is discarded, never executed"]
+    priority: high
+
+  - id: delete_requires_confirm_then_purges
+    preconditions: ["a stale pending command is open in the payload panel"]
+    actions: ["tap Delete", "confirm"]
+    assertions: ["a DELETE /v1/makercheckers/{id} is enqueued after the confirm", "the queued command is purged, neither approved nor executed", "it is never silently dropped"]
+    priority: high
+
+  - id: bulk_approve_is_independent_batch
+    preconditions: ["the checker selects three entries they canCheck"]
+    actions: ["tap Bulk approve"]
+    assertions:
+      - "one approve command is enqueued per selected entry as an Independent /v1/batches"
+      - "a single failed entry does not abort the rest"
+      - "every selected entry is locked so none can be double-approved"
+    priority: high
+
+  - id: replay_blocked_when_can_check_revoked
+    preconditions: ["a queued command's checker permission was revoked since it was queued"]
+    actions: ["approve the command", "the queued replay runs after the permission change"]
+    assertions: ["the command surfaces as BLOCKED_PERMISSION_REVOKED", "it is never silently dropped or approved"]
+    priority: high
+
+  - id: rejected_replay_surfaces_in_needs_attention
+    preconditions: ["a queued approve command was enqueued and the server rejects the replay"]
+    actions: ["the offline replay runs and fails"]
+    assertions: ["the failed command surfaces in needs-attention-inbox", "M15 does not silently swallow the failure"]
+    priority: medium
+
+  # ── read-only cross-link ──
+  - id: open_needs_attention_is_read_only
+    preconditions: ["the queue is in content"]
+    actions: ["tap 'Open Needs Attention'"]
+    assertions: ["navigation goes to needs-attention-inbox", "no state in the inbox is mutated by the jump"]
+    priority: medium

@@ -1,0 +1,98 @@
+schema_version: v1.0.0
+feature: m09-organization
+scenarios:
+  # ── State coverage ──
+  - id: org_loading_shows_cached_shimmer
+    description: "Loading state renders a shimmer while the reference-data collections fetch, with the last cached data preserved underneath so dropdowns stay usable"
+    preconditions: ["org reference data previously cached", "app cold-started"]
+    actions: ["open the Organization module"]
+    assertions:
+      - "m09-organization_header visible"
+      - "loading shimmer shown over the previously-cached rows"
+    priority: high
+
+  - id: org_content_reference_read_gated
+    description: "Content state renders the entity tabs the user can READ; a READ_OFFICE+READ_STAFF-only user sees just Offices + Staff, and create controls are hidden"
+    preconditions: ["user holds READ_OFFICE + READ_STAFF but NOT CREATE_OFFICE / CREATE_STAFF"]
+    actions: ["open the Organization module"]
+    assertions:
+      - "Offices + Staff tabs visible; Currencies/Codes/… tabs hidden (no READ)"
+      - "office/staff lists rendered from cache"
+      - "m09-organization_new_office and m09-organization_new_staff HIDDEN (fail-closed)"
+    priority: high
+
+  - id: org_empty_tab_shows_cta
+    description: "Empty state on a reference tab with zero rows shows an illustration + empty message + a 'New …' CTA (only if the user holds the matching CREATE permission)"
+    preconditions: ["user holds READ_HOLIDAY + CREATE_HOLIDAY", "no holidays defined in scope"]
+    actions: ["select the Holidays tab"]
+    assertions:
+      - "m09_empty message shown"
+      - "m09-organization_empty_cta visible (user holds CREATE_HOLIDAY)"
+    priority: medium
+
+  - id: org_error_shows_retry_keeps_cache
+    description: "Error state shows the server error verbatim + Retry, and the last cached reference data stays visible so offline dropdowns keep working"
+    preconditions: ["reference fetch fails (5xx)", "cache present"]
+    actions: ["open the Organization module"]
+    assertions:
+      - "m09_error_list_failed shown with m09-organization_retry"
+      - "cached rows still rendered underneath the error banner"
+    priority: high
+
+  # ── Office hierarchy read ──
+  - id: office_hierarchy_tree_rendered
+    description: "Offices render as an indented hierarchy tree (Head Office → Nairobi Region → Nairobi CBD Branch) built from parent_id"
+    preconditions: ["offices cached with a multi-level hierarchy"]
+    actions: ["select the Offices tab"]
+    assertions:
+      - "parent offices show their sub-offices indented"
+      - "tapping m09-organization_office_row opens the office detail"
+    priority: medium
+
+  # ── Vocabulary source (the reason this module matters) ──
+  - id: codes_feed_offline_dropdowns
+    description: "Cached codes/code-values populate a dynamic-template-form's dropdown offline (LoanPurpose options appear with no network)"
+    preconditions: ["codes + LoanPurpose code-values previously cached", "network unavailable"]
+    actions: ["open a loan application form offline that uses the LoanPurpose dropdown"]
+    assertions:
+      - "the LoanPurpose dropdown is populated from cached code-values (Working capital, Asset purchase, …)"
+      - "no spinner blocks the form"
+    priority: high
+
+  - id: payment_types_feed_repayment_form
+    description: "Cached payment types populate the 'payment method' dropdown on a repayment form offline"
+    preconditions: ["payment types previously cached", "network unavailable"]
+    actions: ["open a repayment form offline"]
+    assertions:
+      - "payment-method dropdown shows Cash / Bank transfer / Mobile money / Cheque from cache"
+    priority: medium
+
+  # ── Write path (online-only + gated + maker-checker) ──
+  - id: reference_create_online_only_gated
+    description: "A create control is enabled only for the matching CREATE permission AND online; offline it is disabled with a 'connect to edit configuration' reason (reference config never deferred-syncs)"
+    preconditions: ["user holds CREATE_CODEVALUE", "network unavailable"]
+    actions: ["select a code and attempt Add value"]
+    assertions:
+      - "m09-organization_add_code_value disabled with m09_edit_online_only reason"
+      - "no draft queued for deferred sync"
+    priority: high
+
+  - id: reference_create_maker_checker_pending
+    description: "Under maker-checker, a submitted reference create lands PENDING_APPROVAL ('Submitted for approval'), not optimistically applied"
+    preconditions: ["user holds CREATE_OFFICE", "CREATE_OFFICE is maker-checkerable", "online"]
+    actions: ["create a new office and submit"]
+    assertions:
+      - "uiState=Submitting → 'Submitted for approval' chip (m09_submitted_for_approval)"
+      - "the office does not appear in the list until approved"
+    priority: medium
+
+  # ── Bulk reassignment ──
+  - id: bulk_reassign_gated_and_queued
+    description: "Bulk loan reassignment is DISABLE-with-reason without BULKREASSIGN_LOAN; with it, moving a from-officer's loans to a to-officer queues one durable-idempotent command"
+    preconditions: ["user holds BULKREASSIGN_LOAN", "online", "from-officer has active loans"]
+    actions: ["open Reassign Loans, pick office + from-officer + to-officer, submit"]
+    assertions:
+      - "m09-organization_bulk_reassign enabled; submit enqueues one BULKREASSIGN_LOAN command with a durable idempotency key"
+      - "a retry does not double-reassign"
+      - "a rejected command routes to needs-attention-inbox (never silently dropped)"
+    priority: low

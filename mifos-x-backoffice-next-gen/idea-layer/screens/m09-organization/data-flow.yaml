@@ -1,0 +1,265 @@
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: m09-organization
+
+# Organization reference-data hydrates CACHE_FIRST_SWR Store5 SourceOfTruth streams over the Room
+# `org_reference_data` table (one durable row per (entity_type, entity_id)) so every dynamic-template-form
+# resolves its dropdown vocabulary (offices, staff/loan-officers, currencies, payment types, funds, codes)
+# fully offline. Every mutating reference-data command is ONLINE-ONLY (per the per-domain offline policy —
+# config drift is dangerous) and, when online, is queued into the durable `draft_outbox` (idempotency_key +
+# (action,entity)) and replayed exactly-once over POST /v1/batches. Create/edit forms carry a JsonObject
+# template payload straight through the outbox unchanged (dynamic-template-forms).
+
+entries:
+  # ── 1. Reference-data collections — mount (multi-entity CACHE_FIRST_SWR) ──
+  - screen_id: m09-organization
+    trigger: on_mount
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_offices
+        transport: rest
+      - api_id: list_staff
+        transport: rest
+      - api_id: list_currencies
+        transport: rest
+      - api_id: list_holidays
+        transport: rest
+      - api_id: get_working_days
+        transport: rest
+      - api_id: list_funds
+        transport: rest
+      - api_id: list_payment_types
+        transport: rest
+      - api_id: list_codes
+        transport: rest
+    tables:
+      - name: org_reference_data
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          OrgReferenceEntity keyed by (entity_type, entity_id): entity_type ∈
+          {office,staff,currency,holiday,workingdays,fund,paymenttype,code,codevalue}, plus name,
+          parent_id (office hierarchy), and payload_json for the entity's full fields. One CACHE_FIRST_SWR
+          SourceOfTruth stream per entity_type over Room. validator.markFresh() after each write starts the
+          TTL. This is the offline dropdown backbone every dynamic-template-form reads.
+    dtos:
+      - name: OfficeDto
+        role: response
+        api_id: list_offices
+      - name: StaffDto
+        role: response
+        api_id: list_staff
+      - name: CurrencyConfigDto
+        role: response
+        api_id: list_currencies
+      - name: HolidayDto
+        role: response
+        api_id: list_holidays
+      - name: WorkingDaysDto
+        role: response
+        api_id: get_working_days
+      - name: FundDto
+        role: response
+        api_id: list_funds
+      - name: PaymentTypeDto
+        role: response
+        api_id: list_payment_types
+      - name: CodeDto
+        role: response
+        api_id: list_codes
+    cache:
+      strategy: cache_first
+      ttl_seconds: 3600
+      key_template: "fineract:org:{entityType}:tenant:{tenantId}"
+      shape: list
+    privacy_constraint:
+      scope: shared_reference
+      notes: "Offices/staff scoped to the signed-in user's office hierarchy (officeId); the rest are tenant-global reference data. No client PII. Encrypted at rest (SQLCipher)."
+    error_paths:
+      - error_code: org_read_failed
+        behavior: fallback_cache
+        message_key: m09_error_list_failed
+      - error_code: auth.session_expired
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: sync_reauth_required
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m09_showing_cached
+
+  # ── 2. Code-values drill-in — interaction (per-code dropdown vocabulary) ──
+  - screen_id: m09-organization
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_code_values
+        transport: rest
+    tables:
+      - name: org_reference_data
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: "Code-values stored as (entity_type=codevalue, entity_id, parent_id=codeId, name, payload_json) so a code's option list renders offline."
+    dtos:
+      - name: CodeValueDto
+        role: response
+        api_id: list_code_values
+    cache:
+      strategy: cache_first
+      ttl_seconds: 3600
+      key_template: "fineract:org:codevalue:code:{codeId}"
+      shape: list
+    error_paths:
+      - error_code: org_read_failed
+        behavior: fallback_cache
+        message_key: m09_error_list_failed
+
+  # ── 3. Reference-data create/edit — ONLINE-ONLY, queued exactly-once ──
+  - screen_id: m09-organization
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: create_office
+        transport: rest
+      - api_id: update_office
+        transport: rest
+      - api_id: create_staff
+        transport: rest
+      - api_id: update_currencies
+        transport: rest
+      - api_id: create_holiday
+        transport: rest
+      - api_id: activate_holiday
+        transport: rest
+      - api_id: update_working_days
+        transport: rest
+      - api_id: create_fund
+        transport: rest
+      - api_id: create_payment_type
+        transport: rest
+      - api_id: add_code_value
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          RoomSubmitOutbox entry (framework_submit_drafts, Room v11): durable idempotency_key +
+          (action,entity) composite key + JsonObject template payload. ONLINE-ONLY drain — the syncer only
+          replays these when connectivity is present (reference config must never deferred-sync); when
+          offline the create/edit control is disabled with a 'connect to edit configuration' reason.
+          Maker-checker aware — a queued commandId with empty changes lands PENDING_APPROVAL.
+      - name: org_reference_data
+        mutation: read
+    dtos:
+      - name: OfficeRequest
+        role: request
+        api_id: create_office
+      - name: StaffRequest
+        role: request
+        api_id: create_staff
+      - name: HolidayRequest
+        role: request
+        api_id: create_holiday
+      - name: CurrencyUpdateRequest
+        role: request
+        api_id: update_currencies
+      - name: CodeValueRequest
+        role: request
+        api_id: add_code_value
+      - name: CommandProcessingResultDto
+        role: response
+        api_id: create_office
+    privacy_constraint:
+      scope: user_synced
+      notes: "Reference-config payloads scoped to the signed-in admin's office hierarchy; encrypted at rest."
+    side_effects:
+      - kind: invalidate_cache
+        target: "the edited entity's cached collection (offices/staff/codes/…) — revalidated by the follow-on delta-pull"
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer online-only drain for this outbox entry"
+    error_paths:
+      - error_code: command.rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: m09_command_rejected
+      - error_code: command.pending_approval
+        behavior: user_action
+        message_key: m09_submitted_for_approval
+      - error_code: permission.drift_403
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: sync_reauth_required
+      - error_code: network.offline
+        behavior: user_action
+        message_key: m09_edit_online_only
+
+  # ── 4. Bulk loan-officer reassignment — ONLINE-ONLY, queued exactly-once ──
+  - screen_id: m09-organization
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: get_reassignment_template
+        transport: rest
+      - api_id: bulk_reassign_loans
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          A BULKREASSIGN_LOAN command (from-officer → to-officer for an office) queued with a durable
+          idempotency_key so a retry never double-reassigns. ONLINE-ONLY drain; maker-checker aware.
+      - name: org_reference_data
+        mutation: read
+    dtos:
+      - name: LoanReassignmentRequest
+        role: request
+        api_id: bulk_reassign_loans
+      - name: CommandProcessingResultDto
+        role: response
+        api_id: bulk_reassign_loans
+    side_effects:
+      - kind: invalidate_cache
+        target: "the to-officer's / from-officer's loan portfolio caches — revalidated on next sync"
+    error_paths:
+      - error_code: command.rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: m09_command_rejected
+      - error_code: network.offline
+        behavior: user_action
+        message_key: m09_edit_online_only
+
+  # ── 5. Periodic freshness re-check (CACHE_FIRST_SWR revalidate) ────────
+  - screen_id: m09-organization
+    trigger: on_timer
+    interval_seconds: 3600
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_codes
+        transport: rest
+    tables:
+      - name: org_reference_data
+        mutation: read
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 3600
+      key_template: "fineract:org:{entityType}:tenant:{tenantId}"
+      shape: list
+    error_paths:
+      - error_code: network.offline
+        behavior: silent
+        message_key: m09_showing_cached

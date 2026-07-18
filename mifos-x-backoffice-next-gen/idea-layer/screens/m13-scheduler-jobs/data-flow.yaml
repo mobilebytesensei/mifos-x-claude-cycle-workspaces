@@ -1,0 +1,191 @@
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: m13-scheduler-jobs
+
+# Scheduler reads (job roster, run history, scheduler status, business date) are CACHE_FIRST_SWR
+# per-entity Store5 caches so the roster + last-run outcomes render offline. UNLIKE the transactional
+# modules there is NO offline outbox here: every mutation (run-now / edit-schedule / enable-disable /
+# scheduler start-stop / advance-business-date) is a SERVER-SIDE BATCH operation that is ONLINE-ONLY —
+# it posts directly online, invalidates the read cache, and is DISABLED while offline. A COB run cannot
+# be deferred and replayed, so nothing is written to draft_outbox and there is no needs-attention triage.
+
+entries:
+  # ── 1. Job roster + scheduler status + business date (on mount) ──────
+  - screen_id: m13-scheduler-jobs
+    trigger: on_mount
+    produces_state: content
+    loading_state: loading
+    error_state: error
+    auth_required: true
+    endpoints:
+      - api_id: list_jobs
+        transport: rest
+      - api_id: get_scheduler_status
+        transport: rest
+      - api_id: get_business_date
+        transport: rest
+    tables:
+      - name: scheduler_jobs
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Scheduled-job roster Room cache keyed by (job_id, name); cron, next_run_time,
+          previous_run_time, last_run_status, active, currently_running, cob_steps, payload_json
+          columns. CACHE_FIRST_SWR — the roster serves cached rows instantly and the delta-pull
+          (offline-sync-engine read side) revalidates against the FetchedAt watermark. Read-only
+          cache: mutations are online-only and never write back through the outbox.
+    dtos:
+      - name: SchedulerJobRow
+        role: response
+        api_id: list_jobs
+      - name: SchedulerStatus
+        role: response
+        api_id: get_scheduler_status
+      - name: BusinessDate
+        role: response
+        api_id: get_business_date
+    cache:
+      strategy: cache_first
+      ttl_seconds: 600
+      key_template: "fineract:scheduler:jobs:{tenant}"
+      shape: list
+    privacy_constraint:
+      scope: user_synced
+      notes: "The job roster + scheduler status are operational config (no PII) but the app is SQLCipher-encrypted and logs are PII-scrubbed; scoped to the signed-in ops user's tenant."
+    error_paths:
+      - error_code: jobs_read_failed
+        behavior: retry
+        message_key: m13_error_list_failed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m13_showing_cached
+
+  # ── 2. Job detail + run-history drill-in (on interact) ───────────────
+  - screen_id: m13-scheduler-jobs
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: get_job_run_history
+        transport: rest
+    tables:
+      - name: job_run_history
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Per-job run-history Room cache keyed by (job_id, version); job_run_start_time,
+          job_run_end_time, status, trigger_type, error_message, error_log, payload_json.
+          CACHE_FIRST_SWR so past run outcomes + failure stack traces render offline.
+    dtos:
+      - name: JobRunHistoryEntry
+        role: response
+        api_id: get_job_run_history
+    cache:
+      strategy: cache_first
+      ttl_seconds: 600
+      key_template: "fineract:scheduler:runhistory:{jobId}"
+      shape: list
+    error_paths:
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m13_showing_cached
+
+  # ── 3. Run a job now (ONLINE-ONLY server-side batch) ─────────────────
+  - screen_id: m13-scheduler-jobs
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: execute_job
+        transport: rest
+    tables:
+      - name: scheduler_jobs
+        mutation: read
+      - name: job_run_history
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: "On a successful run-now the follow-on run-history refetch upserts the new run entry; the command itself is ONLINE-ONLY and posts directly — nothing is queued to draft_outbox."
+    dtos:
+      - name: ExecuteJobRequest
+        role: request
+        api_id: execute_job
+      - name: CommandProcessingResult
+        role: response
+        api_id: execute_job
+    privacy_constraint:
+      scope: user_synced
+      notes: "Executing a job is a server-side batch trigger; the app holds no financial payload here — only the CommandProcessingResult (jobId + status)."
+    side_effects:
+      - kind: invalidate_cache
+        target: "job_run_history + scheduler_jobs (currentlyRunning / last_run_status) — refetched after the run is triggered"
+      - kind: notification
+        target: "an inline 'Job started' confirmation; a failed run surfaces the Fineract error beside the row (no offline-queue triage)"
+    error_paths:
+      - error_code: scheduler.command_rejected
+        behavior: retry
+        message_key: m13_command_rejected
+      - error_code: scheduler.offline_blocked
+        behavior: retry
+        message_key: m13_online_only
+      - error_code: permission.revoked
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: m13_access_changed
+
+  # ── 4. Edit schedule / enable-disable / scheduler switch / business date (ONLINE-ONLY) ──
+  - screen_id: m13-scheduler-jobs
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: update_job
+        transport: rest
+      - api_id: update_scheduler
+        transport: rest
+      - api_id: advance_business_date
+        transport: rest
+    tables:
+      - name: scheduler_jobs
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          On a successful edit (PUT /v1/jobs/{id}), scheduler toggle (PUT /v1/scheduler), or
+          business-date advance (POST /v1/businessdate), the read cache is refetched and upserted.
+          These are ONLINE-ONLY commands — they post directly and are NEVER written to draft_outbox,
+          so a killed-mid-submit edit is simply not applied (no replay), and offline the controls are
+          disabled.
+    dtos:
+      - name: UpdateJobRequest
+        role: request
+        api_id: update_job
+      - name: UpdateSchedulerRequest
+        role: request
+        api_id: update_scheduler
+      - name: AdvanceBusinessDateRequest
+        role: request
+        api_id: advance_business_date
+      - name: CommandProcessingResult
+        role: response
+        api_id: update_job
+    side_effects:
+      - kind: invalidate_cache
+        target: "scheduler_jobs (cron/active), scheduler status, and business date — refetched after the online command succeeds"
+    error_paths:
+      - error_code: scheduler.command_rejected
+        behavior: retry
+        message_key: m13_command_rejected
+      - error_code: scheduler.offline_blocked
+        behavior: retry
+        message_key: m13_online_only
+      - error_code: permission.revoked
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: m13_access_changed

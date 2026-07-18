@@ -1,0 +1,99 @@
+schema_version: v1.0.0
+feature: m12-datatables-config
+scenarios:
+  # ── State coverage ──
+  - id: config_loading_shows_cached_shimmer
+    description: "Loading state renders a shimmer while the configuration families fetch, with the last cached datatable schemas preserved underneath so dynamic-template-forms keeps rendering custom fields"
+    preconditions: ["config reference data previously cached", "app cold-started"]
+    actions: ["open the Data Tables & Configuration module"]
+    assertions:
+      - "m12-datatables-config_header visible"
+      - "loading shimmer shown over the previously-cached rows"
+    priority: high
+
+  - id: config_content_read_gated
+    description: "Content state renders the config families the user can READ; a READ_CONFIGURATION-only user sees just the Global Config tab, and register/create controls are hidden"
+    preconditions: ["user holds READ_CONFIGURATION but NOT READ_DATATABLE / REGISTER_DATATABLE"]
+    actions: ["open the Data Tables & Configuration module"]
+    assertions:
+      - "Global Config tab visible; Data Tables / Entity Checks / External Services tabs hidden (no READ)"
+      - "config flags rendered from cache"
+      - "m12-datatables-config_register HIDDEN (fail-closed)"
+    priority: high
+
+  - id: config_empty_tab_shows_cta
+    description: "Empty state on the Data Tables tab with zero registered datatables shows an illustration + empty message + a 'Register datatable' CTA (only if the user holds REGISTER_DATATABLE)"
+    preconditions: ["user holds READ_DATATABLE + REGISTER_DATATABLE", "no custom datatables registered"]
+    actions: ["select the Data Tables tab"]
+    assertions:
+      - "m12_empty message shown"
+      - "m12-datatables-config_empty_cta visible (user holds REGISTER_DATATABLE)"
+    priority: medium
+
+  - id: config_error_shows_retry_keeps_cache
+    description: "Error state shows the server error verbatim + Retry, and the last cached datatable schemas stay visible so dynamic-template-forms keeps rendering custom fields"
+    preconditions: ["configuration fetch fails (5xx)", "cache present"]
+    actions: ["open the Data Tables & Configuration module"]
+    assertions:
+      - "m12_error_list_failed shown with m12-datatables-config_retry"
+      - "cached rows still rendered underneath the error banner"
+    priority: high
+
+  # ── Datatable schema drives dynamic forms (the reason this module matters) ──
+  - id: datatable_schema_drives_offline_forms
+    description: "A registered datatable's cached column schema populates the extra custom fields on that entity's dynamic-template-form offline (client_kyc_details fields appear on the client form with no network)"
+    preconditions: ["client_kyc_details datatable previously cached against m_client", "network unavailable"]
+    actions: ["open a client onboarding form offline"]
+    assertions:
+      - "the client_kyc_details custom fields (from the cached column schema) render on the form"
+      - "a dropdown column resolves its options from the cached M09 code offline"
+    priority: high
+
+  - id: register_datatable_gated_online_only
+    description: "A register control is enabled only for REGISTER_DATATABLE AND online; offline it is disabled with a 'connect to change configuration' reason (a half-registered schema is dangerous, never deferred-syncs)"
+    preconditions: ["user holds REGISTER_DATATABLE", "network unavailable"]
+    actions: ["attempt to register a new datatable"]
+    assertions:
+      - "m12-datatables-config_register disabled with m12_edit_online_only reason"
+      - "no draft queued for deferred sync"
+    priority: high
+
+  # ── Write path (online-only + gated + maker-checker) ──
+  - id: register_datatable_maker_checker_pending
+    description: "Under maker-checker, a submitted datatable register lands PENDING_APPROVAL ('Submitted for approval') with a durable idempotency key, not optimistically applied; a retry never double-registers"
+    preconditions: ["user holds REGISTER_DATATABLE", "REGISTER_DATATABLE is maker-checkerable", "online"]
+    actions: ["define + register a new datatable against m_client and submit"]
+    assertions:
+      - "uiState=Submitting → 'Submitted for approval' chip (m12_submitted_for_approval)"
+      - "one REGISTER_DATATABLE command queued with a durable idempotency key; a retry does not double-register"
+      - "the datatable's fields do not appear in dynamic-template-forms until approved + next sync"
+    priority: medium
+
+  - id: config_toggle_gated_and_queued
+    description: "A global config toggle is DISABLE-with-reason without UPDATE_CONFIGURATION; with it AND online, flipping maker-checker queues one durable-idempotent UPDATE_CONFIGURATION command"
+    preconditions: ["user holds UPDATE_CONFIGURATION", "online"]
+    actions: ["open Global Config, flip the maker-checker switch"]
+    assertions:
+      - "m12-datatables-config_toggle_config enabled; submit enqueues one UPDATE_CONFIGURATION command with a durable idempotency key"
+      - "the change re-resolves the capability map next sync (other modules' approval behaviour updates)"
+    priority: medium
+
+  # ── Entity-datatable checks ──
+  - id: entity_check_makes_datatable_mandatory
+    description: "Creating an entity-datatable check makes a datatable mandatory at a lifecycle status; the rule is gated by CREATE_ENTITY_DATATABLE_CHECK, online-only, queued durable-idempotent"
+    preconditions: ["user holds CREATE_ENTITY_DATATABLE_CHECK", "online", "loan_additional_info datatable registered against m_loan"]
+    actions: ["create a check requiring loan_additional_info before APPROVE, submit"]
+    assertions:
+      - "one CREATE_ENTITY_DATATABLE_CHECK command queued with a durable idempotency key"
+      - "a rejected command routes to needs-attention-inbox (never silently dropped)"
+    priority: medium
+
+  # ── External services (secrets write-only) ──
+  - id: external_service_secrets_write_only
+    description: "An external-service connector shows non-secret config from cache with secret values masked; editing forwards secrets write-only through the outbox (never cached, never read back)"
+    preconditions: ["user holds READ_EXTERNALSERVICES + UPDATE_EXTERNALSERVICES", "S3 connector configured", "online"]
+    actions: ["open the S3 external service, edit the secret access key, submit"]
+    assertions:
+      - "the existing secret is shown masked as '••••' (never read back)"
+      - "m12-datatables-config_edit_external_service enqueues one UPDATE_EXTERNALSERVICES command; the secret rides the payload write-only and is never mirrored to cache"
+    priority: low

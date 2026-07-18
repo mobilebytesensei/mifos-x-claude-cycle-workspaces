@@ -1,0 +1,175 @@
+screen_id: offline-sync-engine
+name: "Offline Sync Engine (outbox · batch replay · delta pull)"
+status: designed
+archetype: mutation_console
+initial_state: idle
+description: >-
+  The Sync console (M17 surface): shows the durable outbox, drains it via POST /v1/batches with
+  exactly-once idempotency, and hydrates the user's office/portfolio working set via per-entity
+  changeListSync delta-pull. Every write in the app funnels through this engine — it is FOUNDATION
+  infra, not a leaf feature. Renders the 6 Store5 ScreenState variants free via MutationScreenContent.
+
+# ── States (map 1:1 to Store5 ScreenState + the sync lifecycle) ──────────
+states:
+  idle:
+    description: "Outbox empty (0 pending); last successful sync + delta watermark shown. Content-fresh."
+    is_default: true
+  content:
+    description: "N pending outbox commands listed (idempotency key, action, entity, age); a 'Sync now' CTA is enabled. Cached-content state."
+  syncing:
+    description: "Draining the outbox — per-command progress (PENDING→RETRYING→SUBMITTED) + delta-pull hydrate spinner; the CTA is disabled while in flight."
+  empty:
+    description: "No outbox commands AND no delta ever pulled (fresh install / just logged in). CTA offers a first full delta-pull."
+  error:
+    description: "Batch rejected or delta-pull failed. Failed commands are surfaced with the server error and a 'Review N failed' CTA routing to Needs-Attention; a Retry CTA re-drains."
+  no_network:
+    description: "Offline — outbox commands stay queued; a persistent 'N queued · will sync when online' banner; captive-portal aware."
+
+# ── Business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-5) ──────────
+business_logic:
+  kind: composite
+  processing_kind: batch
+  description: >-
+    Drains RoomSubmitOutbox PENDING entries via OfflineSubmitSyncer, replaying each command through
+    BatchSubmitHandler.AllOrNothing over POST /v1/batches with a durable idempotency key (exactly-once
+    retries); marks each SUBMITTED or FAILED (error routed to Needs-Attention); then runs
+    changeListSync delta-pull scoped to the user's office. Edge-triggered on NetworkStatus and tap.
+  external_library_refs:
+    - "org.mobilenativefoundation.store.store5"
+    - "androidx.room"
+    - "kotlinx.serialization"
+    - "Fineract POST /v1/batches (enclosingTransaction)"
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T00:00:00Z"
+  required_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core-base/store
+    - core-base/network
+
+# ── Shell (M17 Sync tab; permission-gated at the module root) ────────────
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  fab_visible: false
+  snackbar_visible: true
+
+# ── Components ──────────────────────────────────────────────────────────
+components:
+  - id: sync_header
+    type: header
+    label: "Sync"
+    testTag: "offline-sync-engine_header"
+
+  - id: sync_status_banner
+    type: status_banner
+    label: "Last synced · N pending · watermark age (freshness chip)"
+    testTag: "offline-sync-engine_status_banner"
+    state_bindings:
+      idle: "Up to date · last synced {lastSyncedRelative}"
+      content: "{pendingCount} pending · last synced {lastSyncedRelative}"
+      syncing: "Syncing… {syncedCount}/{totalCount} commands"
+      no_network: "{pendingCount} queued · will sync when online"
+      error: "{failedCount} failed · last attempt {lastAttemptRelative}"
+
+  - id: outbox_list
+    type: content_area
+    label: "Pending outbox commands (idempotency key · action · entity · age · status)"
+    testTag: "offline-sync-engine_content"
+    empty_label: "No pending work — everything is synced"
+
+  - id: outbox_command_row
+    type: list_item
+    label: "One queued command row: action + entity + amount + relative age + status chip"
+    testTag: "offline-sync-engine_command_row"
+    on_click:
+      action: view_command_detail
+      target: needs-attention-inbox
+      action_contract:
+        effect: navigate
+        description: "Open the queued command's detail (payload, idempotency key, status history). FAILED rows deep-link into needs-attention-inbox for Retry/Edit/Discard; PENDING rows show read-only queue detail."
+
+  - id: sync_now_button
+    type: button
+    label: "Sync now"
+    testTag: "offline-sync-engine_sync_now"
+    variant: primary
+    enabled_states: [content, error, no_network, idle]
+    on_click:
+      action: trigger_sync
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/batches"
+        reads_from:
+          - table: draft_outbox
+        writes_to:
+          - table: draft_outbox
+        produces_state: syncing
+        invalidates:
+          - pendingCount
+          - lastSyncedAt
+        description: "Drain the RoomSubmitOutbox by replaying every PENDING command via BatchSubmitHandler.AllOrNothing over POST /v1/batches with its durable idempotency key (exactly-once, zero double-post), mark each SUBMITTED or FAILED, then run per-entity changeListSync delta-pull to hydrate the office/portfolio working set."
+
+  - id: pull_latest_button
+    type: button
+    label: "Pull latest"
+    testTag: "offline-sync-engine_pull_latest"
+    variant: secondary
+    enabled_states: [idle, content, empty, error]
+    on_click:
+      action: trigger_delta_pull
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract GET /v1/audits (lastModifiedSince)"
+        reads_from:
+          - table: fetched_at
+        writes_to:
+          - table: fetched_at
+        produces_state: syncing
+        invalidates:
+          - deltaWatermarkAt
+        description: "Run Synchronizer.changeListSync over the Fineract lastModifiedSince change feed for the user's office/portfolio only, refreshing each entity's CACHE_FIRST_SWR SourceOfTruth and advancing the per-cache FetchedAt watermark, without touching the write outbox."
+
+  - id: review_failed_button
+    type: button
+    label: "Review failed"
+    testTag: "offline-sync-engine_review_failed"
+    variant: text
+    enabled_states: [error]
+    on_click:
+      action: open_needs_attention
+      target: needs-attention-inbox
+      action_contract:
+        effect: navigate
+        description: "Navigate to needs-attention-inbox where every FAILED/rejected replay is triaged (Retry / Edit / Discard) with the Fineract server error and explicit ConflictStrategy resolution."
+
+  - id: retry_failed_button
+    type: button
+    label: "Retry all"
+    testTag: "offline-sync-engine_retry_failed"
+    variant: text
+    enabled_states: [error]
+    on_click:
+      action: retry_failed
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/batches"
+        writes_to:
+          - table: draft_outbox
+        produces_state: syncing
+        invalidates:
+          - failedCount
+        description: "Re-queue every FAILED outbox entry back to RETRYING and re-drain via POST /v1/batches, reusing each command's original durable idempotency key so a previously-half-applied batch does not double-post on the second attempt."

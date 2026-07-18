@@ -1,0 +1,167 @@
+feature: m03-groups-centers
+status: approved
+approve_hash: "sha256:2503df4143c8dd74fbbb963fb5e3a96f3841fa83261b4e83ef18b752b9062c7a"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+schema_version: v2
+cluster: back-office-module
+module: m03-groups-centers
+priority: should_have
+is_primary_flow: false
+has_ui: true
+has_api: true
+has_server: false
+capabilities:
+  - has_ui
+  - has_api
+  - has_offline_cache
+  - has_form_input
+  - has_flow
+  - requires_auth
+requires_features:
+  - permission-capability-engine
+  - offline-sync-engine
+  - dynamic-template-forms
+  - m02-clients
+provides_to:
+  - m06-collections
+permissions_gate: >-
+  READ_/CREATE_/ACTIVATE_/ASSIGNSTAFF_/ASSOCIATECLIENTS_/DISASSOCIATECLIENTS_/TRANSFERCLIENTS_/CLOSE_GROUP, *_CENTER
+  (+ASSOCIATEGROUPS_), *_MEETING + SAVEORUPDATEATTENDANCE_MEETING, SAVECOLLECTIONSHEET_CENTER/_GROUP
+requires_permission:
+  - READ_GROUP
+  - READ_CENTER
+contracts:
+  reads:
+    - GET /v1/centers — office-scoped center list (paged; underHierarchy + staffId)
+    - GET /v1/groups — office-scoped group list (paged; officeId/staffId/status)
+    - GET /v1/groups/{id}?associations=all — members, GLIM group loans, roles, calendar
+    - GET /v1/centers/{id}?associations=groupMembers — groups under the center + calendar
+    - GET /v1/groups/{id}/calendars — meeting calendars driving the attendance sheet
+    - GET /v1/groups/template — office/staff/role option lists (dynamic-template-forms)
+  writes:
+    - POST /v1/groups — create (client-generated externalId; via outbox when offline)
+    - POST /v1/groups/{id}?command=activate|assignStaff|associateClients|disassociateClients|transferClients
+    - POST /v1/centers/{id}?command=activate|associateGroups|disassociateGroups|saveCollectionSheet
+    - POST /v1/meetings/{id}?command=saveOrUpdateAttendance — clientsAttendance[] + meetingDate
+  consumes_tables:
+    - groups_centers
+    - cached_templates
+    - framework_submit_drafts
+libraries:
+  cmp_modules:
+    - cmp-network-monitor
+  core_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/permissions
+    - core-base/store
+    - core-base/network
+  external:
+    - name: org.mobilenativefoundation.store.store5
+      role: CACHE_FIRST_SWR reads of centers/groups/members/meetings so lists + attendance sheets are offline-readable.
+    - name: androidx.room
+      role: SourceOfTruth persistence for the group/center working set + the durable command outbox.
+    - name: kotlinx.serialization
+      role: Serialize the Fineract command bodies (saveOrUpdateAttendance, activate, assignStaff) into JsonObject payloads.
+  training_surfaces:
+    - training-layer/instructions/stream-first/latest/CORE_STORE.md
+    - training-layer/instructions/stream-first/latest/CORE_DATA.md
+    - training-layer/instructions/stream-first/latest/CORE_DATABASE.md
+    - training-layer/instructions/stream-first/latest/CORE_BASE_STORE.md
+vm_actions:
+  - action: OnScopeTabClick
+    maps_to_on_click: switch_scope_tab
+    handler: Set selectedScope (centers|groups); re-derive which cached collection the list renders. No fetch.
+  - action: OnGroupCenterRowClick
+    maps_to_on_click: open_group_center_detail
+    handler: >-
+      Load the group/center detail into the master-detail state; resolve which actions are VISIBLE/DISABLED/HIDDEN per
+      permissions.
+  - action: OnMemberRowClick
+    maps_to_on_click: open_member_client
+    handler: sendEvent(NavigateToClient360(clientId)) into m02-clients (read-only cross-link).
+  - action: OnAttendanceToggle
+    maps_to_on_click: toggle_member_attendance
+    handler: Flip present/absent in the in-VM attendance draft for the selected meeting; mark draft dirty; enable Save.
+  - action: OnSaveAttendanceClick
+    maps_to_on_click: save_attendance
+    handler: >-
+      Assemble saveOrUpdateAttendance command (clientsAttendance[], meetingDate, dateFormat, locale); enqueue to outbox
+      (durable idempotency).
+  - action: OnActivateClick
+    maps_to_on_click: activate_group_center
+    handler: Enqueue activate command (activationDate); optimistic 'activating · queued' status until replay confirms.
+  - action: OnAssignStaffClick
+    maps_to_on_click: assign_staff
+    handler: Open the dynamic-template-forms staff picker; enqueue assignStaff command (staffId).
+  - action: OnManageMembersClick
+    maps_to_on_click: manage_members
+    handler: >-
+      Open the member picker (m02-clients roster); enqueue associateClients/disassociateClients command
+      (clientMembers[]).
+  - action: OnCreateClick
+    maps_to_on_click: start_group_center_creation
+    handler: >-
+      Open dynamic-template-forms create form (/v1/groups|centers/template); on submit enqueue CREATE_GROUP with
+      client-generated externalId.
+  - action: OnRetryClick
+    maps_to_on_click: retry_load
+    handler: Re-issue the list/detail fetch through Store5; on 403 route to permission-drift refresh.
+  - action: Internal.ReceiveList
+    handler: Fold the centers/groups Store5 stream into ScreenState (loading/content/empty/error/no-network).
+  - action: Internal.ReceiveNetworkStatus
+    handler: On loss → no-network state (queued commands persist); on regain → auto-drain the outbox.
+error_cases:
+  - code: group_list_failed
+    ux: error state with Retry; no cache → nothing rendered; cache present → serve cached rows + soft error toast.
+  - code: attendance_queued_offline
+    ux: >-
+      no-network state; saveOrUpdateAttendance stays PENDING in the outbox with a 'will sync when online' chip (never
+      dropped).
+  - code: command_rejected
+    ux: >-
+      rejected activate/assignStaff/associateClients replay routes to needs-attention-inbox with the Fineract server
+      error.
+  - code: permission_drift_403
+    ux: >-
+      403 NoAuthorization → permission-capability-engine refresh + re-resolve; now-denied actions prune; surface stays
+      alive.
+  - code: maker_checker_pending
+    ux: >-
+      under tenant maker-checker a mutating command returns commandId without resourceId → 'Submitted for approval'
+      badge, not applied optimistically.
+test_fixtures:
+  - centers+groups list cached → open offline → rows render from Room (CACHE_FIRST_SWR)
+  - user holds READ_GROUP but not ACTIVATE_GROUP → activate control hidden/disabled with reason
+  - mark 8 of 12 members present offline → save → saveOrUpdateAttendance queued with durable idempotency_key
+  - kill+restore app with a queued attendance command → payload + idempotency key survive (Room)
+  - server-rejected assignStaff replay → lands in needs-attention-inbox with server_error
+acceptance_refs:
+  - Group/center CRUD + membership + meetings + attendance, gated + offline
+plan_ref: idea-plan.yaml#features[m03-groups-centers]
+summary: >-
+  M03 · Groups & Centers. Group/center CRUD, membership (associate/disassociate/transfer clients), calendars/meetings,
+  and attendance (saveOrUpdateAttendance) — all permission-gated via permission-capability-engine and offline-first via
+  offline-sync-engine (durable idempotency + batch replay). Create/edit + staff picker render through
+  dynamic-template-forms; members cross-link (read-only) into m02-clients. GLIM/GSIM surfaced from the group detail.
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T03:10:00Z'
+enriched_by: /idea-feature-enrich
+status_history:
+  - from: designed
+    to: design_partial
+    at: '2026-07-17T20:10:00.076Z'
+    by: /idea-feature-stitch
+  - from: design_partial
+    to: designed
+    at: '2026-07-17T20:24:09.813Z'
+    by: /idea-feature-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

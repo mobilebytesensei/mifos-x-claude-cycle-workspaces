@@ -1,0 +1,66 @@
+feature: dynamic-template-forms
+# The Fineract "template pattern": every create/edit surface fetches a GET /{entity}/template
+# payload (field defaults + allowed-value option lists), optionally contextualised by query
+# params, and joins it with the entity's registered datatable schemas. Forms are rendered FROM
+# the template — never hardcoded. Submits use the command pattern (POST /{entity}?command={action}).
+base_url: "{host}/fineract-provider/api/v1"
+tenant_header: "Fineract-Platform-TenantId"
+
+endpoints:
+  - id: get_entity_template
+    method: GET
+    path: "/v1/{entity}/template"
+    description: "Universal template pattern — returns field defaults + allowed-value option lists to build the create/edit form for any entity. Contextual query params (?clientId=&productId=&templateType=individual|group|jlg) refine the options. Distinct from the Excel downloadtemplate/uploadtemplate bulk-import surface."
+    query_params:
+      - { name: clientId, required: false, note: "Scopes option lists (e.g. loan template pre-bound to a client's office/staff)" }
+      - { name: productId, required: false, note: "Loan/savings template driven by the selected product's charges + interest options" }
+      - { name: templateType, required: false, note: "individual | group | jlg for loan templates" }
+      - { name: staffInSelectedOfficeOnly, required: false, note: "Restricts loanOfficerOptions to the chosen office" }
+    response:
+      shape: object
+      type: "EntityTemplate"
+      note: "Envelope of default field values + *Options[] arrays (e.g. genderIdOptions, loanOfficerOptions, productOptions, chargeOptions, savingsProductOptions) the renderer binds to dropdowns."
+    requires_auth: true
+    requires_permission: []
+    cacheable: true
+    cache_strategy: cache_first_swr
+
+  - id: get_datatables
+    method: GET
+    path: "/v1/datatables"
+    description: "Registered datatable (custom-field) schemas. Filter ?apptable={entity} to list only the custom-field groups attached to the target entity; each becomes an extra field group appended to the base template form."
+    query_params:
+      - { name: apptable, required: false, note: "e.g. m_client | m_loan — returns only datatables attached to that entity" }
+    response:
+      shape: list
+      type: "DatatableSchema"
+      note: "Each schema carries columnHeaderData[] (columnName, columnType, columnCode option lists, isColumnNullable) driving the datatable field group."
+    requires_auth: true
+    requires_permission: [READ_DATATABLE]
+    cacheable: true
+    cache_strategy: cache_first_swr
+
+  - id: submit_entity_command
+    method: POST
+    path: "/v1/{entity}"
+    description: "Create/command submit. Plain create posts to /{entity}; a state transition posts to /{entity}/{id}?command={action} (approve|disburse|repayment|activate|...) with the assembled JsonObject body. Returns CommandProcessingResult{resourceId,commandId,changes{}}; a maker-checkerable action returns 2xx with commandId + empty changes (queued for a checker)."
+    query_params:
+      - { name: command, required: false, note: "State-transition token for edit/lifecycle forms; omitted for a plain create" }
+    request_body:
+      type: "JsonObject"
+      note: "Assembled from the values map — base template fields plus a nested datatables[] payload for custom-field groups; date fields carry dateFormat + locale."
+    headers:
+      - { name: "Idempotency-Key", required: false, note: "Durable UUID reused on retry so an offline replay never double-posts (loan-transaction POSTs honor it)." }
+    response:
+      shape: object
+      type: "CommandProcessingResult"
+    requires_auth: true
+    requires_permission: []
+    note: "The concrete {ACTION}_{ENTITY} permission is resolved by the caller screen (e.g. CREATE_CLIENT, APPROVE_LOAN, REPAYMENT_LOAN); this engine is entity-agnostic and inherits the caller's gate."
+    cacheable: false
+
+conventions:
+  template_pattern: "Render forms FROM GET /{entity}/template allowed-value lists; never hardcode options."
+  command_pattern: "State transitions = POST /{entity}/{id}?command={action} + JSON body."
+  date_contract: "Every date-bearing field MUST send dateFormat + locale alongside the value."
+  offline_keystone: "Writes go through the outbox → POST /v1/batches replay; client-generated externalId lets create-before-server-id work offline."

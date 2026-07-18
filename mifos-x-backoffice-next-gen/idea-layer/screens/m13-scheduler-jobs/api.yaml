@@ -1,0 +1,119 @@
+feature: m13-scheduler-jobs
+
+# Fineract Scheduler & Jobs (COB) surface. Reads (job roster, run history, scheduler
+# status, business date) are CACHE_FIRST_SWR — browsable offline. Every mutating command
+# is a SERVER-SIDE BATCH operation and is ONLINE-ONLY: run-now, edit schedule / enable-disable,
+# scheduler start/stop, and advance business date are NEVER queued to the offline outbox and are
+# disabled while offline (a COB run cannot be deferred/replayed). No maker-checker path here.
+
+endpoints:
+  # ── Scheduled-job roster + run history (read) ─────────────────────────
+  - id: list_jobs
+    method: GET
+    path: "/v1/jobs"
+    description: "Scheduled-job roster — each job's displayName, cronExpression, nextRunTime, previousRunTime, lastRunHistory status, active flag, currentlyRunning flag, and COB step count; CACHE_FIRST_SWR."
+    response_type: "SchedulerJob[]"
+    response:
+      shape: list
+    pagination:
+      style: none
+      params: []
+      envelope: bare_array
+    requires_auth: true
+    requires_permission: [READ_SCHEDULER]
+    cacheable: true
+
+  - id: get_job_run_history
+    method: GET
+    path: "/v1/jobs/{jobId}/runhistory"
+    description: "Paged run history for one job — each run's version, jobRunStartTime, jobRunEndTime, status, triggerType, and (on failure) jobRunErrorMessage + jobRunErrorLog stack trace; CACHE_FIRST_SWR."
+    response_type: "JobRunHistory"
+    response:
+      shape: list
+    pagination:
+      style: offset_limit
+      params: [offset, limit]
+      envelope: "{ totalFilteredRecords, pageItems[] }"
+    requires_auth: true
+    requires_permission: [READ_SCHEDULER]
+    cacheable: true
+
+  # ── Scheduler on/off status (read) ────────────────────────────────────
+  - id: get_scheduler_status
+    method: GET
+    path: "/v1/scheduler"
+    description: "Whether the global scheduler is currently running (active true|false); CACHE_FIRST_SWR."
+    response_type: "SchedulerStatus"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [READ_SCHEDULER]
+    cacheable: true
+
+  # ── COB business date (read) ──────────────────────────────────────────
+  - id: get_business_date
+    method: GET
+    path: "/v1/businessdate"
+    description: "The current COB business date(s) (type BUSINESS_DATE / COB_DATE with their effective date); CACHE_FIRST_SWR."
+    response_type: "BusinessDate[]"
+    response:
+      shape: list
+    pagination:
+      style: none
+      params: []
+      envelope: bare_array
+    requires_auth: true
+    requires_permission: [READ_SCHEDULER]
+    cacheable: true
+
+  # ── Run a job now (ONLINE-ONLY server-side batch) ─────────────────────
+  - id: execute_job
+    method: POST
+    path: "/v1/jobs/{jobId}?command=executeJob"
+    description: "Run the scheduled job / COB step immediately. SERVER-SIDE BATCH work — ONLINE-ONLY, never queued to the offline outbox and never optimistically applied. Returns 202/CommandProcessingResult; the job's currentlyRunning flips true and its run history gains an entry."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [EXECUTEJOB_SCHEDULER]
+    idempotency: none
+    online_only: true
+
+  # ── Edit schedule / enable-disable a job (ONLINE-ONLY) ────────────────
+  - id: update_job
+    method: PUT
+    path: "/v1/jobs/{jobId}"
+    description: "Change a job's cron schedule and/or its active (schedulable) flag (cronExpression + active). ONLINE-ONLY server-side edit — never queued. 400 on an invalid cron expression."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [UPDATE_SCHEDULER]
+    idempotency: none
+    online_only: true
+
+  # ── Global scheduler start/stop (ONLINE-ONLY) ─────────────────────────
+  - id: update_scheduler
+    method: PUT
+    path: "/v1/scheduler?command=start"
+    description: "Turn the global scheduler ON (?command=start) or OFF (?command=stop). ONLINE-ONLY server-side switch — never queued. When OFF, no scheduled job fires automatically."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [UPDATE_SCHEDULER]
+    idempotency: none
+    online_only: true
+
+  # ── Advance the COB business date (ONLINE-ONLY) ───────────────────────
+  - id: advance_business_date
+    method: POST
+    path: "/v1/businessdate"
+    description: "Advance the COB business date (type=BUSINESS_DATE, date + dateFormat + locale) — shifts the effective date all batch/COB jobs run against. ONLINE-ONLY server-side operation — never queued."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [UPDATE_SCHEDULER]
+    idempotency: none
+    online_only: true

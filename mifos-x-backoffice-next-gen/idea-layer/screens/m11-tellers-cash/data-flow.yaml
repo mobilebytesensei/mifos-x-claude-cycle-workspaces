@@ -1,0 +1,121 @@
+feature: m11-tellers-cash
+# Reads (tellers + cash position, cashiers-per-teller, transaction ledger) ride CACHE_FIRST_SWR
+# Store5 over a Room tellers_cash table: the cached row emits instantly (offline-safe) and a
+# background revalidation replaces it when FreshnessBands mark it Stale. Cash movements (allocate/
+# settle) and management commands (create teller / assign cashier) are command-shaped and
+# money-sensitive: they are assembled as command JsonObjects and written to the durable
+# framework_submit_drafts outbox (offline-sync-engine) with an idempotency key, then replayed
+# exactly-once via POST /v1/batches — never a direct online call that could double-move cash.
+entries:
+  - trigger: on_mount
+    source: api.list_tellers
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: teller_read_failed
+    tables:
+      - name: tellers_cash
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Room tellers_cash cache (teller_id, office_id, vault_cash_balance, status, payload_json,
+          fetched_at). CACHE_FIRST_SWR — the teller list renders instantly from cache offline;
+          validator.markFresh() follows every successful fetch so TTL starts.
+
+  - trigger: on_select_teller
+    source: api.list_cashiers
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: cashier_read_failed
+    tables:
+      - name: tellers_cash
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Cashiers assigned to the selected teller for a date range (teller_id, cashier_id, staff_id,
+          allocated_cash, start_date, end_date) upserted under the teller row. Cached per teller_id +
+          date range so the detail renders offline; change_cashier_date_range re-projects over cached
+          rows without a refetch.
+
+  - trigger: on_view_ledger
+    source: api.list_teller_transactions
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: teller_txn_read_failed
+    tables:
+      - name: tellers_cash
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Teller-transaction ledger (teller_id, transaction_id, txn_type, amount, txn_date,
+          running_balance) upserted under the teller row. Read-only, CACHE_FIRST_SWR so the ledger
+          renders instantly offline.
+
+  - trigger: on_command
+    source: api.allocate_cash
+    target_state: submitting
+    loading_state: submitting
+    error_state: error
+    on_error:
+      nav_target: needs-attention-inbox
+      error_code: cash_command_rejected
+    tables:
+      - name: draft_outbox
+        mutation: write
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          RoomSubmitOutbox over framework_submit_drafts (Room v11). Every cash movement (allocate /
+          settle) and management command (create teller / assign cashier) is serialized as a command
+          JsonObject with a DURABLE idempotency_key + (action, entity) composite key BEFORE it is
+          sent — the local system-of-record until replayed exactly-once via POST /v1/batches. PENDING
+          never pruned; a killed-mid-submit allocation reuses its stored idempotency key on replay so
+          cash never double-moves. A server rejection routes the entry to needs-attention-inbox with
+          the Fineract server_error; the (action, entity) permission is re-checked before replay.
+      - name: tellers_cash
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Optimistic vault/cashier cash-position update marked pending-sync until the outbox replay
+          confirms; reconciled against the server on delta-pull.
+
+# Reads consumed by the ui.yaml action_contracts (reads_from) + writes (writes_to).
+reads:
+  - name: tellers_cash
+    source: api.list_tellers
+    cache: room
+    note: "The tellers + cashiers + ledger working set keyed by teller_id (and cashier_id / transaction_id); read by every action_contract's reads_from and re-projected by change_cashier_date_range."
+writes:
+  - name: draft_outbox
+    target: api.allocate_cash
+    cache: room
+    note: "The durable command outbox (framework_submit_drafts) that every allocate/settle/create-teller/assign-cashier action_contract writes_to for exactly-once replay."
+
+cache:
+  strategy: cache_first
+  ttl_seconds: 900
+  key_template: "fineract:tellers:{officeId}"
+  shape: list
+  note: >-
+    Tellers, cashiers and the transaction ledger are CACHE_FIRST_SWR over the Room tellers_cash table:
+    the cached row emits immediately and a background revalidation refreshes it only when FreshnessBands
+    mark it Stale. validator.markFresh() follows every successful fetch so TTL starts; offline the cached
+    cash position is the source of truth and the offline banner is shown, while any queued allocate/settle
+    command carries an optimistic pending-sync marker until it replays.

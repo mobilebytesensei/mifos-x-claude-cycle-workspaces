@@ -1,0 +1,278 @@
+sibling: docs
+schema_version: v2
+contract_version: 2.2.0
+id: m13-scheduler-jobs
+name: M13 · Scheduler & Jobs (COB)
+feature: m13-scheduler-jobs
+flow: scheduler
+status: approved
+cluster: back-office-module
+module: m13-scheduler-jobs
+priority: could_have
+is_primary_flow: false
+auth_required: true
+has_ui: true
+has_api: true
+has_server: false
+offline_policy: online-only
+capabilities:
+  - has_ui
+  - has_api
+  - has_offline_cache
+  - has_form_input
+  - has_flow
+  - requires_auth
+consumes_tables:
+  - scheduler_jobs
+  - job_run_history
+journey:
+  persona: >-
+    Ops / system administrator running batch jobs — the scheduled-job roster, COB steps, run history, and the business
+    date
+  goal: >-
+    Review scheduled jobs and their last-run outcomes offline, then (online) run a job now, adjust a schedule or the
+    global scheduler, and advance the COB business date — with every control gated by the exact scheduler permission the
+    user holds
+  success_metric: >-
+    Read-gated users browse the roster + run history offline; only EXECUTEJOB_SCHEDULER holders can run a job; only
+    UPDATE_SCHEDULER holders can edit schedules / toggle the scheduler / advance the business date; every mutation is
+    online-only and never queued
+  screen_sequence:
+    - m13-scheduler-jobs
+    - dynamic-template-forms
+  expected_outcome: >-
+    A run-now command (POST /v1/jobs/{id}?command=executeJob) fires online-only, the job's currentlyRunning flips and a
+    new run-history entry appears; a schedule edit / scheduler toggle / business-date advance posts online-only via
+    PUT/POST; a server rejection (invalid cron / run failed) surfaces inline; offline the mutating controls are disabled
+    with a 'requires connection' reason
+requires_features:
+  - permission-capability-engine
+  - dynamic-template-forms
+provides_to:
+  - m01-dashboard
+  - m07-accounting
+contracts:
+  apis:
+    - id: list_jobs
+      method: GET
+      path: /v1/jobs
+      note: job roster; CACHE_FIRST_SWR
+    - id: get_job_run_history
+      method: GET
+      path: /v1/jobs/{jobId}/runhistory
+      note: paged run history + errors; CACHE_FIRST_SWR
+    - id: get_scheduler_status
+      method: GET
+      path: /v1/scheduler
+      note: scheduler on/off; CACHE_FIRST_SWR
+    - id: get_business_date
+      method: GET
+      path: /v1/businessdate
+      note: current COB business date; CACHE_FIRST_SWR
+    - id: execute_job
+      method: POST
+      path: /v1/jobs/{jobId}?command=executeJob
+      online_only: true
+      note: run a job now; ONLINE-ONLY, never queued
+    - id: update_job
+      method: PUT
+      path: /v1/jobs/{jobId}
+      online_only: true
+      note: edit cron / enable-disable; ONLINE-ONLY
+    - id: update_scheduler
+      method: PUT
+      path: /v1/scheduler?command=start
+      online_only: true
+      note: global scheduler start/stop; ONLINE-ONLY
+    - id: advance_business_date
+      method: POST
+      path: /v1/businessdate
+      online_only: true
+      note: advance COB business date; ONLINE-ONLY
+  tables:
+    - name: scheduler_jobs
+      backend: room
+      keys:
+        - job_id
+        - name
+      columns:
+        - cron
+        - next_run_time
+        - previous_run_time
+        - last_run_status
+        - active
+        - currently_running
+        - cob_steps
+        - payload_json
+      note: >-
+        Scheduled-job roster cache; CACHE_FIRST_SWR read. Read-only cache — job execution/edits are ONLINE-ONLY and
+        never write back through the offline outbox.
+    - name: job_run_history
+      backend: room
+      keys:
+        - job_id
+        - version
+      columns:
+        - job_run_start_time
+        - job_run_end_time
+        - status
+        - trigger_type
+        - error_message
+        - error_log
+        - payload_json
+      note: >-
+        Per-job run-history cache keyed by (job_id, version); CACHE_FIRST_SWR so past run outcomes + errors render
+        offline.
+  dtos:
+    - name: SchedulerJobRow
+      role: response
+    - name: JobRunHistoryEntry
+      role: response
+    - name: SchedulerStatus
+      role: response
+    - name: BusinessDate
+      role: response
+    - name: ExecuteJobRequest
+      role: request
+    - name: UpdateJobRequest
+      role: request
+    - name: UpdateSchedulerRequest
+      role: request
+    - name: AdvanceBusinessDateRequest
+      role: request
+    - name: CommandProcessingResult
+      role: response
+libraries:
+  cmp_modules:
+    - cmp-network-monitor
+  core_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/network
+    - core/permissions
+  external:
+    - org.mobilenativefoundation.store.store5
+    - androidx.room (Room 3)
+    - kotlinx.serialization
+    - Fineract /v1/jobs (+ /runhistory, ?command=executeJob), /v1/scheduler, /v1/businessdate
+  training_surfaces:
+    - training-layer/instructions/stream-first/latest/CORE_STORE.md
+    - training-layer/instructions/stream-first/latest/CORE_DATA.md
+    - training-layer/instructions/stream-first/latest/CORE_DATABASE.md
+    - training-layer/instructions/stream-first/latest/CORE_NETWORK.md
+vm_actions:
+  - action: OnJobClick
+    maps_to_on_click: open_job_detail
+    handler: Set selectedJob and expand its schedule + run-history detail (served from cache offline).
+  - action: OnViewRunHistoryClick
+    maps_to_on_click: view_run_history
+    handler: >-
+      Collect the runhistory Store Flow for selectedJob (GET /v1/jobs/{id}/runhistory) into runHistory (paged);
+      read-only, gated READ_SCHEDULER.
+  - action: OnRunJobClick
+    maps_to_on_click: execute_job
+    handler: >-
+      Guard EXECUTEJOB_SCHEDULER + require online → confirm dialog → POST /v1/jobs/{id}?command=executeJob (online-only,
+      never queued); flip currentlyRunning; refresh run history.
+  - action: OnToggleJobActiveClick
+    maps_to_on_click: toggle_job_active
+    handler: >-
+      Guard UPDATE_SCHEDULER + require online → PUT /v1/jobs/{id} with active true|false (online-only); refresh the
+      roster.
+  - action: OnEditScheduleClick
+    maps_to_on_click: edit_job_schedule
+    handler: >-
+      Guard UPDATE_SCHEDULER + require online → NavigateToForm(entity=jobs, command=update) pre-filled with cron +
+      active → submit PUT /v1/jobs/{id}; validate cron client-side, server is final (400 invalid cron surfaces inline).
+  - action: OnAdvanceBusinessDateClick
+    maps_to_on_click: advance_business_date
+    handler: >-
+      Guard UPDATE_SCHEDULER + require online → confirm form (type=BUSINESS_DATE + date + dateFormat + locale) → POST
+      /v1/businessdate (online-only).
+  - action: OnToggleSchedulerClick
+    maps_to_on_click: toggle_scheduler
+    handler: >-
+      Guard UPDATE_SCHEDULER + require online → PUT /v1/scheduler?command=start|stop (online-only); update
+      schedulerRunning.
+  - action: OnRetryClick
+    maps_to_on_click: retry_load
+    handler: >-
+      Re-issue the failed job/scheduler/business-date fetch via stream.refreshFresh(); 403 → refreshPermissions() drift
+      protocol.
+  - action: Internal.ReceiveJobs
+    handler: >-
+      Fold the jobs Store Flow into ScreenState (loading/content/empty/no_network/error); set fromCache; when offline
+      mark the online-only controls disabled.
+  - action: Internal.ReceiveSchedulerStatus
+    handler: Fold the scheduler-status + business-date Store Flows into schedulerRunning + businessDate.
+  - action: Internal.ReceiveRunHistory
+    handler: Fold the paged runhistory Store Flow into runHistory for the selected job.
+  - action: Internal.ReceiveCommandResult
+    handler: >-
+      On 2xx refresh the affected roster/scheduler/business-date state; on rejection (invalid cron / run failed / 409)
+      surface the Fineract server error inline; on 403 route through the permission-drift refresh.
+error_cases:
+  - code: jobs_read_failed
+    ux: >-
+      Error state with the server message + Retry CTA; a cached roster + scheduler status is served instead when present
+      (no_network).
+  - code: scheduler.command_rejected
+    ux: >-
+      The failed command's Fineract server error (invalid cron / run failed to start / 409) is surfaced inline beside
+      the affected control; there is no offline-queue triage because scheduler commands never queue.
+  - code: scheduler.offline_blocked
+    ux: >-
+      Offline: run-now, edit-schedule, enable-disable, scheduler-switch, and advance-business-date controls are DISABLED
+      with a 'requires connection — job execution is online-only' reason; reads still serve from cache.
+  - code: permission.revoked
+    ux: >-
+      403 drift → refreshPermissions(); denied controls (Run / Edit schedule / Scheduler switch) pruned live, 'Your
+      access has changed' toast; the failed screen stays alive.
+  - code: network.offline
+    ux: >-
+      no_network state; cached roster / run history / scheduler status / business date served under an offline banner;
+      no command can be issued.
+test_fixtures:
+  - cached job roster + run history → browse the scheduled jobs and a failed run's error/stack trace fully offline
+  - >-
+    user holds READ_SCHEDULER but NOT EXECUTEJOB_SCHEDULER → the roster + run history are visible but the Run-job
+    control is absent (onDenied: HIDE)
+  - >-
+    user holds EXECUTEJOB_SCHEDULER, device offline → the Run-job control is disabled with a 'requires connection'
+    reason (job execution is online-only, never queued)
+  - >-
+    user holds EXECUTEJOB_SCHEDULER, online → confirm → POST /v1/jobs/{id}?command=executeJob fires once,
+    currentlyRunning flips true, a new run-history entry appears
+  - >-
+    user holds UPDATE_SCHEDULER → edit a job's cron via dynamic-template-forms → PUT /v1/jobs/{id}; an invalid cron is
+    rejected 400 and surfaced inline, no offline queue
+  - >-
+    user holds UPDATE_SCHEDULER → toggle the global scheduler off (PUT /v1/scheduler?command=stop) online-only →
+    schedulerRunning flips; a read-only user never sees the switch enabled
+acceptance_refs:
+  - View/schedule/run jobs, COB business-steps, business-date — ops persona
+review_package: idea-layer/exports/m13-scheduler-jobs/REVIEW.md
+plan_ref: idea-plan.yaml#features[m13-scheduler-jobs]
+summary: >-
+  M13 · Scheduler & Jobs (COB). The ops persona's batch-administration console: a scheduled-job roster (name · cron ·
+  next/previous run · last-run status · active toggle), a global scheduler on/off switch, the current COB business date,
+  and per-job run history (start/finish · duration · status · errors). Reads are CACHE_FIRST_SWR (fully browsable
+  offline); every mutation — run-now (executeJob), edit schedule / enable-disable, scheduler start/stop, advance
+  business date — is a SERVER-SIDE BATCH operation that is ONLINE-ONLY (never queued, disabled offline). Schedule edits
+  come from dynamic-template-forms; every entry point + command is gated (permission-capability-engine:
+  READ_/UPDATE_/EXECUTEJOB_SCHEDULER; unmapped → HIDDEN).
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T12:00:00Z'
+enriched_by: /idea-feature-enrich
+approve_hash: "sha256:aad2e1c5a9d8d8d3eb26bb0b2371513fe12ed6998698f91109c183d596de4f0e"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+status_history:
+  - from: designed
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

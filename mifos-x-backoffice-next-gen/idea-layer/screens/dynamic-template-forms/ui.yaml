@@ -1,0 +1,149 @@
+schema_version: v1.0.0
+screen_id: dynamic-template-forms
+feature: dynamic-template-forms
+name: "Dynamic Template Forms (Fineract entity template + datatable renderer)"
+archetype: form_screen
+status: enriched
+initial_state: template-loading
+
+# Foundation engine: renders a create/edit form for ANY Fineract entity purely from the
+# server-returned GET /{entity}/template payload (field defaults + allowed-value option lists)
+# joined with the entity's registered GET /v1/datatables schemas. No field is hardcoded — a
+# back-office config change (new datatable column, new code value) surfaces on the next sync
+# with zero app release. Submits assemble a JsonObject command body and flow through the
+# offline outbox so forms remain fully usable with no connectivity.
+
+states:
+  template-loading:
+    description: "Fetching GET /{entity}/template + GET /v1/datatables (CACHE_FIRST_SWR — serves the cached schema instantly, revalidates in the background)."
+  content:
+    description: "Form rendered from the resolved schema — base template fields plus registered datatable field groups; each field editable, options bound from the template allowed-value lists."
+  validation-error:
+    description: "One or more fields failed client-side validation (mandatory-missing, regex/length, dateFormat/locale) — offending fields highlighted inline, submit blocked until resolved."
+  submitting:
+    description: "Assembled JsonObject payload posting online to POST /{entity}?command={action} (or POST /{entity} for create)."
+  queued-offline:
+    description: "No connectivity (or a per-domain offline-queued entity) — the command payload was enqueued to the outbox with a durable idempotency key for exactly-once batch replay."
+  error:
+    description: "Template fetch failed and no cached schema exists, or the server rejected the submission with a 400 validation / 409 conflict body."
+
+state_model:
+  fields:
+    - name: entity
+      type: String
+      notes: "Target Fineract entity slug driving the template endpoint (clients | loans | savingsaccounts | loanproducts | ...)."
+    - name: command
+      type: String
+      notes: "Optional command token for state-transition forms (approve | disburse | repayment | activate); empty for a plain create."
+    - name: fields
+      type: List<TemplateField>
+      notes: "Resolved schema — base template fields + flattened datatable field groups; each carries type, options, mandatory, validation."
+    - name: values
+      type: Map<String, JsonElement>
+      notes: "Current user-entered values keyed by field code; serialized into the command JsonObject at submit."
+    - name: fieldErrors
+      type: Map<String, String>
+      notes: "Per-field client-validation messages; non-empty blocks submit and drives the validation-error state."
+    - name: fromCache
+      type: Boolean
+      notes: "True when the rendered schema came from the offline Room cache rather than a fresh fetch."
+
+components:
+  - id: form-header
+    type: header
+    label: "Form title (entity + create/edit/command context)"
+    testTag: "dynamic-template-forms_header"
+
+  - id: schema-fields
+    type: content_area
+    label: "Schema-rendered field list — text / number / select / date / checkbox / datatable groups"
+    testTag: "dynamic-template-forms_content"
+
+  - id: text-field
+    type: input
+    input_kind: text
+    label: "Rendered text/number field (bound to a template String/Integer/Decimal field)"
+    testTag: "dynamic-template-forms_text_field"
+    on_click:
+      action: edit_text_field
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["kotlinx.serialization"]
+        description: "Update the kotlinx.serialization values map for this field code from user input and run the field's declared validators (mandatory, min/max length, numeric range); write any message into fieldErrors and recompute canSubmit."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
+
+  - id: select-field
+    type: input
+    input_kind: select
+    label: "Rendered dropdown — options bound from the template allowed-value list (e.g. loanOfficerOptions, genderIdOptions, product/code values)"
+    testTag: "dynamic-template-forms_select_field"
+    on_click:
+      action: select_option
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["kotlinx.serialization"]
+        description: "Set the kotlinx.serialization values map entry for this field to the chosen option's id from the template allowed-value list, clear any prior fieldError for it, and re-derive dependent option lists that the template marks as cascading on this selection."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
+
+  - id: date-field
+    type: input
+    input_kind: date
+    label: "Rendered date field — emits dateFormat + locale alongside the value per the Fineract mutation contract"
+    testTag: "dynamic-template-forms_date_field"
+    on_click:
+      action: pick_date
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["kotlinx.serialization"]
+        description: "Store the picked date in the kotlinx.serialization values map together with the required dateFormat and locale keys the Fineract command body expects, validate it against any minDate/maxDate the template declares, and update fieldErrors accordingly."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
+
+  - id: submit-button
+    type: button
+    label: "Submit"
+    testTag: "dynamic-template-forms_submit"
+    on_click:
+      action: submit_form
+      action_contract:
+        effect: call_api
+        library_refs: []
+        external_library_refs: ["kotlinx.serialization"]
+        description: "Run all field validators; if clean, serialize the values map into a Fineract command JsonObject via kotlinx.serialization and enqueue it through the offline outbox (durable idempotency key) for POST /{entity}?command={action}; if offline the row waits for exactly-once batch replay."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
+
+  - id: retry-button
+    type: button
+    label: "Retry"
+    testTag: "dynamic-template-forms_retry"
+    on_click:
+      action: retry_template_fetch
+      action_contract:
+        effect: call_api
+        library_refs: []
+        external_library_refs: ["kotlinx.serialization"]
+        description: "Re-issue GET /{entity}/template + GET /v1/datatables to rebuild the field schema after a fetch failure, deserialize the response with kotlinx.serialization, refresh the Room template cache, and transition back to the content state when a schema resolves."
+        action_contract_hash: "human-edited"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T00:00:00Z"
+
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  library_refs: []
+  external_library_refs: ["kotlinx.serialization"]
+  required_modules: ["core/network", "core/database", "core/data"]
+  description: "Parse a Fineract GET /{entity}/template response plus registered /v1/datatables schemas into a typed field model, render each field with its allowed-value options, validate input against the template's mandatory/format rules, then assemble a command JsonObject via kotlinx.serialization and route it through the offline outbox."
+  description_hash: "human-edited"
+  description_author: "claude-via-idea-enrich"
+  description_authored_at: "2026-07-17T00:00:00Z"

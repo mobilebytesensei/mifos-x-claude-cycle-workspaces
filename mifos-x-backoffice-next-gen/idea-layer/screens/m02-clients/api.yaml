@@ -1,0 +1,276 @@
+feature: m02-clients
+# Fineract is consumed as-is (backend provider = none). These are the client-domain endpoints the
+# app drives; the outbox/delta orchestration around the mutations is local (offline-sync-engine).
+# Create/edit bodies are assembled by dynamic-template-forms from GET /v1/clients/template.
+endpoints:
+  - id: list_clients
+    method: GET
+    path: "/v1/clients"
+    description: >-
+      Office-scoped client list. Server filters rows by the user's office hierarchy (data scope, not
+      a permission); supports name/externalId text search, staff/status/legalForm filters, and paging.
+      Read from the CACHE_FIRST_SWR SourceOfTruth so the list renders offline.
+    request:
+      shape: object
+      params:
+        - name: officeId
+          type: long
+          description: "Scopes the list to an office (defaults to the signed-in user's office)."
+        - name: sqlSearch
+          type: string
+          description: "Free-text name / externalId search (debounced from the search field)."
+        - name: status
+          type: string
+          description: "Optional lifecycle-status filter (pending | active | closed | rejected | withdrawn | transferInProgress)."
+        - name: orderBy
+          type: string
+          default: "displayName"
+        - name: sortOrder
+          type: string
+          default: "ASC"
+    response:
+      shape: list
+      dto: ClientListItem
+      envelope: "{ totalFilteredRecords, pageItems[] }"
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+        default_limit: 30
+        description: "Fineract offset/limit paging; the list pages until the office scope is drained. Exposed to Compose via PagingSource → collectAsLazyPagingItems (never an unbounded LazyColumn)."
+    requires_auth: true
+    requires_permission: [READ_CLIENT]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: search_clients_advanced
+    method: POST
+    path: "/v2/clients/search"
+    description: >-
+      Advanced client search (the single /v2 op) — used when office/staff/status/legalForm/underHierarchy
+      filters are combined beyond what the GET list filters express. Returns the same paged envelope.
+    request:
+      shape: object
+      body: ClientSearchRequest
+    response:
+      shape: list
+      dto: ClientListItem
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+        default_limit: 30
+    requires_auth: true
+    requires_permission: [READ_CLIENT]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: get_client_detail
+    method: GET
+    path: "/v1/clients/{clientId}"
+    description: >-
+      A single client's base 360 profile (display name, external id, office, status, staff, dates,
+      legalForm). Cached per-client (CACHE_FIRST_SWR) so the 360 opens offline.
+    request:
+      shape: object
+      params:
+        - name: clientId
+          type: long
+          description: "Path param — the client to open."
+        - name: associations
+          type: string
+          default: "all"
+          description: "?associations=all pulls related sub-resources in one call where the server supports it."
+    response:
+      shape: object
+      dto: ClientDetail
+    requires_auth: true
+    requires_permission: [READ_CLIENT]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: get_client_accounts
+    method: GET
+    path: "/v1/clients/{clientId}/accounts"
+    description: "Client 360 — the loan / savings / share account summaries for the client (the Accounts tab)."
+    request:
+      shape: object
+      params:
+        - name: clientId
+          type: long
+    response:
+      shape: object
+      dto: ClientAccountsSummary
+    requires_auth: true
+    requires_permission: [READ_CLIENT]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: get_client_subresource
+    method: GET
+    path: "/v1/clients/{clientId}/{subResource}"
+    description: >-
+      Lazily loads a 360 sub-resource collection — identifiers / documents / addresses / familymembers
+      / charges / notes — when its tab is opened. Each is gated on its own READ permission and served
+      cache-first so the tab renders offline.
+    request:
+      shape: object
+      params:
+        - name: clientId
+          type: long
+        - name: subResource
+          type: string
+          description: "One of: identifiers | documents | addresses | familymembers | charges | notes."
+    response:
+      shape: list
+      dto: ClientSubResourceItem
+    requires_auth: true
+    requires_permission: [READ_CLIENTIDENTIFIER, READ_DOCUMENT, READ_ADDRESS, READ_FAMILYMEMBERS, READ_CLIENTCHARGE, READ_CLIENTNOTE]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: get_client_template
+    method: GET
+    path: "/v1/clients/template"
+    description: >-
+      Field defaults + allowed-value option lists (offices, staff, genderId, clientTypeId,
+      clientClassificationId, legalForm, savingsProductId…) that dynamic-template-forms renders the
+      create/edit form FROM — no field is hardcoded. Cached so the onboarding form opens offline.
+    request:
+      shape: object
+      params:
+        - name: officeId
+          type: long
+          description: "Scopes the template's office/staff option lists."
+        - name: clientId
+          type: long
+          description: "Present for the edit form — the template is pre-filled from the existing client."
+    response:
+      shape: object
+      dto: ClientTemplate
+    requires_auth: true
+    requires_permission: [READ_CLIENT]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: create_client
+    method: POST
+    path: "/v1/clients"
+    description: >-
+      Onboard a client. The body carries a client-generated externalId so the row can be queued
+      offline and later reconciled by external-id path mirrors; assembled by dynamic-template-forms
+      from the template. Enqueued to the outbox and replayed exactly-once via POST /v1/batches.
+    request:
+      shape: object
+      body: CreateClientRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResult
+      description: "{ officeId, clientId, resourceId, commandId, changes{} }. A queued maker-checker command returns commandId with empty changes (Submitted-for-approval)."
+    requires_auth: true
+    requires_permission: [CREATE_CLIENT]
+    idempotency: durable
+    maker_checker: true
+    offline: queued
+
+  - id: update_client
+    method: PUT
+    path: "/v1/clients/{clientId}"
+    description: "Edit a client's base profile; body assembled by dynamic-template-forms from the pre-filled template. Queued to the outbox."
+    request:
+      shape: object
+      body: UpdateClientRequest
+      headers:
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResult
+    requires_auth: true
+    requires_permission: [UPDATE_CLIENT]
+    idempotency: durable
+    maker_checker: true
+    offline: queued
+
+  - id: client_lifecycle_command
+    method: POST
+    path: "/v1/clients/{clientId}"
+    description: >-
+      Client lifecycle state transitions — one endpoint, command selected via ?command=. Each command
+      is gated by its own {ACTION}_CLIENT permission and date-bearing commands send dateFormat + locale.
+      Queued to the outbox and replayed via POST /v1/batches; maker-checker queues for approval.
+    request:
+      shape: object
+      params:
+        - name: clientId
+          type: long
+        - name: command
+          type: string
+          enum: [activate, close, reject, withdraw, reactivate, undoRejection, undoWithdrawal, proposeTransfer, acceptTransfer, assignStaff, unassignStaff]
+          description: "The lifecycle transition; the app surfaces the subset the client's current status + the user's permissions allow."
+      body: ClientCommandRequest
+      headers:
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResult
+    requires_auth: true
+    requires_permission: [ACTIVATE_CLIENT, CLOSE_CLIENT, REJECT_CLIENT, WITHDRAW_CLIENT, REACTIVATE_CLIENT, PROPOSETRANSFER_CLIENT, ASSIGNSTAFF_CLIENT]
+    idempotency: durable
+    maker_checker: true
+    offline: queued
+
+  - id: create_client_subresource
+    method: POST
+    path: "/v1/clients/{clientId}/{subResource}"
+    description: >-
+      Add a KYC sub-resource — an identifier / note / address / family member / charge (documents use
+      the multipart variant). Body assembled from the sub-resource template; gated on the matching
+      {CREATE}_{SUBRESOURCE} permission; queued to the outbox.
+    request:
+      shape: object
+      params:
+        - name: clientId
+          type: long
+        - name: subResource
+          type: string
+          description: "identifiers | notes | addresses | familymembers | charges."
+      body: ClientSubResourceRequest
+      headers:
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResult
+    requires_auth: true
+    requires_permission: [CREATE_CLIENTIDENTIFIER, CREATE_CLIENTNOTE, CREATE_ADDRESS, CREATE_FAMILYMEMBERS, CREATE_CLIENTCHARGE]
+    idempotency: durable
+    maker_checker: true
+    offline: queued
+
+  - id: upload_client_document
+    method: POST
+    path: "/v1/clients/{clientId}/documents"
+    description: >-
+      Attach a KYC document (multipart). The picked file is staged to encrypted local media and
+      registered in the outbox; the multipart upload runs on the next sync (queued while offline).
+    request:
+      shape: multipart
+      params:
+        - name: clientId
+          type: long
+      body: DocumentUpload
+    response:
+      shape: object
+      dto: CommandProcessingResult
+    requires_auth: true
+    requires_permission: [CREATE_DOCUMENT]
+    idempotency: durable
+    offline: queued
+
+notes:
+  - "No server is built for this project — these contracts document how the client drives the live Fineract instance."
+  - "Every date-bearing lifecycle command (activate/close/reject/withdraw/transfer) MUST send dateFormat + locale alongside the date field per the Fineract mutation contract."
+  - "External-ID mirrors (.../external-id/{externalId}) let onboarding create + address sub-resources BEFORE the server assigns numeric ids — the offline-first keystone for m02."
+  - "requires_permission on lifecycle_command / subresource endpoints lists the union of the commands routed through it; the resolved gate is per-command via the permission-capability-engine, not the whole set."

@@ -1,0 +1,398 @@
+screen_id: m08-products-charges
+name: "M08 · Products & Charges"
+status: designed
+archetype: master_detail
+cluster: back-office-module
+module: m08-products-charges
+initial_state: template-loading
+
+# ─────────────────────────────────────────────────────────────────────────
+# The heaviest template-driven CONFIG module: the whole product & charge
+# control plane of Fineract in one binary — loan products, savings products,
+# fixed/recurring-deposit products, share products, the charge catalog, funds,
+# tax groups/components, floating rates, and delinquency buckets. Everything
+# a product-admin persona touches. A tabbed catalog (Loan / Savings / FD /
+# Share / Charges / Funds / Tax / Rates) → per-product/charge detail → a
+# create/EDIT surface rendered ENTIRELY by the dynamic-template-forms engine
+# from GET /{entity}/template (these are the LARGEST template payloads in the
+# API — interest method/terms/accounting-rule/charge-assignment/GL-mapping
+# option lists), never hardcoded. Every mutating control is gated by its exact
+# {ACTION}_{PRODUCT|CHARGE|FUND|TAX...} permission via permission-capability-engine
+# (fail-closed HIDE for the nav root + create FABs; DISABLE-with-reason for a
+# maker without the action). Product/charge config is ADMIN-TIER and, per the
+# per-domain offline policy, ONLINE-ONLY + maker-checker — a GL-affecting
+# product/charge edit is deliberately NOT deferred-sync (offline queueing is
+# WRONG for config); the write still funnels through the offline-sync-engine
+# DraftSubmitHandler so it is durable-idempotent + maker-checker-routable, but
+# it BLOCKS (config-online-only state) when there is no connectivity rather
+# than queueing for silent later replay. Most personas (teller, collections,
+# CSR, auditor) see this module read-only or not at all.
+# ─────────────────────────────────────────────────────────────────────────
+
+# ── Business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-5) ──────────
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  description: "Lists loan/savings/FD/share products, charges, funds, tax groups, floating rates and delinquency buckets CACHE_FIRST_SWR over Store5+Room so the catalog reads offline and feeds origination-form option lists. Create/edit surfaces render via dynamic-template-forms. Every mutating command is gated by its permission and submitted ONLINE-ONLY + maker-checker with a durable idempotency key."
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "openMF Fineract Client KMP SDK"
+    - "org.mobilenativefoundation.store.store5"
+    - "androidx.room"
+    - "kotlinx.serialization"
+    - "Fineract GET /v1/{loanproducts|savingsproducts|charges|funds|taxes} (+template)"
+    - "Fineract POST /v1/{loanproducts|savingsproducts|charges|funds|taxes/group} (create/edit — online-only)"
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T00:00:00Z"
+  required_modules:
+    - core/store
+    - core/data
+    - core/network
+    - core/database
+    - core/permissions
+
+# ── States (loading/content/empty/error + submitting + config-online-only) ──
+states:
+  template-loading:
+    description: "Fetching the product/charge catalog and, when a create/edit form opens, its GET /{entity}/template payload (CACHE_FIRST_SWR — the cached catalog + last template render instantly, revalidated in the background). The large template option lists (interest methods, repayment strategies, accounting rules, charge/GL options) resolve here."
+  content:
+    description: "The product & charge console rendered — tabbed catalog (Loan / Savings / FD / Share products, Charges, Funds, Tax, Floating rates, Delinquency buckets) with per-item detail, and a create/edit form rendered from the entity template. Each create/edit/delete control is VISIBLE/enabled only per the user's {ACTION}_{ENTITY} permission; a product-admin sees the full surface, a read-only persona sees the catalog with no mutating controls."
+  empty:
+    description: "A catalog tab has no items yet (e.g. no charges defined) — shows an illustration + the empty message + a 'Create {entity}' CTA (visible only if the user holds the matching CREATE_ permission for that tab)."
+  submitting:
+    description: "A product/charge/fund/tax create or edit is posting ONLINE to POST /{entity} (config is online-only). The control shows a spinner; a maker-checkerable submission returns a commandId with empty changes and lands 'Submitted for approval' (PENDING_APPROVAL) rather than being optimistically applied."
+  config-online-only:
+    description: "The user attempted a product/charge config write while offline. Product/charge edits are deliberately ONLINE-ONLY + maker-checker (never deferred-sync — a GL-affecting config change must not replay silently later), so the action is BLOCKED with a 'Connect to edit configuration' banner; the catalog stays fully readable from cache underneath."
+  error:
+    description: "Catalog/template fetch failed with no cache, or the server rejected the create/edit with a 400 validation / 409 conflict body. Shows the server error verbatim + a Retry; a rejected maker-checker submission routes to needs-attention-inbox, never silently dropped; the last-known cached catalog stays usable offline."
+
+# ── Shell (M08 nav root; permission-gated at the module root on the product/charge group) ──
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  fab_visible: true
+  snackbar_visible: true
+
+# ── Components ──────────────────────────────────────────────────────────
+components:
+  - id: header
+    type: header
+    label: "{strings.m08_title}"
+    testTag: "m08-products-charges_header"
+    visible_states: [template-loading, content, empty, submitting, config-online-only, error]
+
+  - id: catalog_tabs
+    type: chip
+    label: "{strings.m08_catalog_tabs}"
+    testTag: "m08-products-charges_tabs"
+    visible_states: [content, empty]
+    on_click:
+      action: switch_catalog_tab
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["kotlinx.serialization"]
+        reads_from: ["products_charges"]
+        description: "Switch the active catalog tab (Loan / Savings / FD / Share products, Charges, Funds, Tax, Floating rates, Delinquency buckets) and re-filter the in-memory CACHE_FIRST_SWR catalog rows to that entity type. Pure VM-internal state transition over the already-cached @Serializable rows — no network call, works fully offline."
+
+  - id: catalog_search_field
+    type: text_field
+    label: "{strings.m08_search}"
+    testTag: "m08-products-charges_search"
+    visible_states: [content, empty]
+    description: "Filters the active catalog tab by product/charge name or short-name within the cached working set. Search is offline over the cached catalog; a 403 never appears here (read-gated by the READ_ permission of the active tab at the module root)."
+    on_click:
+      action: search_catalog
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["kotlinx.serialization"]
+        reads_from: ["products_charges"]
+        description: "Filters the active tab's cached product/charge rows by the entered query (name / short-name) with a pure VM-internal state transition over the already-cached @Serializable catalog — no network call, fully offline. Clears when the query is emptied."
+
+  - id: catalog_list
+    type: content_area
+    label: "{strings.m08_catalog_list}"
+    testTag: "m08-products-charges_content"
+    visible_states: [content]
+    empty_label: "{strings.m08_empty_body}"
+    description: "The catalog list for the active tab — each row shows the product/charge name, short-name, key config summary (loan: interest method + term; savings: nominal interest; charge: calc type + amount + applies-to) and Active/Inactive status. Rendered via PagingScreenContent over Store<PageKey,List<CatalogItem>>. Read-only for personas without CREATE/UPDATE permissions."
+
+  - id: catalog_row
+    type: list_item
+    label: "{strings.m08_catalog_row}"
+    testTag: "m08-products-charges_item"
+    visible_states: [content]
+    on_click:
+      action: open_product_detail
+      target: product-editor
+      action_contract:
+        effect: navigate
+        description: "Opens the selected product/charge's detail (full config read-only view: interest/terms/accounting-rule/charge-assignment for a product, or calc-type/amount/applies-to/GL-mapping for a charge). The detail's Edit/Delete controls are each gated by the matching UPDATE_/DELETE_ permission and disabled-with-reason for a maker without the action."
+
+  # ── Create FABs — one per product/charge family, each HIDE-gated on its CREATE_ permission ──
+  - id: create_loan_product_fab
+    type: fab
+    label: "{strings.m08_create_loan_product}"
+    testTag: "m08-products-charges_create_loan_product"
+    gated_permission: CREATE_LOANPRODUCT
+    on_denied: HIDE
+    visible_states: [content, empty]
+    on_click:
+      action: create_loan_product
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/loanproducts/template"
+          - "Fineract POST /v1/loanproducts"
+        reads_from: ["product_templates"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["loanProducts"]
+        description: "Open the loan-product editor (dynamic-template-forms from the large GET /v1/loanproducts/template — interest method/rate, repayment strategy, amortization, term ranges, accounting rule + GL mappings, charges, delinquency bucket) then submit POST /v1/loanproducts ONLINE. Hidden unless the user holds CREATE_LOANPRODUCT; durable-idempotent + maker-checker aware; blocked offline."
+
+  - id: create_savings_product_fab
+    type: fab
+    label: "{strings.m08_create_savings_product}"
+    testTag: "m08-products-charges_create_savings_product"
+    gated_permission: CREATE_SAVINGSPRODUCT
+    on_denied: HIDE
+    visible_states: [content, empty]
+    on_click:
+      action: create_savings_product
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/savingsproducts/template"
+          - "Fineract POST /v1/savingsproducts"
+        reads_from: ["product_templates"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["savingsProducts"]
+        description: "Open the savings-product editor (dynamic-template-forms from GET /v1/savingsproducts/template — nominal annual interest, compounding/posting period, calculation type, min opening balance, lock-in, accounting rule + GL mappings, charges) then submit POST /v1/savingsproducts ONLINE. Hidden unless the user holds CREATE_SAVINGSPRODUCT; durable-idempotent + maker-checker aware; blocked when offline."
+
+  - id: create_charge_fab
+    type: fab
+    label: "{strings.m08_create_charge}"
+    testTag: "m08-products-charges_create_charge"
+    gated_permission: CREATE_CHARGE
+    on_denied: HIDE
+    visible_states: [content, empty]
+    on_click:
+      action: create_charge
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/charges/template"
+          - "Fineract POST /v1/charges"
+        reads_from: ["product_templates"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["charges"]
+        description: "Open the charge editor (dynamic-template-forms from GET /v1/charges/template — applies-to loan/savings/client, time type, calculation type flat/%, amount, payment mode, currency, GL income account, tax group) then submit POST /v1/charges ONLINE. Hidden unless the user holds CREATE_CHARGE; the new charge feeds product charge-assignment lists; maker-checker aware; blocked offline."
+
+  - id: create_fund_fab
+    type: fab
+    label: "{strings.m08_create_fund}"
+    testTag: "m08-products-charges_create_fund"
+    gated_permission: CREATE_FUND
+    on_denied: HIDE
+    visible_states: [content, empty]
+    on_click:
+      action: create_fund
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract POST /v1/funds"
+        reads_from: ["product_templates"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["funds"]
+        description: "Open the fund editor (dynamic-template-forms — fund name + external id; a fund is a lightweight source-of-money label attached to loans) then submit POST /v1/funds ONLINE. Hidden unless the user holds CREATE_FUND; the fund then feeds loan-product/loan-account fund option lists; durable-idempotent + maker-checker aware; blocked when offline (config online-only)."
+
+  - id: create_tax_group_fab
+    type: fab
+    label: "{strings.m08_create_tax_group}"
+    testTag: "m08-products-charges_create_tax_group"
+    gated_permission: CREATE_TAXGROUP
+    on_denied: HIDE
+    visible_states: [content, empty]
+    on_click:
+      action: create_tax_group
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/taxes/group/template"
+          - "Fineract POST /v1/taxes/group"
+        reads_from: ["product_templates"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["taxGroups"]
+        description: "Open the tax-group editor (dynamic-template-forms from GET /v1/taxes/group/template — a group bundles tax components with start dates, each mapping a percentage to a GL liability account) then submit POST /v1/taxes/group ONLINE. Hidden unless the user holds CREATE_TAXGROUP; the group then feeds charge tax-group lists; durable-idempotent + maker-checker aware; blocked offline."
+
+  # ── Detail-level edit / delete / activate (DISABLE-with-reason on a visible detail) ──
+  - id: edit_product_button
+    type: button
+    label: "{strings.m08_edit_product}"
+    testTag: "m08-products-charges_edit_product"
+    variant: primary
+    gated_permission: UPDATE_LOANPRODUCT
+    on_denied: DISABLE
+    disabled_reason: "Requires UPDATE_LOANPRODUCT — ask your product admin"
+    visible_states: [content]
+    enabled_states: [content]
+    on_click:
+      action: edit_product
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/loanproducts/{id}"
+          - "Fineract PUT /v1/loanproducts/{id}"
+        reads_from: ["products_charges"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["loanProducts"]
+        description: "Open the product editor pre-filled from GET /v1/loanproducts/{id} (dynamic-template-forms) then submit an edit PUT /v1/loanproducts/{id} ONLINE. DISABLE-with-reason for a maker lacking UPDATE_LOANPRODUCT; the concrete UPDATE_{PRODUCT} is resolved per active tab (savings -> UPDATE_SAVINGSPRODUCT). Durable-idempotent + maker-checker aware; blocked when offline."
+
+  - id: edit_charge_button
+    type: button
+    label: "{strings.m08_edit_charge}"
+    testTag: "m08-products-charges_edit_charge"
+    variant: secondary
+    gated_permission: UPDATE_CHARGE
+    on_denied: DISABLE
+    disabled_reason: "Requires UPDATE_CHARGE"
+    visible_states: [content]
+    enabled_states: [content]
+    on_click:
+      action: edit_charge
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/charges/{id}"
+          - "Fineract PUT /v1/charges/{id}"
+        reads_from: ["products_charges"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["charges"]
+        description: "Open the charge editor pre-filled from GET /v1/charges/{id} (dynamic-template-forms) then submit PUT /v1/charges/{id} ONLINE — amount, calculation type, applies-to, GL income account, tax group. DISABLE-with-reason for a maker lacking UPDATE_CHARGE. Durable-idempotent + maker-checker aware; blocked when offline (config online-only)."
+
+  - id: delete_product_button
+    type: button
+    label: "{strings.m08_delete_product}"
+    testTag: "m08-products-charges_delete_product"
+    variant: text
+    gated_permission: DELETE_LOANPRODUCT
+    on_denied: DISABLE
+    disabled_reason: "Requires DELETE_LOANPRODUCT — ask your product admin"
+    visible_states: [content]
+    enabled_states: [content]
+    on_click:
+      action: delete_product
+      action_contract:
+        effect: delete
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract DELETE /v1/loanproducts/{id}"
+        reads_from: ["products_charges"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["loanProducts"]
+        description: "Show a destructive confirm dialog then submit DELETE /v1/loanproducts/{id} ONLINE — only permitted while the product has no accounts referencing it (the server 409-rejects otherwise, surfaced verbatim). DISABLE-with-reason for a user lacking DELETE_LOANPRODUCT; the concrete DELETE_{PRODUCT|CHARGE} is resolved per active tab. Maker-checker aware; blocked when offline (config online-only)."
+
+  - id: toggle_charge_active_button
+    type: switch
+    label: "{strings.m08_toggle_charge_active}"
+    testTag: "m08-products-charges_toggle_charge_active"
+    gated_permission: UPDATE_CHARGE
+    on_denied: DISABLE
+    disabled_reason: "Requires UPDATE_CHARGE"
+    visible_states: [content]
+    enabled_states: [content]
+    on_click:
+      action: toggle_charge_active
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract PUT /v1/charges/{id}"
+        reads_from: ["products_charges"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["charges"]
+        description: "Toggle a charge active/inactive via PUT /v1/charges/{id} with the active flag flipped, ONLINE — an inactive charge is retained but hidden from new product charge-assignment lists. DISABLE-with-reason for a user lacking UPDATE_CHARGE. Durable-idempotent; blocked when offline (config online-only)."
+
+  # ── Empty-state CTA + offline banner + error recovery ──
+  - id: empty_create_cta
+    type: button
+    label: "{strings.m08_create_first}"
+    testTag: "m08-products-charges_empty_cta"
+    variant: primary
+    gated_permission: CREATE_CHARGE
+    on_denied: HIDE
+    visible_states: [empty]
+    on_click:
+      action: create_charge
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/charges/template"
+          - "Fineract POST /v1/charges"
+        reads_from: ["product_templates"]
+        writes_to: ["draft_outbox"]
+        produces_state: submitting
+        invalidates: ["charges"]
+        description: "From the empty state of the active tab, opens the create form (dynamic-template-forms from the tab's GET /{entity}/template) then submits POST /{entity} ONLINE. Hidden (fail-closed) unless the user holds the tab's CREATE_ permission; the create is durable-idempotent + maker-checker aware and blocked when offline (config online-only)."
+
+  - id: connect_to_edit_banner
+    type: button
+    label: "{strings.m08_connect_to_edit}"
+    testTag: "m08-products-charges_connect_banner"
+    variant: text
+    visible_states: [config-online-only]
+    on_click:
+      action: dismiss_config_offline_banner
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["kotlinx.serialization"]
+        description: "Dismiss the 'connect to edit configuration' banner and return to the read-only catalog content state. Product/charge config edits are online-only + maker-checker (never offline-queued), so no write is enqueued here — the user keeps browsing the cached catalog until connectivity returns."
+
+  - id: retry_button
+    type: button
+    label: "{strings.m08_retry}"
+    testTag: "m08-products-charges_retry"
+    variant: primary
+    visible_states: [error]
+    on_click:
+      action: retry_load
+      action_contract:
+        effect: call_api
+        library_refs: ["cmp-network-monitor"]
+        external_library_refs:
+          - "openMF Fineract Client KMP SDK"
+          - "Fineract GET /v1/loanproducts"
+          - "Fineract GET /v1/charges"
+        reads_from: ["products_charges"]
+        produces_state: template-loading
+        invalidates: ["loanProducts", "charges"]
+        description: "Re-fetch the product/charge catalog (and any pending template) via the Store5 stream.refreshFresh() path over CACHE_FIRST_SWR after a fetch failure. On a 403 drift it routes to the permission-refresh protocol instead of blindly retrying; the last cached catalog stays visible underneath."

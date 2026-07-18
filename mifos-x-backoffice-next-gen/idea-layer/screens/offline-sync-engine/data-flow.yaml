@@ -1,0 +1,136 @@
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: offline-sync-engine
+
+# The offline write-outbox + per-cache freshness are the two NEW local infra tables the whole app
+# rides on. Fineract is the upstream SoT for reads; draft_outbox is the local system-of-record for
+# un-synced work (irreplaceable until replayed).
+
+entries:
+  # ── 1. Manual/edge-triggered outbox drain via POST /v1/batches ────────
+  - screen_id: offline-sync-engine
+    trigger: on_interact
+    produces_state: syncing
+    auth_required: true
+    endpoints:
+      - api_id: replay_batch
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          RoomSubmitOutbox over framework_submit_drafts (Room v11). Durable idempotency_key +
+          (action,entity) composite key; PENDING never pruned, terminal rows pruned at 30d. Survives
+          crash + reinstall-restore.
+    dtos:
+      - name: BatchRequest
+        role: request
+        api_id: replay_batch
+      - name: BatchResponse
+        role: response
+        api_id: replay_batch
+    privacy_constraint:
+      scope: user_synced
+      notes: "Payloads are money-movement commands scoped to the signed-in officer; encrypted at rest (SQLCipher)."
+    side_effects:
+      - kind: invalidate_cache
+        target: "read caches for the mutated entities (loans/savings/collections) — revalidated by the follow-on delta-pull"
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer re-run for any entry left RETRYING"
+    error_paths:
+      - error_code: batch.rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: sync_batch_rejected
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: sync_will_retry_when_online
+      - error_code: auth.session_expired
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: sync_reauth_required
+
+  # ── 2. Connectivity-regain background drain (worker) ──────────────────
+  - screen_id: offline-sync-engine
+    trigger: on_background_sync
+    produces_state: syncing
+    auth_required: true
+    endpoints:
+      - api_id: replay_batch
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+    side_effects:
+      - kind: notification
+        target: "N-pending sync badge; a single 'sync complete' / 'N failed' snackbar (notify-once)"
+    error_paths:
+      - error_code: batch.partial_failure
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: sync_some_failed
+      - error_code: network.offline
+        behavior: silent
+        message_key: sync_deferred
+
+  # ── 3. Per-entity delta-pull hydrate (changeListSync) ─────────────────
+  - screen_id: offline-sync-engine
+    trigger: on_interact
+    produces_state: syncing
+    auth_required: true
+    endpoints:
+      - api_id: delta_changelist
+        transport: rest
+    tables:
+      - name: fetched_at
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: "FetchedAtEntity — per-cache freshness/TTL watermark; advanced on every successful delta-pull so CACHE_FIRST_SWR knows what is Stale."
+    dtos:
+      - name: AuditEntry
+        role: response
+        api_id: delta_changelist
+    cache:
+      strategy: cache_first
+      ttl_seconds: 7200
+      key_template: "fineract:delta:{officeId}"
+      shape: flat
+    privacy_constraint:
+      scope: user_synced
+      notes: "Delta feed scoped to the user's office/portfolio only — never a global tenant pull."
+    error_paths:
+      - error_code: delta_pull.failed
+        behavior: retry
+        message_key: sync_delta_failed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: sync_showing_cached
+
+  # ── 4. Periodic freshness re-check (SWR revalidate) ───────────────────
+  - screen_id: offline-sync-engine
+    trigger: on_timer
+    interval_seconds: 7200
+    produces_state: idle
+    auth_required: true
+    endpoints:
+      - api_id: delta_changelist
+        transport: rest
+    tables:
+      - name: fetched_at
+        mutation: read
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 7200
+      key_template: "fineract:delta:{officeId}"
+    error_paths:
+      - error_code: network.offline
+        behavior: silent
+        message_key: sync_deferred

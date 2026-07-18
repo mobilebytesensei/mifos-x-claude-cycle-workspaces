@@ -1,0 +1,109 @@
+schema_version: v1.0.0
+feature: m13-scheduler-jobs
+scenarios:
+  # ── Behavior: acceptance-criteria keystones ──────────────────────────
+  - id: roster_and_run_history_offline
+    description: "A previously-cached scheduled-job roster + run history browse fully offline — the jobs and a failed run's error/stack trace render from the Room cache."
+    preconditions: ["the job roster + run history were previously synced", "device offline"]
+    actions: ["open the Scheduler module (cached)", "open a job's detail", "open its run history", "open a Failed run entry"]
+    assertions: ["the job roster renders from cache (CACHE_FIRST_SWR)", "a job's run history displays each run's start/finish, duration, and status offline", "a failed run's error message + stack trace are visible offline", "an 'Offline · showing cached scheduler data' banner is shown", "no network call is required to read"]
+    priority: high
+
+  - id: run_job_hidden_without_execute_permission
+    description: "A user lacking EXECUTEJOB_SCHEDULER never sees the Run-job control (onDenied: HIDE, fail-closed), even though they can read the roster."
+    preconditions: ["user holds READ_SCHEDULER but NOT EXECUTEJOB_SCHEDULER"]
+    actions: ["open the Scheduler module", "open a job's detail"]
+    assertions: ["the job roster + run history are visible (read-gated)", "the Run-job control is absent (not merely disabled)", "no run-job action is reachable via deep link either"]
+    priority: high
+
+  - id: run_job_online_only_disabled_offline
+    description: "Running a job is online-only — offline the Run-job control is disabled with a 'requires connection' reason and is NEVER queued to the offline outbox."
+    preconditions: ["user holds EXECUTEJOB_SCHEDULER", "device offline"]
+    actions: ["open the Scheduler module (cached)", "open a job's detail", "attempt to run the job"]
+    assertions: ["the Run-job control is DISABLED offline with a 'requires connection — job execution is online-only' reason", "no POST /v1/jobs/{id}?command=executeJob request is made", "the command is NOT written to draft_outbox (nothing queues; a COB run cannot be deferred)"]
+    priority: high
+
+  - id: run_job_online_fires_once
+    description: "Online, running a job posts executeJob once, flips the job's currentlyRunning flag, and adds a new run-history entry."
+    preconditions: ["user holds EXECUTEJOB_SCHEDULER", "online"]
+    actions: ["open a job's detail", "tap Run job", "confirm"]
+    assertions: ["a confirm dialog is shown before the run", "exactly one POST /v1/jobs/{jobId}?command=executeJob is made", "the job's status chip flips to 'Running'", "a new entry appears in the run history after the run is triggered"]
+    priority: high
+
+  - id: edit_schedule_gated_and_online_only
+    description: "Editing a job's cron / active flag is gated on UPDATE_SCHEDULER, rendered by dynamic-template-forms, online-only, and validates the cron."
+    preconditions: ["user holds UPDATE_SCHEDULER", "online"]
+    actions: ["open a job's detail", "tap Edit schedule", "change the cron expression", "submit"]
+    assertions: ["the edit-schedule form (dynamic-template-forms) opens pre-filled with the current cron + active flag", "submit issues a PUT /v1/jobs/{jobId} (online-only, never queued)", "an invalid cron is rejected 400 and surfaced inline; the edit is not applied", "a user without UPDATE_SCHEDULER sees the Edit-schedule control disabled-with-reason"]
+    priority: high
+
+  - id: scheduler_switch_gated_online_only
+    description: "The global scheduler on/off switch is gated on UPDATE_SCHEDULER and posts online-only."
+    preconditions: ["user holds UPDATE_SCHEDULER", "online"]
+    actions: ["toggle the global scheduler off"]
+    assertions: ["a PUT /v1/scheduler?command=stop is made (online-only, never queued)", "the schedulerRunning state flips to off", "a read-only (READ_SCHEDULER-only) user sees the switch disabled-with-reason", "offline the switch is disabled with a 'requires connection' reason"]
+    priority: medium
+
+  - id: advance_business_date_gated
+    description: "Advancing the COB business date is gated on UPDATE_SCHEDULER, confirmed, and online-only."
+    preconditions: ["user holds UPDATE_SCHEDULER", "online"]
+    actions: ["tap Advance business date", "confirm the new date"]
+    assertions: ["the Advance-business-date control is hidden entirely unless UPDATE_SCHEDULER is held", "a confirm form (type=BUSINESS_DATE + date + dateFormat + locale) is shown", "a POST /v1/businessdate is made online-only", "the business-date header updates on success"]
+    priority: medium
+
+  - id: command_rejected_surfaces_inline
+    description: "A server-rejected scheduler command (invalid cron / run failed to start) surfaces the Fineract error inline — there is no offline-queue triage because these commands never queue."
+    preconditions: ["user holds UPDATE_SCHEDULER", "online", "the server will reject the command"]
+    actions: ["edit a schedule with an invalid cron", "submit"]
+    assertions: ["the Fineract server error is surfaced inline beside the control", "the command is NOT routed to needs-attention-inbox (scheduler commands never queue)", "the edit stays unapplied"]
+    priority: medium
+
+  - id: permission_drift_prunes_controls
+    description: "A 403 permission-drift refreshes permissions and prunes now-denied controls live rather than crashing."
+    preconditions: ["user's EXECUTEJOB_SCHEDULER was revoked server-side since login", "online"]
+    actions: ["attempt to run a job", "receive a 403"]
+    assertions: ["the 403 triggers refreshPermissions() rather than a crash", "the Run-job control is pruned (hidden) after the refresh", "a 'Your access has changed' toast is shown", "the screen stays alive"]
+    priority: medium
+
+  # ── State coverage (one per ui.yaml state) ───────────────────────────
+  - id: loading_state_shows_progress
+    description: "The initial job-roster + scheduler-status fetch shows the loading state."
+    preconditions: ["no cached scheduler data", "fetch in flight"]
+    actions: ["open the Scheduler module"]
+    assertions: ["a loading skeleton is shown while GET /v1/jobs + GET /v1/scheduler + GET /v1/businessdate are in flight"]
+    priority: low
+
+  - id: content_state_shows_roster
+    description: "The scheduler console renders the job roster with cron, run times, status chips, active toggles, plus the scheduler switch and business date."
+    preconditions: ["tenant has registered jobs", "data loaded"]
+    actions: ["open the Scheduler module"]
+    assertions: ["each job row shows display name, cron expression, next & previous run time, last-run status chip, and an active toggle", "the global scheduler on/off switch and the COB business-date header are shown", "the roster is served from the Store5 cache and background-revalidated"]
+    priority: high
+
+  - id: empty_state_no_jobs
+    description: "A tenant with no registered scheduled jobs shows the empty state (no create action)."
+    preconditions: ["no scheduled jobs registered for the tenant"]
+    actions: ["open the Scheduler module"]
+    assertions: ["the empty state with a 'No scheduled jobs configured' message is shown", "no create/FAB action is offered (Fineract job definitions are server-registered, not created from the app)"]
+    priority: medium
+
+  - id: submitting_state_shows_progress
+    description: "Issuing a scheduler command shows the submitting state while the online command is posted."
+    preconditions: ["user holds EXECUTEJOB_SCHEDULER", "online"]
+    actions: ["run a job and confirm"]
+    assertions: ["a per-command progress indicator (PENDING → SUBMITTED) is shown while the CommandProcessingResult is awaited", "the affected control is disabled during submit", "on 2xx the roster/run-history refreshes"]
+    priority: medium
+
+  - id: no_network_serves_cache_disables_writes
+    description: "Offline with cached scheduler data shows the cached roster/run history/status plus an offline banner, and disables every mutating control."
+    preconditions: ["scheduler data was previously synced", "device offline"]
+    actions: ["open the Scheduler module offline"]
+    assertions: ["the last-synced roster + run history + scheduler status + business date are served from cache", "an 'Offline · showing cached scheduler data' banner is shown", "the Run-job / Edit-schedule / toggle / scheduler-switch / advance-business-date controls are disabled with a 'requires connection' reason"]
+    priority: high
+
+  - id: error_state_offers_retry
+    description: "A failed fetch with no cache shows the error state with the server message and a Retry CTA; a 403 refreshes permissions instead."
+    preconditions: ["fetch fails (5xx) and no cached scheduler data exists"]
+    actions: ["open the Scheduler module", "tap Retry"]
+    assertions: ["the error state shows the server message + a Retry CTA", "Retry re-issues GET /v1/jobs + GET /v1/scheduler + GET /v1/businessdate", "a 403 routes through the permission-drift refresh rather than a hard crash"]
+    priority: medium

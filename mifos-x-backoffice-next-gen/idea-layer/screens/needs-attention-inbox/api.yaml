@@ -1,0 +1,112 @@
+feature: needs-attention-inbox
+
+# The inbox is a fan-in over multiple Fineract sources PLUS the local outbox.
+# Reads are permission-filtered client-side (each source only contributes rows the
+# user is authorized to see); the local outbox source has no HTTP call.
+
+endpoints:
+  # ── SOURCE 1 · Maker-checker approvals awaiting THIS user ──────────────────
+  - id: list_pending_approvals
+    method: GET
+    path: "/v1/makercheckers"
+    description: >-
+      Self-scoped list of queued maker-checker commands. Contributes an 'approvals' row per entry the
+      user canCheck({action},{entity}) (or holds CHECKER_SUPER_USER). Server filters to the checker's
+      scope; the client further gates per-entry before rendering.
+    query_params:
+      - { name: makerDateTimeFrom, type: string, required: false }
+      - { name: entityName, type: string, required: false }
+      - { name: actionName, type: string, required: false }
+    response:
+      shape: list
+      dto: MakerCheckerEntryDto
+    pagination:
+      style: offset-limit
+      params: [offset, limit]
+      envelope: bare_array
+    requires_auth: true
+    requires_permission: ["CHECKER_SUPER_USER"]   # any *_CHECKER also satisfies (hasAnyChecker); server is the real gate
+    cache: cache_first_swr
+
+  - id: approve_or_reject_entry
+    method: POST
+    path: "/v1/makercheckers/{auditId}"
+    description: >-
+      Inline approve/reject a queued command from the inbox (?command=approve|reject). Only exposed on
+      rows the user is authorized to check. Deep approval workflow lives in M15.
+    query_params:
+      - { name: command, type: string, required: true }   # approve | reject
+    response:
+      shape: object
+      dto: CommandProcessingResultDto
+    requires_auth: true
+    requires_permission: ["CHECKER_SUPER_USER"]
+    idempotency: header
+
+  # ── SOURCE 2 · Failed / rejected offline replays (LOCAL outbox — no HTTP GET) ──
+  - id: replay_failed_command
+    method: POST
+    path: "/v1/batches"
+    description: >-
+      Retry re-enqueues a rejected outbox command for replay via the transactional batch endpoint
+      (enclosingTransaction). Replay revalidates the user's permission for the command; a fresh durable
+      idempotency key is minted so a crash between retry and replay cannot double-post.
+    query_params:
+      - { name: enclosingTransaction, type: boolean, required: false }
+    response:
+      shape: list
+      dto: BatchResponseDto
+    requires_auth: true
+    requires_permission: []   # per-command permission is revalidated on replay, not gated here
+    idempotency: durable
+    source_note: "The failed-command ROWS themselves come from DraftDao.observeAllFailed() (local Room), not an HTTP GET — see data-flow.yaml."
+
+  # ── SOURCE 3 · Overdue field / collections tasks the user owns ─────────────
+  - id: list_overdue_collections
+    method: POST
+    path: "/v1/collectionsheet"
+    description: >-
+      Generate the user's staffId-scoped collection sheet to detect overdue / undue-today rows; each
+      overdue center/group contributes an 'overdue_tasks' row. Gated by READ_COLLECTIONSHEET; scoped by
+      staffId so a collections officer sees only their route.
+    query_params:
+      - { name: command, type: string, required: true }   # generateCollectionSheet
+    response:
+      shape: object
+      dto: CollectionSheetDto
+    requires_auth: true
+    requires_permission: ["READ_COLLECTIONSHEET"]
+    cache: cache_first_swr
+
+  # ── SOURCE 4 · Unread actionable alerts / notifications ────────────────────
+  - id: list_notifications
+    method: GET
+    path: "/v1/notifications"
+    description: >-
+      Poll unread, actionable notifications (e.g. a loan approved, a client transfer proposed, a job
+      failed). Contributes 'alerts' rows; each carries a deep-link target resolved on tap.
+    query_params:
+      - { name: isRead, type: boolean, required: false }
+      - { name: offset, type: integer, required: false }
+      - { name: limit, type: integer, required: false }
+    response:
+      shape: list
+      dto: NotificationDto
+    pagination:
+      style: offset-limit
+      params: [offset, limit]
+      envelope: paged
+    requires_auth: true
+    requires_permission: []
+    cache: cache_first_swr
+
+  - id: mark_notification_read
+    method: PUT
+    path: "/v1/notifications"
+    description: "Mark alert rows read once actioned/snoozed so they stop surfacing in the inbox."
+    response:
+      shape: object
+      dto: CommandProcessingResultDto
+    requires_auth: true
+    requires_permission: []
+    idempotency: none

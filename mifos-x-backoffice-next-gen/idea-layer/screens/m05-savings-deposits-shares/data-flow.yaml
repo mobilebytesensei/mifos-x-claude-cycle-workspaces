@@ -1,0 +1,200 @@
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: m05-savings-deposits-shares
+
+# Reads ride CACHE_FIRST_SWR Store5 over a Room cache (Fineract is the upstream SoT). Every
+# money-movement command is written to the durable RoomSubmitOutbox (offline-sync-engine's
+# draft_outbox / framework_submit_drafts) and replayed exactly-once via POST /v1/batches — the
+# outbox row, not the deposit_accounts cache, is the local system-of-record until replayed.
+
+entries:
+  # ── 1. On-mount: hydrate the account list (savings/FD/RD/share) ────────
+  - screen_id: m05-savings-deposits-shares
+    trigger: on_mount
+    produces_state: content
+    loading_state: loading
+    error_state: error
+    auth_required: true
+    endpoints:
+      - api_id: list_savings
+        transport: rest
+      - api_id: list_fixed_deposits
+        transport: rest
+      - api_id: list_recurring_deposits
+        transport: rest
+      - api_id: list_share_accounts
+        transport: rest
+    tables:
+      - name: deposit_accounts
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Room deposit_accounts cache (account_id, account_type, client_id, product_id, status,
+          balance, on_hold, share_count, maturity_date, payload_json). CACHE_FIRST_SWR read; TTL
+          advanced via FetchedAt on each successful fetch. Detail associations (transactions,
+          charges) cached under the same key.
+    dtos:
+      - name: SavingsAccountDto
+        role: response
+        api_id: list_savings
+      - name: FixedDepositAccountDto
+        role: response
+        api_id: list_fixed_deposits
+      - name: RecurringDepositAccountDto
+        role: response
+        api_id: list_recurring_deposits
+      - name: ShareAccountDto
+        role: response
+        api_id: list_share_accounts
+    cache:
+      strategy: cache_first
+      ttl_seconds: 900
+      key_template: "fineract:deposit-accounts:{officeId}:{clientId}"
+      shape: list
+    privacy_constraint:
+      scope: user_synced
+      notes: "Account balances are scoped to the signed-in officer's office/portfolio; encrypted at rest (SQLCipher)."
+    on_error:
+      nav_target: null
+      error_code: deposit_list_failed
+    error_paths:
+      - error_code: deposit_list_failed
+        behavior: fallback_cache
+        message_key: m05_list_failed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m05_showing_cached
+
+  # ── 2. On-interact: open account detail (transactions + charges + holds) ──
+  - screen_id: m05-savings-deposits-shares
+    trigger: on_interact
+    produces_state: content
+    loading_state: loading
+    error_state: error
+    auth_required: true
+    endpoints:
+      - api_id: list_savings
+        transport: rest
+    tables:
+      - name: deposit_accounts
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: "Detail GET (?associations=transactions,charges) upserts the transaction ledger + charges into the same account row's payload_json."
+    cache:
+      strategy: cache_first
+      ttl_seconds: 900
+      key_template: "fineract:deposit-account:{accountId}"
+      shape: object
+    error_paths:
+      - error_code: account_detail_failed
+        behavior: fallback_cache
+        message_key: m05_detail_failed
+
+  # ── 3. On-interact: money-movement + lifecycle command via the durable outbox ──
+  - screen_id: m05-savings-deposits-shares
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: savings_transaction
+        transport: rest
+      - api_id: savings_lifecycle
+        transport: rest
+      - api_id: fixed_deposit_lifecycle
+        transport: rest
+      - api_id: recurring_deposit_transaction
+        transport: rest
+      - api_id: share_lifecycle
+        transport: rest
+      - api_id: account_transfer
+        transport: rest
+      - api_id: standing_instruction
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          RoomSubmitOutbox over framework_submit_drafts (Room v11). The command JsonObject is
+          serialized with a DURABLE idempotency_key + (action, entity) composite key; PENDING never
+          pruned, terminal rows pruned at 30d. Survives crash + reinstall-restore so a
+          deposit/withdrawal posts exactly-once on replay (zero double-post).
+      - name: deposit_accounts
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: "Optimistic balance/status/ledger update marked pending-sync until the outbox replay confirms; reconciled against the server on delta-pull."
+    dtos:
+      - name: SavingsTransactionRequest
+        role: request
+        api_id: savings_transaction
+      - name: SavingsCommandRequest
+        role: request
+        api_id: savings_lifecycle
+      - name: ShareCommandRequest
+        role: request
+        api_id: share_lifecycle
+      - name: CommandProcessingResult
+        role: response
+        api_id: savings_transaction
+    privacy_constraint:
+      scope: user_synced
+      notes: "Command payloads are money-movement, scoped to the signed-in officer; encrypted at rest."
+    side_effects:
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer drains the queued command via offline-sync-engine's POST /v1/batches on reconnect"
+      - kind: invalidate_cache
+        target: "the mutated account's read cache (balance/transactions/holds) — revalidated by the follow-on delta-pull"
+    error_paths:
+      - error_code: command_rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: m05_command_rejected
+      - error_code: insufficient_balance
+        behavior: retry
+        message_key: m05_insufficient_balance
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m05_queued_offline
+      - error_code: permission.drift
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: m05_access_changed
+      - error_code: maker_checker.queued
+        behavior: silent
+        message_key: m05_submitted_for_approval
+
+  # ── 4. On-timer: periodic SWR revalidate of the account working set ────
+  - screen_id: m05-savings-deposits-shares
+    trigger: on_timer
+    interval_seconds: 900
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_savings
+        transport: rest
+    tables:
+      - name: deposit_accounts
+        mutation: read
+      - name: fetched_at
+        mutation: read
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: "FetchedAtEntity — per-cache freshness/TTL watermark read to decide whether the SWR revalidate should fire; advanced on each successful fetch so CACHE_FIRST_SWR knows what is Stale."
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 900
+      key_template: "fineract:deposit-accounts:{officeId}:{clientId}"
+      shape: list
+    error_paths:
+      - error_code: network.offline
+        behavior: silent
+        message_key: m05_showing_cached

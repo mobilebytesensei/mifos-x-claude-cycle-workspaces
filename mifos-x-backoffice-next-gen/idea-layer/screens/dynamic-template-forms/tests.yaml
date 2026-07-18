@@ -1,0 +1,98 @@
+schema_version: v1.0.0
+feature: dynamic-template-forms
+scenarios:
+  - id: form_rendered_from_template
+    description: "Base template fields + registered datatable groups render from the server schema"
+    preconditions: ["GET /clients/template returns officeOptions + genderIdOptions", "GET /v1/datatables?apptable=m_client returns client_kyc_details"]
+    actions: ["open client create form", "wait for schema resolve (template-loading -> content)"]
+    assertions:
+      - "every template field renders with its label and default value"
+      - "dropdowns are bound to the template *Options[] allowed-value lists (genderIdOptions, officeOptions)"
+      - "the client_kyc_details datatable group appears as an extra field section"
+    priority: high
+
+  - id: options_bound_and_cascade
+    description: "Selecting an option updates state and re-derives cascading option lists"
+    preconditions: ["loan template with productOptions + loanOfficerOptions rendered"]
+    actions: ["select a loan product from productOptions", "select a loan officer"]
+    assertions:
+      - "values[loanProductId] is set to the chosen option id"
+      - "charge/interest option lists refresh from the product-scoped template"
+      - "no fieldError remains on the changed fields"
+    priority: high
+
+  - id: date_field_carries_format_and_locale
+    description: "A date field emits dateFormat + locale per the Fineract mutation contract"
+    preconditions: ["template declares an activationDate field with dateFormat dd MMMM yyyy"]
+    actions: ["pick a date in the activationDate field"]
+    assertions:
+      - "values contains activationDate plus dateFormat and locale keys"
+      - "a date outside the template minDate/maxDate raises a fieldError"
+    priority: medium
+
+  - id: validation_blocks_submit
+    description: "Client-side validation gates submit until fields are valid"
+    preconditions: ["client template rendered with mandatory firstname/lastname"]
+    actions: ["leave a mandatory field empty", "tap Submit"]
+    assertions:
+      - "state transitions content -> validation-error"
+      - "the mandatory field is highlighted with a message"
+      - "no command JsonObject is enqueued"
+    priority: high
+
+  - id: submit_online_returns_command_result
+    description: "A clean submit with connectivity posts the command and returns CommandProcessingResult"
+    preconditions: ["clean client create form", "network available"]
+    actions: ["tap Submit"]
+    assertions:
+      - "state transitions content -> submitting"
+      - "POST /clients receives the assembled JsonObject with datatables[] nested"
+      - "on 2xx the caller navigates to the created resource (or a checker badge on empty changes)"
+    priority: high
+
+  - id: submit_offline_enqueues_to_outbox
+    description: "Submitting offline queues the command with a durable idempotency key"
+    preconditions: ["clean client create form", "network unavailable"]
+    actions: ["tap Submit"]
+    assertions:
+      - "state transitions content -> queued-offline"
+      - "a framework_submit_drafts row is written with status PENDING and a UUIDv4 idempotency_key"
+      - "batch replay reuses the same key (zero double-post) when connectivity returns"
+    priority: high
+
+  - id: config_change_appears_next_sync_no_release
+    description: "A back-office datatable/config change surfaces without an app release"
+    preconditions: ["a back-office admin adds a datatable column to client_kyc_details", "next sync revalidates the cached schema"]
+    actions: ["re-open the client create form after sync"]
+    assertions:
+      - "the new custom field appears in the datatable group"
+      - "no app update or release was required"
+    priority: high
+
+  - id: form_works_offline_from_cache
+    description: "A previously cached template renders offline"
+    preconditions: ["client template previously cached in Room", "network unavailable"]
+    actions: ["open the client create form offline (CACHE_FIRST_SWR cache hit)"]
+    assertions:
+      - "form renders from the cached schema with fromCache = true"
+      - "submit enqueues to the outbox"
+    priority: high
+
+  - id: error_template_fetch_failure_no_cache
+    description: "Template fetch failure with no cache shows a recoverable error"
+    preconditions: ["template never cached", "network unavailable"]
+    actions: ["open the create form", "observe error state", "tap Retry after reconnect"]
+    assertions:
+      - "error state shown with a Retry action"
+      - "no partial form is rendered"
+      - "Retry re-fetches the template and transitions template-loading -> content"
+    priority: medium
+
+  - id: server_rejects_maps_error_to_field
+    description: "A 400 validation body maps back onto the offending field"
+    preconditions: ["submit posted online", "server returns errors[] with parameterName"]
+    actions: ["submit a form the server rejects"]
+    assertions:
+      - "state transitions submitting -> error"
+      - "the server errors[] defaultUserMessage is shown against the field named by parameterName"
+    priority: medium

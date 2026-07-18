@@ -1,0 +1,317 @@
+screen_id: m03-groups-centers
+name: "M03 · Groups & Centers"
+status: designed
+archetype: master_detail
+initial_state: loading
+
+# ─────────────────────────────────────────────────────────────────────────
+# M03 · Groups & Centers — group & center hierarchy management for group
+# lending. Two co-located surfaces: (1) an office-scoped list of centers and
+# the groups under them; (2) a group/center detail with members, group loans,
+# the meeting calendar, and attendance capture. Create/edit route through
+# dynamic-template-forms (GET /v1/groups/template + /v1/centers/template);
+# every mutating command (activate, assignStaff, associateClients, save
+# attendance, save collection sheet) is enqueued through offline-sync-engine
+# with a durable idempotency key; and every action renders VISIBLE / DISABLED
+# (reason) / HIDDEN purely from the permission-capability-engine resolution
+# of the user's *_GROUP / *_CENTER / *_MEETING codes. No role branching —
+# a collections field officer sees read + attendance; an admin sees full CRUD.
+# GLIM (group loans) and GSIM (group savings) are surfaced from the detail.
+# ─────────────────────────────────────────────────────────────────────────
+
+# ── States (map 1:1 to Store5 ScreenState over the CACHE_FIRST_SWR read) ──
+states:
+  loading:
+    description: "Resolving the office-scoped center + group list (or a group/center detail) — CACHE_FIRST_SWR serves any cached rows instantly while a background delta-pull revalidates."
+    is_default: true
+  content:
+    description: "Center/group list rendered (centers with their groups nested), or a group/center detail with members, group loans (GLIM), the meeting calendar, and attendance. Management actions render only for the permissions the user holds."
+  empty:
+    description: "No groups or centers exist in the signed-in user's office/hierarchy scope. A create CTA is shown only if the user holds CREATE_GROUP / CREATE_CENTER; otherwise a plain 'nothing here' message."
+  no-network:
+    description: "Offline — the last-synced centers, groups, members, and meetings are served from the Room cache with a persistent 'offline · cached' banner; attendance and membership commands captured here queue for replay."
+  error:
+    description: "The group/center list or detail fetch failed and no cache exists (or the server returned a 4xx/5xx). An error message with a Retry CTA is shown; a 403 triggers the permission-drift refresh rather than a crash."
+
+# ── Business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-5) ──────────
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  description: "Reads office-scoped centers, groups, and group detail (members, GLIM loans, meetings) via a store5 SourceOfTruth over androidx.room (CACHE_FIRST_SWR) so lists and attendance are offline-readable. Mutating commands (activate, assignStaff, associateClients, saveOrUpdateAttendance) serialize with kotlinx.serialization and enqueue to the outbox for /v1/batches replay; each gated by core/permissions."
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "org.mobilenativefoundation.store.store5"
+    - "androidx.room"
+    - "kotlinx.serialization"
+    - "Fineract /v1/groups + /v1/centers + /v1/meetings (command pattern)"
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T03:10:00Z"
+  required_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/permissions
+    - core-base/store
+    - core-base/network
+
+# ── Shell (reached as a permission-gated nav root; no bottom-nav tab —
+#    M03 is a should_have/P2 module surfaced in the drawer/rail when the user
+#    holds >=1 of READ_GROUP / READ_CENTER) ────────────────────────────────
+shell:
+  bottom_navigation_visible: false
+  top_app_bar_visible: true
+  fab_visible: true
+  snackbar_visible: true
+
+# ── Components ──────────────────────────────────────────────────────────
+components:
+  - id: header
+    type: header
+    label: "{strings.m03_title}"
+    testTag: "m03-groups-centers_header"
+    visible_states: [loading, content, empty, no-network, error]
+
+  - id: scope_tabs
+    type: tab_bar
+    label: "{strings.m03_scope_tabs}"
+    testTag: "m03-groups-centers_scope_tabs"
+    visible_states: [content, no-network]
+    options: [centers, groups]
+    on_click:
+      action: switch_scope_tab
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Switch the list between the Centers view (centers with their groups nested underneath) and the flat Groups view within the current office scope; a pure in-ViewModel selectedScope state change that re-derives which cached collection the list renders, no fetch."
+        action_contract_hash: "sha256:m03-switch-scope"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: content_area
+    type: content_area
+    label: "Center/group list (office-scoped) — or a group/center detail with members, group loans, calendar, and attendance"
+    testTag: "m03-groups-centers_content"
+    empty_label: "{strings.m03_empty}"
+
+  - id: group_center_row
+    type: list_item
+    label: "One center or group row: name, office, member/group count, next meeting day, status chip"
+    testTag: "m03-groups-centers_item"
+    on_click:
+      action: open_group_center_detail
+      target: m03-groups-centers
+      state: content
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Open the tapped group or center detail (members, group loans/GLIM, meeting calendar, attendance) in the same master-detail surface; management actions inside the detail render only for the *_GROUP / *_CENTER / *_MEETING permissions the signed-in user holds."
+        action_contract_hash: "sha256:m03-open-detail"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: member_row
+    type: list_item
+    label: "One member row inside a group detail: client display name, client external id, and attendance toggle for the selected meeting"
+    testTag: "m03-groups-centers_member_row"
+    visible_states: [content, no-network]
+    on_click:
+      action: open_member_client
+      target: m02-clients
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Navigate to the tapped member's Client 360 profile in m02-clients (read-only cross-link into the clients module); the member roster itself comes from the group's associated-clients association, so this is a pure navigation into the sibling clients feature."
+        action_contract_hash: "sha256:m03-open-member"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: attendance_toggle
+    type: toggle
+    label: "Per-member present/absent toggle for the selected meeting"
+    testTag: "m03-groups-centers_attendance_toggle"
+    visible_states: [content, no-network]
+    gated_permission: SAVEORUPDATEATTENDANCE_MEETING
+    on_click:
+      action: toggle_member_attendance
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Flip the present/absent flag for this member in the in-ViewModel attendance draft for the selected meeting; a pure state change that marks the draft dirty and enables the Save-attendance button. Rendered only when the user holds SAVEORUPDATEATTENDANCE_MEETING; disabled with a reason otherwise."
+        action_contract_hash: "sha256:m03-toggle-attendance"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: save_attendance_button
+    type: button
+    label: "{strings.m03_save_attendance}"
+    testTag: "m03-groups-centers_save_attendance"
+    variant: primary
+    visible_states: [content, no-network]
+    enabled_states: [content, no-network]
+    gated_permission: SAVEORUPDATEATTENDANCE_MEETING
+    on_click:
+      action: save_attendance
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/meetings/{id}?command=saveOrUpdateAttendance"
+        reads_from:
+          - table: groups_centers
+        writes_to:
+          - table: draft_outbox
+        produces_state: content
+        invalidates:
+          - attendanceDraftDirty
+        description: "Assemble a saveOrUpdateAttendance command body (clientsAttendance[] with attendanceType, meetingDate, dateFormat, locale) for the selected meeting and enqueue it to the offline outbox with a durable idempotency key, so field attendance capture works offline and replays exactly-once via POST /v1/batches. Requires SAVEORUPDATEATTENDANCE_MEETING; re-checked in the domain layer."
+        action_contract_hash: "sha256:m03-save-attendance"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: activate_button
+    type: button
+    label: "{strings.m03_activate}"
+    testTag: "m03-groups-centers_activate"
+    variant: secondary
+    visible_states: [content]
+    gated_permission: ACTIVATE_GROUP
+    on_click:
+      action: activate_group_center
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/groups/{id}?command=activate"
+        reads_from:
+          - table: groups_centers
+        writes_to:
+          - table: draft_outbox
+        produces_state: content
+        invalidates:
+          - groupStatus
+        description: "Enqueue an activate command (activationDate + dateFormat + locale) for a pending group or center through the offline outbox with a durable idempotency key; the status chip optimistically shows activating-queued until the batch replay confirms. Rendered only when the user holds ACTIVATE_GROUP (ACTIVATE_CENTER for a center); under maker-checker the command badges pending-approval."
+        action_contract_hash: "sha256:m03-activate"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: assign_staff_button
+    type: button
+    label: "{strings.m03_assign_staff}"
+    testTag: "m03-groups-centers_assign_staff"
+    variant: text
+    visible_states: [content]
+    gated_permission: ASSIGNSTAFF_GROUP
+    on_click:
+      action: assign_staff
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/groups/{id}?command=assignStaff"
+        reads_from:
+          - table: groups_centers
+        writes_to:
+          - table: draft_outbox
+        produces_state: content
+        invalidates:
+          - assignedStaffId
+        description: "Open the dynamic-template-forms staff picker (options from GET /v1/groups/{id}?staffInSelectedOfficeOnly=true) and enqueue an assignStaff command (staffId) through the offline outbox with a durable idempotency key so the group/center loan officer can be reassigned offline. Rendered only when the user holds ASSIGNSTAFF_GROUP; re-checked in the domain layer before dispatch."
+        action_contract_hash: "sha256:m03-assign-staff"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: manage_members_button
+    type: button
+    label: "{strings.m03_manage_members}"
+    testTag: "m03-groups-centers_manage_members"
+    variant: text
+    visible_states: [content]
+    gated_permission: ASSOCIATECLIENTS_GROUP
+    on_click:
+      action: manage_members
+      target: m02-clients
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/groups/{id}?command=associateClients|disassociateClients"
+        reads_from:
+          - table: clients
+        writes_to:
+          - table: draft_outbox
+        produces_state: content
+        invalidates:
+          - groupMemberIds
+        description: "Open the member picker (clients in the group office, read from the m02-clients cache) and enqueue an associateClients/disassociateClients command (clientMembers[]) through the offline outbox with a durable idempotency key, editing group membership offline. Rendered only when the user holds ASSOCIATECLIENTS_GROUP; reads the m02-clients roster but never mutates a client record."
+        action_contract_hash: "sha256:m03-manage-members"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: create_group_center_fab
+    type: fab
+    label: "{strings.m03_new_group_center}"
+    testTag: "m03-groups-centers_new"
+    visible_states: [content, empty, no-network]
+    gated_permission: CREATE_GROUP
+    on_click:
+      action: start_group_center_creation
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/groups (template-driven)"
+        reads_from:
+          - table: cached_templates
+        writes_to:
+          - table: draft_outbox
+        produces_state: content
+        invalidates:
+          - groupCount
+        description: "Launch the dynamic-template-forms create form rendered from GET /v1/groups/template (or /v1/centers/template — office, staff, role option lists) and, on submit, enqueue a CREATE_GROUP command through the offline outbox with a client-generated externalId + durable idempotency key so group/center creation works fully offline. Hidden unless the user holds CREATE_GROUP (CREATE_CENTER for a center)."
+        action_contract_hash: "sha256:m03-create"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"
+
+  - id: retry_button
+    type: button
+    label: "{strings.m03_retry}"
+    testTag: "m03-groups-centers_retry"
+    variant: text
+    visible_states: [error, no-network]
+    enabled_states: [error, no-network]
+    on_click:
+      action: retry_load
+      state: loading
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract GET /v1/groups + /v1/centers"
+        reads_from:
+          - table: groups_centers
+        produces_state: loading
+        invalidates:
+          - listFetchedAt
+        description: "Re-issue the office-scoped GET /v1/centers + GET /v1/groups (or the current detail fetch) through the Store5 SourceOfTruth to rebuild the list after a fetch failure, refreshing the Room cache and the FetchedAt watermark, then transition back to content when rows resolve. On a 403 this routes into the permission-drift refresh instead of retrying blind."
+        action_contract_hash: "sha256:m03-retry"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-17T03:10:00Z"

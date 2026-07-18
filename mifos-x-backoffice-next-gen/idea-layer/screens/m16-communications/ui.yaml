@@ -1,0 +1,371 @@
+screen_id: m16-communications
+name: "M16 · Communications"
+status: designed
+archetype: master_detail
+cluster: back-office-module
+module: m16-communications
+initial_state: loading
+description: >-
+  The communications back-office module: a list of SMS/email campaigns (each with its business-rule
+  message template, run type, trigger and status), a per-campaign detail with the recipient report,
+  the message-template library (business-rule + UGD document templates), the outbound email/SMS gateway
+  configuration, and the registered webhooks (hooks). The marketing/admin persona works here — author a
+  message template, create an SMS campaign from a template + recipient criteria, activate a campaign,
+  close a campaign, read its recipient delivery report, register a webhook, and edit the email gateway
+  config. Reads ride CACHE_FIRST_SWR Store5 (campaign list + templates + hooks render instantly offline);
+  every campaign lifecycle command (create / activate / close) and every management command (create
+  template / register hook / save email config) flows through the durable outbox (offline-sync-engine)
+  with an exactly-once idempotency key — an activate posts once, never twice — and every control renders
+  through PermissionEvaluator.Gated so each button is VISIBLE-enabled / VISIBLE-disabled / HIDDEN by the
+  exact {ACTION}_{ENTITY} code the user holds (READ_SMSCAMPAIGN, CREATE_SMSCAMPAIGN, ACTIVATE_SMSCAMPAIGN,
+  CLOSE_SMSCAMPAIGN, CREATE_TEMPLATE, CREATE_HOOK, UPDATE_EXTERNALSERVICES).
+
+# ── States (Store5 ScreenState + the command-submit lifecycle) ───────────
+states:
+  loading:
+    description: "Fetching the campaign list, or a selected campaign's recipient report / the template library / the hooks list (no cache yet). Store5 Loading — a shimmer skeleton for the campaign rows or the template cards."
+    is_default: true
+  content:
+    description: >-
+      Campaign list (each campaign: name · SMS/Email badge · trigger/run-type · template name · status
+      chip — Pending / Active / Closed) OR a selected campaign detail (the message template preview, the
+      recipient criteria, and the per-recipient delivery report) OR the message-template library / email
+      config / hooks tabs. Store5 Content — served instantly from cache, revalidated in the background per
+      FreshnessBands.
+  empty:
+    description: "No campaigns, templates or hooks in the current scope. The empty state offers 'New campaign' when CREATE_SMSCAMPAIGN is held (or 'New template' when CREATE_TEMPLATE is held), otherwise a plain 'No campaigns yet' message."
+  submitting:
+    description: >-
+      A command (create campaign / activate campaign / close campaign / create template / register hook /
+      save email config) is being posted ONLINE — the command bar is disabled and a per-command progress
+      indicator shows PENDING → SUBMITTED. On maker-checker tenants a 2xx-with-commandId lands in
+      pending_approval instead of optimistically flipping the campaign status.
+  queued_offline:
+    description: >-
+      Offline (or a transient failure): the command was written to the durable RoomSubmitOutbox with its
+      idempotency key and will replay exactly-once on reconnect. A persistent 'N queued · will sync when
+      online' banner shows; the optimistic campaign status (e.g. Pending → Active) is marked pending-sync
+      so the operator sees the intended state without risking a double activation.
+  pending_approval:
+    description: >-
+      A maker-checker tenant queued the command (2xx with commandId, empty changes) — a third, non-error
+      'Submitted for approval' state; the campaign status is NOT optimistically flipped and the row shows
+      a 'pending approval' badge routing to M15 (Approvals).
+  error:
+    description: >-
+      Campaign list/detail fetch failed with no cache, OR a command was rejected by the server
+      (400 validation / 409 optimistic-lock / 403 permission-drift — e.g. activating a campaign whose
+      template was deleted). Rejected commands surface the Fineract server error and a 'Review failed'
+      CTA into needs-attention-inbox; a Retry CTA re-drains the list fetch.
+  no_network:
+    description: "Offline with no cached campaign/template/hook data for the requested scope; captive-portal aware; cached reads (if any) are still served under an offline banner."
+
+# ── Business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-5) ──────────
+business_logic:
+  kind: composite
+  processing_kind: batch
+  description: "Folds CACHE_FIRST_SWR Store5 streams (campaigns, recipient report, templates, hooks, email config) into a master-detail ScreenState and drives the campaign lifecycle commands (create, activate, close) plus template/hook/email-config management. Each mutation is enqueued to the durable outbox and replayed exactly-once so a campaign never double-activates; every control is permission-gated."
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "org.mobilenativefoundation.store.store5"
+    - "androidx.room"
+    - "kotlinx.serialization"
+    - "Fineract GET /v1/smscampaigns"
+    - "Fineract POST /v1/smscampaigns/{id}?command=activate"
+    - "Fineract POST /v1/templates"
+  required_modules:
+    - core/model
+    - core/network
+    - core/database
+    - core/store
+    - core/data
+    - core-base/store
+    - core-base/network
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-17T12:00:00Z"
+
+# ── Shell (module root; permission-gated at the campaign/template group) ──
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  fab_visible: true            # "New campaign" FAB — HIDDEN unless CREATE_SMSCAMPAIGN
+  snackbar_visible: true
+
+# ── Components (author `- id:` FIRST) ────────────────────────────────────
+components:
+  - id: m16_header
+    type: header
+    label: "{strings.m16_title}"
+    testTag: "m16-communications_header"
+    visible_states: [loading, content, empty, no_network, error]
+
+  - id: offline_banner
+    type: banner
+    label: "{strings.m16_offline_banner}"
+    testTag: "m16-communications_offline_banner"
+    visible_states: [no_network, queued_offline]
+    description: "A persistent banner shown while offline or with queued campaign commands; the campaign list + templates + hooks render their last cached values and any queued create/activate/close commands show a 'N queued · will sync when online' count. Communicates that a campaign status may be optimistic and will reconcile on the next sync."
+
+  - id: comms_tabs
+    type: chip
+    label: "{strings.m16_tabs}"
+    testTag: "m16-communications_tabs"
+    visible_states: [content, empty]
+    on_click:
+      action: switch_comms_tab
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+        reads_from:
+          - table: communications
+        produces_state: content
+        description: "Switch between the Campaigns, Templates, Email config and Hooks tabs — a pure in-ViewModel re-projection over the already-folded Store5 communications stream selecting the active entity_type, no refetch and no network call, works fully offline over cached rows."
+
+  - id: comms_content
+    type: content_area
+    label: "{strings.m16_content_label}"
+    testTag: "m16-communications_content"
+    empty_label: "{strings.m16_empty}"
+    label_states:
+      content: "Campaign list (name · SMS/Email badge · trigger/run-type · template · status chip) or a selected campaign detail (message-template preview, recipient criteria, per-recipient delivery report) — or the message-template library, the outbound email/SMS gateway config, and the registered webhooks (hooks)"
+
+  - id: campaign_row
+    type: list_item
+    label: "{strings.m16_campaign_row}"
+    testTag: "m16-communications_campaign_item"
+    visible_states: [content]
+    on_click:
+      action: open_campaign_detail
+      target: m16-communications
+      action_contract:
+        effect: navigate
+        reads_from:
+          - table: communications
+        produces_state: content
+        description: "Open the campaign detail (the resolved message-template preview, the recipient criteria, and the per-recipient delivery report). The command bar renders only the controls whose {ACTION}_{ENTITY} permission the user holds; a read-only viewer still sees the campaign status, template and delivery report."
+
+  - id: new_campaign_button
+    type: fab
+    label: "{strings.m16_new_campaign}"
+    testTag: "m16-communications_new_campaign"
+    variant: primary
+    gated_permission: CREATE_SMSCAMPAIGN
+    visible_states: [content, empty]
+    on_click:
+      action: create_campaign_form
+      target: dynamic-template-forms
+      action_contract:
+        effect: navigate
+        library_refs:
+          - dynamic-template-forms
+        description: "Launch the create-campaign form rendered by dynamic-template-forms from GET /v1/smscampaigns/template — the campaign-type, trigger-type, run-type, provider and message-template option lists come from the server payload, never hardcoded. HIDDEN entirely (onDenied HIDE) unless the user holds CREATE_SMSCAMPAIGN."
+
+  - id: edit_campaign_button
+    type: button
+    label: "{strings.m16_edit_campaign}"
+    testTag: "m16-communications_edit_campaign"
+    variant: secondary
+    gated_permission: UPDATE_SMSCAMPAIGN
+    visible_states: [content]           # campaign detail, only while Pending
+    on_click:
+      action: edit_campaign_form
+      target: dynamic-template-forms
+      action_contract:
+        effect: navigate
+        library_refs:
+          - dynamic-template-forms
+        description: "Open the edit-campaign form (dynamic-template-forms) pre-filled from the campaign's current values plus the GET template; submit enqueues an update-campaign command (PUT /v1/smscampaigns/{id}) through the durable outbox. Only meaningful while the campaign is still Pending; gated on UPDATE_SMSCAMPAIGN and disabled-with-reason for users without it."
+
+  - id: activate_campaign_button
+    type: button
+    label: "{strings.m16_activate_campaign}"
+    testTag: "m16-communications_activate_campaign"
+    variant: primary
+    gated_permission: ACTIVATE_SMSCAMPAIGN
+    visible_states: [content]           # a Pending campaign detail
+    on_click:
+      action: activate_campaign
+      action_contract:
+        effect: call_api
+        library_refs:
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/smscampaigns/{campaignId}?command=activate"
+        reads_from:
+          - table: communications
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - campaignStatus
+          - campaignList
+        description: "Activate the selected Pending campaign so its scheduler begins sending — assemble the activation command (activationDate + dateFormat + locale) and enqueue to the durable outbox with an idempotency key so it posts exactly-once even if the app is killed mid-submit (POST /smscampaigns/{id}?command=activate). Optimistically flips the status to Active, pending-sync. Gated on ACTIVATE_SMSCAMPAIGN."
+
+  - id: close_campaign_button
+    type: button
+    label: "{strings.m16_close_campaign}"
+    testTag: "m16-communications_close_campaign"
+    variant: secondary
+    gated_permission: CLOSE_SMSCAMPAIGN
+    visible_states: [content]           # an Active campaign detail
+    on_click:
+      action: close_campaign
+      action_contract:
+        effect: call_api
+        library_refs:
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/smscampaigns/{campaignId}?command=close"
+        reads_from:
+          - table: communications
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - campaignStatus
+          - campaignList
+        description: "Close the selected Active campaign so it stops sending (POST /smscampaigns/{id}?command=close with closureDate + dateFormat + locale) — same durable-outbox exactly-once path as activate, gated by CLOSE_SMSCAMPAIGN. Optimistically flips the status to Closed pending-sync; a server rejection routes to Needs-Attention with the Fineract error."
+
+  - id: view_recipient_report_button
+    type: button
+    label: "{strings.m16_view_report}"
+    testTag: "m16-communications_view_report"
+    variant: text
+    gated_permission: READ_SMSCAMPAIGN
+    visible_states: [content]
+    on_click:
+      action: view_recipient_report
+      action_contract:
+        effect: call_api
+        library_refs:
+          - offline-sync-engine
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract GET /v1/smscampaigns/{campaignId}/messageByStatus"
+        reads_from:
+          - table: communications
+        produces_state: content
+        description: "Load the per-recipient delivery report for the selected campaign (GET /v1/smscampaigns/{campaignId}/messageByStatus) — recipients grouped by delivery status (Pending / Sent / Delivered / Failed) with counts and per-message rows — served CACHE_FIRST_SWR so the report renders instantly offline and background-revalidates when stale. Read-only; gated by READ_SMSCAMPAIGN."
+
+  - id: new_template_button
+    type: button
+    label: "{strings.m16_new_template}"
+    testTag: "m16-communications_new_template"
+    variant: primary
+    gated_permission: CREATE_TEMPLATE
+    visible_states: [content, empty]    # Templates tab
+    on_click:
+      action: create_template_form
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/templates"
+        reads_from:
+          - table: communications
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - templateList
+        description: "Create a message / UGD document template — the form (dynamic-template-forms) sources the entity, template-type and mapper option lists from GET /v1/templates/template, then the template command JsonObject (name, entity, type, mappers, mustache body) is enqueued to the durable outbox and replayed exactly-once (POST /v1/templates). Gated on CREATE_TEMPLATE; re-checked at replay."
+
+  - id: register_hook_button
+    type: button
+    label: "{strings.m16_register_hook}"
+    testTag: "m16-communications_register_hook"
+    variant: primary
+    gated_permission: CREATE_HOOK
+    visible_states: [content, empty]    # Hooks tab
+    on_click:
+      action: register_hook_form
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract POST /v1/hooks"
+        reads_from:
+          - table: communications
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - hookList
+        description: "Register an outbound webhook (hook) — the form (dynamic-template-forms) sources the template-name, event grouping and config-field option lists from GET /v1/hooks/template, then the hook command JsonObject (name, isActive, events[], config{payloadURL,contentType}) is enqueued to the durable outbox and replayed exactly-once (POST /v1/hooks). Gated on CREATE_HOOK; re-checked at replay."
+
+  - id: edit_email_config_button
+    type: button
+    label: "{strings.m16_edit_email_config}"
+    testTag: "m16-communications_edit_email_config"
+    variant: secondary
+    gated_permission: UPDATE_EXTERNALSERVICES
+    visible_states: [content]           # Email config tab
+    on_click:
+      action: save_email_config
+      target: dynamic-template-forms
+      action_contract:
+        effect: call_api
+        library_refs:
+          - dynamic-template-forms
+          - offline-sync-engine
+          - permission-capability-engine
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+          - "Fineract PUT /v1/externalservice/SMTP"
+        reads_from:
+          - table: communications
+        writes_to:
+          - table: draft_outbox
+        produces_state: submitting
+        invalidates:
+          - emailConfig
+        description: "Edit the outbound email (SMTP) gateway configuration — host, port, username, useTLS and from-address rendered by dynamic-template-forms from GET /v1/externalservice/SMTP, then the config command is enqueued to the durable outbox and replayed exactly-once (PUT /v1/externalservice/SMTP). Gated on UPDATE_EXTERNALSERVICES; the password field is masked and stored via secure storage."
+
+  - id: review_failed_button
+    type: button
+    label: "{strings.m16_review_failed}"
+    testTag: "m16-communications_review_failed"
+    variant: text
+    visible_states: [error]
+    on_click:
+      action: open_needs_attention
+      target: needs-attention-inbox
+      action_contract:
+        effect: navigate
+        description: "Navigate to needs-attention-inbox where a rejected create/activate/close-campaign, create-template, register-hook or save-email-config command is triaged (Retry / Edit / Discard) with the Fineract server error and explicit conflict resolution — a rejected campaign command never silently disappears and never double-activates a campaign."
+
+  - id: retry_button
+    type: button
+    label: "{strings.m16_retry}"
+    testTag: "m16-communications_retry"
+    variant: text
+    visible_states: [error, no_network]
+    on_click:
+      action: retry_load
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "org.mobilenativefoundation.store.store5"
+        reads_from:
+          - table: communications
+        produces_state: loading
+        description: "Re-run the failed campaign/template/hook list fetch — calls stream.refreshFresh() to force a fresh Store5 fetch past the cache (the streamFresh cold-start dual path), returning to loading then content/error."

@@ -1,0 +1,322 @@
+feature: m04-loan-portfolio
+# Fineract is consumed as-is (backend provider = none). These are the loan-domain endpoints M04
+# drives. Reads are CACHE_FIRST_SWR over Store5; all mutating commands/transactions are queued through
+# the offline-sync-engine outbox with a DURABLE idempotency key (exactly-once) and are maker-checker
+# aware. Application/edit/disburse forms are rendered by dynamic-template-forms FROM the entity template.
+endpoints:
+  # ── READS ──────────────────────────────────────────────────────────────
+  - id: list_loans
+    method: GET
+    path: "/v1/loans"
+    description: >-
+      Loan account list scoped to the signed-in officer's office/portfolio (staffId one filter).
+      Paged; CACHE_FIRST_SWR over Store<PageKey,List<Loan>> (offset/limit ≙ Fineract paging).
+    request:
+      shape: object
+      params:
+        - name: offset
+          type: int
+          default: 0
+        - name: limit
+          type: int
+          default: 50
+        - name: orderBy
+          type: string
+          description: "Sort column (e.g. id, accountNo)."
+        - name: sortOrder
+          type: string
+          description: "ASC | DESC."
+        - name: staffId
+          type: long
+          description: "Field-officer 'my portfolio' filter — orthogonal to permissions."
+        - name: officeId
+          type: long
+          description: "Scopes rows to the user's office hierarchy."
+    response:
+      shape: list
+      dto: LoanAccountDto
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+        default_limit: 50
+        description: "Fineract paged envelope {totalFilteredRecords, pageItems[]}; the list pages until drained."
+    requires_auth: true
+    requires_permission: [READ_LOAN]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: get_loan_detail
+    method: GET
+    path: "/v1/loans/{loanId}"
+    description: >-
+      Loan 360° detail. ?associations=all|repaymentSchedule|transactions|charges|guarantors|collateral
+      hydrates the tabs in one call; CACHE_FIRST_SWR SourceOfTruth over Room so the whole detail is
+      readable offline.
+    request:
+      shape: object
+      params:
+        - name: associations
+          type: string
+          default: "all"
+          description: "repaymentSchedule | transactions | charges | guarantors | collateral | notes | all"
+        - name: exclude
+          type: string
+          description: "Trim heavy associations for the list-cache warm-up."
+    response:
+      shape: object
+      dto: LoanAccountDto
+    requires_auth: true
+    requires_permission: [READ_LOAN]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: get_loan_charges
+    method: GET
+    path: "/v1/loans/{loanId}/charges"
+    description: "Loan charges (fees/penalties with amount, due date, paid/waived state). Read-gated by READ_LOANCHARGE."
+    response:
+      shape: list
+      dto: LoanChargeDto
+      pagination:
+        strategy: none
+        description: "Fineract sub-resource array — the full charge set for one loan is returned unpaged (bounded cardinality); rendered in-place under the Charges tab, no page controls."
+    requires_auth: true
+    requires_permission: [READ_LOANCHARGE]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: get_loan_template
+    method: GET
+    path: "/v1/loans/template"
+    description: >-
+      Loan application template — field defaults + allowed-value lists (products, loan officers,
+      charges, funds, repayment strategies). Rendered FROM by dynamic-template-forms; cached in a
+      CACHE_FIRST_SWR store for offline application. NEVER hardcode the option lists.
+    request:
+      shape: object
+      params:
+        - name: clientId
+          type: long
+          description: "Contextualizes the template to the applying client."
+        - name: productId
+          type: long
+          description: "Contextualizes to a specific loan product."
+        - name: templateType
+          type: string
+          default: "individual"
+          description: "individual | group | jlg."
+    response:
+      shape: object
+      dto: LoanTemplateDto
+    requires_auth: true
+    requires_permission: [READ_LOAN]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: get_transaction_template
+    method: GET
+    path: "/v1/loans/{loanId}/transactions/template"
+    description: >-
+      Transaction form template — the field defaults + payment-type list + computed amount for a
+      given command. ?command=repayment | prepayLoan | foreclosure | waiveinterest returns the
+      command-specific defaults (e.g. prepayLoan → full payoff amount; foreclosure → settlement total).
+      Rendered FROM by dynamic-template-forms.
+    request:
+      shape: object
+      params:
+        - name: command
+          type: string
+          description: "repayment | prepayLoan | foreclosure | waiveinterest | disburse."
+        - name: dateFormat
+          type: string
+          default: "dd MMMM yyyy"
+        - name: locale
+          type: string
+          default: "en"
+    response:
+      shape: object
+      dto: LoanTransactionTemplateDto
+    requires_auth: true
+    requires_permission: [READ_LOAN]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: get_reschedule_template
+    method: GET
+    path: "/v1/rescheduleloans/template"
+    description: "Reschedule form template — reschedule reasons + allowed adjustments. Rendered FROM by dynamic-template-forms."
+    response:
+      shape: object
+      dto: RescheduleTemplateDto
+    requires_auth: true
+    requires_permission: [READ_RESCHEDULELOAN]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  # ── LIVE SCHEDULE PREVIEW (application-time, no loan created) ────────────
+  - id: calculate_schedule
+    method: POST
+    path: "/v1/loans"
+    description: >-
+      Live repayment schedule preview during application (?command=calculateLoanSchedule). Body carries
+      the entered principal/term/interestRate/expectedDisbursementDate + product defaults + dateFormat +
+      locale; returns the full installment breakdown WITHOUT creating a loan. Debounced on field change;
+      falls back to the last cached preview offline.
+    request:
+      shape: object
+      body: CalculateScheduleRequest
+      params:
+        - name: command
+          type: string
+          default: "calculateLoanSchedule"
+    response:
+      shape: object
+      dto: LoanScheduleDto
+    requires_auth: true
+    requires_permission: [READ_LOAN]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  # ── ORIGINATION / LIFECYCLE COMMANDS (queued, exactly-once, maker-checker) ──
+  - id: submit_loan_application
+    method: POST
+    path: "/v1/loans"
+    description: >-
+      Submit a new loan application. Body is the dynamic-template-forms JsonObject payload (client,
+      product, principal, term, rate, disbursement date, charges, dateFormat, locale) + a
+      client-generated externalId so the resource can be addressed before the server assigns an id
+      (offline-first keystone). Queued through the outbox; maker-checker aware.
+    request:
+      shape: object
+      body: LoanApplicationRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResultDto
+    requires_auth: true
+    requires_permission: [CREATE_LOAN]
+    idempotency: durable
+    maker_checker: true
+    offline: queued
+
+  - id: loan_lifecycle_command
+    method: POST
+    path: "/v1/loans/{loanId}?command={approve|reject|withdrawnByApplicant|disburse|undoapproval|undodisbursal}"
+    description: >-
+      Loan lifecycle state transitions. Each maps to its exact {ACTION}_LOAN permission (APPROVE_/
+      REJECT_/WITHDRAW_/DISBURSE_/UNDOAPPROVAL_/UNDODISBURSAL_LOAN). Body carries the command's date
+      fields + note + dateFormat + locale. Backdated approve/disburse additionally require
+      APPROVEINPAST_/DISBURSEINPAST_LOAN. Queued through the outbox with a durable idempotency key;
+      maker-checker aware (queued commandId + empty changes → PENDING_APPROVAL).
+    request:
+      shape: object
+      body: LoanCommandRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResultDto
+    requires_auth: true
+    requires_permission: [APPROVE_LOAN, REJECT_LOAN, WITHDRAW_LOAN, DISBURSE_LOAN, UNDOAPPROVAL_LOAN, UNDODISBURSAL_LOAN]
+    idempotency: durable
+    maker_checker: true
+    offline: queued
+
+  # ── SERVICING TRANSACTIONS (money movement — EXACTLY ONCE) ───────────────
+  - id: loan_transaction
+    method: POST
+    path: "/v1/loans/{loanId}/transactions?command={repayment|waiveinterest|writeoff|foreclosure}"
+    description: >-
+      Loan servicing transactions. repayment/prepayment (REPAYMENT_LOAN), waiveinterest
+      (WAIVEINTERESTPORTION_LOAN), writeoff (WRITEOFF_LOAN), foreclosure (FORECLOSURE_LOAN). Body:
+      transactionAmount + transactionDate + paymentTypeId + note + dateFormat + locale. Queued through
+      DraftSubmitHandler + RoomSubmitOutbox with a DURABLE idempotency key so a field repayment posts
+      EXACTLY ONCE across network flaps / crash / reinstall-restore (zero double-post). Backdated posting
+      requires the matching *INPAST_LOAN permission.
+    request:
+      shape: object
+      body: LoanTransactionRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResultDto
+    requires_auth: true
+    requires_permission: [REPAYMENT_LOAN, WAIVEINTERESTPORTION_LOAN, WRITEOFF_LOAN, FORECLOSURE_LOAN]
+    idempotency: durable
+    offline: queued
+
+  # ── CHARGE SERVICING (pay / waive a specific loan charge) ────────────────
+  - id: loan_charge_command
+    method: POST
+    path: "/v1/loans/{loanId}/charges/{chargeId}?command={pay|waive}"
+    description: >-
+      Pay (PAY_LOANCHARGE) or waive (WAIVE_LOANCHARGE) a specific outstanding loan charge. Queued
+      through the outbox with a durable idempotency key (exactly-once); maker-checker aware.
+    request:
+      shape: object
+      body: LoanChargeCommandRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResultDto
+    requires_auth: true
+    requires_permission: [PAY_LOANCHARGE, WAIVE_LOANCHARGE]
+    idempotency: durable
+    maker_checker: true
+    offline: queued
+
+  - id: add_loan_charge
+    method: POST
+    path: "/v1/loans/{loanId}/charges"
+    description: "Add a fee/penalty charge to a loan (CREATE_LOANCHARGE); body from the charge template. Queued, durable-idempotent."
+    request:
+      shape: object
+      body: AddLoanChargeRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResultDto
+    requires_auth: true
+    requires_permission: [CREATE_LOANCHARGE]
+    idempotency: durable
+    offline: queued
+
+  # ── RESCHEDULE (request + approve are separate permissions/steps) ────────
+  - id: create_reschedule
+    method: POST
+    path: "/v1/rescheduleloans"
+    description: >-
+      Create a loan reschedule REQUEST (CREATE_RESCHEDULELOAN). Body from the reschedule template
+      (reason, from-installment date, new rate/grace/term). A supervisor approves it separately via
+      the checker inbox (APPROVE_RESCHEDULELOAN). Queued through the outbox with a durable idempotency
+      key; maker-checker aware.
+    request:
+      shape: object
+      body: RescheduleRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResultDto
+    requires_auth: true
+    requires_permission: [CREATE_RESCHEDULELOAN, APPROVE_RESCHEDULELOAN]
+    idempotency: durable
+    maker_checker: true
+    offline: queued
+
+notes:
+  - "No server is built for this project — these contracts document how the client drives the live Fineract instance (backend consumed as-is)."
+  - "PREFER the openMF Fineract Client KMP SDK (used by mifos-x-field-officer-app) over hand-rolling endpoints; supplement via generated-from-OpenAPI(fineract.json)+Ktorfit for gaps."
+  - "Every mutating loan command/transaction is an outbox payload replayed inside a /v1/batches enclosed request (offline-sync-engine) with a DURABLE Idempotency-Key so money posts exactly-once."
+  - "Backdated posting is a distinct capability: REPAYMENTINPAST_LOAN / DISBURSEINPAST_LOAN / APPROVEINPAST_LOAN gate the date picker's past range."

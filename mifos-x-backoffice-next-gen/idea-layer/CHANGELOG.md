@@ -1,0 +1,26 @@
+# template_meta
+# template_version: "2.86.0"
+# template_path: "templates/blueprints/workspace-project/idea-layer/CHANGELOG.md"
+
+# Idea Evolution Log — mifos-x-backoffice-next-gen
+
+> Tracks how the product idea evolves over time.
+> Auto-updated by `/idea add`, `/idea enhance`, `/idea evolve`.
+
+---
+
+## 2026-07-17 — Layer docset scaffolded
+
+- **What**: Scaffolded the per-project layer dirs (server/client/feature/infrastructure/platform/testing/docs) and backfilled the idea-layer docset (ARCHITECTURE / DATA_MODEL / FEATURES / REQUIREMENTS / ROADMAP / REGISTRY_COVERAGE / LAYER_STATUS) from `core/blueprints/workspace-project/` via the healed `/project-add` layer scaffold.
+- **Impact**: Idea-layer docset now derived from the existing 21-module idea-plan; downstream `/idea-sync`, `/design`, `/implement`, `/gap-planning-project` can read a complete docset.
+
+## 2026-07-16 — Project promoted from plan
+
+- **What**: `/project-add --from-plan` promoted the idea-plan (89% overall quality, 21 modules) into a KMP project scaffold — repo `mobilebytesensei/mifos-x-backoffice-next-gen` (public, dev), template `openMF/kmp-project-template`.
+- **Impact**: `source/` + `PROJECT_CONFIG.yaml` + `idea-layer/{IDEA.md, idea-plan.yaml, screens/, research/}` established. Idea-layer is the single source of truth.
+
+## 2026-07-16 — Project Created
+
+- **What**: Initial project setup via the `/idea-plan` wizard (15 phases completed).
+- **Impact**: Idea-layer created with the "generic permission-gated Fineract back-office platform" vision, four research audits, and the 17 back-office modules + 4 foundation features.
+- [design-system-stitch] 2026-07-17 — DESIGN.md uploaded to Stitch (asset_id=6486719301524192685, design_md_sha=b87665693755)

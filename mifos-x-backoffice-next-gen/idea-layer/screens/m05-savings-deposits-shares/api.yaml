@@ -1,0 +1,296 @@
+feature: m05-savings-deposits-shares
+# Fineract is consumed as-is (backend provider = none). These document how the client drives the
+# live Fineract deposit/shares surface. Money-movement commands are outbox payloads replayed inside
+# offline-sync-engine's POST /v1/batches enclosed requests — never a direct online post that could
+# double-post. Every mutating op is gated by its exact {ACTION}_{ENTITY} code (see requires_permission).
+
+endpoints:
+  # ── Savings accounts — list/detail + template ──────────────────────────
+  - id: list_savings
+    method: GET
+    path: "/v1/savingsaccounts"
+    description: >-
+      Paged savings-account list, filtered by office/client/status. Detail via
+      /v1/savingsaccounts/{id}?associations=transactions,charges. CACHE_FIRST_SWR-cached.
+    request:
+      shape: object
+      params:
+        - name: offset
+          type: int
+          default: 0
+        - name: limit
+          type: int
+          default: 50
+        - name: clientId
+          type: long
+          description: "Scopes to one client's savings accounts (from Client 360)."
+        - name: sqlSearch
+          type: string
+          description: "Optional server-side filter expression."
+    response:
+      shape: list
+      dto: SavingsAccountDto
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+        default_limit: 50
+        description: "Fineract paged envelope {totalFilteredRecords, pageItems[]}; the list pages until drained."
+    requires_auth: true
+    requires_permission: [READ_SAVINGSACCOUNT]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: savings_template
+    method: GET
+    path: "/v1/savingsaccounts/template"
+    description: >-
+      Create/edit field defaults + product-driven option lists (?clientId=&productId=). Rendered by
+      dynamic-template-forms; cached CACHE_FIRST_SWR so create forms work offline.
+    request:
+      shape: object
+      params:
+        - name: clientId
+          type: long
+        - name: productId
+          type: long
+    response:
+      shape: object
+      dto: SavingsAccountTemplateDto
+    requires_auth: true
+    requires_permission: [READ_SAVINGSACCOUNT]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: savings_lifecycle
+    method: POST
+    path: "/v1/savingsaccounts/{accountId}?command={approve|activate|close|postInterestAsOn|calculateInterest|block|hold}"
+    description: >-
+      Savings lifecycle + interest command. Each is gated by its own {ACTION}_SAVINGSACCOUNT code and
+      enqueued through the durable outbox with an idempotency key. Maker-checker tenants return a 2xx
+      with commandId + empty changes (PENDING_APPROVAL).
+    request:
+      shape: object
+      body: SavingsCommandRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResult
+      description: "{officeId,clientId,savingsId,resourceId,commandId,changes{}}; commandId-without-resourceId == queued for approval."
+    requires_auth: true
+    requires_permission: [APPROVE_SAVINGSACCOUNT, ACTIVATE_SAVINGSACCOUNT, CLOSE_SAVINGSACCOUNT, POSTINTEREST_SAVINGSACCOUNT]
+    idempotency: durable
+    offline: queued
+
+  - id: savings_transaction
+    method: POST
+    path: "/v1/savingsaccounts/{accountId}/transactions?command={deposit|withdrawal|holdAmount|releaseAmount}"
+    description: >-
+      Money-movement on a savings account. Each command is gated by its {ACTION}_SAVINGSACCOUNT code,
+      assembled from the /transactions/template, and enqueued to RoomSubmitOutbox with a DURABLE
+      idempotency key for exactly-once replay via POST /v1/batches.
+    request:
+      shape: object
+      body: SavingsTransactionRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResult
+    requires_auth: true
+    requires_permission: [DEPOSIT_SAVINGSACCOUNT, WITHDRAWAL_SAVINGSACCOUNT, HOLDAMOUNT_SAVINGSACCOUNT, RELEASEAMOUNT_SAVINGSACCOUNT]
+    idempotency: durable
+    offline: queued
+
+  # ── Fixed-deposit accounts ─────────────────────────────────────────────
+  - id: list_fixed_deposits
+    method: GET
+    path: "/v1/fixeddepositaccounts"
+    description: "Paged fixed-deposit-account list/detail (+ maturity, interest-rate chart). CACHE_FIRST_SWR."
+    request:
+      shape: object
+      params:
+        - name: offset
+          type: int
+          default: 0
+        - name: limit
+          type: int
+          default: 50
+        - name: clientId
+          type: long
+    response:
+      shape: list
+      dto: FixedDepositAccountDto
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+        default_limit: 50
+    requires_auth: true
+    requires_permission: [READ_FIXEDDEPOSITACCOUNT]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: fixed_deposit_lifecycle
+    method: POST
+    path: "/v1/fixeddepositaccounts/{accountId}?command={approve|activate|close|prematureClose|calculatePrematureAmount}"
+    description: >-
+      FD lifecycle incl. premature close (preview via calculatePrematureAmount, then prematureClose).
+      Enqueued through the durable outbox. RD mirror lives at /v1/recurringdepositaccounts.
+    request:
+      shape: object
+      body: DepositCommandRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResult
+    requires_auth: true
+    requires_permission: [APPROVE_FIXEDDEPOSITACCOUNT, ACTIVATE_FIXEDDEPOSITACCOUNT, PREMATURECLOSE_FIXEDDEPOSITACCOUNT]
+    idempotency: durable
+    offline: queued
+
+  # ── Recurring-deposit accounts ─────────────────────────────────────────
+  - id: list_recurring_deposits
+    method: GET
+    path: "/v1/recurringdepositaccounts"
+    description: "Paged recurring-deposit-account list/detail (+ deposit schedule, maturity). CACHE_FIRST_SWR."
+    request:
+      shape: object
+      params:
+        - name: offset
+          type: int
+          default: 0
+        - name: limit
+          type: int
+          default: 50
+        - name: clientId
+          type: long
+    response:
+      shape: list
+      dto: RecurringDepositAccountDto
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+        default_limit: 50
+    requires_auth: true
+    requires_permission: [READ_RECURRINGDEPOSITACCOUNT]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: recurring_deposit_transaction
+    method: POST
+    path: "/v1/recurringdepositaccounts/{accountId}/transactions?command={deposit|withdrawal}"
+    description: >-
+      RD installment deposit / withdrawal (updateDepositAmount handled via the edit form). Gated by
+      DEPOSIT_/WITHDRAWAL_RECURRINGDEPOSITACCOUNT; enqueued through the durable outbox.
+    request:
+      shape: object
+      body: SavingsTransactionRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResult
+    requires_auth: true
+    requires_permission: [DEPOSIT_RECURRINGDEPOSITACCOUNT, WITHDRAWAL_RECURRINGDEPOSITACCOUNT]
+    idempotency: durable
+    offline: queued
+
+  # ── Share accounts ─────────────────────────────────────────────────────
+  - id: list_share_accounts
+    method: GET
+    path: "/v1/accounts/share"
+    description: "Paged share-account list/detail (holding, pending-for-approval shares, dividends). CACHE_FIRST_SWR."
+    request:
+      shape: object
+      params:
+        - name: offset
+          type: int
+          default: 0
+        - name: limit
+          type: int
+          default: 50
+        - name: clientId
+          type: long
+    response:
+      shape: list
+      dto: ShareAccountDto
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+        default_limit: 50
+    requires_auth: true
+    requires_permission: [READ_SHAREACCOUNT]
+    idempotency: safe_get
+    offline: cache_first_swr
+
+  - id: share_lifecycle
+    method: POST
+    path: "/v1/accounts/share/{accountId}?command={approve|activate|close|applyadditionalshares|redeemshares}"
+    description: >-
+      Share subscribe (applyadditionalshares) + redeem (redeemshares) + lifecycle. Each gated by its
+      {ACTION}_SHAREACCOUNT code and enqueued through the durable outbox for exactly-once replay.
+    request:
+      shape: object
+      body: ShareCommandRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResult
+    requires_auth: true
+    requires_permission: [APPROVE_SHAREACCOUNT, ACTIVATE_SHAREACCOUNT, APPLYADDITIONALSHARES_SHAREACCOUNT, REDEEMSHARES_SHAREACCOUNT]
+    idempotency: durable
+    offline: queued
+
+  # ── Cross-account: transfers + standing instructions ───────────────────
+  - id: account_transfer
+    method: POST
+    path: "/v1/accounttransfers"
+    description: "Inter-account transfer (savings↔savings↔loan). Enqueued through the durable outbox."
+    request:
+      shape: object
+      body: AccountTransferRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResult
+    requires_auth: true
+    requires_permission: [CREATE_ACCOUNTTRANSFER]
+    idempotency: durable
+    offline: queued
+
+  - id: standing_instruction
+    method: POST
+    path: "/v1/standinginstructions"
+    description: "Standing-instruction create/edit for scheduled transfers. Enqueued through the durable outbox."
+    request:
+      shape: object
+      body: StandingInstructionRequest
+      headers:
+        - "Fineract-Platform-TenantId"
+        - "Idempotency-Key (durable, per outbox entry)"
+    response:
+      shape: object
+      dto: CommandProcessingResult
+    requires_auth: true
+    requires_permission: [CREATE_STANDINGINSTRUCTION]
+    idempotency: durable
+    offline: queued
+
+notes:
+  - "No server is built for this project — these contracts document how the client drives the live Fineract instance."
+  - "READ_* gate list visibility; the {ACTION}_{ENTITY} command codes gate each button (double-enforced at replay per PERMISSION_SCOPE_MODEL C3/C6)."
+  - "Every command POST carries dateFormat + locale alongside its date field (Fineract cross-cutting contract §0); the values map is assembled from the entity /template by dynamic-template-forms."
+  - "prematureClose is previewed with calculatePrematureAmount before the close command is enqueued."

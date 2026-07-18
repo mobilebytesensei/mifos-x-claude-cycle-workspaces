@@ -1,0 +1,290 @@
+feature: m16-communications
+status: approved
+cluster: back-office-module
+module: m16-communications
+priority: could_have
+new_infra: false
+is_primary_flow: false
+has_ui: true
+has_api: true
+has_server: false
+capabilities:
+  - has_ui
+  - has_api
+  - has_offline_cache
+  - has_form_input
+  - has_flow
+  - requires_auth
+requires_features:
+  - offline-sync-engine
+  - dynamic-template-forms
+  - permission-capability-engine
+  - needs-attention-inbox
+requires_permission:
+  - READ_SMSCAMPAIGN
+  - CREATE_SMSCAMPAIGN
+  - UPDATE_SMSCAMPAIGN
+  - ACTIVATE_SMSCAMPAIGN
+  - CLOSE_SMSCAMPAIGN
+  - CREATE_TEMPLATE
+  - READ_HOOK
+  - CREATE_HOOK
+  - READ_EXTERNALSERVICES
+  - UPDATE_EXTERNALSERVICES
+acceptance_refs:
+  - Create SMS/email campaigns, report-mailing jobs, UGD document templates (agreements/receipts)
+  - >-
+    Every campaign lifecycle command (create/activate/close) queued with a DURABLE idempotency key through the outbox;
+    replays exactly-once (zero double-activate) even across an app kill
+  - >-
+    Every control gated on its exact {ACTION}_{ENTITY} code (READ_/CREATE_/ACTIVATE_/CLOSE_SMSCAMPAIGN, CREATE_TEMPLATE,
+    CREATE_HOOK, UPDATE_EXTERNALSERVICES); same binary renders marketing-admin vs read-only viewer
+plan_ref: idea-plan.yaml#features[m16-communications]
+permissions_gate: '*_SMSCAMPAIGN, email campaign codes, *_REPORTMAILINGJOB, template (UGD)'
+summary: >-
+  M16 · Communications — the marketing/admin persona's surface. A list of SMS/email campaigns (each with its
+  business-rule message template, run type, trigger and status), a per-campaign detail with the recipient delivery
+  report, the message-template library (business-rule + UGD document templates), the outbound email/SMS gateway config,
+  and the registered webhooks (hooks). Author a template, create an SMS campaign from a template + recipient criteria,
+  activate it, close it, read its recipient report, register a webhook, and edit the email config — every campaign
+  lifecycle command flows through the durable outbox (offline-sync-engine) with an exactly-once idempotency key so a
+  campaign never double-activates, every form is rendered from the Fineract GET template (dynamic-template-forms), and
+  every control is gated on its exact {ACTION}_{ENTITY} permission (permission-capability-engine). Reads ride
+  CACHE_FIRST_SWR Store5 so the campaign list renders offline.
+metadata:
+  category: permission-gated-feature
+  implementation_ready: true
+  impl_ready_at: '2026-07-17T12:00:00Z'
+  impl_ready_schema: v2
+contracts:
+  - capability: list_sms_campaigns
+    platform_spec: >-
+      GET /v1/smscampaigns → StoreFactory.createStore + Room SourceOfTruth(communications) +
+      asScreenStream(CACHE_FIRST_SWR); SmsCampaignDto -> SmsCampaign (name, campaignType, triggerType, runType,
+      templateName, status); scoped by the permission group
+    permission: READ_SMSCAMPAIGN
+    error_cases:
+      - campaigns_read_failed
+      - offline_no_cache
+  - capability: get_campaign_recipient_report
+    platform_spec: >-
+      GET /v1/smscampaigns/{id}/messageByStatus → cached per campaign_id; CampaignMessageDto -> CampaignMessage
+      (recipient, deliveryStatus, sentOn) grouped by status with totals; CACHE_FIRST_SWR read-only
+    permission: READ_SMSCAMPAIGN
+    error_cases:
+      - recipient_report_read_failed
+  - capability: create_sms_campaign
+    platform_spec: >-
+      GET /v1/smscampaigns/template (campaign-type / trigger / run-type / provider / template option lists) →
+      dynamic-template-forms → POST /v1/smscampaigns command JsonObject (campaignName, campaignType, triggerType,
+      businessRuleId, templateMessage, recipientCriteria + dateFormat + locale) enqueued via RoomSubmitOutbox with
+      durable IdempotencyKey
+    permission: CREATE_SMSCAMPAIGN
+    error_cases:
+      - campaign_command_rejected
+      - template_fetch_failed
+  - capability: activate_sms_campaign
+    platform_spec: >-
+      POST /v1/smscampaigns/{id}?command=activate command JsonObject (activationDate + dateFormat + locale) →
+      RoomSubmitOutbox with DURABLE idempotency_key; BatchSubmitHandler.AllOrNothing replay; optimistic status Pending
+      -> Active, pending-sync until replayed (never double-activates)
+    permission: ACTIVATE_SMSCAMPAIGN
+    error_cases:
+      - campaign_command_rejected
+  - capability: close_sms_campaign
+    platform_spec: >-
+      POST /v1/smscampaigns/{id}?command=close command JsonObject (closureDate + dateFormat + locale) → durable outbox
+      exactly-once; optimistic status Active -> Closed pending-sync; server final authority (rejection ->
+      needs-attention)
+    permission: CLOSE_SMSCAMPAIGN
+    error_cases:
+      - campaign_command_rejected
+  - capability: create_template
+    platform_spec: >-
+      GET /v1/templates/template (entity / template-type / mapper option lists) → dynamic-template-forms → POST
+      /v1/templates command JsonObject (name, entity, type, mappers, mustache body) enqueued via durable outbox;
+      exactly-once replay
+    permission: CREATE_TEMPLATE
+    error_cases:
+      - template_command_rejected
+  - capability: create_hook
+    platform_spec: >-
+      GET /v1/hooks/template (template-name / grouped-events / config-field option lists) → POST /v1/hooks command
+      JsonObject (name, isActive, events[], config{payloadURL,contentType}) enqueued via durable outbox
+    permission: CREATE_HOOK
+    error_cases:
+      - hook_command_rejected
+  - capability: save_email_config
+    platform_spec: >-
+      GET /v1/externalservice/SMTP (host, port, username, useTLS, fromAddress; password never returned) →
+      dynamic-template-forms → PUT /v1/externalservice/SMTP command JsonObject; password stored via secure storage,
+      never logged; enqueued via durable outbox
+    permission: UPDATE_EXTERNALSERVICES
+    error_cases:
+      - email_config_command_rejected
+libraries:
+  - capability: list_sms_campaigns
+    library: ktorfit
+    version: 2.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: list_sms_campaigns
+    library: kotlinx-serialization
+    version: 1.7.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: get_campaign_recipient_report
+    library: kotlinx-coroutines
+    version: 1.9.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: activate_sms_campaign
+    library: androidx.room
+    version: 3.x
+    targets:
+      - android
+      - ios
+      - desktop
+vm_actions:
+  - name: LoadCampaigns
+    signature: private fun loadCampaigns()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content(campaigns) | Empty | NoNetwork(cachedCampaigns)
+      - uiState=Error
+    side_effects:
+      - CommunicationsRepository.campaignsStream(CACHE_FIRST_SWR).collect { … }
+    error_handling:
+      CampaignsReadFailed: uiState=Error; keep last-known cache; offer Retry
+      Offline: uiState=NoNetwork; emit cached campaigns; show offline banner
+  - name: SwitchCommsTab
+    signature: 'private fun onSwitchCommsTab(tab: CommsTab)'
+    state_mutations:
+      - selectedTab=tab
+      - uiState=Content(reprojected)
+    side_effects: []
+    error_handling: {}
+  - name: OpenCampaignDetail
+    signature: 'private fun onOpenCampaignDetail(campaignId: String)'
+    state_mutations:
+      - selectedCampaignId=campaignId
+      - uiState=Content(detail)
+    side_effects:
+      - CommunicationsRepository.recipientReportStream(campaignId).collect { … }
+    error_handling:
+      RecipientReportReadFailed: uiState=Error; offer Retry
+  - name: ActivateCampaign
+    signature: 'private fun activateCampaign(campaignId: String, activationDate: LocalDate)'
+    state_mutations:
+      - uiState=Submitting | QueuedOffline
+      - campaignStatus=Active (optimistic, pending-sync)
+    side_effects:
+      - RoomSubmitOutbox.enqueue(ActivateCampaignPayload, IdempotencyKey.generate())
+      - OfflineSubmitSyncer drain on reconnect (POST .../activate)
+    error_handling:
+      CampaignCommandRejected: uiState=Error; route to needs-attention-inbox with server_error
+  - name: CloseCampaign
+    signature: 'private fun closeCampaign(campaignId: String, closureDate: LocalDate)'
+    state_mutations:
+      - uiState=Submitting | QueuedOffline
+      - campaignStatus=Closed (optimistic, pending-sync)
+    side_effects:
+      - RoomSubmitOutbox.enqueue(CloseCampaignPayload, IdempotencyKey.generate())
+    error_handling:
+      CampaignCommandRejected: uiState=Error; route to needs-attention-inbox
+  - name: ViewRecipientReport
+    signature: 'private fun viewRecipientReport(campaignId: String)'
+    state_mutations:
+      - uiState=Content(report)
+    side_effects:
+      - CommunicationsRepository.recipientReportStream(campaignId, CACHE_FIRST_SWR).collect { … }
+    error_handling:
+      RecipientReportReadFailed: uiState=Error; offer Retry
+  - name: CreateCampaign
+    signature: 'private fun createCampaign(payload: CreateCampaignPayload)'
+    state_mutations:
+      - uiState=Submitting | QueuedOffline
+    side_effects:
+      - RoomSubmitOutbox.enqueue(CreateCampaignPayload, IdempotencyKey.generate())
+    error_handling:
+      CampaignCommandRejected: uiState=Error; route to needs-attention-inbox
+  - name: CreateTemplate
+    signature: 'private fun createTemplate(payload: CreateTemplatePayload)'
+    state_mutations:
+      - uiState=Submitting | QueuedOffline
+    side_effects:
+      - RoomSubmitOutbox.enqueue(CreateTemplatePayload, IdempotencyKey.generate())
+    error_handling:
+      TemplateCommandRejected: uiState=Error; route to needs-attention-inbox
+  - name: RegisterHook
+    signature: 'private fun registerHook(payload: RegisterHookPayload)'
+    state_mutations:
+      - uiState=Submitting | QueuedOffline
+    side_effects:
+      - RoomSubmitOutbox.enqueue(RegisterHookPayload, IdempotencyKey.generate())
+    error_handling:
+      HookCommandRejected: uiState=Error; route to needs-attention-inbox
+  - name: SaveEmailConfig
+    signature: 'private fun saveEmailConfig(payload: EmailConfigPayload)'
+    state_mutations:
+      - uiState=Submitting | QueuedOffline
+    side_effects:
+      - RoomSubmitOutbox.enqueue(EmailConfigPayload, IdempotencyKey.generate())
+    error_handling:
+      EmailConfigCommandRejected: uiState=Error; route to needs-attention-inbox
+  - name: RetryLoad
+    signature: private fun retryLoad()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content | Error
+    side_effects:
+      - CommunicationsRepository.campaignsStream.refreshFresh()
+    error_handling: {}
+  - name: OpenNeedsAttention
+    signature: private fun onOpenNeedsAttention()
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToNeedsAttention)
+    error_handling: {}
+error_cases:
+  - campaigns_read_failed
+  - recipient_report_read_failed
+  - templates_read_failed
+  - hooks_read_failed
+  - campaign_command_rejected
+  - template_command_rejected
+  - hook_command_rejected
+  - email_config_command_rejected
+  - template_fetch_failed
+  - offline_no_cache
+test_fixtures:
+  source: screens/m16-communications/tests.yaml
+  scenario_count: 8
+  priority_distribution:
+    high: 4
+    medium: 4
+    low: 0
+approve_hash: "sha256:102755980bccc2fa69b77a4d8badf1a30617d555804f16073d6b16491e05fbd5"
+approved_at: "2026-07-18T01:52:48Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+scaffolded_at: '2026-07-17T02:08:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-17T12:00:00Z'
+enriched_by: /idea-feature-enrich
+status_history:
+  - from: designed
+    to: design_partial
+    at: '2026-07-17T21:56:51.042Z'
+    by: /idea-feature-stitch
+  - from: design_partial
+    to: approved
+    at: "2026-07-18T01:52:48Z"
+    by: /idea approve

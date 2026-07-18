@@ -1,0 +1,302 @@
+feature: m16-communications
+# Fineract communications surface. Reads (campaigns, recipient reports, templates, hooks, email
+# config, templates GET) are CACHE_FIRST_SWR-cacheable so the campaign list, template library and
+# hooks render offline. Campaign lifecycle commands (create/activate/close) and management commands
+# (create template, register hook, save email config) are durable-idempotent — they flow through
+# offline-sync-engine's outbox and replay exactly-once via POST /v1/batches, never a direct online
+# call that could double-activate a campaign. Every call sends the global Fineract-Platform-TenantId
+# header.
+endpoints:
+  - id: list_sms_campaigns
+    method: GET
+    path: "/v1/smscampaigns"
+    description: >-
+      SMS/email campaign list backing the Campaigns tab — each campaign carries its name, campaign type
+      (SMS/Email), trigger type, run type, resolved message-template name and status (Pending/Active/
+      Closed). Scoped by the user's permission group. Gates on READ_SMSCAMPAIGN (or an umbrella).
+    query_params:
+      - name: offset
+        type: integer
+        required: false
+        description: "Pagination offset; defaults to 0."
+      - name: limit
+        type: integer
+        required: false
+        description: "Page size; defaults to the server page limit."
+    response_type: "SmsCampaign[]"
+    response:
+      shape: list
+      dto: SmsCampaignDto
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+    requires_auth: true
+    requires_permission: [READ_SMSCAMPAIGN]
+    tenant_header: true
+    cacheable: true
+
+  - id: get_campaign_template
+    method: GET
+    path: "/v1/smscampaigns/template"
+    description: >-
+      Create/edit-campaign form template — campaign-type, trigger-type, run-type, provider and
+      message-template option lists plus field defaults. dynamic-template-forms renders the campaign form
+      FROM this payload (never hardcoded options) and caches it CACHE_FIRST_SWR so the form works offline.
+    response_type: "SmsCampaignTemplate"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [READ_SMSCAMPAIGN]
+    tenant_header: true
+    cacheable: true
+
+  - id: create_sms_campaign
+    method: POST
+    path: "/v1/smscampaigns"
+    description: >-
+      Create an SMS/email campaign (campaignName, campaignType, triggerType, runType, providerId,
+      businessRuleId, templateMessage, recipientCriteria + dateFormat + locale). Assembled as a command
+      JsonObject by dynamic-template-forms and enqueued through the durable outbox for exactly-once
+      replay. Command gates on CREATE_SMSCAMPAIGN.
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [CREATE_SMSCAMPAIGN]
+    idempotency: durable
+    tenant_header: true
+    cacheable: false
+
+  - id: update_sms_campaign
+    method: PUT
+    path: "/v1/smscampaigns/{campaignId}"
+    description: >-
+      Update a still-Pending campaign's mutable fields (name, message, recipient criteria, schedule).
+      Enqueued through the durable outbox; command gates on UPDATE_SMSCAMPAIGN.
+    query_params:
+      - name: campaignId
+        type: integer
+        required: true
+        description: "The campaign being edited."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [UPDATE_SMSCAMPAIGN]
+    idempotency: durable
+    tenant_header: true
+    cacheable: false
+
+  - id: activate_sms_campaign
+    method: POST
+    path: "/v1/smscampaigns/{campaignId}?command=activate"
+    description: >-
+      Activate a Pending campaign so its scheduler begins sending (activationDate + dateFormat + locale).
+      Money-adjacent/side-effecting — assembled as a command JsonObject and enqueued to the durable outbox
+      with an idempotency key so it posts EXACTLY once even across an app kill/retry (a campaign never
+      double-activates). Command gates on ACTIVATE_SMSCAMPAIGN.
+    query_params:
+      - name: campaignId
+        type: integer
+        required: true
+        description: "The campaign being activated."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [ACTIVATE_SMSCAMPAIGN]
+    idempotency: durable
+    tenant_header: true
+    cacheable: false
+
+  - id: close_sms_campaign
+    method: POST
+    path: "/v1/smscampaigns/{campaignId}?command=close"
+    description: >-
+      Close an Active campaign so it stops sending (closureDate + dateFormat + locale). Same durable-outbox
+      exactly-once path as activate; a server rejection routes to needs-attention-inbox with the Fineract
+      error. Command gates on CLOSE_SMSCAMPAIGN.
+    query_params:
+      - name: campaignId
+        type: integer
+        required: true
+        description: "The campaign being closed."
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [CLOSE_SMSCAMPAIGN]
+    idempotency: durable
+    tenant_header: true
+    cacheable: false
+
+  - id: get_campaign_recipient_report
+    method: GET
+    path: "/v1/smscampaigns/{campaignId}/messageByStatus"
+    description: >-
+      Per-recipient delivery report for a campaign — recipients grouped by delivery status (Pending/Sent/
+      Delivered/Failed) with counts and per-message rows. Read-only, CACHE_FIRST_SWR so the report renders
+      offline. Gates on READ_SMSCAMPAIGN.
+    query_params:
+      - name: campaignId
+        type: integer
+        required: true
+        description: "The campaign whose recipient report is fetched."
+      - name: status
+        type: integer
+        required: false
+        description: "Optional delivery-status filter for the report window."
+    response_type: "CampaignMessage[]"
+    response:
+      shape: list
+      dto: CampaignMessageDto
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+    requires_auth: true
+    requires_permission: [READ_SMSCAMPAIGN]
+    tenant_header: true
+    cacheable: true
+
+  - id: list_templates
+    method: GET
+    path: "/v1/templates"
+    description: >-
+      The message / UGD document template library (business-rule message templates + agreement/receipt
+      document templates). Backs the Templates tab; read CACHE_FIRST_SWR so the library renders offline.
+      Publicly readable (no explicit permission on the read).
+    query_params:
+      - name: typeId
+        type: integer
+        required: false
+        description: "Optional filter by template type (document vs SMS message)."
+      - name: entityId
+        type: integer
+        required: false
+        description: "Optional filter by the entity the template attaches to (client/loan/savings)."
+    response_type: "Template[]"
+    response:
+      shape: list
+      dto: TemplateDto
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+    requires_auth: true
+    requires_permission: []
+    tenant_header: true
+    cacheable: true
+
+  - id: get_template_form
+    method: GET
+    path: "/v1/templates/template"
+    description: >-
+      Create-template form template — the entity, template-type and mapper option lists plus field
+      defaults. dynamic-template-forms renders the create-template form from this payload and caches it
+      offline. Publicly readable.
+    response_type: "TemplateForm"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: []
+    tenant_header: true
+    cacheable: true
+
+  - id: create_template
+    method: POST
+    path: "/v1/templates"
+    description: >-
+      Create a message / UGD document template (name, entity, type, mappers, mustache body). Assembled as
+      a command JsonObject by dynamic-template-forms and enqueued through the durable outbox for
+      exactly-once replay. Command gates on CREATE_TEMPLATE.
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [CREATE_TEMPLATE]
+    idempotency: durable
+    tenant_header: true
+    cacheable: false
+
+  - id: list_hooks
+    method: GET
+    path: "/v1/hooks"
+    description: >-
+      Registered outbound webhooks (hooks) — each with its name, template, isActive flag, subscribed
+      events and payload URL. Backs the Hooks tab; read CACHE_FIRST_SWR so the list renders offline.
+      Gates on READ_HOOK.
+    response_type: "Hook[]"
+    response:
+      shape: list
+      dto: HookDto
+      pagination:
+        strategy: offset
+        param_offset: offset
+        param_limit: limit
+    requires_auth: true
+    requires_permission: [READ_HOOK]
+    tenant_header: true
+    cacheable: true
+
+  - id: get_hook_template
+    method: GET
+    path: "/v1/hooks/template"
+    description: >-
+      Register-hook form template — template-name, grouped-events and config-field option lists. Rendered
+      by dynamic-template-forms and cached offline. Gates on READ_HOOK.
+    response_type: "HookTemplate"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [READ_HOOK]
+    tenant_header: true
+    cacheable: true
+
+  - id: create_hook
+    method: POST
+    path: "/v1/hooks"
+    description: >-
+      Register an outbound webhook (name, isActive, events[], config{payloadURL,contentType}). Assembled
+      as a command JsonObject by dynamic-template-forms and enqueued through the durable outbox for
+      exactly-once replay. Command gates on CREATE_HOOK.
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [CREATE_HOOK]
+    idempotency: durable
+    tenant_header: true
+    cacheable: false
+
+  - id: get_email_config
+    method: GET
+    path: "/v1/externalservice/SMTP"
+    description: >-
+      The outbound email (SMTP) gateway configuration — host, port, username, useTLS, from-address (the
+      secret password is never returned). Backs the Email config tab; cached CACHE_FIRST_SWR so it renders
+      offline. Gates on READ_EXTERNALSERVICES.
+    response_type: "ExternalServiceConfig"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [READ_EXTERNALSERVICES]
+    tenant_header: true
+    cacheable: true
+
+  - id: save_email_config
+    method: PUT
+    path: "/v1/externalservice/SMTP"
+    description: >-
+      Save the outbound email (SMTP) gateway configuration (host, port, username, password, useTLS,
+      fromAddress). Assembled as a command JsonObject; the password is stored via secure storage and never
+      logged. Enqueued through the durable outbox. Command gates on UPDATE_EXTERNALSERVICES.
+    response_type: "CommandProcessingResult"
+    response:
+      shape: object
+    requires_auth: true
+    requires_permission: [UPDATE_EXTERNALSERVICES]
+    idempotency: durable
+    tenant_header: true
+    cacheable: false

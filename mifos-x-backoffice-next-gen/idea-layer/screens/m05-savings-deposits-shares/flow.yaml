@@ -1,0 +1,96 @@
+feature: m05-savings-deposits-shares
+
+entry_points:
+  - type: nav_root
+    description: >-
+      Savings/Deposits/Shares module root (M05 tab) — VISIBLE only when the user holds ≥1 READ_*
+      code in the deposit group (READ_SAVINGSACCOUNT ∨ READ_FIXEDDEPOSITACCOUNT ∨
+      READ_RECURRINGDEPOSITACCOUNT ∨ READ_SHAREACCOUNT); else HIDDEN (fail-closed, PERMISSION_SCOPE C2).
+  - type: from_client_360
+    description: "Opened from a client's savings/deposit/share account row in M02 Clients (clientId-scoped list)."
+  - type: from_sync
+    description: "offline-sync-engine / needs-attention-inbox deep-links here to re-open the account of a rejected deposit/withdrawal command."
+
+transitions:
+  # ── load lifecycle ──
+  - from: loading
+    to: content
+    trigger: "account list or selected-account detail loaded (cache or fresh)"
+  - from: loading
+    to: empty
+    trigger: "no accounts in the current office/client/product scope"
+  - from: loading
+    to: error
+    trigger: "list/detail fetch failed AND no cache exists"
+  - from: loading
+    to: no_network
+    trigger: "offline with no cached account data for the requested scope"
+
+  # ── in-content interactions ──
+  - from: content
+    to: content
+    trigger: "switch_account_type (savings/FD/RD/share facet) — in-VM filter, no refetch"
+  - from: content
+    to: content
+    trigger: "open_account_detail — master→detail within the same feature (detail rendered in place)"
+
+  # ── command submit lifecycle (deposit/withdrawal/hold/approve/activate/close/post-interest/subscribe/redeem/transfer/SI) ──
+  - from: content
+    to: submitting
+    trigger: "a permitted command posted ONLINE (record_deposit / record_withdrawal / approve_account / activate_account / post_interest / subscribe_shares / redeem_shares / account_transfer / …)"
+  - from: content
+    to: queued_offline
+    trigger: "a permitted command issued while OFFLINE — written to RoomSubmitOutbox with a durable idempotency key"
+  - from: submitting
+    to: content
+    trigger: "command accepted (200 with resourceId) — optimistic balance/ledger confirmed, streams revalidated"
+  - from: submitting
+    to: pending_approval
+    trigger: "maker-checker tenant queued the command (2xx with commandId, empty changes)"
+  - from: submitting
+    to: queued_offline
+    trigger: "connectivity lost mid-submit — the command stays PENDING in the outbox for replay"
+  - from: submitting
+    to: error
+    trigger: "command rejected (400 validation / 409 optimistic-lock / 403 permission-drift) — routed to needs-attention-inbox"
+  - from: queued_offline
+    to: submitting
+    trigger: "connectivity regained — OfflineSubmitSyncer replays the queued command via POST /v1/batches"
+  - from: queued_offline
+    to: content
+    trigger: "queued command replayed and accepted on reconnect (exactly-once)"
+  - from: pending_approval
+    to: content
+    trigger: "checker approved the queued command (M15) and the account stream revalidated"
+
+  # ── template-form navigation (create/edit/command entry) ──
+  - from: content
+    to: dynamic-template-forms
+    trigger: "open_account_form / edit_account_form / record_deposit / record_withdrawal / premature_close_deposit / subscribe_shares / redeem_shares / account_transfer / create_standing_instruction / close_account — template-driven form"
+  - from: empty
+    to: dynamic-template-forms
+    trigger: "open_account_form from the empty state ('Open an account')"
+
+  # ── error / drift recovery ──
+  - from: error
+    to: needs-attention-inbox
+    trigger: "open_needs_attention (Review failed) — per-command triage of a rejected deposit/withdrawal/lifecycle command"
+  - from: error
+    to: loading
+    trigger: "retry_load (Retry) — stream.refreshFresh() re-runs the fetch"
+  - from: error
+    to: permission-capability-engine
+    trigger: "403 permission-drift on a command — refreshPermissions() then re-resolve the command bar"
+  - from: no_network
+    to: loading
+    trigger: "retry_load / connectivity regained — re-fetch"
+  - from: no_network
+    to: content
+    trigger: "connectivity regained and cached content revalidated"
+
+navigates_to:
+  - dynamic-template-forms
+  - offline-sync-engine
+  - needs-attention-inbox
+  - permission-capability-engine
+  - m15-approvals-makerchecker
