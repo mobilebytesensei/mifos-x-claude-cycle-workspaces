@@ -9,6 +9,7 @@
 | Slug | mifos-x-group-banking |
 | Type | kmp |
 | Subtype | kmp-app |
+| Source | source/mifos-x-group-banking/ |
 | Workspace | mifos-x |
 | Package | org.mifos.groupbanking |
 | Repo (origin = fork) | [therajanmaurya/mifos-x-group-banking](https://github.com/therajanmaurya/mifos-x-group-banking) — push target |

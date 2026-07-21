@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m16-communications
 
-<!-- schema: v3.2 | generated: 2026-07-21T18:48:23.804Z -->
+<!-- schema: v3.2 | generated: 2026-07-21T18:49:52.122Z -->
 
 ## Stitch Project
 
@@ -8,22 +8,32 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-21T18:48:23.802Z |
-| Success | 2/3 states |
+| Generated | 2026-07-21T18:49:52.121Z |
+| Success | 7/8 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| empty | — | 01-m16-communications-empty | PNG ❌ | HTML ✅ | ⏳ pending |
-| error | — | 02-m16-communications-error | PNG ❌ | HTML ✅ | ⏳ pending |
-| no_network | — | 03-m16-communications-no_network | PNG ❌ | HTML ❌ | ❌ fallback-source-missing: preview-missing: /Users/therajanmaurya/project-development/claude-product-cycle/workspaces/mifos-x/mifos-x-backoffice-next-gen/idea-layer/screens/m16-communications/preview/no_network.html (No such file or directory (os error 2): readfile '/Users/therajanmaurya/project-development/claude-product-cycle/workspaces/mifos-x/mifos-x-backoffice-next-gen/idea-layer/screens/m16-communications/preview/no_network.html') |
+| loading | — | 01-m16-communications-loading | PNG ❌ | HTML ✅ | ⏳ pending |
+| content | — | 02-m16-communications-content | PNG ❌ | HTML ✅ | ⏳ pending |
+| empty | — | 03-m16-communications-empty | PNG ❌ | HTML ✅ | ⏳ pending |
+| submitting | — | 04-m16-communications-submitting | PNG ❌ | HTML ✅ | ⏳ pending |
+| queued_offline | — | 05-m16-communications-queued_offline | PNG ❌ | HTML ✅ | ⏳ pending |
+| pending_approval | — | 06-m16-communications-pending_approval | PNG ❌ | HTML ✅ | ⏳ pending |
+| error | — | 07-m16-communications-error | PNG ❌ | HTML ✅ | ⏳ pending |
+| no_network | — | 08-m16-communications-no_network | PNG ❌ | HTML ❌ | ❌ fallback-source-missing: preview-missing: /Users/therajanmaurya/project-development/claude-product-cycle/workspaces/mifos-x/mifos-x-backoffice-next-gen/idea-layer/screens/m16-communications/preview/no_network.html (No such file or directory (os error 2): readfile '/Users/therajanmaurya/project-development/claude-product-cycle/workspaces/mifos-x/mifos-x-backoffice-next-gen/idea-layer/screens/m16-communications/preview/no_network.html') |
 
 ## Open in Figma / Stitch
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
+| loading | — | — |
+| content | — | — |
 | empty | — | — |
+| submitting | — | — |
+| queued_offline | — | — |
+| pending_approval | — | — |
 | error | — | — |
 | no_network | — | — |
 
