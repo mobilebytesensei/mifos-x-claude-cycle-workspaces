@@ -1,37 +1,37 @@
 # FIGMA_LINKS.md — m17-sync-settings
 
-<!-- schema: v3.2 | generated: 2026-07-17T22:54:26.899Z -->
+<!-- schema: v3.2 | generated: 2026-07-21T18:46:30.526Z -->
 
 ## Stitch Project
 
 | Field | Value |
 |-------|-------|
-| Project URL | [4340646484225532819](https://stitch.google.com/projects/4340646484225532819) |
-| Design System ID | 6971225134039640611 |
-| Generated | 2026-07-17T22:54:26.899Z |
-| Success | 5/6 states |
+| Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
+| Design System ID | 312064780206383264 |
+| Generated | 2026-07-21T18:46:30.525Z |
+| Success | 6/6 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| idle | 0a9b7ac8e76948e285842b5d2ec0faa2 | 01-m17-sync-settings-idle | PNG ✅ | HTML ✅ | ♻ resumed |
-| content | 1a841a982ab1402c9f877c8d6ae7206c | 02-m17-sync-settings-content | PNG ✅ | HTML ✅ | ❌ screen-not-landed-after-retry |
-| syncing | 5cb99d8248f5495daf150b9be2707b84 | 03-m17-sync-settings-syncing | PNG ✅ | HTML ✅ | ♻ resumed |
-| empty | fc37f15e6dfb4b3bb10500fc5f12a867 | 04-m17-sync-settings-empty | PNG ✅ | HTML ✅ | ♻ resumed |
-| needs-attention | 1070c44c16b44dbb9136d6e7a21908e7 | 05-m17-sync-settings-needs-attention | PNG ✅ | HTML ✅ | ♻ resumed |
-| error | 754da12054624cfeb30273ebebb82b92 | 06-m17-sync-settings-error | PNG ✅ | HTML ✅ | ♻ resumed |
+| idle | 07619ded644744c2b60af94bb79b4dd7 | 01-m17-sync-settings-idle | PNG ✅ | HTML ✅ | ♻ resumed |
+| content | — | 02-m17-sync-settings-content | PNG ❌ | HTML ✅ | ⏳ pending |
+| syncing | — | 03-m17-sync-settings-syncing | PNG ❌ | HTML ✅ | ⏳ pending |
+| empty | 7dae146d86244db3bca4f40d4547e9a2 | 04-m17-sync-settings-empty | PNG ✅ | HTML ✅ | ♻ resumed |
+| needs-attention | 2e6cfc64e447441c89bbffd355430b1c | 05-m17-sync-settings-needs-attention | PNG ✅ | HTML ✅ | ♻ resumed |
+| error | — | 06-m17-sync-settings-error | PNG ❌ | HTML ✅ | ⏳ pending |
 
 ## Open in Figma / Stitch
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
-| idle | [Open](https://stitch.google.com/projects/4340646484225532819/screens/0a9b7ac8e76948e285842b5d2ec0faa2) | — |
-| content | [Open](https://stitch.google.com/projects/4340646484225532819/screens/1a841a982ab1402c9f877c8d6ae7206c) | — |
-| syncing | [Open](https://stitch.google.com/projects/4340646484225532819/screens/5cb99d8248f5495daf150b9be2707b84) | — |
-| empty | [Open](https://stitch.google.com/projects/4340646484225532819/screens/fc37f15e6dfb4b3bb10500fc5f12a867) | — |
-| needs-attention | [Open](https://stitch.google.com/projects/4340646484225532819/screens/1070c44c16b44dbb9136d6e7a21908e7) | — |
-| error | [Open](https://stitch.google.com/projects/4340646484225532819/screens/754da12054624cfeb30273ebebb82b92) | — |
+| idle | [Open](https://stitch.google.com/projects/10243803383444073820/screens/07619ded644744c2b60af94bb79b4dd7) | — |
+| content | — | — |
+| syncing | — | — |
+| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/7dae146d86244db3bca4f40d4547e9a2) | — |
+| needs-attention | [Open](https://stitch.google.com/projects/10243803383444073820/screens/2e6cfc64e447441c89bbffd355430b1c) | — |
+| error | — | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >
