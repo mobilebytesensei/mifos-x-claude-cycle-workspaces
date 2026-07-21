@@ -1,39 +1,39 @@
 # FIGMA_LINKS.md — m07-accounting
 
-<!-- schema: v3.2 | generated: 2026-07-17T22:41:35.146Z -->
+<!-- schema: v3.2 | generated: 2026-07-21T18:19:24.524Z -->
 
 ## Stitch Project
 
 | Field | Value |
 |-------|-------|
-| Project URL | [4340646484225532819](https://stitch.google.com/projects/4340646484225532819) |
-| Design System ID | 6971225134039640611 |
-| Generated | 2026-07-17T22:41:35.083Z |
-| Success | 6/7 states |
+| Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
+| Design System ID | 312064780206383264 |
+| Generated | 2026-07-21T18:19:24.509Z |
+| Success | 7/7 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| loading | 53b98dd5f20d4482a619a95cbfa8fe84 | 01-m07-accounting-loading | PNG ✅ | HTML ✅ | ♻ resumed |
-| content | 206d7e949a5d46d79852394f6eb080c4 | 02-m07-accounting-content | PNG ✅ | HTML ✅ | ♻ resumed |
-| empty | 6792e4462d104d32ac5e854efdf9bf1f | 03-m07-accounting-empty | PNG ✅ | HTML ✅ | ✅ generated |
-| balancing | — | 04-m07-accounting-balancing | PNG ❌ | HTML ❌ | ❌ canon-lock-fallback-source-missing: preview-missing: /Users/therajanmaurya/project-development/claude-product-cycle/workspaces/mifos-x/mifos-x-backoffice-next-gen/idea-layer/screens/m07-accounting/preview/balancing.html (No such file or directory (os error 2): readfile '/Users/therajanmaurya/project-development/claude-product-cycle/workspaces/mifos-x/mifos-x-backoffice-next-gen/idea-layer/screens/m07-accounting/preview/balancing.html') |
-| submitting | 1ab1259b98684e70b9b5daa3bac2c932 | 05-m07-accounting-submitting | PNG ✅ | HTML ✅ | ♻ resumed |
-| no-network | 8e4222de066b48799acb2e6d40b9cb23 | 06-m07-accounting-no-network | PNG ✅ | HTML ✅ | ♻ resumed |
-| error | 3bb2bcbb378a4e179e5262e28fe502ed | 07-m07-accounting-error | PNG ✅ | HTML ✅ | ♻ resumed |
+| loading | 8c67e13c70e74acbafc1a5f141009e45 | 01-m07-accounting-loading | PNG ✅ | HTML ✅ | ✅ generated |
+| content | 93e09dad95e44e8e9eae5c562ba16683 | 02-m07-accounting-content | PNG ✅ | HTML ✅ | ✅ generated |
+| empty | 83680d1f8a1443b1a7eef955b7de0bc8 | 03-m07-accounting-empty | PNG ✅ | HTML ✅ | ✅ generated |
+| balancing | a23e0cd15167468f846fa38c7cb0e1cb | 04-m07-accounting-balancing | PNG ✅ | HTML ✅ | ✅ generated |
+| submitting | — | 05-m07-accounting-submitting | PNG ❌ | HTML ✅ | ⏳ pending |
+| no-network | 1922b60f996a486cae2a8d71c1b1c89d | 06-m07-accounting-no-network | PNG ✅ | HTML ✅ | ✅ generated |
+| error | 3f1b9331716641d5834779ac3b087563 | 07-m07-accounting-error | PNG ✅ | HTML ✅ | ✅ generated |
 
 ## Open in Figma / Stitch
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
-| loading | [Open](https://stitch.google.com/projects/4340646484225532819/screens/53b98dd5f20d4482a619a95cbfa8fe84) | — |
-| content | [Open](https://stitch.google.com/projects/4340646484225532819/screens/206d7e949a5d46d79852394f6eb080c4) | — |
-| empty | [Open](https://stitch.google.com/projects/4340646484225532819/screens/6792e4462d104d32ac5e854efdf9bf1f) | — |
-| balancing | — | — |
-| submitting | [Open](https://stitch.google.com/projects/4340646484225532819/screens/1ab1259b98684e70b9b5daa3bac2c932) | — |
-| no-network | [Open](https://stitch.google.com/projects/4340646484225532819/screens/8e4222de066b48799acb2e6d40b9cb23) | — |
-| error | [Open](https://stitch.google.com/projects/4340646484225532819/screens/3bb2bcbb378a4e179e5262e28fe502ed) | — |
+| loading | [Open](https://stitch.google.com/projects/10243803383444073820/screens/8c67e13c70e74acbafc1a5f141009e45) | — |
+| content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/93e09dad95e44e8e9eae5c562ba16683) | — |
+| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/83680d1f8a1443b1a7eef955b7de0bc8) | — |
+| balancing | [Open](https://stitch.google.com/projects/10243803383444073820/screens/a23e0cd15167468f846fa38c7cb0e1cb) | — |
+| submitting | — | — |
+| no-network | [Open](https://stitch.google.com/projects/10243803383444073820/screens/1922b60f996a486cae2a8d71c1b1c89d) | — |
+| error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/3f1b9331716641d5834779ac3b087563) | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >

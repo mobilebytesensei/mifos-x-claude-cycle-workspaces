@@ -1,41 +1,41 @@
 # FIGMA_LINKS.md — m05-savings-deposits-shares
 
-<!-- schema: v3.2 | generated: 2026-07-17T22:08:04.568Z -->
+<!-- schema: v3.2 | generated: 2026-07-21T18:22:54.545Z -->
 
 ## Stitch Project
 
 | Field | Value |
 |-------|-------|
-| Project URL | [4340646484225532819](https://stitch.google.com/projects/4340646484225532819) |
-| Design System ID | 6486719301524192685 |
-| Generated | 2026-07-17T22:08:04.508Z |
+| Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
+| Design System ID | 312064780206383264 |
+| Generated | 2026-07-21T18:22:54.540Z |
 | Success | 8/8 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| loading | 120d71afb5ca447bb1106e207323be0d | 01-m05-savings-deposits-shares-loading | PNG ✅ | HTML ✅ | ✅ generated |
-| content | 0e3429a527c74d7d99a3bd6b6471926f | 02-m05-savings-deposits-shares-content | PNG ✅ | HTML ✅ | ♻ resumed |
-| empty | e7cf555370764245a48f26a28f559be2 | 03-m05-savings-deposits-shares-empty | PNG ✅ | HTML ✅ | ♻ resumed |
-| submitting | aedc726ad7c64544a48814259ea86f22 | 04-m05-savings-deposits-shares-submitting | PNG ✅ | HTML ✅ | ♻ resumed |
-| queued_offline | 1b53f9125ee1440796c79a5732027448 | 05-m05-savings-deposits-shares-queued_offline | PNG ✅ | HTML ✅ | ♻ resumed |
-| pending_approval | b289ce061e14455bb963381912c6fceb | 06-m05-savings-deposits-shares-pending_approval | PNG ✅ | HTML ✅ | ♻ resumed |
-| error | 1534fea5b4b049b495ef67a9bf4faa0e | 07-m05-savings-deposits-shares-error | PNG ✅ | HTML ✅ | ♻ resumed |
-| no_network | f3ede13229f14ca09a662bfeb9f2dc19 | 08-m05-savings-deposits-shares-no_network | PNG ✅ | HTML ✅ | ♻ resumed |
+| loading | b5741c3ce2c74b3dbfad39e627cc2467 | 01-m05-savings-deposits-shares-loading | PNG ✅ | HTML ✅ | ♻ resumed |
+| content | — | 02-m05-savings-deposits-shares-content | PNG ❌ | HTML ✅ | ⏳ pending |
+| empty | 979867e3f10d424c961d28e5e248443d | 03-m05-savings-deposits-shares-empty | PNG ✅ | HTML ✅ | ✅ generated |
+| submitting | 042ce956217f42d9b36ad157c3a2d2cb | 04-m05-savings-deposits-shares-submitting | PNG ✅ | HTML ✅ | ✅ generated |
+| queued_offline | afbe5b17f7b641f2ac7d1d1a6d996d5b | 05-m05-savings-deposits-shares-queued_offline | PNG ✅ | HTML ✅ | ♻ resumed |
+| pending_approval | 05eacf69721a42e289c5b27d5ca1e6cf | 06-m05-savings-deposits-shares-pending_approval | PNG ✅ | HTML ✅ | ♻ resumed |
+| error | 8881560766784e288833053e18600f83 | 07-m05-savings-deposits-shares-error | PNG ✅ | HTML ✅ | ✅ generated |
+| no_network | d2832e1601df49b68378e37b0e9473d6 | 08-m05-savings-deposits-shares-no_network | PNG ✅ | HTML ✅ | ♻ resumed |
 
 ## Open in Figma / Stitch
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
-| loading | [Open](https://stitch.google.com/projects/4340646484225532819/screens/120d71afb5ca447bb1106e207323be0d) | — |
-| content | [Open](https://stitch.google.com/projects/4340646484225532819/screens/0e3429a527c74d7d99a3bd6b6471926f) | — |
-| empty | [Open](https://stitch.google.com/projects/4340646484225532819/screens/e7cf555370764245a48f26a28f559be2) | — |
-| submitting | [Open](https://stitch.google.com/projects/4340646484225532819/screens/aedc726ad7c64544a48814259ea86f22) | — |
-| queued_offline | [Open](https://stitch.google.com/projects/4340646484225532819/screens/1b53f9125ee1440796c79a5732027448) | — |
-| pending_approval | [Open](https://stitch.google.com/projects/4340646484225532819/screens/b289ce061e14455bb963381912c6fceb) | — |
-| error | [Open](https://stitch.google.com/projects/4340646484225532819/screens/1534fea5b4b049b495ef67a9bf4faa0e) | — |
-| no_network | [Open](https://stitch.google.com/projects/4340646484225532819/screens/f3ede13229f14ca09a662bfeb9f2dc19) | — |
+| loading | [Open](https://stitch.google.com/projects/10243803383444073820/screens/b5741c3ce2c74b3dbfad39e627cc2467) | — |
+| content | — | — |
+| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/979867e3f10d424c961d28e5e248443d) | — |
+| submitting | [Open](https://stitch.google.com/projects/10243803383444073820/screens/042ce956217f42d9b36ad157c3a2d2cb) | — |
+| queued_offline | [Open](https://stitch.google.com/projects/10243803383444073820/screens/afbe5b17f7b641f2ac7d1d1a6d996d5b) | — |
+| pending_approval | [Open](https://stitch.google.com/projects/10243803383444073820/screens/05eacf69721a42e289c5b27d5ca1e6cf) | — |
+| error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/8881560766784e288833053e18600f83) | — |
+| no_network | [Open](https://stitch.google.com/projects/10243803383444073820/screens/d2832e1601df49b68378e37b0e9473d6) | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >

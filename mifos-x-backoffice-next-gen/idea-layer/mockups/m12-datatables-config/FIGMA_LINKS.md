@@ -1,37 +1,37 @@
 # FIGMA_LINKS.md — m12-datatables-config
 
-<!-- schema: v3.2 | generated: 2026-07-17T22:23:14.493Z -->
+<!-- schema: v3.2 | generated: 2026-07-21T18:34:21.251Z -->
 
 ## Stitch Project
 
 | Field | Value |
 |-------|-------|
-| Project URL | [4340646484225532819](https://stitch.google.com/projects/4340646484225532819) |
-| Design System ID | 6486719301524192685 |
-| Generated | 2026-07-17T22:23:14.431Z |
+| Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
+| Design System ID | 312064780206383264 |
+| Generated | 2026-07-21T18:34:21.172Z |
 | Success | 6/6 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| loading | 5af796f49e2a483f87824a8e45cf4743 | 01-m12-datatables-config-loading | PNG ✅ | HTML ✅ | ♻ resumed |
-| content | 7fa064de728742ccaf9c87f95c600bd0 | 02-m12-datatables-config-content | PNG ✅ | HTML ✅ | ✅ generated |
-| empty | c5faa38a3d5f40588f532a2600043b9a | 03-m12-datatables-config-empty | PNG ✅ | HTML ✅ | ♻ resumed |
-| submitting | 8d1909e612c141bf9e325f92a623a8a3 | 04-m12-datatables-config-submitting | PNG ✅ | HTML ✅ | ♻ resumed |
-| action-disabled | 355b7a20a2574dadbb4266f816c84004 | 05-m12-datatables-config-action-disabled | PNG ✅ | HTML ✅ | ♻ resumed |
-| error | f9efa2187f4e4ca2a040c2974ef2262e | 06-m12-datatables-config-error | PNG ✅ | HTML ✅ | ✅ generated |
+| loading | 4e528b80629848748c53a0b4cbf420a4 | 01-m12-datatables-config-loading | PNG ✅ | HTML ✅ | ♻ resumed |
+| content | b9625f21e0cf4eb8bf48b94545586caa | 02-m12-datatables-config-content | PNG ✅ | HTML ✅ | ♻ resumed |
+| empty | a937f39a961942f6b97ae68d02b59753 | 03-m12-datatables-config-empty | PNG ✅ | HTML ✅ | ♻ resumed |
+| submitting | 137cb8f63de0454c8e99937e542bc03b | 04-m12-datatables-config-submitting | PNG ✅ | HTML ✅ | ✅ generated |
+| action-disabled | 6f6c022521cd4903ba96d30677a60390 | 05-m12-datatables-config-action-disabled | PNG ✅ | HTML ✅ | ♻ resumed |
+| error | 595953a10bd14c95b8a9d6ece74af0ee | 06-m12-datatables-config-error | PNG ✅ | HTML ✅ | ✅ generated |
 
 ## Open in Figma / Stitch
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
-| loading | [Open](https://stitch.google.com/projects/4340646484225532819/screens/5af796f49e2a483f87824a8e45cf4743) | — |
-| content | [Open](https://stitch.google.com/projects/4340646484225532819/screens/7fa064de728742ccaf9c87f95c600bd0) | — |
-| empty | [Open](https://stitch.google.com/projects/4340646484225532819/screens/c5faa38a3d5f40588f532a2600043b9a) | — |
-| submitting | [Open](https://stitch.google.com/projects/4340646484225532819/screens/8d1909e612c141bf9e325f92a623a8a3) | — |
-| action-disabled | [Open](https://stitch.google.com/projects/4340646484225532819/screens/355b7a20a2574dadbb4266f816c84004) | — |
-| error | [Open](https://stitch.google.com/projects/4340646484225532819/screens/f9efa2187f4e4ca2a040c2974ef2262e) | — |
+| loading | [Open](https://stitch.google.com/projects/10243803383444073820/screens/4e528b80629848748c53a0b4cbf420a4) | — |
+| content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/b9625f21e0cf4eb8bf48b94545586caa) | — |
+| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/a937f39a961942f6b97ae68d02b59753) | — |
+| submitting | [Open](https://stitch.google.com/projects/10243803383444073820/screens/137cb8f63de0454c8e99937e542bc03b) | — |
+| action-disabled | [Open](https://stitch.google.com/projects/10243803383444073820/screens/6f6c022521cd4903ba96d30677a60390) | — |
+| error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/595953a10bd14c95b8a9d6ece74af0ee) | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >
