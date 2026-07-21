@@ -1,37 +1,37 @@
 # FIGMA_LINKS.md — m01-dashboard
 
-<!-- schema: v3.2 | generated: 2026-07-17T10:53:33.818Z -->
+<!-- schema: v3.2 | generated: 2026-07-21T17:46:45.837Z -->
 
 ## Stitch Project
 
 | Field | Value |
 |-------|-------|
-| Project URL | [16649445309504448812](https://stitch.google.com/projects/16649445309504448812) |
-| Design System ID | 6486719301524192685 |
-| Generated | 2026-07-17T10:53:33.817Z |
+| Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
+| Design System ID | 312064780206383264 |
+| Generated | 2026-07-21T17:46:45.748Z |
 | Success | 6/6 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| loading | 7bab680e24ed4ffda9ffa15b5307ec37 | 01-m01-dashboard-loading | PNG ✅ | HTML ✅ | ♻ resumed |
-| content | 03b70f6a7b3e472c9621d3181da20cd4 | 02-m01-dashboard-content | PNG ✅ | HTML ✅ | ♻ resumed |
-| empty | 22e4b086cc5d46d29c9f2d36aeece166 | 03-m01-dashboard-empty | PNG ✅ | HTML ✅ | ♻ resumed |
-| partial-tile-error | a22987fdeb264e1c8001874a956a19f8 | 04-m01-dashboard-partial-tile-error | PNG ✅ | HTML ✅ | ♻ resumed |
-| no-network | 572e662e8d524a438a6e5a3e1c338e2d | 05-m01-dashboard-no-network | PNG ✅ | HTML ✅ | ♻ resumed |
-| error | efde0564cc1443629920de4b778bf0a5 | 06-m01-dashboard-error | PNG ✅ | HTML ✅ | ♻ resumed |
+| loading | 0126902a726d48eca09a655c46c2a703 | 01-m01-dashboard-loading | PNG ✅ | HTML ✅ | ✅ generated |
+| content | c458fe024bac40669ab30644b9fb9d5d | 02-m01-dashboard-content | PNG ✅ | HTML ✅ | ♻ resumed |
+| empty | d74b78eb147d4035994f60b80892bd8d | 03-m01-dashboard-empty | PNG ✅ | HTML ✅ | ♻ resumed |
+| partial-tile-error | 92c2853d8c9b4e0192f98fab70b04a0f | 04-m01-dashboard-partial-tile-error | PNG ✅ | HTML ✅ | ♻ resumed |
+| no-network | f0f75206fc534b69887aa4e6e250c81e | 05-m01-dashboard-no-network | PNG ✅ | HTML ✅ | ♻ resumed |
+| error | a6b96b980163431f8053bf1a231dd4eb | 06-m01-dashboard-error | PNG ✅ | HTML ✅ | ♻ resumed |
 
 ## Open in Figma / Stitch
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
-| loading | [Open](https://stitch.google.com/projects/16649445309504448812/screens/7bab680e24ed4ffda9ffa15b5307ec37) | — |
-| content | [Open](https://stitch.google.com/projects/16649445309504448812/screens/03b70f6a7b3e472c9621d3181da20cd4) | — |
-| empty | [Open](https://stitch.google.com/projects/16649445309504448812/screens/22e4b086cc5d46d29c9f2d36aeece166) | — |
-| partial-tile-error | [Open](https://stitch.google.com/projects/16649445309504448812/screens/a22987fdeb264e1c8001874a956a19f8) | — |
-| no-network | [Open](https://stitch.google.com/projects/16649445309504448812/screens/572e662e8d524a438a6e5a3e1c338e2d) | — |
-| error | [Open](https://stitch.google.com/projects/16649445309504448812/screens/efde0564cc1443629920de4b778bf0a5) | — |
+| loading | [Open](https://stitch.google.com/projects/10243803383444073820/screens/0126902a726d48eca09a655c46c2a703) | — |
+| content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/c458fe024bac40669ab30644b9fb9d5d) | — |
+| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/d74b78eb147d4035994f60b80892bd8d) | — |
+| partial-tile-error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/92c2853d8c9b4e0192f98fab70b04a0f) | — |
+| no-network | [Open](https://stitch.google.com/projects/10243803383444073820/screens/f0f75206fc534b69887aa4e6e250c81e) | — |
+| error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/a6b96b980163431f8053bf1a231dd4eb) | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >
