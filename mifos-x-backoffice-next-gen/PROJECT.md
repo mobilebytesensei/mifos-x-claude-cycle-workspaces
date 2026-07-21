@@ -4,6 +4,7 @@
 |-------|-------|
 | Status | initialized |
 | Type | kmp |
+| Subtype | kmp-app |
 | Source | source/mifos-x-backoffice-next-gen/ |
 | Created | 2026-07-16 |
 | Description | Generic Mifos/Fineract back-office platform — one binary exposing the entire Fineract API as features, each visible only per the signed-in user's permissions (field officer, teller, accountant, branch manager, product admin, system admin, auditor…). Offline-first. |

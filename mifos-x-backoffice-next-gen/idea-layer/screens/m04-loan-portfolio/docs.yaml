@@ -1,8 +1,8 @@
 feature: m04-loan-portfolio
-status: approved
-approve_hash: "sha256:36105441fa77b393fd998da3b2410ab3398a766321742249149a1fec94497a52"
-approved_at: "2026-07-18T01:52:48Z"
-approved_by: "/idea approve"
+status: enriched
+approve_hash: null
+approved_at: null
+approved_by: null
 approve_predicate_version: "1.0.0"
 approve_contract_version: "2.0.0"
 cluster: back-office-module
@@ -258,6 +258,101 @@ vm_actions:
       - LoanAccountsRepository.loansStream.refreshFresh()
     error_handling:
       Unauthorized403: route to permission-capability-engine
+  - name: RejectLoan
+    signature: 'private fun rejectLoan(loanId: String, payload: LoanCommandPayload)'
+    state_mutations:
+      - uiState=Submitting
+      - loanStatus=<rejected on SUBMITTED>
+    side_effects:
+      - LoanOutboxRepository.enqueue(REJECT_LOAN, loanId, payload, idempotencyKey)
+    error_handling:
+      CommandRejected: route entry to needs-attention-inbox; uiState=Error
+      Queued: uiState=Submitting → row 'Submitted for approval' (maker-checker)
+  - name: WithdrawLoan
+    signature: 'private fun withdrawLoan(loanId: String, payload: LoanCommandPayload)'
+    state_mutations:
+      - uiState=Submitting
+      - loanStatus=<withdrawn on SUBMITTED>
+    side_effects:
+      - LoanOutboxRepository.enqueue(WITHDRAW_LOAN, loanId, payload, idempotencyKey)
+    error_handling:
+      CommandRejected: route to needs-attention-inbox; uiState=Error
+      Queued: uiState=Submitting (maker-checker; applicant-initiated on a Pending Approval loan)
+  - name: UndoApproval
+    signature: 'private fun undoApproval(loanId: String)'
+    state_mutations:
+      - uiState=Submitting
+      - loanStatus=<pending_approval on SUBMITTED>
+    side_effects:
+      - LoanOutboxRepository.enqueue(UNDOAPPROVAL_LOAN, loanId, payload, idempotencyKey)
+    error_handling:
+      CommandRejected: route to needs-attention-inbox
+      Queued: uiState=Submitting (maker-checker)
+  - name: UndoDisbursal
+    signature: 'private fun undoDisbursal(loanId: String)'
+    state_mutations:
+      - uiState=Submitting
+      - loanStatus=<approved on SUBMITTED>
+      - loanBalance=<reset to pre-disbursal>
+    side_effects:
+      - LoanOutboxRepository.enqueue(UNDODISBURSAL_LOAN, loanId, payload, idempotencyKey)
+    error_handling:
+      CommandRejected: route to needs-attention-inbox; only valid while no repayments posted
+      DurableKeyGuard: durable idempotency key prevents a double-reverse on retry
+  - name: MakePrepayment
+    signature: 'private fun makePrepayment(loanId: String, payload: RepaymentPayload)'
+    state_mutations:
+      - uiState=Submitting
+      - loanBalance=<optimistic pending payoff>
+      - loanStatus=<closed_obligations_met when payoff clears>
+    side_effects:
+      - LoanRepository.prepaymentQuote(loanId) (GET .../transactions/template?command=prepayLoan)
+      - RoomSubmitOutbox.enqueue(REPAYMENT_LOAN, loanId, payload, DURABLE idempotencyKey) (exactly-once)
+    error_handling:
+      BackdateForbidden: block; require REPAYMENTINPAST_LOAN
+      TransactionRejected: route to needs-attention-inbox; keep draft
+      Offline: stays PENDING; auto-drains on connectivity regain
+  - name: AddLoanCharge
+    signature: 'private fun addLoanCharge(loanId: String, payload: LoanChargePayload)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - BaseDraftMutationViewModel(formKey=loan_add_charge, uniqueKey=loanId) from GET /v1/loans/{id}/charges/template
+      - LoanOutboxRepository.enqueue(CREATE_LOANCHARGE, loanId, payload, idempotencyKey)
+    error_handling:
+      ChargeCommandRejected: route to needs-attention-inbox
+      Offline: stays PENDING; auto-drains on connectivity regain
+  - name: PayLoanCharge
+    signature: 'private fun payLoanCharge(loanId: String, chargeId: String, payload: ChargePaymentPayload)'
+    state_mutations:
+      - uiState=Submitting
+      - loanBalance=<optimistic pending>
+    side_effects:
+      - LoanOutboxRepository.enqueue(PAY_LOANCHARGE, key=loanId+chargeId, payload, DURABLE idempotencyKey)
+    error_handling:
+      ChargeCommandRejected: route to needs-attention-inbox
+      Offline: stays PENDING; exactly-once on retry (no double-pay)
+  - name: WaiveLoanCharge
+    signature: 'private fun waiveLoanCharge(loanId: String, chargeId: String)'
+    state_mutations:
+      - uiState=Submitting
+    side_effects:
+      - LoanOutboxRepository.enqueue(WAIVE_LOANCHARGE, key=loanId+chargeId, payload, idempotencyKey)
+    error_handling:
+      ChargeCommandRejected: route to needs-attention-inbox
+      Queued: uiState=Submitting (maker-checker)
+  - name: StartLoanApplication
+    signature: private fun onStartLoanApplication()
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToLoanApplicationWizard)
+    error_handling: {}
+  - name: ViewLoanDetailTab
+    signature: 'private fun onViewLoanDetailTab(tab: LoanDetailTab)'
+    state_mutations:
+      - selectedTab=<schedule | transactions | charges | guarantors | collateral | documents>
+    side_effects: []
+    error_handling: {}
 error_cases:
   - loan_list_failed
   - loan_list_offline_no_cache
@@ -283,8 +378,8 @@ test_fixtures:
     low: 1
 scaffolded_at: '2026-07-17T02:08:00Z'
 scaffolded_by: /idea-plan-add
-enriched_at: '2026-07-17T00:00:00Z'
-enriched_by: /idea-feature-enrich
+enriched_at: '2026-07-21T15:38:17Z'
+enriched_by: /idea-feature-enrich-capability
 status_history:
   - from: designed
     to: design_partial
@@ -298,3 +393,28 @@ status_history:
     to: approved
     at: "2026-07-18T01:52:48Z"
     by: /idea approve
+  - from: approved
+    to: enriched
+    at: "2026-07-21T15:38:17Z"
+    by: /idea-feature-enrich-capability
+    note: >-
+      Interaction/on_click depth enrichment — added 10 vm_action handlers so all 26 ui.yaml on_click
+      actions resolve to an implementation-intelligence contract (RejectLoan, WithdrawLoan, UndoApproval,
+      UndoDisbursal, MakePrepayment, AddLoanCharge, PayLoanCharge, WaiveLoanCharge command handlers +
+      StartLoanApplication nav + ViewLoanDetailTab drill). Every money-posting handler enqueues through
+      LoanOutboxRepository/RoomSubmitOutbox with a durable idempotency key (exactly-once) and routes
+      rejections to needs-attention-inbox; backdate guards on prepayment. approve_hash invalidated per
+      RULE-FEATURE-VERSION-001 — re-run /idea approve after review.
+    capabilities_added: []
+    sections_injected: []
+    vm_actions_added:
+      - RejectLoan
+      - WithdrawLoan
+      - UndoApproval
+      - UndoDisbursal
+      - MakePrepayment
+      - AddLoanCharge
+      - PayLoanCharge
+      - WaiveLoanCharge
+      - StartLoanApplication
+      - ViewLoanDetailTab
