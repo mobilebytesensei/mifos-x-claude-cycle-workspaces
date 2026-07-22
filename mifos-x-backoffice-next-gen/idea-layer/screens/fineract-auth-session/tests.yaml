@@ -1,0 +1,83 @@
+schema_version: v1.0.0
+feature: fineract-auth-session
+scenarios:
+  - id: successful_login_establishes_session
+    description: "Valid base-URL + tenant + username + password authenticates, persists an encrypted session, and routes to the capability bootstrap"
+    preconditions: ["no persisted session", "reachable Fineract server", "valid credentials"]
+    actions: ["enter base-url, tenant, username, password", "tap Sign in"]
+    assertions:
+      - "state transitions input -> authenticating -> authenticated"
+      - "AuthProvider.isConfigured becomes true"
+      - "session persisted encrypted (base_url, tenant, basic_auth_token, user_id, permissions_raw)"
+      - "PermissionSet bootstrapped from permissions[]; routes to permission-capability-engine"
+    priority: high
+
+  - id: basic_auth_and_tenant_header_applied
+    description: "Every authenticated request carries Authorization: Basic base64(user:password) and Fineract-Platform-TenantId"
+    preconditions: ["a session was just established via sign_in"]
+    actions: ["issue any authenticated request through the Fineract client"]
+    assertions:
+      - "Authorization header equals 'Basic ' + base64('username:password')"
+      - "Fineract-Platform-TenantId header equals the entered tenant identifier"
+      - "requests target the operator-supplied dynamic base-URL"
+    priority: high
+
+  - id: invalid_credentials_shows_error
+    description: "A 401 renders the invalid-credentials error without persisting anything"
+    preconditions: ["reachable server", "wrong password"]
+    actions: ["enter credentials with a wrong password", "tap Sign in"]
+    assertions:
+      - "state transitions authenticating -> error"
+      - "error banner shows invalid credentials"
+      - "no session is persisted; entered values (except password) retained"
+    priority: high
+
+  - id: field_validation_blocks_sign_in
+    description: "Empty fields or a malformed base-URL keep Sign in disabled and highlight the offending field"
+    preconditions: ["login form shown"]
+    actions: ["leave a required field empty OR enter a non-URL base-url"]
+    assertions:
+      - "Sign in button is disabled"
+      - "malformed base-url highlights the base-url field (invalid_base_url)"
+      - "no request is issued"
+    priority: high
+
+  - id: session_restored_on_cold_start
+    description: "A previously persisted session rehydrates the AuthProvider on cold start with no network call"
+    preconditions: ["a valid encrypted session exists in secure settings"]
+    actions: ["launch the app"]
+    assertions:
+      - "state is restoring then authenticated (no login form shown)"
+      - "AuthProvider.isConfigured is true from the restored session"
+      - "no authenticate request is issued (offline-capable)"
+    priority: high
+
+  - id: unauthorized_401_drops_session_routes_to_login
+    description: "A 401 from any authenticated request clears the session and returns to login"
+    preconditions: ["authenticated session active", "server revokes/expires the session"]
+    actions: ["issue a request that returns 401"]
+    assertions:
+      - "encrypted session is cleared; AuthProvider.isConfigured becomes false"
+      - "app navigates to fineract-auth-session (login)"
+      - "no crash"
+    priority: high
+
+  - id: logout_clears_session
+    description: "Logout clears the persisted session and returns to the login form"
+    preconditions: ["authenticated session active"]
+    actions: ["invoke logout from settings"]
+    assertions:
+      - "secure session store is cleared"
+      - "AuthProvider.isConfigured becomes false"
+      - "state returns to input (login form)"
+    priority: medium
+
+  - id: password_change_or_2fa_required_blocks_surface
+    description: "shouldRenewPassword or isTwoFactorAuthenticationRequired blocks building the capability surface"
+    preconditions: ["server returns shouldRenewPassword=true OR isTwoFactorAuthenticationRequired=true"]
+    actions: ["enter valid credentials for such a user", "tap Sign in"]
+    assertions:
+      - "state transitions authenticating -> error (auth_step_required)"
+      - "no capability surface is built and no full session is established"
+      - "the operator is told which step is required next"
+    priority: medium
