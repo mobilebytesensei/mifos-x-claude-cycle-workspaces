@@ -1,0 +1,161 @@
+# data-flow.yaml — B8 Country Macro Snapshot per-screen data flows.
+# One entry per per-indicator Store5 stream. Source of truth for the World Bank
+# endpoint, the DTO/domain model consumed, and per-card error paths.
+# Reverse-engineered from feature/macro + core/{network,store,data}/demo/economic.
+sibling: data-flow
+schema_version: "2.2.0"
+feature_id: feat-country-macro
+
+# Store5 MEMORY_ONLY pipeline (shared by every entry below):
+#   Ktorfit WorldBankApi.indicator  ── Fetcher ──▶ WorldBankResponseDto.toDomain
+#        │                                                     │
+#   NetworkMonitor.executeWithRetry(maxAttempts=1)             ▼
+#        │                                          MacroIndicator (domain)
+#        ▼                                                     │
+#   StoreFactory.createMemoryStore ── (NO SourceOfTruth) ──▶ in-memory cache ONLY
+#        │                             ▲ no Room DAO, no table, lost on process death
+#        ▼
+#   MacroIndicatorsRepository.macroIndicatorStream → ScreenDataStream<MacroIndicator>
+#        │  (asScreenStream: emits Loading→Content/Empty/Error/NoNetwork + FreshnessSignal)
+#        ▼
+#   CountryMacroViewModel: 3 independent cells (gdp / inflation / unemployment)
+#
+# CONTRAST feat-rates/B7 (NETWORK_WITH_CACHE): rates persists FRED series to a
+# Room table (interest_rate_series) via createStore(fetcher, dao). Macro does NOT
+# — createMemoryStore has no SourceOfTruth, so there is NO `tables:` block below.
+
+store_pattern: MEMORY_ONLY          # createMemoryStore(fetcher) — no DAO, no persistence
+persistence: none                    # in-memory only; cold start re-fetches from World Bank
+combine:
+  kind: independent-cells            # NOT combineScreenStates — each card evolves on its own
+  streams: 3                         # GDP, INFLATION_CPI, UNEMPLOYMENT (CountryMacroViewModel.TRACKED_INDICATORS)
+  aggregate_freshness: "MacroUiState.overallBand = worst-of-3 Content bands (VeryStale>Stale>Initial>Fresh)"
+  re_key_on: "MacroAction.ChangeCountry → cancel all 3 subs, re-subscribe keyed on new countryCode"
+
+entries:
+  - screen_id: macro
+    trigger: on_subscribe            # subscribeAll(countryCode) at VM init + on ChangeCountry
+    auth_required: false             # World Bank Open Data is fully open — NO api key
+    indicator: GDP
+    indicator_code: "NY.GDP.MKTP.CD"
+    indicator_label: "GDP (current US$)"
+    endpoints:
+      - api_id: worldbank-country-indicator
+        transport: rest
+        method: GET
+    dtos:
+      - { name: WorldBankResponseDto, role: response, api_id: worldbank-country-indicator }
+      - { name: MacroIndicator,       role: domain,   api_id: worldbank-country-indicator }
+    produces_state: content
+    cache:
+      strategy: memory_only          # Store5 createMemoryStore — no SourceOfTruth
+      persistence: in_memory
+      ttl_seconds: 604800            # 7-day TTL per MacroIndicatorStore doc (annual data → real fetch ≤ weekly)
+      key_template: "economic:macro:{countryCode}:GDP:25y"
+      shape: list                    # observations[] (annual)
+    error_paths:
+      - { error_code: network.offline,       behavior: no_network_slot, message: "Offline — connect to fetch this indicator." }
+      - { error_code: empty.no_observations, behavior: empty_slot,      message: "No data published for this indicator." }
+      - { error_code: generic.fetch_failed,  behavior: error_slot,      message: "Couldn't load this indicator." }
+    notes: "Gross Domestic Product (current US$) — headline rendered as compact currency ($NN.NNT)."
+
+  - screen_id: macro
+    trigger: on_subscribe
+    auth_required: false
+    indicator: INFLATION_CPI
+    indicator_code: "FP.CPI.TOTL.ZG"
+    indicator_label: "Inflation, consumer prices (annual %)"
+    endpoints:
+      - { api_id: worldbank-country-indicator, transport: rest, method: GET }
+    dtos:
+      - { name: WorldBankResponseDto, role: response, api_id: worldbank-country-indicator }
+      - { name: MacroIndicator,       role: domain,   api_id: worldbank-country-indicator }
+    produces_state: content
+    cache:
+      strategy: memory_only
+      persistence: in_memory
+      ttl_seconds: 604800
+      key_template: "economic:macro:{countryCode}:INFLATION_CPI:25y"
+      shape: list
+    error_paths:
+      - { error_code: network.offline,       behavior: no_network_slot, message: "Offline — connect to fetch this indicator." }
+      - { error_code: empty.no_observations, behavior: empty_slot,      message: "No data published for this indicator." }
+      - { error_code: generic.fetch_failed,  behavior: error_slot,      message: "Couldn't load this indicator." }
+    notes: "CPI inflation, annual % — headline rendered as NN.N%."
+
+  - screen_id: macro
+    trigger: on_subscribe
+    auth_required: false
+    indicator: UNEMPLOYMENT
+    indicator_code: "SL.UEM.TOTL.ZS"
+    indicator_label: "Unemployment, total (% of labor force, ILO modeled)"
+    endpoints:
+      - { api_id: worldbank-country-indicator, transport: rest, method: GET }
+    dtos:
+      - { name: WorldBankResponseDto, role: response, api_id: worldbank-country-indicator }
+      - { name: MacroIndicator,       role: domain,   api_id: worldbank-country-indicator }
+    produces_state: content
+    cache:
+      strategy: memory_only
+      persistence: in_memory
+      ttl_seconds: 604800
+      key_template: "economic:macro:{countryCode}:UNEMPLOYMENT:25y"
+      shape: list
+    error_paths:
+      - { error_code: network.offline,       behavior: no_network_slot, message: "Offline — connect to fetch this indicator." }
+      - { error_code: empty.no_observations, behavior: empty_slot,      message: "No data published for this indicator." }
+      - { error_code: generic.fetch_failed,  behavior: error_slot,      message: "Couldn't load this indicator." }
+    notes: "Unemployment total (% of labor force) — ILO modeled estimate; headline as NN.N%."
+
+  - screen_id: countryPicker
+    trigger: on_open                 # pure-local, no async
+    auth_required: false
+    source: SupportedCountries       # static bundled G20-plus list — NO Store, NO network
+    persistence: bundled_compile_time
+    produces_state: content
+    notes: >-
+      Picker has NO data flow — CountryPickerViewModel reads the static
+      SupportedCountries.list and filters via SupportedCountries.search(query)
+      in-process. No endpoint, no Store, no ScreenState. Included here for
+      completeness so /idea-sync sees the picker is intentionally data-less.
+
+  - screen_id: macroIndicatorDetail
+    trigger: on_subscribe
+    auth_required: false
+    indicator: "<route indicatorKind>"   # single indicator, resolved from IndicatorDetailRoute
+    country: "<route countryCode>"
+    endpoints:
+      - { api_id: worldbank-country-indicator, transport: rest, method: GET }
+    dtos:
+      - { name: WorldBankResponseDto, role: response, api_id: worldbank-country-indicator }
+      - { name: MacroIndicator,       role: domain,   api_id: worldbank-country-indicator }
+    produces_state: content
+    cache:
+      strategy: memory_only
+      persistence: in_memory
+      ttl_seconds: 604800
+      key_template: "economic:macro:{countryCode}:{indicator}:25y"
+      shape: list
+    error_paths:
+      - { error_code: network.offline,       behavior: no_network_slot }
+      - { error_code: empty.no_observations, behavior: empty_slot }
+      - { error_code: generic.fetch_failed,  behavior: error_slot }
+    notes: >-
+      Per-indicator 25-year detail — same MemoryStore/endpoint as the dashboard,
+      single key. Stale/VeryStale band surfaces an OfflineDataBanner above content.
+
+# ─────────────────────────────────────────────────
+# Syncable seam — forced-refresh (sync/ module DataSyncWorker)
+# ─────────────────────────────────────────────────
+syncable:
+  interface: Syncable
+  method: "MacroIndicatorsRepositoryImpl.syncWith(synchronizer)"
+  pinned_keys:                       # PINNED_MACRO_KEYS — hardcoded at v1 so we don't bulk-fetch World Bank
+    - { countryCode: US, indicator: GDP }
+    - { countryCode: IN, indicator: GDP }
+  mechanism: >-
+    For each pinned (country, indicator) pair in parallel, issues Store5
+    stream(StoreReadRequest.fresh(key)).first { Data|Error }.requireData() — a
+    cold one-shot that bypasses the in-memory cache, hits World Bank via the
+    fetcher, and completes on first terminal response. Distinct from asScreenStream
+    (long-lived UI subscriptions).

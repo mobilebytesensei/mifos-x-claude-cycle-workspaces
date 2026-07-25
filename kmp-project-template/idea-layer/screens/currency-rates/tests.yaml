@@ -1,0 +1,163 @@
+schema_version: "1.0"
+feature_id: feat-currency-rates
+screen_id: currency-rates
+generated_by: "/idea-import (reverse-engineered from feature/currency-rates commonTest)"
+# Derived 1:1 from the shipped tests:
+#   CurrencyRatesViewModelTest, CurrencyConverterViewModelTest, RateHistoryViewModelTest,
+#   CurrencyRatesScreenUiTest, RateHistoryScreenUiTest, FakeCurrencyRepository.
+
+state_coverage:
+  - state: loading
+    screen: currency-rates-list
+    name: "initial screenState is Loading"
+    setup: "fresh CurrencyRatesViewModel(FakeCurrencyRepository) before any stream emits"
+    assertions:
+      - "vm.screenState.first() == ScreenState.Loading"
+      - "currency_rates_root Scaffold is displayed (CurrencyRatesScreenUiTest)"
+  - state: content
+    screen: currency-rates-list
+    name: "search filters the rates map case-insensitively"
+    setup: "repo.exchangeRatesState = Content(ExchangeRates(USD, {EUR:0.92, INR:83.5, GBP:0.79})); Search(\"eur\")"
+    assertions:
+      - "filtered state is ScreenState.Content"
+      - "filtered.data.rates.keys == {EUR} (case-insensitive match)"
+      - "row renders currency code + rate.formatDecimal(4)"
+  - state: empty
+    screen: currency-rates-list
+    name: "a search with no matches yields Empty (emptyIfContent)"
+    setup: "Content with {EUR, INR}; Search(\"ZZZ\")"
+    assertions:
+      - "vm.screenState eventually is ScreenState.Empty"
+  - state: content
+    screen: currency-rates-list
+    name: "the VM opens the exchange-rates stream with base = USD"
+    setup: "buildViewModel(repo); advanceUntilIdle()"
+    assertions:
+      - "repo.lastExchangeRatesBase == \"USD\""
+  - state: loading
+    screen: currency-spot-converter
+    name: "online mode wires NETWORK_ONLY policy (spotConversionRate starts Loading)"
+    setup: "FakeNetworkMonitor(online=true); vm.spotConversionRate.first()"
+    assertions:
+      - "state == ScreenState.Loading (NETWORK_ONLY path chosen, awaiting fetch)"
+  - state: loading
+    screen: currency-spot-converter
+    name: "offline mode wires CACHE_ONLY policy (no network request fired)"
+    setup: "FakeNetworkMonitor(online=false); vm.spotConversionRate.first()"
+    assertions:
+      - "state == ScreenState.Loading (CACHE_ONLY path; cold in-memory store)"
+  - state: content
+    screen: currency-spot-converter
+    name: "connectivity flip offline→online rebuilds the stream with NETWORK_ONLY"
+    setup: "FakeNetworkMonitor(online=false) → setOnline(true); advanceUntilIdle()"
+    assertions:
+      - "spotConversionRate is still observable and starts at Loading after flatMapLatest rebuild"
+  - state: loading
+    screen: rate-history
+    name: "history initial screenState is Loading with default INR/30d"
+    setup: "RateHistoryViewModel(FakeCurrencyRepository)"
+    assertions:
+      - "vm.stateFlow.first().targetCurrency == \"INR\" && periodDays == 30"
+      - "vm.screenState.first() == ScreenState.Loading"
+      - "rate_history_root Scaffold is displayed (RateHistoryScreenUiTest)"
+  - state: content
+    screen: rate-history
+    name: "stream Content surfaces as Content state carrying the target pair"
+    setup: "repo.rateHistoryState = Content(RateHistory(USD, INR, ...)); advanceUntilIdle()"
+    assertions:
+      - "vm.screenState eventually is ScreenState.Content"
+      - "state.data.to == \"INR\""
+
+interactions:
+  - screen: rate-history
+    component: "first key emission"
+    trigger: on_subscribe
+    name: "the first RateHistoryKey matches the defaults"
+    expected: "RateHistoryKey(from=USD, to=INR, days=30)"
+    assertions:
+      - "repo.rateHistoryKeys.first() == RateHistoryKey(\"USD\", \"INR\", 30)"
+  - screen: rate-history
+    component: "currency FilterChip"
+    trigger: tap
+    name: "changing currency emits a new key"
+    expected: "action: HistoryAction.SelectCurrency(code)"
+    assertions:
+      - "repo.rateHistoryKeys grows; last().to == \"EUR\" after SelectCurrency(\"EUR\")"
+  - screen: rate-history
+    component: "period FilterChip"
+    trigger: tap
+    name: "changing period emits a new key"
+    expected: "action: HistoryAction.SelectPeriod(days)"
+    assertions:
+      - "repo.rateHistoryKeys grows; last().days == 7 after SelectPeriod(7)"
+  - screen: currency-rates-list
+    component: "freshness indicator / retry"
+    trigger: tap
+    name: "onRetry fans out to the exchange-rates stream refresh"
+    expected: "action: RatesAction.Retry → stream.retry()"
+    assertions:
+      - "repo.exchangeRatesRefresh emits once per onRetry()"
+  - screen: currency-rates-list
+    component: "pull-to-refresh"
+    trigger: refresh
+    name: "onRefresh fans out to the exchange-rates stream refresh"
+    expected: "action: RatesAction.Refresh → stream.refresh()"
+    assertions:
+      - "repo.exchangeRatesRefresh emits once per onRefresh()"
+  - screen: currency-rates-list
+    component: "back button"
+    trigger: tap
+    name: "back pops the stack"
+    expected: "navigate_back (popBackStackSafely)"
+    assertions: ["returns to the caller"]
+
+api_integration:
+  - operation: latest-rates
+    name: "successful Frankfurter fetch caches to Room and renders Content"
+    setup: "FrankfurterApi.getLatestRates(from=USD) returns ExchangeRatesDto; Store writes ExchangeRatesEntity"
+    assertions:
+      - "ExchangeRatesDto.toDomain drops amount, keeps base/date/rates"
+      - "row transitions Loading → Content; rates render code→formatDecimal(4)"
+  - operation: latest-rates
+    name: "spot converter NETWORK_ONLY skips cache; CACHE_ONLY never fires a request"
+    setup: "policy chosen by NetworkMonitor connectivity via flatMapLatest"
+    assertions:
+      - "online → NETWORK_ONLY (fresh spot rate); offline → CACHE_ONLY (no HTTP call)"
+  - operation: historical-rates
+    name: "history fetch computes [today-days, today] and projects target points"
+    setup: "RateHistoryKey(USD, INR, 30); FrankfurterApi.getHistoricalRates returns RateHistoryDto"
+    assertions:
+      - "RateHistoryDto.toDomain(INR) sorts by date + maps day[INR] → RatePoint(date, value)"
+      - "Store writer overrides start/end with key-derived dates so SOT reader matches"
+  - operation: historical-rates
+    name: "offline with cache carries forward the previous selection as stale content"
+    setup: "new key fetch fails; previous key's RateHistory cached"
+    assertions:
+      - "previous data renders as stale Content; FreshnessBand ∈ {Stale, VeryStale} → OfflineDataBanner"
+
+acceptance_criteria:
+  - ref: "AC-CUR-01"
+    name: "Live FX rates by base currency"
+    given: "connectivity (or a warm cache)"
+    when: "the user opens Currency Rates"
+    then: "the latest USD-based rates render as code→value rows sourced from Frankfurter via the Store5 NETWORK_WITH_CACHE cache"
+  - ref: "AC-CUR-02"
+    name: "Search filter"
+    given: "the rate list is shown"
+    when: "the user types a currency code fragment"
+    then: "the list filters case-insensitively; a no-match query shows the Empty state (emptyIfContent)"
+  - ref: "AC-CUR-03"
+    name: "Freshness + offline-first"
+    given: "the app has previously fetched rates and is now offline"
+    when: "the screen loads"
+    then: "cached rates render with a FreshnessIndicator reflecting a Stale/VeryStale band; retry re-fetches when back online"
+  - ref: "AC-CUR-04"
+    name: "Connectivity-aware spot converter"
+    given: "the embedded spot conversion rate"
+    when: "connectivity flips"
+    then: "online selects NETWORK_ONLY (always-fresh rate) and offline selects CACHE_ONLY (no request, no error flicker)"
+  - ref: "AC-CUR-05"
+    name: "Rate history with currency + period selection"
+    given: "the Rate History screen (default USD→INR, 30d)"
+    when: "the user picks a currency chip [INR|EUR|GBP|JPY|AUD] or period chip [7|14|30|90]"
+    then: "a new RateHistoryKey re-drives the fetch over [today-days, today] and the (date → value) series updates; a failed selection carries the previous data forward with an offline banner"

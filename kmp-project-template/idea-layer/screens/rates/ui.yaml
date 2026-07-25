@@ -1,0 +1,381 @@
+schema_version: "1.0"
+screen_id: rates
+feature: feat-rates
+archetype: screen-content
+platforms: [android, ios, desktop, web]
+# B7 Interest Rate Tracker — canonical NETWORK_WITH_CACHE + DataFreshness showcase.
+# Reverse-engineered (read-only) from feature/rates + core/{network,data,store,
+# database,model}/demo/economic. Two screens ship in this feature:
+#   - rates        (InterestRatesScreen)      — the multi-series dashboard (PRIMARY, this file)
+#   - rateDetail   (InterestRateDetailScreen) — per-series 365-day drill-down (see related_screens)
+# The list renders FOUR INDEPENDENT rows, each its own ScreenState<InterestRateSeries>
+# (Loading / Content / Empty / Error / NoNetwork). One failed FRED series never blanks
+# the whole screen — each row has its own retry.
+# Per-row ScreenState — every row starts Loading (see state_components for the full
+# component trees). initial_state made explicit here (was implied by the ViewModel
+# field defaults ScreenState.Loading on all four rows).
+states:
+  initial_state: loading
+  loading:
+    components: [rates_scroll, fed_funds_loading_card, prime_loading_card, mortgage30y_loading_card, treasury10y_loading_card]
+    description: "Every row starts here — ScreenContent renders its per-row Loading slot (four 140dp app cards)."
+  content:
+    components: [rates_scroll, fed_funds_card, prime_card, mortgage30y_card, treasury10y_card]
+    description: "Four resolved RateRowCards (name + current value + RateBadge delta + KptSparkline) in a vertical scroll."
+  empty:
+    components: [app_card, empty_slot]
+    description: "Per-row ScreenState.Empty — a FRED series resolved with zero observations in the [today-365d, today] window."
+  error:
+    components: [app_card, error_slot]
+    description: "Per-row ScreenState.Error / NoNetwork with retry — includes the fred_key_missing variant (fetcher throws when FRED_API_KEY unset with no cache)."
+
+# ─────────────────────────────────────────────────
+# i18n — /idea sync STEP 3: raw English literals extracted from this screen's
+# TopAppBar, per-row loading/empty/error slots, series names, card aria labels,
+# the FRED-key-missing copy, and the detail source label into screens_rates_*
+# keys. Values mirror the shipped feature/rates/.../strings.xml; inline comments
+# below tag each literal with its key. en is the source locale.
+# ─────────────────────────────────────────────────
+i18n:
+  en:
+    screens_rates_title: "Interest Rates"
+    screens_rates_back_cd: "Back"
+    screens_rates_freshness_cd: "Data freshness — tap to refresh"
+    screens_rates_refresh_all_cd: "Refresh all"
+    screens_rates_loading_fed_funds_cd: "Loading Federal Funds Rate"
+    screens_rates_loading_prime_cd: "Loading Prime Rate"
+    screens_rates_loading_mortgage30y_cd: "Loading 30-Year Mortgage"
+    screens_rates_loading_treasury10y_cd: "Loading 10-Year Treasury"
+    screens_rates_empty_message: "No published observations for this series"
+    screens_rates_row_error_cd: "Couldn't load this rate — tap to retry"
+    screens_rates_error_fred_key_missing: "FRED_API_KEY is not configured — supply a key via FredApiConfig. See CLAUDE.md → First-time fork setup."
+    screens_rates_error_network: "Couldn't reach FRED. Showing last synced data where available."
+    screens_rates_retry_cd: "Retry"
+    screens_rates_fed_funds_name: "Federal Funds Rate"
+    screens_rates_prime_name: "Prime Rate"
+    screens_rates_mortgage30y_name: "30-Year Mortgage"
+    screens_rates_treasury10y_name: "10-Year Treasury"
+    screens_rates_fed_funds_card_cd: "Federal Funds Rate — tap for 365-day detail"
+    screens_rates_prime_card_cd: "Prime Rate — tap for 365-day detail"
+    screens_rates_mortgage30y_card_cd: "30-Year Mortgage — tap for 365-day detail"
+    screens_rates_treasury10y_card_cd: "10-Year Treasury — tap for 365-day detail"
+    screens_rates_detail_source_label: "Source: FRED"
+
+# ─────────────────────────────────────────────────
+# Feature business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-3)
+# ─────────────────────────────────────────────────
+business_logic:
+  kind: aggregation
+  processing_kind: on_demand   # + periodic background revalidation: Store5 24h TTL (stale-while-revalidate)
+  processing_location: on_device
+  library_refs: [cmp-network-monitor]
+  external_library_refs: [ktorfit, ktor, store5, room]
+  description: >-
+    Compose four INDEPENDENT FRED-backed reactive streams into one dashboard
+    state. The ViewModel opens one per-series stream per RateSeriesCatalog entry
+    — DFF (Federal Funds), DPRIME (Prime), MORTGAGE30US (30-Year Mortgage),
+    DGS10 (10-Year Treasury) — via EconomicRatesRepository.interestRateSeriesStream,
+    each backed by the InterestRateSeriesStore (Store5 NETWORK_WITH_CACHE archetype).
+    Each stream emits ScreenState transitions independently so one card can show
+    Content while another is still Loading or surfacing an Error. On first
+    subscription the Room source-of-truth (interest_rate_series table) emits any
+    cached observations immediately, then the Ktorfit FredApi silently refreshes
+    from FRED's fred/series/observations endpoint over a [today-365d, today]
+    window (stale-while-revalidate, 24h TTL). Per-row 1-day delta = last two
+    published observations; drives a rateUp/rateDown accent stripe + RateBadge +
+    KptSparkline. A separate aggregateFreshness = worse-of-4 FreshnessBand feeds
+    the TopAppBar FreshnessIndicator. Pull/refresh-all fans out to all four
+    streams concurrently; per-row retry refreshes only its own stream. When
+    FRED_API_KEY is unconfigured the store fetcher throws and — with no cache —
+    every row renders the Error slot carrying "FRED_API_KEY is not configured".
+  library_note: >-
+    Store5 read-only cache (StoreFactory.createStore) — Fetcher = Ktorfit FredApi
+    wrapped in NetworkMonitor.executeWithRetry(maxAttempts=1); SourceOfTruth =
+    InterestRateSeriesDao (Room). ScreenDataStream (core-base/store) owns the
+    ScreenState + FreshnessSignal projection. cacheKey = economic:rates:{seriesId}:{days}d.
+
+# ─────────────────────────────────────────────────
+# State model — mirrors InterestRatesViewModel.kt (per-row ScreenState, no master reduce)
+# ─────────────────────────────────────────────────
+state_model:
+  viewmodel: InterestRatesViewModel
+  base: "BaseViewModel<RatesUiState, Nothing, RatesAction>"
+  event_type: Nothing   # no one-shot events — navigation is via onSeriesClick / onBackClick callbacks
+  state:
+    name: RatesUiState
+    fields:
+      - { name: fedFunds,    type: "ScreenState<InterestRateSeries>", default: "ScreenState.Loading", note: "DFF row." }
+      - { name: prime,       type: "ScreenState<InterestRateSeries>", default: "ScreenState.Loading", note: "DPRIME row." }
+      - { name: mortgage30Y, type: "ScreenState<InterestRateSeries>", default: "ScreenState.Loading", note: "MORTGAGE30US row." }
+      - { name: treasury10Y, type: "ScreenState<InterestRateSeries>", default: "ScreenState.Loading", note: "DGS10 row." }
+  derived:
+    - name: aggregateFreshness
+      type: "StateFlow<FreshnessSignal>"
+      note: "combine(4 streams' freshness) → maxBy FreshnessBand.severity (worst-of-4) → TopAppBar FreshnessIndicator."
+    - { name: fedFundsFreshness,    type: "StateFlow<FreshnessSignal>", note: "per-card DFF freshness." }
+    - { name: primeFreshness,       type: "StateFlow<FreshnessSignal>", note: "per-card DPRIME freshness." }
+    - { name: mortgage30YFreshness, type: "StateFlow<FreshnessSignal>", note: "per-card MORTGAGE30US freshness." }
+    - { name: treasury10YFreshness, type: "StateFlow<FreshnessSignal>", note: "per-card DGS10 freshness." }
+  actions:
+    name: RatesAction
+    variants:
+      - { action: RefreshAll,        payload: none, effect: "fan-out refresh() to all four streams (re-fetch from FRED)" }
+      - { action: RetryFedFunds,     payload: none, effect: "fedFundsStream.refresh()" }
+      - { action: RetryPrime,        payload: none, effect: "primeStream.refresh()" }
+      - { action: RetryMortgage30Y,  payload: none, effect: "mortgage30YStream.refresh()" }
+      - { action: RetryTreasury10Y,  payload: none, effect: "treasury10YStream.refresh()" }
+
+# ─────────────────────────────────────────────────
+# Shell — plain TopAppBar with back + refresh-all; no bottom nav (pushed destination)
+# ─────────────────────────────────────────────────
+shell:
+  bottom_nav:
+    enabled: false
+  top_app_bar:
+    enabled: true
+    title: "Interest Rates"                       # screens_rates_title
+    leading:
+      - type: icon_button
+        icon: arrow_back
+        aria_label: "Back"                         # screens_rates_back_cd
+        on_click:
+          action: "navigate_back"
+          action_contract:
+            effect: navigate
+            description: "Pop the back stack (popBackStackSafely) to return to the caller (home dashboard rates tile / calculators hub)."
+    trailing:
+      - type: freshness_indicator
+        binds_to: "aggregateFreshness"
+        aria_label: "Data freshness — tap to refresh"   # screens_rates_freshness_cd
+        on_click:
+          action: "refresh"
+          action_contract:
+            effect: call_api
+            external_library_refs: [ktorfit, store5]
+            reads_from:
+              - { source: "FRED fred/series/observations", series_ids: [DFF, DPRIME, MORTGAGE30US, DGS10], dto: InterestRateSeries }
+            description: "RatesAction.RefreshAll — fan out refresh() to all four Store5 streams, re-fetching each FRED series over the [today-365d, today] window and updating the Room cache."
+      - type: icon_button
+        icon: refresh
+        aria_label: "Refresh all"                  # screens_rates_refresh_all_cd
+        on_click:
+          action: "refresh"
+          action_contract:
+            effect: call_api
+            external_library_refs: [ktorfit, store5]
+            reads_from:
+              - { source: "FRED fred/series/observations", series_ids: [DFF, DPRIME, MORTGAGE30US, DGS10], dto: InterestRateSeries }
+            description: "RatesAction.RefreshAll — re-fetch all four FRED series concurrently via the Store5 NETWORK_WITH_CACHE path."
+
+# ─────────────────────────────────────────────────
+# State components. Each of the four rows is an independent ScreenState slot,
+# rendered by core-base/ui ScreenContent (Loading/Empty/Error/NoNetwork slots
+# framework-owned; Content slot = RateRowContent). Loading/empty/error below
+# describe the PER-ROW slot rendering; content describes the resolved dashboard.
+# ─────────────────────────────────────────────────
+state_components:
+
+  # ── LOADING — every row starts here; ScreenContent renders its Loading slot ──
+  loading:
+    - type: stack
+      direction: column
+      scroll: vertical
+      padding: "{spacing.lg}"
+      gap: "{spacing.md}"
+      test_tag: "rates_scroll"
+      children:
+        - { type: card, variant: app_card, height: "140dp", child: { type: loading_indicator, aria_label: "Loading Federal Funds Rate" } }   # screens_rates_loading_fed_funds_cd
+        - { type: card, variant: app_card, height: "140dp", child: { type: loading_indicator, aria_label: "Loading Prime Rate" } }           # screens_rates_loading_prime_cd
+        - { type: card, variant: app_card, height: "140dp", child: { type: loading_indicator, aria_label: "Loading 30-Year Mortgage" } }     # screens_rates_loading_mortgage30y_cd
+        - { type: card, variant: app_card, height: "140dp", child: { type: loading_indicator, aria_label: "Loading 10-Year Treasury" } }     # screens_rates_loading_treasury10y_cd
+
+  # ── EMPTY — ScreenState.Empty: series resolved with zero observations in window ──
+  empty:
+    - type: card
+      variant: app_card
+      height: "140dp"
+      children:
+        - type: empty_slot
+          aria_label: "No published observations for this series"   # screens_rates_empty_message
+          description: >-
+            Rendered by ScreenContent's framework Empty slot when a FRED series
+            returns no rows in the [today-365d, today] window (all "." no-data
+            markers stripped by the DTO mapper). Per-row only — other rows
+            unaffected.
+
+  # ── ERROR — ScreenState.Error / NoNetwork, per row, with retry.
+  #    Includes the FRED-key-missing variant (fetcher throws when apiKey unset). ──
+  error:
+    - type: card
+      variant: app_card
+      height: "140dp"
+      children:
+        - type: error_slot
+          id: rate_row_error
+          aria_label: "Couldn't load this rate — tap to retry"   # screens_rates_row_error_cd
+          retry_action: "retry"                                   # label: screens_rates_retry_cd
+          variants:
+            - id: fred_key_missing
+              trigger: "FredApiConfig.apiKey is null/blank → store Fetcher throws IllegalStateException"
+              message: "FRED_API_KEY is not configured — supply a key via FredApiConfig. See CLAUDE.md → First-time fork setup."   # screens_rates_error_fred_key_missing
+              note: >-
+                Surfaces as ScreenState.Error (isNetworkError=false) on every row
+                when no cache exists. This is the "FRED key not configured" empty
+                experience the toolkit promises — technically the Error slot, not
+                ScreenState.Empty. With a warm Room cache the rows still show
+                stale Content instead.
+            - id: network_error
+              trigger: "FRED unreachable / offline → NetworkMonitor.executeWithRetry fails"
+              message: "Couldn't reach FRED. Showing last synced data where available."   # screens_rates_error_network
+              note: "ScreenState.NoNetwork (or Error isNetworkError=true) — cached observations render as stale Content when present."
+          on_retry:
+            action: "retry"
+            action_contract:
+              effect: call_api
+              external_library_refs: [ktorfit, store5]
+              reads_from:
+                - { source: "FRED fred/series/observations", series_id: "<row series id>", dto: InterestRateSeries }
+              description: "RatesAction.Retry{Row} — refresh only this row's Store5 stream, re-fetching its FRED series."
+
+  # ── CONTENT — four resolved RateRowCards inside a vertical scroll ──
+  content:
+    - type: stack
+      direction: column
+      scroll: vertical
+      padding: "{spacing.lg}"
+      gap: "{spacing.md}"
+      test_tag: "rates_scroll"
+      children:
+
+        - type: card
+          variant: app_card
+          id: fed_funds_card
+          accent: "direction-driven: rateUp (finance.rateUp) if 1-day delta > 0, rateDown if < 0, none if flat"
+          aria_label: "Federal Funds Rate — tap for 365-day detail"   # screens_rates_fed_funds_card_cd
+          on_click:
+            action: "navigate"
+            target: "rateDetail"
+            params: { seriesId: "DFF" }
+            action_contract:
+              effect: navigate
+              description: "Navigate to InterestRateDetailScreen for series DFF (Federal Funds Rate) via navigateToRateDetail."
+          children:
+            - { type: text, variant: title_medium, content_source: "series.name (Federal Funds Rate)" }   # screens_rates_fed_funds_name
+            - { type: text, variant: headline_small, content_source: "series.current formatDecimal(2) + series.unit (%)" }
+            - { type: rate_badge, binds_to: "1-day delta", note: "signed delta + RateDirection Up/Down/Flat" }
+            - { type: sparkline, component: KptSparkline, binds_to: "series.observations[].value" }
+
+        - type: card
+          variant: app_card
+          id: prime_card
+          accent: "direction-driven (see fed_funds_card)"
+          aria_label: "Prime Rate — tap for 365-day detail"   # screens_rates_prime_card_cd
+          on_click:
+            action: "navigate"
+            target: "rateDetail"
+            params: { seriesId: "DPRIME" }
+            action_contract:
+              effect: navigate
+              description: "Navigate to InterestRateDetailScreen for series DPRIME (Bank Prime Loan Rate)."
+          children:
+            - { type: text, variant: title_medium, content_source: "series.name (Prime Rate)" }   # screens_rates_prime_name
+            - { type: text, variant: headline_small, content_source: "series.current formatDecimal(2) + unit" }
+            - { type: rate_badge, binds_to: "1-day delta" }
+            - { type: sparkline, component: KptSparkline, binds_to: "series.observations[].value" }
+
+        - type: card
+          variant: app_card
+          id: mortgage30y_card
+          accent: "direction-driven (see fed_funds_card)"
+          aria_label: "30-Year Mortgage — tap for 365-day detail"   # screens_rates_mortgage30y_card_cd
+          on_click:
+            action: "navigate"
+            target: "rateDetail"
+            params: { seriesId: "MORTGAGE30US" }
+            action_contract:
+              effect: navigate
+              description: "Navigate to InterestRateDetailScreen for series MORTGAGE30US (30-Year Fixed Mortgage Average, Freddie Mac weekly)."
+          children:
+            - { type: text, variant: title_medium, content_source: "series.name (30-Year Mortgage)" }   # screens_rates_mortgage30y_name
+            - { type: text, variant: headline_small, content_source: "series.current formatDecimal(2) + unit" }
+            - { type: rate_badge, binds_to: "1-day delta" }
+            - { type: sparkline, component: KptSparkline, binds_to: "series.observations[].value" }
+
+        - type: card
+          variant: app_card
+          id: treasury10y_card
+          accent: "direction-driven (see fed_funds_card)"
+          aria_label: "10-Year Treasury — tap for 365-day detail"   # screens_rates_treasury10y_card_cd
+          on_click:
+            action: "navigate"
+            target: "rateDetail"
+            params: { seriesId: "DGS10" }
+            action_contract:
+              effect: navigate
+              description: "Navigate to InterestRateDetailScreen for series DGS10 (10-Year Treasury Constant Maturity Rate, benchmark long-term yield)."
+          children:
+            - { type: text, variant: title_medium, content_source: "series.name (10-Year Treasury)" }   # screens_rates_treasury10y_name
+            - { type: text, variant: headline_small, content_source: "series.current formatDecimal(2) + unit" }
+            - { type: rate_badge, binds_to: "1-day delta" }
+            - { type: sparkline, component: KptSparkline, binds_to: "series.observations[].value" }
+
+# ─────────────────────────────────────────────────
+# Related screen — per-series detail (drill-down target of every row).
+# ─────────────────────────────────────────────────
+related_screens:
+  - screen_id: rateDetail
+    viewmodel: InterestRateDetailViewModel
+    base: "BaseViewModel<Unit, Nothing, DetailAction>"
+    archetype: screen-content
+    route: "RateDetailRoute(seriesId: String)"
+    states: [loading, content, empty, error]
+    initial_state: loading   # single-series stream stateIn(..., ScreenState.Loading) — was implied by the VM default
+    description: >-
+      Streams the full 365-day window for one seriesId through the SAME
+      NETWORK_WITH_CACHE Store5 path. Hero = AmountDisplay of series.current +
+      source attribution (series.source = "FRED"); body = KptAreaChart of all
+      observations + a reverse-chronological LazyColumn table of every (date,
+      value) observation. Known ids resolve to the canonical RateSeriesCatalog
+      key; unknown ids fall back to a minimal InterestRateSeriesKey(seriesId,
+      name=seriesId) so the screen still renders. TopAppBar carries a
+      FreshnessIndicator + refresh action (DetailAction.Refresh/Retry).
+    components:
+      - { type: hero_card, component: HeroCard, contains: [AmountDisplay, "source label: Source: FRED"] }   # screens_rates_detail_source_label
+      - { type: chart, component: KptAreaChart, binds_to: "series.observations[].value" }
+      - { type: list, component: LazyColumn, binds_to: "series.observations.reversed() → (date, value) rows" }
+    on_refresh:
+      action: "refresh"
+      action_contract:
+        effect: call_api
+        external_library_refs: [ktorfit, store5]
+        reads_from:
+          - { source: "FRED fred/series/observations", series_id: "<route seriesId>", dto: InterestRateSeries }
+        description: "DetailAction.Refresh/Retry — refresh the single-series Store5 stream, re-fetching from FRED."
+
+# ─────────────────────────────────────────────────
+# Test tags present in source (feature/rates/.../TestTags.kt) — APPEND-ONLY
+# ─────────────────────────────────────────────────
+test_tags:
+  - { id: "rates_scroll", screen: rates, note: "Root vertically-scrollable Column hosting the four rate-row cards; always rendered." }
+  - { id: "rate_detail_root", screen: rateDetail, note: "Root Scaffold of the detail screen; always in the tree irrespective of ScreenState." }
+
+# ─────────────────────────────────────────────────
+# Source provenance (reverse-engineered, read-only)
+# ─────────────────────────────────────────────────
+source_refs:
+  list_screen: "feature/rates/src/commonMain/kotlin/kpt/feature/rates/ui/InterestRatesScreen.kt"
+  list_viewmodel: "feature/rates/src/commonMain/kotlin/kpt/feature/rates/ui/InterestRatesViewModel.kt"
+  detail_screen: "feature/rates/src/commonMain/kotlin/kpt/feature/rates/ui/InterestRateDetailScreen.kt"
+  detail_viewmodel: "feature/rates/src/commonMain/kotlin/kpt/feature/rates/ui/InterestRateDetailViewModel.kt"
+  stream_seam: "feature/rates/src/commonMain/kotlin/kpt/feature/rates/ui/RateStreamFactory.kt"
+  catalog: "feature/rates/src/commonMain/kotlin/kpt/feature/rates/ui/RateSeriesCatalog.kt"
+  navigation: "feature/rates/src/commonMain/kotlin/kpt/feature/rates/navigation/RatesNavigation.kt"
+  di: "feature/rates/src/commonMain/kotlin/kpt/feature/rates/di/RatesModule.kt"
+  test_tags: "feature/rates/src/commonMain/kotlin/kpt/feature/rates/ui/TestTags.kt"
+  strings: "feature/rates/src/commonMain/composeResources/values/strings.xml"
+  repository: "core/data/src/commonMain/kotlin/kpt/core/data/demo/economic/{EconomicRatesRepository.kt,impl/EconomicRatesRepositoryImpl.kt}"
+  store: "core/store/src/commonMain/kotlin/kpt/core/store/demo/economic/impl/{InterestRateSeriesStore.kt,InterestRateSeriesKey.kt}"
+  network: "core/network/src/commonMain/kotlin/kpt/core/network/demo/economic/{api/FredApi.kt,config/FredApiConfig.kt,dto/FredObservationsDto.kt}"
+  database: "core/database/src/commonMain/kotlin/kpt/core/database/demo/economic/{InterestRateSeriesDao.kt,InterestRateSeriesEntity.kt}"
+  model: "core/model/src/commonMain/kotlin/kpt/core/model/demo/economic/InterestRateSeries.kt"
+  design_system: ["core-base/designsystem AppCard + HeroCard", "core-base/ui ScreenContent + FreshnessIndicator", "core/designsystem KptSparkline + KptAreaChart + RateBadge + AmountDisplay", "core/common formatDecimal"]

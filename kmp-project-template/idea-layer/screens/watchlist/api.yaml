@@ -1,0 +1,89 @@
+schema_version: "1.0"
+screen_id: watchlist
+feature_id: feat-watchlist
+
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/watchlist blends TWO data surfaces:
+#   (A) LOCAL, watch-list membership — OFFLINE_LOCAL_ONLY, raw Room DAO (NO Store5).
+#       Every "operation" is a local read/write on `personal_watchlist` through
+#       WatchlistRepository (WatchlistDao + core-base/database invalidation bridge).
+#   (B) NETWORK value-resolution — the tracked coinIds are cross-referenced against
+#       feature/crypto's CryptoRepository (Store5 NETWORK_WITH_CACHE over CoinGecko)
+#       to render live symbol/name/price/24h-change. This feature does NOT own that
+#       endpoint; it is documented here as a consumed dependency, not a new API.
+# ─────────────────────────────────────────────────────────────────────────────
+remote_endpoints: none                 # feature/watchlist owns NO remote endpoint of its own
+source: local_room
+store: none                            # NOT a Store5 store — direct DAO + invalidation bridge
+repository: WatchlistRepository        # core/data/demo/watchlist/WatchlistRepository.kt
+impl: WatchlistRepositoryImpl          # core/data/demo/watchlist/impl/WatchlistRepositoryImpl.kt
+dao: WatchlistDao                      # core/database/demo/watchlist/dao/WatchlistDao.kt
+table: personal_watchlist              # core/database/demo/watchlist/entity/WatchlistEntity.kt
+dto: WatchlistItem                     # {coinId: String, addedAtMs: Long} (UI projection of WatchlistEntity)
+
+# (A) Local watch-list operations (all on-device — no network round-trip).
+api:
+  # ── Reads (reactive Flow from Room via the invalidation bridge) ──
+  - operation: observe-watchlist
+    method: local-read
+    source: room
+    kind: reactive
+    request: { key: Unit, order: "addedAtMs DESC" }
+    response: { dto: WatchlistItem, shape: list }
+    dao: "WatchlistDao.observeAll()   # wrapped in daoFlow(personal_watchlist)"
+    demo_source: watchlist
+    used_by: [watchlist]
+
+  - operation: observe-contains
+    method: local-read
+    source: room
+    kind: reactive
+    request: { key: coinId }
+    response: { dto: Boolean, shape: scalar }
+    dao: "WatchlistDao.observeContains(coinId)   # SELECT EXISTS(...); wrapped in daoFlow"
+    demo_source: watchlist
+    used_by: [add-to-watchlist]        # drives the star filled/outline state
+
+  # ── Writes (suspend, local commit; UI wraps in the framework SubmitHandler) ──
+  - operation: add-to-watchlist
+    method: local-write
+    source: room
+    kind: suspend
+    request: { key: coinId }
+    response: { shape: none }
+    idempotent: true
+    dao: "WatchlistDao.insert(WatchlistEntity(coinId, addedAtMs=now))   # @Insert REPLACE; wrapped in notifyingWrite"
+    used_by: [add-to-watchlist]
+    notes: "Idempotent — re-adding an existing coin REPLACEs the row, refreshing addedAtMs to now."
+
+  - operation: remove-from-watchlist
+    method: local-write
+    source: room
+    kind: suspend
+    request: { key: coinId }
+    response: { shape: none }
+    idempotent: true
+    dao: "WatchlistDao.delete(coinId)   # DELETE WHERE coinId=:coinId; wrapped in notifyingWrite"
+    used_by: [watchlist, add-to-watchlist]
+    notes: "Idempotent — no-op if the coin is not present."
+
+# (B) Consumed cross-feature streams for live value-resolution — NOT owned here.
+consumed_streams:
+  - operation: crypto-coin-markets-stream
+    owner_feature: feat-crypto
+    repository: CryptoRepository
+    method: "coinMarketsStream(scope, pageSize)"
+    kind: reactive
+    store_archetype: NETWORK_WITH_CACHE
+    response: { dto: CoinMarket, shape: paged-list }
+    used_by: [watchlist]
+    notes: "Tracked coinIds are matched against this stream to project live symbol/name/price/24h-change."
+  - operation: crypto-coin-detail-stream
+    owner_feature: feat-crypto
+    repository: CryptoRepository
+    method: "coinDetailStream(coinId, scope)"
+    kind: reactive
+    store_archetype: NETWORK_WITH_CACHE
+    response: { dto: CoinDetail, shape: single }
+    used_by: [watchlist]               # row short-tap → crypto coin-detail destination
+    notes: "Re-used by the cross-feature coin-detail destination the watchlist row navigates to."

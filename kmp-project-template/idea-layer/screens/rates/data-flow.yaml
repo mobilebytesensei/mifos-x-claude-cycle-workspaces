@@ -1,0 +1,151 @@
+# data-flow.yaml — B7 Interest Rate Tracker per-screen data flows.
+# One entry per per-series Store5 stream. Source of truth for the FRED endpoint,
+# Room cache table, DTO/domain model consumed, and per-row error paths.
+# Reverse-engineered from feature/rates + core/{network,store,data,database}/demo/economic.
+sibling: data-flow
+schema_version: "2.2.0"
+feature_id: feat-rates
+
+# Store5 NETWORK_WITH_CACHE pipeline (shared by every entry below):
+#   Ktorfit FredApi.seriesObservations  ── Fetcher ──▶ FredObservationsDto.toDomain
+#        │                                                     │
+#   NetworkMonitor.executeWithRetry(maxAttempts=1)             ▼
+#        │                                          InterestRateSeries (domain)
+#        ▼                                                     │
+#   StoreFactory.createStore ── SourceOfTruth ──▶ InterestRateSeriesDao (Room, interest_rate_series)
+#        │                       reader: observeBySeriesId(id).map { toInterestRateSeries }
+#        ▼                       writer: upsertAll(toEntities(updatedAt=now))
+#   EconomicRatesRepository.interestRateSeriesStream → ScreenDataStream<InterestRateSeries>
+#        │  (asScreenStream: emits Loading→Content/Empty/Error/NoNetwork + FreshnessSignal)
+#        ▼
+#   InterestRatesViewModel: 4 independent slots (fedFunds/prime/mortgage30Y/treasury10Y)
+
+store_pattern: NETWORK_WITH_CACHE
+combine:
+  kind: independent-slots           # NOT combineScreenStates — each row evolves on its own
+  streams: 4
+  aggregate_freshness: "combine(4 freshness flows) → worst-of-4 FreshnessBand (Initial<Fresh<Stale<VeryStale)"
+
+entries:
+  - screen_id: rates
+    trigger: on_subscribe            # stream.state.launchIn(viewModelScope) at VM init
+    auth_required: false             # no user auth — public FRED data. FRED api_key ≠ user auth.
+    series_id: DFF
+    series_name: "Federal Funds Rate"
+    endpoints:
+      - api_id: fred-series-observations
+        transport: rest
+        method: GET
+    tables:
+      - name: interest_rate_series
+        mutation: read_write         # read via SourceOfTruth reader; write via Store writer on fetch success
+        columns: [seriesId, date, value, updatedAt]
+    dtos:
+      - { name: FredObservationsDto, role: response, api_id: fred-series-observations }
+      - { name: InterestRateSeries,  role: domain,   api_id: fred-series-observations }
+    produces_state: content
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 86400
+      key_template: "economic:rates:DFF:365d"
+      shape: list                    # observations[]
+    error_paths:
+      - { error_code: config.fred_key_missing, behavior: error_slot, message: "FRED_API_KEY is not configured" }
+      - { error_code: network.offline,         behavior: fallback_cache, fallback_dto: InterestRateSeries }
+      - { error_code: empty.no_observations,   behavior: empty_slot }
+    notes: "Effective Federal Funds Rate — overnight bank-to-bank lending rate."
+
+  - screen_id: rates
+    trigger: on_subscribe
+    auth_required: false
+    series_id: DPRIME
+    series_name: "Prime Rate"
+    endpoints:
+      - { api_id: fred-series-observations, transport: rest, method: GET }
+    tables:
+      - { name: interest_rate_series, mutation: read_write, columns: [seriesId, date, value, updatedAt] }
+    dtos:
+      - { name: FredObservationsDto, role: response, api_id: fred-series-observations }
+      - { name: InterestRateSeries,  role: domain,   api_id: fred-series-observations }
+    produces_state: content
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 86400
+      key_template: "economic:rates:DPRIME:365d"
+      shape: list
+    error_paths:
+      - { error_code: config.fred_key_missing, behavior: error_slot, message: "FRED_API_KEY is not configured" }
+      - { error_code: network.offline,         behavior: fallback_cache, fallback_dto: InterestRateSeries }
+      - { error_code: empty.no_observations,   behavior: empty_slot }
+    notes: "Bank Prime Loan Rate — rate banks charge their most creditworthy customers."
+
+  - screen_id: rates
+    trigger: on_subscribe
+    auth_required: false
+    series_id: MORTGAGE30US
+    series_name: "30-Year Mortgage"
+    endpoints:
+      - { api_id: fred-series-observations, transport: rest, method: GET }
+    tables:
+      - { name: interest_rate_series, mutation: read_write, columns: [seriesId, date, value, updatedAt] }
+    dtos:
+      - { name: FredObservationsDto, role: response, api_id: fred-series-observations }
+      - { name: InterestRateSeries,  role: domain,   api_id: fred-series-observations }
+    produces_state: content
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 86400
+      key_template: "economic:rates:MORTGAGE30US:365d"
+      shape: list
+    error_paths:
+      - { error_code: config.fred_key_missing, behavior: error_slot, message: "FRED_API_KEY is not configured" }
+      - { error_code: network.offline,         behavior: fallback_cache, fallback_dto: InterestRateSeries }
+      - { error_code: empty.no_observations,   behavior: empty_slot }
+    notes: "30-Year Fixed Mortgage Average — Freddie Mac weekly survey (weekly cadence, not daily)."
+
+  - screen_id: rates
+    trigger: on_subscribe
+    auth_required: false
+    series_id: DGS10
+    series_name: "10-Year Treasury"
+    endpoints:
+      - { api_id: fred-series-observations, transport: rest, method: GET }
+    tables:
+      - { name: interest_rate_series, mutation: read_write, columns: [seriesId, date, value, updatedAt] }
+    dtos:
+      - { name: FredObservationsDto, role: response, api_id: fred-series-observations }
+      - { name: InterestRateSeries,  role: domain,   api_id: fred-series-observations }
+    produces_state: content
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 86400
+      key_template: "economic:rates:DGS10:365d"
+      shape: list
+    error_paths:
+      - { error_code: config.fred_key_missing, behavior: error_slot, message: "FRED_API_KEY is not configured" }
+      - { error_code: network.offline,         behavior: fallback_cache, fallback_dto: InterestRateSeries }
+      - { error_code: empty.no_observations,   behavior: empty_slot }
+    notes: "10-Year Treasury Constant Maturity Rate — benchmark long-term yield."
+
+  - screen_id: rateDetail
+    trigger: on_subscribe
+    auth_required: false
+    series_id: "<route seriesId>"    # single series, resolved from RateDetailRoute
+    endpoints:
+      - { api_id: fred-series-observations, transport: rest, method: GET }
+    tables:
+      - { name: interest_rate_series, mutation: read_write, columns: [seriesId, date, value, updatedAt] }
+    dtos:
+      - { name: FredObservationsDto, role: response, api_id: fred-series-observations }
+      - { name: InterestRateSeries,  role: domain,   api_id: fred-series-observations }
+    produces_state: content
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 86400
+      key_template: "economic:rates:{seriesId}:365d"
+      shape: list
+    error_paths:
+      - { error_code: config.fred_key_missing, behavior: error_slot, message: "FRED_API_KEY is not configured" }
+      - { error_code: network.offline,         behavior: fallback_cache, fallback_dto: InterestRateSeries }
+      - { error_code: empty.no_observations,   behavior: empty_slot }
+    notes: "Per-series 365-day detail — same Store/endpoint as the list, single key. Unknown ids fall back to a minimal key so the screen still renders."

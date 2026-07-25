@@ -1,0 +1,170 @@
+schema_version: "1.0"
+feature_id: feat-rates
+screen_id: rates
+generated_by: "/idea-import (reverse-engineered from feature/rates commonTest)"
+# Derived 1:1 from the shipped tests:
+#   InterestRatesViewModelTest, InterestRateDetailViewModelTest,
+#   InterestRatesScreenUiTest, InterestRateDetailScreenUiTest, FakeEconomicRatesRepository.
+
+state_coverage:
+  - state: loading
+    screen: rates
+    name: "all four slots start in Loading"
+    setup: "fresh InterestRatesViewModel(FakeRateStreamFactory) before any stream emits"
+    assertions:
+      - "state.fedFunds == ScreenState.Loading"
+      - "state.prime == ScreenState.Loading"
+      - "state.mortgage30Y == ScreenState.Loading"
+      - "state.treasury10Y == ScreenState.Loading"
+      - "rates_scroll root is displayed (four card placeholders render immediately)"
+  - state: content
+    screen: rates
+    name: "a stream Content emission updates only its own slot"
+    setup: "factory.emit(DFF, Content(sampleSeries)) after collectors register"
+    assertions:
+      - "state.fedFunds is ScreenState.Content and holds the emitted series"
+      - "prime / mortgage30Y / treasury10Y remain Loading (rows evolve independently)"
+      - "row renders series.name + current value + RateBadge (1-day delta) + KptSparkline"
+  - state: error
+    screen: rates
+    name: "a stream Error emission surfaces per-row without blanking the screen"
+    setup: "factory.emit(DPRIME, Error(IllegalStateException, isNetworkError=false)) while DFF is Content"
+    assertions:
+      - "state.prime is ScreenState.Error"
+      - "state.fedFunds stays Content; mortgage30Y / treasury10Y stay Loading"
+      - "error slot exposes a retry affordance"
+  - state: error
+    screen: rates
+    variant: fred_key_missing
+    name: "unconfigured FRED key surfaces the 'not configured' message on every row"
+    setup: "FredApiConfig.apiKey = null, no Room cache → store Fetcher throws IllegalStateException"
+    assertions:
+      - "every row is ScreenState.Error carrying 'FRED_API_KEY is not configured …'"
+      - "no crash — the toolkit's promised graceful degradation"
+  - state: empty
+    screen: rates
+    name: "a series with no observations renders the framework Empty slot"
+    setup: "series resolves with observations = [] in the requested window"
+    assertions:
+      - "that row is ScreenState.Empty; siblings unaffected"
+  - state: loading
+    screen: rateDetail
+    name: "detail initial screenState is Loading"
+    setup: "InterestRateDetailViewModel(seriesId=DFF, FakeEconomicRatesRepository)"
+    assertions:
+      - "screenState.first() == ScreenState.Loading"
+      - "rate_detail_root is in the composition tree"
+  - state: content
+    screen: rateDetail
+    name: "detail Content emission surfaces series with area chart + observations table"
+    setup: "repo.state.value = Content(InterestRateSeries with observations)"
+    assertions:
+      - "screenState is ScreenState.Content holding the series"
+      - "HeroCard shows current value + 'Source: FRED'; KptAreaChart + reverse-chron observation rows render"
+
+interactions:
+  - screen: rates
+    component: "rate row card (e.g. DFF)"
+    trigger: tap
+    name: "tapping a rate row navigates to its detail"
+    expected: "nav: rateDetail (params.seriesId)"
+    assertions:
+      - "onSeriesClick(series.seriesId) fires → navigateToRateDetail(seriesId)"
+  - screen: rates
+    component: "refresh-all icon (and freshness indicator)"
+    trigger: tap
+    name: "RefreshAll fans out to every stream"
+    expected: "action: RatesAction.RefreshAll"
+    assertions:
+      - "refreshCount(DFF) == refreshCount(DPRIME) == refreshCount(MORTGAGE30US) == refreshCount(DGS10) == 1"
+  - screen: rates
+    component: "per-row retry (error slot)"
+    trigger: tap
+    name: "per-row retry refreshes only that row"
+    expected: "action: RatesAction.Retry{Row}"
+    assertions:
+      - "RetryFedFunds → refreshCount(DFF)==1, others 0"
+      - "RetryMortgage30Y → refreshCount(MORTGAGE30US)==1, others 0"
+  - screen: rates
+    component: "back button"
+    trigger: tap
+    name: "back pops the stack"
+    expected: "navigate_back (popBackStackSafely)"
+    assertions: ["returns to the caller"]
+  - screen: rateDetail
+    component: "refresh icon / retry"
+    trigger: tap
+    name: "onRefresh / onRetry both refresh the single-series stream"
+    expected: "action: DetailAction.Refresh / DetailAction.Retry → stream.refresh()"
+    assertions:
+      - "refreshTrigger emits once per onRefresh()/onRetry() call"
+
+catalog_and_routing:
+  - name: "RateSeriesCatalog exposes exactly four canonical entries in order"
+    assertions:
+      - "RateSeriesCatalog.all.map{seriesId} == [DFF, DPRIME, MORTGAGE30US, DGS10]"
+      - "every entry requests a 365-day window (days == 365)"
+  - name: "the ViewModel opens one stream per catalog series"
+    assertions:
+      - "opened series ids == {DFF, DPRIME, MORTGAGE30US, DGS10}"
+  - name: "findBySeriesId resolves known ids to the canonical key and null for unknown"
+    assertions:
+      - "findBySeriesId(DFF) === RateSeriesCatalog.FedFunds"
+      - "findBySeriesId(UNKNOWN) == null"
+  - name: "detail resolves known id to canonical key; unknown id falls back to minimal key"
+    assertions:
+      - "seriesId=DFF → vm.seriesKey === RateSeriesCatalog.FedFunds"
+      - "seriesId=UNKNOWN_ID → seriesKey.seriesId == seriesKey.name == 'UNKNOWN_ID' (renders, no crash)"
+
+api_integration:
+  - operation: fred-series-observations
+    name: "successful FRED fetch caches to Room and renders Content"
+    setup: "FredApi.seriesObservations returns observations; Store writes InterestRateSeriesEntity rows"
+    assertions:
+      - "FredObservationsDto.toDomain strips '.' no-data markers + unparseable rows"
+      - "InterestRateSeries.current == last parsed observation value"
+      - "row transitions Loading → Content"
+  - operation: fred-series-observations
+    name: "cold start with warm cache renders immediately then revalidates"
+    setup: "Room has cached rows; network available"
+    assertions:
+      - "SourceOfTruth reader emits cached InterestRateSeries first (stale)"
+      - "Fetcher refreshes from FRED and upserts fresh rows (stale-while-revalidate)"
+  - operation: fred-series-observations
+    name: "offline with cache falls back to stale content"
+    setup: "NetworkMonitor.executeWithRetry fails; Room cache present"
+    assertions:
+      - "cached observations render as (stale) Content; FreshnessIndicator reflects Stale/VeryStale band"
+  - operation: fred-series-observations
+    name: "unconfigured key never fires the request"
+    setup: "FredApiConfig.apiKey = null"
+    assertions:
+      - "Fetcher throws before any HTTP call (no api_key=null request)"
+      - "row surfaces Error 'FRED_API_KEY is not configured …'"
+
+acceptance_criteria:
+  - ref: "AC-RATES-01"
+    name: "Four rates at a glance"
+    given: "a fork with FRED_API_KEY configured"
+    when: "the RM/user opens Interest Rates"
+    then: "Federal Funds, Prime, 30-Year Mortgage and 10-Year Treasury each show current value, 1-day delta badge and a 365-day sparkline"
+  - ref: "AC-RATES-02"
+    name: "Independent row resilience"
+    given: "one FRED series fails while others succeed"
+    when: "the screen renders"
+    then: "only the failed row shows an error+retry; the other three still show their data"
+  - ref: "AC-RATES-03"
+    name: "Graceful unconfigured-key degradation"
+    given: "no FRED_API_KEY and no cache"
+    when: "the screen loads"
+    then: "every row shows 'FRED_API_KEY is not configured …' instead of crashing"
+  - ref: "AC-RATES-04"
+    name: "Offline-first caching"
+    given: "the app has previously fetched rates and is now offline"
+    when: "the screen loads"
+    then: "cached observations render as stale content with a freshness indicator, and refresh re-fetches when back online"
+  - ref: "AC-RATES-05"
+    name: "Per-series drill-down"
+    given: "the rates list is shown"
+    when: "a row is tapped"
+    then: "the per-series detail opens with a 365-day area chart and a full observation table sourced from the same Store5 cache"

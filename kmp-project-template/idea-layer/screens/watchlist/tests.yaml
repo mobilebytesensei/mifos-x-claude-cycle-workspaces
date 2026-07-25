@@ -1,0 +1,140 @@
+schema_version: "1.0"
+feature_id: feat-watchlist
+screen_id: watchlist
+generated_by: "/idea-import (reverse-engineered from core/data/demo/watchlist commonTest — UI tests documented as pending)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SHIPPED tests (real, in-tree):
+#   core/data/.../demo/watchlist/WatchlistReactiveInvalidationTest.kt
+#   core/data/.../demo/watchlist/FakeWatchlistDao.kt (cold-snapshot fake — models
+#     Room 3 alpha05 wasmJs InvalidationTracker NOT self-re-emitting)
+# PENDING tests (documented UI intent — WatchlistViewModel / AddToWatchlistViewModel
+#   screens are not yet in-tree; their cases are enumerated here as the target contract).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Repository / invalidation-bridge contract (SHIPPED) ──
+repository_contract:
+  - name: "watchlist re-emits after add (wasmJs invalidation bridge)"
+    source_test: "WatchlistReactiveInvalidationTest.watchlistReEmitsAfterAdd"
+    status: shipped
+    setup: "WatchlistRepositoryImpl over FakeWatchlistDao (cold-snapshot flows that never self-re-emit)"
+    assertions:
+      - "initial watchlist() emits emptyList()"
+      - "after add('btc') the collector re-emits {btc}"
+      - "after add('eth') the collector re-emits {btc, eth}"
+      - "passes ONLY because reads are daoFlow(WATCHLIST_TABLE){} and writes notifyingWrite(WATCHLIST_TABLE){}"
+  - name: "watchlist re-emits after remove"
+    source_test: "WatchlistReactiveInvalidationTest.watchlistReEmitsAfterRemove"
+    status: shipped
+    setup: "add('btc') then observe"
+    assertions:
+      - "watchlist() emits {btc}"
+      - "after remove('btc') re-emits emptySet()"
+  - name: "contains re-emits when coin added then removed"
+    source_test: "WatchlistReactiveInvalidationTest.containsReEmitsWhenCoinAddedThenRemoved"
+    status: shipped
+    setup: "observe contains('btc')"
+    assertions:
+      - "emits false initially"
+      - "after add('btc') emits true"
+      - "after remove('btc') emits false"
+
+# ── Screen/ViewModel state coverage (PENDING — target contract for the documented UI) ──
+state_coverage:
+  - screen: watchlist
+    state: loading
+    status: pending
+    name: "list starts in Loading before the first membership emission"
+    setup: "WatchlistViewModel created; watchlist() has not emitted yet"
+    assertions: ["screenState initial value is ScreenState.Loading"]
+  - screen: watchlist
+    state: empty
+    status: pending
+    name: "empty watch-list produces Empty screen state"
+    setup: "FakeWatchlistRepository with no tracked coins"
+    assertions: ["screenState emits Loading then ScreenState.Empty"]
+  - screen: watchlist
+    state: content
+    status: pending
+    name: "tracked coins produce Content with value-resolved rows (newest-first)"
+    setup: "watchlist = [bitcoin(newest), ethereum, solana]; crypto stream resolves their CoinMarket values"
+    assertions:
+      - "ui.items.size == 3"
+      - "rows ordered bitcoin, ethereum, solana (addedAtMs DESC)"
+      - "each row carries symbol/name/currentPrice/priceChangePercent24h from the joined CoinMarket"
+  - screen: watchlist
+    state: error
+    status: pending
+    name: "value-resolution offline with non-empty membership surfaces the crypto error/offline arm"
+    setup: "membership non-empty; coinMarketsStream emits NoNetwork"
+    assertions: ["screenState surfaces Error/Network with Retry; last-cached crypto values used as fallback where present"]
+  - screen: add-to-watchlist
+    state: content
+    status: pending
+    name: "star reflects membership (filled when tracked, outline when not)"
+    setup: "AddToWatchlistViewModel(coinId='bitcoin') with bitcoin already tracked; and coinId='dogecoin' untracked"
+    assertions:
+      - "tracked coin → isTracked == true (star_filled)"
+      - "untracked coin → isTracked == false (star_outline)"
+
+interactions:
+  - screen: watchlist
+    component: "coin row (watchlist_row_{coinId})"
+    trigger: short_tap
+    status: pending
+    name: "tapping a tracked coin opens its detail"
+    expected: "nav: CoinDetailRoute(coinId)  # cross-feature crypto"
+    assertions: ["NavController navigates to the crypto coin-detail with the tapped coinId"]
+  - screen: watchlist
+    component: "remove star (watchlist_remove_{coinId})"
+    trigger: tap
+    status: pending
+    name: "tapping the filled star un-tracks the coin"
+    expected: "write: SubmitHandler.submit { repository.remove(coinId) }"
+    assertions:
+      - "onRemove(coinId) removes the row from personal_watchlist"
+      - "the reactive watchlist() stream re-emits without it"
+  - screen: add-to-watchlist
+    component: "star toggle (watchlist_star_{coinId})"
+    trigger: tap
+    status: pending
+    name: "toggling the star adds/removes membership via SubmitHandler"
+    expected: "untracked → repository.add(coinId); tracked → repository.remove(coinId); SubmitState Submitting → Submitted"
+    assertions:
+      - "add path inserts a row with addedAtMs≈now; contains() flips to true; star fills"
+      - "remove path deletes the row; contains() flips to false; star outlines"
+      - "re-tapping is idempotent (add REPLACEs, remove no-ops)"
+
+api_integration:
+  - operation: add-to-watchlist
+    status: shipped
+    name: "add is idempotent — re-add REPLACEs and refreshes addedAtMs"
+    source_test: "WatchlistReactiveInvalidationTest (add path) + FakeWatchlistDao insert(REPLACE)"
+    assertions: ["adding an already-tracked coin does not duplicate the row"]
+  - operation: remove-from-watchlist
+    status: shipped
+    name: "remove is idempotent — no-op if absent"
+    source_test: "WatchlistReactiveInvalidationTest.watchlistReEmitsAfterRemove"
+    assertions: ["removing a non-tracked coin is a safe no-op"]
+
+acceptance_criteria:
+  - ref: "AC-WATCHLIST-01"
+    name: "Track coins locally"
+    given: "a user browsing crypto coins"
+    when: "they tap the star on a coin (Coin Markets row or Coin Detail)"
+    then: "the coinId is persisted to the local personal_watchlist (addedAtMs=now), the star fills, and nothing leaves the device"
+  - ref: "AC-WATCHLIST-02"
+    name: "View the watchlist with live values"
+    given: "a user with tracked coins"
+    when: "they open the Watchlist screen"
+    then: "each tracked coin renders newest-added-first with its live symbol/name/price/24h-change resolved from the crypto network store; an empty watch-list shows an Empty state + CTA"
+  - ref: "AC-WATCHLIST-03"
+    name: "Un-track a coin"
+    given: "a tracked coin"
+    when: "the user taps the filled star (on the list or the coin surface)"
+    then: "the coin is removed from personal_watchlist and the reactive list/star re-render without it"
+  - ref: "AC-WATCHLIST-04"
+    name: "Reactive on wasmJs"
+    given: "the app running on the wasmJs target (Room 3 alpha05)"
+    when: "a coin is added or removed"
+    then: "long-lived watchlist()/contains() collectors re-emit (via the daoFlow/notifyingWrite invalidation bridge), not just on the initial subscription"

@@ -1,0 +1,98 @@
+# data-flow.yaml — per-screen local data flows for feature/alerts (Price Alerts).
+# OFFLINE_LOCAL_ONLY: every entry is a Room read/write on the `alerts` table — NO
+# network, NO remote endpoint, NO auth. Source: AlertsStore (Store5 offline store,
+# StoreFactory.createOfflineStore) → AlertsRepository.
+sibling: data-flow
+schema_version: "2.2.0"
+feature_id: feat-alerts
+
+store:
+  name: AlertsStore
+  archetype: OFFLINE_LOCAL_ONLY
+  factory: StoreFactory.createOfflineStore
+  registry_key: "AppStoreRegistry.Alerts (store(\"alerts\"))"
+  key: Unit
+  value: "List<AlertEntity>"
+  source_of_truth: "Room alerts (AlertDao)"
+  remote_fetcher: none
+  invalidation: "core-base/database daoFlow(\"alerts\"){} + notifyingWrite(\"alerts\"){} (absorbs Room 3 alpha05 wasmJs async-fan-out gap; the AlertsReactiveInvalidationTest is the regression guard)"
+
+entries:
+  # ── alerts-list: reactive read of the full alert list ──
+  - screen_id: alerts-list
+    trigger: on_mount
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: alerts
+        mutation: read
+        columns: [id, symbol, targetPrice, conditionAbove, createdAt]
+        order: "createdAt DESC"
+    dtos:
+      - { name: PriceAlert, role: response, api_id: observe-all-alerts }
+    read_path: "alertsStore.stream(StoreReadRequest.cached(Unit, refresh=false)) → filterIsInstance<Data> → map { it.toPriceAlert() }"
+    produces_state: content            # empty list → empty state
+    cache:
+      strategy: source_of_truth_only   # Store5 offline — Room IS the SoT, no TTL, always FRESH
+      ttl_seconds: 0
+      key_template: "alerts:all"
+    error_paths: []                    # local read — no network error class
+    notes: >-
+      Ships EMPTY — no demo alerts are seeded (alerts are user-configured). First run →
+      ScreenState.Empty. DataFreshness.FRESH unconditionally (no network to be STALE about).
+      ⚠ Round-trip is lossy: toPriceAlert() rebuilds direction from conditionAbove
+      (true→ABOVE, false→BELOW) and hardcodes enabled=true — PCT_CHANGE and a disabled
+      flag do not survive persistence.
+
+  # ── alert-addedit: local write (upsert) via the DraftSubmitHandler pipeline ──
+  - screen_id: alert-addedit
+    trigger: on_submit
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: alerts
+        mutation: upsert
+        columns: [id, symbol, targetPrice, conditionAbove, createdAt]
+    dtos:
+      - { name: PriceAlert, role: request, api_id: submit-alert }
+    produces_state: submitted
+    write_pipeline:
+      handler: DraftSubmitHandler       # BaseDraftMutationViewModel, multi-formKey
+      form_key: price_alert             # named verbatim in AlertsRepository doc comment
+      unique_key: "{alertId} ?: new"
+      auto_save_draft: true
+      draft_table: framework_submit_drafts
+      outbox_qualifier: "OutboxQualifiers.PriceAlert (named \"outbox.priceAlert\")"
+      outbox: "RoomSubmitOutbox(serializer = PriceAlert.serializer())"
+      syncer: "OfflineSubmitSyncer<PriceAlert, PriceAlert> (createdAtStart, retries pending drafts on NetworkMonitor online)"
+      submit_target: "repository.submitAlert(payload) → notifyingWrite(\"alerts\") { AlertDao.upsert(entity) }  # local Room commit — no network"
+      states: [Idle, Submitting, Submitted, Failed]
+    error_paths:
+      - error_code: categorized.Network   # simulated failure — real device commits locally without failing
+        behavior: auto_save_draft         # silent draft → 'Saved offline — will sync when online.'; DraftResumeBanner on next open
+        retry: OfflineSubmitSyncer         # commits pending drafts serially on reconnect via the same submit block
+    notes: >-
+      The 'offline' path is a framework showcase — the real submit is a local commit that
+      does not fail on a real device. PriceAlert is @Serializable precisely so the outbox
+      can JSON-encode an unsent payload into framework_submit_drafts.
+
+  # ── alerts-list: local write (delete) ──
+  - screen_id: alerts-list
+    trigger: on_delete
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: alerts
+        mutation: delete
+        filter: { id: "{alertId}" }
+    dtos:
+      - { name: PriceAlert, role: request, api_id: delete-alert }
+    produces_state: content            # reactive stream re-emits the list without the row
+    cache: { strategy: source_of_truth_only, ttl_seconds: 0 }
+    error_paths: []
+    notes: "repository.deleteAlert(id) → notifyingWrite(\"alerts\") { AlertDao.deleteById(id) }; deleteById is a no-op if the id is absent."
+
+# NOTE: feature/alerts wires NO notification scheduler. Only feature/bills
+# (core/platform notification/bill/BillReminderScheduler) schedules device
+# notifications — an "alert" here is a persisted threshold row, never a push.
+side_effects: none

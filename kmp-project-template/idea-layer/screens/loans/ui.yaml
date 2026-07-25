@@ -1,0 +1,388 @@
+schema_version: "1.0"
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/loans — B1 Loan Tracker (reverse-engineered from source).
+# Personal-loan tracker: principal / EMI / due-dates, tracked LOCALLY only.
+# No backend, no network — Room + Store5 (OFFLINE_LOCAL_ONLY archetype).
+#
+# One feature, three screens (declared in screens[]):
+#   loans-list   → PersonalLoansListScreen (paging-list, read side)
+#   loan-detail  → LoanDetailScreen        (detail, read side, LOAD_ONCE)
+#   loan-addedit → AddOrEditLoanScreen      (input form, write side, DraftSubmitHandler)
+#
+# GROUNDED: only screens / actions / fields that exist in source are represented.
+# ─────────────────────────────────────────────────────────────────────────────
+screen_id: loans-list           # primary entry screen of the feature
+feature: feat-loans
+archetype: paging-list
+platforms: [android, ios, desktop, web]
+states: [loading, content, empty, error]
+# Data-backed: the list streams from the Room-backed LoansStore, so the screen
+# opens in loading until observeAll() first emits (then content / empty).
+initial_state: loading
+
+business_logic:
+  kind: crud
+  processing_kind: reactive_local
+  library_refs: [store5, room]
+  external_library_refs: [store5]
+  description: >-
+    Personal loan tracker with purely local persistence — NO backend, NO network.
+    Reads flow reactively from a Room-backed Store5 OFFLINE_LOCAL_ONLY store
+    (LoansStore, key=Unit → List<LoanEntity>) surfaced through LoanRepository
+    (observeAll / observeById / observeTotalMonthlyEmi / observeTotalPrincipalRemaining
+    / observeCount). Writes (create / edit / delete) go through repository.upsert /
+    repository.delete against the banking_loans Room table. The add/edit form wraps its
+    local upsert in the framework DraftSubmitHandler (multi-formKey, formKey="loan",
+    uniqueKey=loanId|"new") so the Saving… / Saved ✓ / Saved-offline UX applies even
+    though the "submit" is a local commit with no remote call. Monthly EMI is computed
+    from (principal, annualRatePercent, tenureMonths) via the standard amortizing formula.
+
+# The Room table backing every read/write in this feature.
+data_source:
+  kind: local_room
+  store: LoansStore                    # core/store/demo/banking/impl/LoansStore.kt
+  store_archetype: OFFLINE_LOCAL_ONLY
+  repository: LoanRepository           # core/data/demo/banking/
+  table: banking_loans                 # core/database/demo/banking/entity/LoanEntity.kt
+  dto: Loan                            # core/model/demo/banking/Loan.kt
+  remote: none
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SCREENS
+# ═════════════════════════════════════════════════════════════════════════════
+screens:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 1) PersonalLoansListScreen — the loans list (paging-list, read side)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: loans-list
+    composable: PersonalLoansListScreen
+    viewmodel: PersonalLoansListViewModel
+    route: PersonalLoansListRoute
+    archetype: paging-list
+    states: [loading, content, empty, error]
+    business_logic:
+      kind: list
+      processing_kind: reactive_local
+      library_refs: [store5, room]
+      description: >-
+        Combines observeAll() + observeTotalMonthlyEmi() + observeTotalPrincipalRemaining()
+        into one LoansListUiState projected to ScreenState. Empty portfolio → Empty;
+        any loans → Content. A summary HeroCard shows total outstanding, active-loan count,
+        and total monthly EMI; each loan renders as a LoanRowCard (name, kind chip, remaining,
+        monthly EMI, payoff-progress bar, next-due). Rows are sorted soonest-due-first by the
+        DAO (ORDER BY nextDueDate ASC, createdAtMs ASC).
+    shell:
+      top_app_bar:
+        enabled: true
+        title: "Personal Loans"        # screens_loans_list_title
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"          # screens_loans_list_back_cd
+            on_click:
+              action: "navigate_back"
+              action_contract:
+                effect: navigate
+                description: "popBackStackSafely() to the previous destination (Home dashboard)."
+      fab:
+        type: extended_fab
+        label: "New loan"               # screens_loans_list_new_fab_text
+        icon: add
+        test_tag: loans_list_fab
+        on_click:
+          action: "navigate"
+          target: "loan-addedit"
+          params: { loanId: null }
+          action_contract:
+            effect: navigate
+            description: "Navigate to AddOrEditLoanRoute(loanId=null) to add a brand-new loan."
+    components:
+      - id: summary_hero
+        type: hero_card
+        description: "Totals tile: total outstanding (sum principalRemaining), active-loan count, total monthly EMI (sum monthlyPayment)."
+        binds:
+          - { field: totalPrincipalRemaining, from: observeTotalPrincipalRemaining }
+          - { field: loans.size, label: "active loan(s)" }   # screens_loans_list_active_count_single|plural
+          - { field: totalMonthlyEmi, from: observeTotalMonthlyEmi }
+      - id: loan_row
+        type: list_item
+        variant: loan_row_card
+        test_tag: "loans_list_row_{loan.id}"
+        repeat_for: loans
+        description: "Per-loan card: name, LoanKind status chip, principalRemaining, monthlyPayment, payoff-progress bar, next-due."
+        on_click:
+          action: "navigate"
+          target: "loan-detail"
+          params: { loanId: "{loan.id}" }
+          action_contract:
+            effect: read
+            reads_from:
+              - { table: banking_loans, dto: Loan }
+            description: "Short-tap a row → navigate to LoanDetailRoute(loanId); the detail screen reads the single Loan by id from the repository."
+        on_long_press:
+          action: "confirm_delete"
+          action_contract:
+            effect: transform_state
+            description: "Long-press sets pendingDelete=loan → opens the delete-confirmation AlertDialog for this row (local UI state only)."
+      - id: delete_dialog_confirm
+        type: text_button
+        label: "Delete"                 # screens_loans_list_delete_confirm
+        test_tag: loans_list_delete_confirm
+        visible_when: "pendingDelete != null"
+        on_click:
+          action: "delete_loan"
+          params: { id: "{pendingDelete.id}" }
+          action_contract:
+            effect: write
+            writes_to:
+              - { table: banking_loans, dto: Loan, op: delete }
+            description: "Confirm → viewModel.onDeleteLoan(id) dispatches LoansListAction.DeleteLoan → repository.delete(id) removes the row from banking_loans; the reactive stream re-emits without it."
+      - id: delete_dialog_cancel
+        type: text_button
+        label: "Cancel"                 # screens_loans_list_delete_cancel
+        visible_when: "pendingDelete != null"
+        on_click:
+          action: "dismiss_dialog"
+          action_contract:
+            effect: transform_state
+            description: "Set pendingDelete=null → dismiss the delete dialog with no mutation."
+    state_model:
+      viewmodel_base: "BaseViewModel<Unit, Nothing, LoansListAction>"
+      screen_state: "StateFlow<ScreenState<LoansListUiState>>"
+      initial: ScreenState.Loading
+      states:
+        loading:
+          when: "streams have not yet emitted"
+          render: "ScreenContent Loading (framework default skeleton/spinner)"
+        content:
+          when: "observeAll() emits a non-empty list"
+          render: "summary HeroCard + LazyColumn of LoanRowCard, soonest-due first"
+          data: LoansListUiState
+        empty:
+          when: "observeAll() emits an empty list"
+          render: "framework ScreenState.Empty default (no loans yet)"
+        error:
+          when: "ScreenContent error slot (onRetry is a no-op — local source rarely errors)"
+          render: "framework ScreenContent error surface"
+      ui_state:
+        name: LoansListUiState
+        fields:
+          - { name: loans, type: "List<Loan>" }
+          - { name: totalMonthlyEmi, type: Double }
+          - { name: totalPrincipalRemaining, type: Double }
+      actions:
+        - { name: "LoansListAction.DeleteLoan", params: { id: String }, effect: "repository.delete(id)" }
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 2) LoanDetailScreen — single-loan detail (detail, read side, LOAD_ONCE)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: loan-detail
+    composable: LoanDetailScreen
+    viewmodel: LoanDetailViewModel
+    route: LoanDetailRoute
+    route_args: { loanId: String }
+    archetype: detail
+    states: [loading, content, empty]
+    business_logic:
+      kind: crud
+      processing_kind: reactive_local
+      library_refs: [store5, room]
+      description: >-
+        Observes a single loan by id (repository.observeById(loanId)) → Content when present,
+        Empty after delete / unknown id. Also exposes the LOAD_ONCE archetype
+        (loadOnceScreenState: transformWhile-terminated on first Content so background Room
+        writes never clobber in-progress edits) and the ScreenWithMutationStream seam
+        (combinedState fuses the read ScreenState with a submitHandler write pipeline;
+        submitEdit(loan) → repository.upsert). Renders principal remaining, original principal,
+        monthly payment, total paid, annual rate, next due date, tenure, and a tenure-progress bar.
+    shell:
+      top_app_bar:
+        enabled: true
+        title: "Loan Details"           # screens_loans_detail_title
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"          # screens_loans_detail_back_cd
+            on_click:
+              action: "navigate_back"
+              action_contract: { effect: navigate, description: "popBackStackSafely() to the loans list." }
+      test_tag: loan_detail_scaffold
+    components:
+      - id: kind_chip
+        type: status_chip
+        description: "LoanKind label chip (Personal / Mortgage / Auto / Student / Business / Other), StatusChipIntent.Info."
+        binds: [{ field: kind }]
+      - id: principal_remaining_hero
+        type: hero_card
+        description: "AmountDisplay of principalRemaining + '{monthsRemaining} months remaining' supporting line."
+        binds: [{ field: principalRemaining }, { field: monthsRemaining }]
+      - id: metrics_card
+        type: app_card
+        description: "MetricRows: original principal, monthly payment (EMI), total paid, annual rate %, next due date, tenure (months), + LinearProgressIndicator tenure-progress."
+        binds:
+          - { field: principal }
+          - { field: monthlyPayment }
+          - { field: totalPaid }
+          - { field: annualRatePercent }
+          - { field: nextDueDate }
+          - { field: tenureMonths }
+          - { field: monthsRemaining }
+      - id: edit_button
+        type: button
+        label: "Edit"                   # screens_loans_detail_edit_button
+        on_click:
+          action: "navigate"
+          target: "loan-addedit"
+          params: { loanId: "{loan.id}" }
+          action_contract:
+            effect: navigate
+            description: "Navigate to AddOrEditLoanRoute(loanId) to edit this loan."
+      - id: schedule_button
+        type: outlined_button
+        label: "Schedule"               # screens_loans_detail_schedule_button
+        on_click:
+          action: "navigate"
+          target: "amortization-schedule"     # feature/amortization (sibling feature — cross-feature nav)
+          params: { loanId: "{loan.id}" }
+          action_contract:
+            effect: navigate
+            description: "Navigate to AmortizationScheduleRoute(loanId) — the B5 amortization feature (separate module, not part of feature/loans)."
+      - id: delete_button
+        type: outlined_button
+        label: "Delete"                 # screens_loans_detail_delete_button
+        on_click:
+          action: "confirm_delete"
+          action_contract:
+            effect: transform_state
+            description: "showDeleteDialog=true → opens the delete-confirmation AlertDialog."
+      - id: delete_dialog_confirm
+        type: text_button
+        label: "Delete"                 # screens_loans_detail_delete_confirm
+        visible_when: "showDeleteDialog"
+        on_click:
+          action: "delete_loan"
+          action_contract:
+            effect: write
+            writes_to:
+              - { table: banking_loans, dto: Loan, op: delete }
+            description: "viewModel.onDelete() → LoanDetailAction.Delete → repository.delete(loanId); then popBackStackSafely() to the list."
+      - id: delete_dialog_cancel
+        type: text_button
+        label: "Cancel"                 # screens_loans_detail_delete_cancel
+        visible_when: "showDeleteDialog"
+        on_click:
+          action: "dismiss_dialog"
+          action_contract: { effect: transform_state, description: "showDeleteDialog=false — no mutation." }
+    state_model:
+      viewmodel_base: "BaseViewModel<Unit, Nothing, LoanDetailAction>"
+      loanId_injection: "Koin parametersOf(loanId); koinViewModel(key = loanId)"
+      streams:
+        - { name: screenState, type: "StateFlow<ScreenState<Loan>>", note: "continuous reactive — observeById(loanId)" }
+        - { name: loadOnceScreenState, type: "StateFlow<ScreenState<Loan>>", note: "LOAD_ONCE — transformWhile stops after first Content" }
+        - { name: combinedState, type: "StateFlow<CombinedState<Loan, Loan>>", note: "ScreenWithMutationStream: read ScreenState + write SubmitState fused" }
+      initial: ScreenState.Loading
+      states:
+        loading: { when: "observeById not yet emitted", render: "ScreenContent Loading" }
+        content: { when: "loan != null", render: "detail body", data: Loan }
+        empty:   { when: "loan == null (unknown id or after delete)", render: "ScreenState.Empty" }
+      actions:
+        - { name: "LoanDetailAction.Delete", effect: "repository.delete(loanId)" }
+      write_api:
+        - { name: "submitEdit(loan)", effect: "editSubmitHandler.submit { repository.upsert(loan) }", note: "ScreenWithMutationStream showcase" }
+        - { name: "dismissEditResult()", effect: "editSubmitHandler.reset()" }
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 3) AddOrEditLoanScreen — create/edit form (input, write side, DraftSubmitHandler)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: loan-addedit
+    composable: AddOrEditLoanScreen
+    viewmodel: EditLoanViewModel
+    route: AddOrEditLoanRoute
+    route_args: { loanId: "String?" }   # null → add; non-null → edit
+    archetype: input
+    states: [content, submitting, submitted, failed]
+    business_logic:
+      kind: crud
+      processing_kind: draft_mutation
+      library_refs: [store5, room]
+      external_library_refs: [store5]
+      description: >-
+        The canonical multi-formKey BaseDraftMutationViewModel showcase. loanId==null → add
+        (uniqueKey="new"); loanId!=null → edit (form hydrated via repository.getById(loanId)).
+        formKey="loan" groups every loan draft; uniqueKey partitions per-loan so 3 concurrent
+        offline edits coexist as 3 independent PENDING drafts in framework_submit_drafts
+        (OfflineSubmitSyncer commits them serially on reconnect). onSubmit() validates the form,
+        computes monthlyPayment via computeMonthlyEmi, builds a Loan payload, and performs
+        performSubmit → repository.upsert(payload) (purely local). A live ComputedPreviewCard
+        shows monthly EMI + total interest as the user types. autoSaveDraft=true — a failed
+        (categorized-Network) submit silently auto-saves the draft (Saved-offline UX).
+    shell:
+      top_app_bar:
+        enabled: true
+        title_add: "Add Loan"           # screens_loans_add_title
+        title_edit: "Edit Loan"         # screens_loans_edit_title
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"          # screens_loans_addedit_back_cd
+            on_click:
+              action: "navigate_back"
+              action_contract: { effect: navigate, description: "popBackStackSafely()." }
+      test_tag: addedit_loan_scaffold
+    components:
+      - { id: name_field, type: text_field, label: "Loan name", binds: [{ field: name }], on_change: onNameChange }
+      - { id: kind_dropdown, type: dropdown, label: "Kind", options: [Personal, Mortgage, Auto, Student, Business, Other], binds: [{ field: kind }], on_change: onKindChange }
+      - { id: principal_field, type: decimal_field, label: "Original principal", binds: [{ field: principal }], on_change: onPrincipalChange, note: "for add-mode, keeps principalRemaining in sync until user edits it" }
+      - { id: principal_remaining_field, type: decimal_field, label: "Principal remaining", binds: [{ field: principalRemaining }], on_change: onPrincipalRemainingChange }
+      - { id: annual_rate_field, type: decimal_field, label: "Annual interest rate (%)", binds: [{ field: annualRatePercent }], on_change: onAnnualRatePercentChange }
+      - { id: tenure_field, type: number_field, label: "Tenure (months)", binds: [{ field: tenureMonths }], on_change: onTenureMonthsChange, note: "for add-mode, keeps monthsRemaining in sync until user edits it" }
+      - { id: months_remaining_field, type: number_field, label: "Months remaining", binds: [{ field: monthsRemaining }], on_change: onMonthsRemainingChange }
+      - { id: next_due_date_field, type: date_field, label: "Next due date (YYYY-MM-DD)", binds: [{ field: nextDueDate }], on_change: onNextDueDateChange, note: "ISO text input; forks can swap a Material date picker" }
+      - { id: total_paid_field, type: decimal_field, label: "Total paid to date", binds: [{ field: totalPaid }], on_change: onTotalPaidChange }
+      - id: computed_preview
+        type: hero_card
+        description: "Read-only live preview: previewMonthlyEmi (computeMonthlyEmi) + 'Total interest: {previewTotalInterest}'."
+        binds: [{ field: previewMonthlyEmi }, { field: previewTotalInterest }]
+      - id: submit_button
+        type: button
+        label_add: "Save Loan"          # screens_loans_add_submit
+        label_edit: "Update Loan"       # screens_loans_edit_submit
+        enabled_when: "form.isValid && submit !is Submitting"
+        on_click:
+          action: "submit"
+          action_contract:
+            effect: write
+            writes_to:
+              - { table: banking_loans, dto: Loan, op: upsert }
+            description: >-
+              viewModel.onSubmit() → validate → compute monthlyPayment → build Loan payload
+              (id = loanId ?: randomId()) → BaseDraftMutationViewModel.onSubmit → performSubmit
+              → repository.upsert(loan) into banking_loans. On Submitted → onSaved() pops back.
+      - id: submit_status_line
+        type: status_text
+        description: "SubmitState surface — Saving… / Saved ✓ / 'Saved offline — will sync when online.' / 'Save failed: {msg}' with Retry + Dismiss buttons."
+        states: [Idle, Submitting, Submitted, Failed]
+      - { id: retry_button, type: button, label: "Retry", visible_when: "submit is Failed", on_change: onRetry, action_contract: { effect: write, description: "re-attempt repository.upsert" } }
+      - { id: dismiss_button, type: button, label: "Dismiss", visible_when: "submit is Failed", on_change: onDismissResult, action_contract: { effect: transform_state, description: "reset submit + clear form" } }
+    state_model:
+      viewmodel_base: "BaseDraftMutationViewModel<Loan, Loan>(formKey=\"loan\", uniqueKey=loanId ?: \"new\", autoSaveDraft=true)"
+      loanId_injection: "Koin parametersOf(loanId); koinViewModel(key = loanId)"
+      form_state:
+        name: LoanFormState
+        fields:
+          - { name: name, type: String, default: "" }
+          - { name: kind, type: LoanKind, default: PERSONAL }
+          - { name: principal, type: Double, default: 0.0 }
+          - { name: principalRemaining, type: Double, default: 0.0 }
+          - { name: annualRatePercent, type: Double, default: 0.0 }
+          - { name: tenureMonths, type: Int, default: 0 }
+          - { name: monthsRemaining, type: Int, default: 0 }
+          - { name: nextDueDate, type: LocalDate, default: "2026-01-01" }
+          - { name: totalPaid, type: Double, default: 0.0 }
+        derived:
+          - { name: isValid, expr: "name.isNotBlank() && principal > 0 && tenureMonths > 0 && annualRatePercent >= 0" }
+          - { name: previewMonthlyEmi, expr: "computeMonthlyEmi(principal, annualRatePercent, tenureMonths)" }
+          - { name: previewTotalInterest, expr: "computeTotalInterest(principal, annualRatePercent, tenureMonths)" }
+      submit_state: "SubmitState { Idle | Submitting | Submitted | Failed(draftSaved) }"
+      submit_target: "repository.upsert(payload)  # local Room commit — no network"

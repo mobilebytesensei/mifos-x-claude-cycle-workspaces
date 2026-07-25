@@ -1,0 +1,86 @@
+schema_version: '1.0'
+screen_id: watchlist
+feature_id: feat-watchlist
+archetype: list
+flow: flow-watchlist-track
+title: Personal Crypto Watchlist
+purpose: >-
+  Let a user keep a PRIVATE, device-local list of crypto coins to track. The watch-list
+  membership (which coins) is persisted LOCALLY ONLY — Room `personal_watchlist`, coinId +
+  addedAtMs, via a raw DAO wrapped in the core-base/database invalidation bridge (NO Store5,
+  NO remote sync). Live coin VALUES (name, symbol, price, 24h change) are NOT stored; they
+  are resolved on-demand by joining the tracked coinIds against feature/crypto's
+  CryptoRepository (a Store5 NETWORK_WITH_CACHE store over CoinGecko). Add/remove is a
+  one-tap star toggle backed by the framework SubmitHandler (the "input simple" pattern).
+status: reverse-engineered
+implementation_status: backend-shipped-ui-pending
+source_of_truth: source            # imported FROM shipped source, not FROM idea-layer
+quality_score: 88
+last_modified: '2026-07-25'
+
+# ── Money Toolkit showcase note ──
+showcase:
+  name: "Personal Watchlist"
+  patterns_demonstrated:
+    - "SubmitHandler 'input simple' — the canonical single-formKey simple-mutation seam (add/remove), distinct from the multi-draft DraftSubmitHandler used by Loans/Bills"
+    - "OFFLINE_LOCAL_ONLY via a RAW Room DAO (no Store5) + core-base/database daoFlow{}/notifyingWrite{} invalidation bridge — the wasmJs Room-3-alpha05 fan-out workaround"
+    - "Reactive membership: contains(coinId): Flow<Boolean> driving a filled/outline star"
+    - "Local-membership × network-value BLEND — tracked coinIds joined against feature/crypto's Store5 streams for live data (a watch-list that stores IDs, not snapshots)"
+  store_archetype: OFFLINE_LOCAL_ONLY
+  note: >-
+    At HEAD the feature/watchlist module contains only a build/ dir — the data layer
+    (WatchlistRepository + WatchlistDao + WatchlistEntity) is shipped and DI-wired
+    (AppDatabase v5→v6 adds `personal_watchlist`), and the UI (WatchlistScreen +
+    AddToWatchlistStar) is documented verbatim in the repository/entity KDoc but not yet
+    in-tree. This sibling set models that documented UI intent; screens carry status: pending.
+
+components:
+  - top_app_bar
+  - lazy_column
+  - watchlist_coin_row
+  - icon_button          # star (filled/outline) — add/remove toggle
+  - amount_display       # currentPrice
+  - money_text
+  - empty_state
+
+screens_summary:
+  - { id: watchlist,        composable: WatchlistScreen,     viewmodel: WatchlistViewModel,        states: "loading, content, empty, error", status: pending }
+  - { id: add-to-watchlist, composable: AddToWatchlistStar,  viewmodel: AddToWatchlistViewModel,   states: "content, submitting, submitted, failed", status: pending, embedded: true }
+
+user_stories:
+  - "As a user, I want to star coins I care about so I can track them without scrolling the full market list."
+  - "As a user, I want my watchlist to show each coin's live price and 24h change at a glance."
+  - "As a user, I want to un-star a coin to remove it, from either the coin surface or the watchlist itself."
+  - "As a user, I want my watchlist kept private on my device — no account, no sync."
+
+metrics:
+  - "coins_added / coins_removed"
+  - "avg_watchlist_size_per_user"
+  - "watchlist_opens"
+  - "watchlist_row_to_detail_taps"
+
+data_model:
+  entity: WatchlistEntity
+  table: personal_watchlist
+  fields:
+    - { name: coinId, type: String, note: "CoinGecko coin id (e.g. 'bitcoin', 'ethereum'). Primary key." }
+    - { name: addedAtMs, type: Long, note: "epoch millis when added — default sort key (DESC = newest first)" }
+  ui_projection:
+    dto: WatchlistItem
+    fields: [coinId, addedAtMs]
+  value_join:
+    from: "feature/crypto CoinMarket (id, symbol, name, currentPrice, priceChangePercent24h, ...)"
+    on: "WatchlistItem.coinId == CoinMarket.id"
+
+repository_api:
+  - "watchlist(): Flow<List<WatchlistItem>>  — reactive, newest-first"
+  - "contains(coinId): Flow<Boolean>         — reactive membership (star state)"
+  - "add(coinId)    — suspend, idempotent (REPLACE, refreshes addedAtMs)"
+  - "remove(coinId) — suspend, idempotent (no-op if absent)"
+
+notes:
+  - "The watch-list stores ONLY coin identifiers — never a price/name snapshot; values are always live via CryptoRepository. This keeps the local table tiny and never stale."
+  - "This is NOT a Store5 store. The entity KDoc is explicit: 'Local-only: no Store5 caching layer, no remote sync.' Reads/writes go direct to WatchlistDao, wrapped in the invalidation bridge for wasmJs correctness."
+  - "The add/remove write is the framework 'input simple' SubmitHandler showcase — the same submit seam a remote mutation uses, but the block is a local Room commit; the SubmitState.Failed arm never trips on-device."
+  - "Row short-tap and the coin-detail destination are cross-feature (feature/crypto); CryptoNavigation.kt notes the watchlist + coin-detail destinations are designed to nest in the crypto graph."
+  - "No auth, no backend, no remote sync. A fork wanting cross-device watchlist sync swaps the repository write for a remote call with zero ViewModel change (SubmitHandler seam already in place)."
