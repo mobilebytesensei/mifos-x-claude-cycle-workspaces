@@ -1,6 +1,6 @@
 <!-- source: screens/m07-accounting/docs.yaml -->
-<!-- source_hash: 17d4c08e31204a77c54be91948d1a5d7dd8aae541d6badb79168bb26ed2e00c1 -->
-<!-- generated: 2026-07-21T17:34:03Z -->
+<!-- source_hash: ui=72cf6ba5b3aa docs=97133d80a1f2 flow=63a038ba76b8 api=183eee579c90 -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: 2.2.0 -->
 <!-- generated_from_contract_version: 2.2.0 -->
 <!-- prior_version: — -->

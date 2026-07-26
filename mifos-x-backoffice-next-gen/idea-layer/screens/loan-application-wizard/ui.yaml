@@ -1,0 +1,187 @@
+schema_version: "1.0"
+screen_id: loan-application-wizard
+feature: loan-application-wizard
+name: "Loan Application Wizard (product → terms → schedule → review)"
+archetype: form
+status: draft
+module: m04-loan-portfolio
+initial_state: loading
+
+# Multi-step new-loan wizard drilled into from the M04 loan list. Fields render from the
+# Fineract loan template; the schedule is previewed before submit; submit routes through
+# the offline outbox and lands on the new loan's detail.
+
+requires_permission: ["CREATE_LOAN"]
+
+consumes_capabilities:
+  - has_offline_cache
+  - has_ui
+  - requires_auth
+
+business_logic:
+  kind: form
+  processing_kind: on_demand
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "core/store.LoanTemplateStore"
+    - "core/permissions.PermissionEvaluator"
+    - "core/database.DraftDao"
+  required_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/permissions
+    - core/network
+  description: >-
+    Renders a multi-step loan application from GET /v1/loans/template (products, min/max principal, charge and
+    collateral options), previews the amortised schedule via ?command=calculateLoanSchedule, validates each
+    step, and submits POST /v1/loans through the offline outbox with a durable idempotency key.
+  description_author: claude-via-idea-plan-add
+  description_authored_at: "2026-07-25T00:00:00Z"
+
+state_model:
+  fields:
+    - name: template
+      type: "LoanTemplate?"
+      description: "The Fineract loan template driving allowed products, principal/term bounds, charges and defaults."
+    - name: form
+      type: "LoanApplicationForm"
+      description: "Captured values across steps: product, principal, term, interest, disbursement date, charges, collateral."
+    - name: step
+      type: "WizardStep"
+      description: "Product | Charges | SchedulePreview | Review."
+    - name: schedulePreview
+      type: "List<RepaymentPeriod>"
+      description: "The previewed amortised schedule from calculateLoanSchedule."
+    - name: uiState
+      type: "LoanWizardScreenState"
+      description: "Loading | Content | Empty | Error."
+
+states:
+  loading:
+    description: "Loading the loan product template (cache-first) for the selected client; shows a form shimmer."
+  content:
+    description: >-
+      The active wizard step form (Product & terms · Charges/collateral · Schedule preview · Review) with a
+      stepper, per-field validation from the template, and Back/Next controls. The Schedule step shows the
+      previewed installments. The Review step's Submit enqueues the application. Draftable offline.
+  empty:
+    description: "The client is ineligible for any loan product (no template products returned); shows a guidance panel."
+  error:
+    description: "The template failed to load, or schedule-calc/submit failed hard with no fallback; shows the error + Retry."
+
+components:
+  - id: lw_stepper
+    type: stepper
+    label: "{strings.loanwiz_stepper}"
+    testTag: "loan-application-wizard_stepper"
+
+  - id: lw_field
+    type: dynamic_form_field
+    label: "{strings.loanwiz_field}"
+    testTag: "loan-application-wizard_field"
+    on_click:
+      action: field_change
+      target: loan-application-wizard
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Update a captured form value and re-run the template's validation rules (min/max principal, allowed term, required charges) so Next is enabled only when the step is valid; a pure in-VM state update."
+        produces_state: content
+        invalidates:
+          - form
+        action_contract_hash: "sha256:lw-field-change"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: lw_preview_schedule
+    type: button
+    label: "{strings.loanwiz_preview_schedule}"
+    accessibility_label: "Preview the repayment schedule for the entered loan terms"
+    testTag: "loan-application-wizard_preview_schedule"
+    variant: secondary
+    description: "Shown on the terms/charges steps; computes the amortised schedule before commit."
+    on_click:
+      action: preview_schedule
+      target: loan-application-wizard
+      state: content
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        description: "Post the captured terms to POST /v1/loans?command=calculateLoanSchedule to compute the amortised repayment schedule so the officer can review installments, interest and fees before submitting the application."
+        produces_state: content
+        action_contract_hash: "sha256:lw-preview-schedule"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: lw_next
+    type: button
+    label: "{strings.loanwiz_next}"
+    accessibility_label: "Go to the next step of the loan application"
+    testTag: "loan-application-wizard_next"
+    variant: primary
+    description: "Advances to the next wizard step when the current step validates."
+    on_click:
+      action: next_step
+      target: loan-application-wizard
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Advance the wizard to the next step (Product → Charges → Schedule → Review) after the current step passes template validation; a pure in-VM step transition."
+        produces_state: content
+        action_contract_hash: "sha256:lw-next-step"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: lw_submit
+    type: button
+    label: "{strings.loanwiz_submit}"
+    accessibility_label: "Submit the loan application"
+    testTag: "loan-application-wizard_submit"
+    variant: primary
+    gated_permission: CREATE_LOAN
+    description: "Shown on the Review step; submits the completed application."
+    on_click:
+      action: submit_application
+      target: loan-detail
+      state: content
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "core/database.DraftDao"
+        description: "Submit the completed loan application POST /v1/loans through the offline outbox with a durable idempotency key so it replays exactly-once; on success the wizard navigates to the newly created loan's detail (loan-detail)."
+        produces_state: content
+        writes_to:
+          - table: draft_outbox
+        action_contract_hash: "sha256:lw-submit"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: lw_error_retry
+    type: button
+    label: "{strings.loanwiz_retry}"
+    accessibility_label: "Retry loading the loan application template"
+    testTag: "loan-application-wizard_error_retry"
+    variant: primary
+    description: "Error-state retry — reloads the template or re-attempts the failed step call."
+    on_click:
+      action: retry
+      target: loan-application-wizard
+      state: loading
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        description: "Reload the loan product template after a hard failure (or re-attempt the failed schedule-calc / submit); resets to loading and repopulates the form."
+        produces_state: loading
+        action_contract_hash: "sha256:lw-retry"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"

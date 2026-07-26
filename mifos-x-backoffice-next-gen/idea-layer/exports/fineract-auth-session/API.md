@@ -1,6 +1,6 @@
 <!-- source: screens/fineract-auth-session/api.yaml -->
 <!-- source_hash: api=1d50cda2c102 -->
-<!-- generated: 2026-07-22T01:40:00Z -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 
@@ -14,8 +14,8 @@
 
 | Function | Method | Table | Auth | Params | Response | Cache |
 |----------|--------|-------|------|--------|----------|-------|
-| authenticate | POST | (none — auth handshake) | No (tenant via query + Basic on success) | tenantIdentifier(query, required), username(String, body), password(String, body) | AuthenticatedUserData: base64EncodedAuthenticationKey, userId, username, permissions[], roles[], officeId, staffId, shouldRenewPassword, isTwoFactorAuthenticationRequired | none (online-only login) |
-| get_authenticated_userdetails | GET | (none) | Yes (Basic + tenant header) | Fineract-Platform-TenantId(header) | AuthenticatedUserData (revalidate a restored session; re-hydrate permissions[]) | none (validates cached session) |
+| authenticate | POST | secure_session_store | No (establishes it) | tenantIdentifier(String), body{username, password} | AuthenticatedUserData: base64EncodedAuthenticationKey, userId, username, permissions[], roles[], officeId, staffId, shouldRenewPassword, isTwoFactorAuthenticationRequired | none (login is online-only) |
+| get_authenticated_userdetails | GET | -- | Yes (Basic + tenant header) | Fineract-Platform-TenantId(header) | AuthenticatedUserData: re-hydrated permissions[] | none (session revalidation) |
 
 ## Auth Mechanism
 
@@ -26,15 +26,16 @@
 ## Error Handling
 
 All endpoints follow standard error mapping:
-- 401 -> invalid credentials on login; on any authenticated request -> session drop (clear encrypted store + route to login)
-- 400/422 -> validation error (surfaced inline)
-- 5xx / network -> retryable; error state + Retry
-- invalid base-URL -> blocked client-side before any request (field highlighted)
+- 401 -> invalid credentials on `authenticate` (nothing persisted); on `get_authenticated_userdetails` it drops the session and routes to login
+- 4xx (invalid/unreachable base-URL) -> invalid_base_url error, base-url field highlighted client-side before any request
+- network unreachable -> network error state with Retry
+- 200 with shouldRenewPassword / isTwoFactorAuthenticationRequired -> auth_step_required error (no full session established)
+- 500 -> Server error (retryable)
 
 Notes:
-- `authenticate` is the sole runtime authorization input — its `permissions: Collection<String>` are normalized verbatim into the PermissionSet consumed by `permission-capability-engine` (never lowercased, split, or umbrella-expanded).
-- `shouldRenewPassword` / `isTwoFactorAuthenticationRequired` in the response block building the capability surface until the required step completes.
-- The login call is online-only; the resulting session is cached encrypted so downstream reads stay authenticated (and offline-usable) until logout or a 401.
+- The base URL is operator-supplied at login (dynamic); all paths are relative to that host. `authenticate` returns AuthenticatedUserData whose `permissions[]` is the SOLE runtime authorization input consumed by core/permissions — normalized verbatim into the PermissionSet (never lowercased, split, or umbrella-expanded).
+- On success the client derives `Authorization: Basic` and carries `Fineract-Platform-TenantId` on every subsequent request. The Session is persisted encrypted via the multiplatform-settings secure variant (never the raw password — only the derived Basic token).
+- `get_authenticated_userdetails` validates a restored/cached session against the server (online cold start) without re-prompting; a 401 here drops the session. The login call is online-only; the resulting session is cached encrypted so downstream reads stay authenticated (and offline-usable) until logout or a 401.
 
 ## Full Contracts
 

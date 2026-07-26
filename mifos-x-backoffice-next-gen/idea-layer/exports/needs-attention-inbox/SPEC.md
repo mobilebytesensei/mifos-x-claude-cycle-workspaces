@@ -1,6 +1,6 @@
 <!-- source: screens/needs-attention-inbox/ (v4.0 siblings: ui, docs, flow, api) -->
-<!-- source_hash: ui=5fbb07798e40 docs=777bff064bff flow=5b97791150b9 api=2b4b2eb5e28e -->
-<!-- generated: 2026-07-21T18:29:49Z -->
+<!-- source_hash: ui=7cc085fb16c2 docs=777bff064bff flow=5b97791150b9 api=2b4b2eb5e28e -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: 2.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

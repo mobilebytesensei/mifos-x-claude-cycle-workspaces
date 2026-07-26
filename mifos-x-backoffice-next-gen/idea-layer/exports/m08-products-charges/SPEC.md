@@ -1,6 +1,6 @@
 <!-- source: screens/m08-products-charges/ (ui+api+flow+docs+data-flow+tests) -->
-<!-- source_hash: ac475224be39920ad6f4cb5acb0a00e0404b3d40c77feb7a2e81535fbb8cc74a -->
-<!-- generated: 2026-07-21T17:33:31Z -->
+<!-- source_hash: ui=2486941814cc docs=bfde2ee1cc8b flow=c4554bec5bef api=7f871a7a9e15 -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

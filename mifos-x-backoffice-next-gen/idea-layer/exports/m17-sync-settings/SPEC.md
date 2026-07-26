@@ -1,6 +1,6 @@
 <!-- source: screens/m17-sync-settings/ (v4.0 siblings: ui, docs, flow, api) -->
-<!-- source_hash: ui=a0a16e9421d9 docs=4e96796bf6aa flow=c387391b817f api=b7972fe98474 -->
-<!-- generated: 2026-07-21T18:23:01Z -->
+<!-- source_hash: ui=102149388ae1 docs=2f923fa718de flow=c387391b817f api=b7972fe98474 -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

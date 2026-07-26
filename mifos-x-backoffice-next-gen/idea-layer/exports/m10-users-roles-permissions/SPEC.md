@@ -1,6 +1,6 @@
 <!-- source: screens/m10-users-roles-permissions/ (v4.0 siblings: ui, docs, flow, api) -->
-<!-- source_hash: ui=715063a4da96 docs=dbc9392e67eb flow=ff5a1915c59c api=f4249d320679 -->
-<!-- generated: 2026-07-21T17:40:32Z -->
+<!-- source_hash: ui=16cecbda7f11 docs=34d8bb2f32f4 flow=ff5a1915c59c api=f4249d320679 -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: 2.2.0 -->
 <!-- generated_from_contract_version: 2.2.0 -->
 <!-- prior_version: — -->

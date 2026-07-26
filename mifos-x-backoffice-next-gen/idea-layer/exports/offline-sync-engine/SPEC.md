@@ -1,6 +1,6 @@
 <!-- source: screens/offline-sync-engine/ (v4.0 siblings: ui, docs, flow, api) -->
-<!-- source_hash: ui=1219b6ab0496 docs=e6859125d47c flow=9604497d0811 api=aecdd5b7877a -->
-<!-- generated: 2026-07-21T23:57:00Z -->
+<!-- source_hash: ui=e956811c3e29 docs=e6859125d47c flow=9604497d0811 api=aecdd5b7877a -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: 2.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

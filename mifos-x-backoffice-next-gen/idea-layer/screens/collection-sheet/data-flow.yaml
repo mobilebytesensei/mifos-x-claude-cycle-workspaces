@@ -1,0 +1,44 @@
+feature: collection-sheet
+
+# The generated dues read cache-first so the route is capturable with no signal. The saved
+# sheet is written as one batch to the local outbox and replayed via POST /v1/batches with a
+# durable idempotency key (exactly-once, all-or-nothing).
+
+entries:
+  - trigger: on_mount
+    source: remote.generate_collection_sheet
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: generate_failed
+    persistence_contract:
+      store: room
+      table: collection_sheet_cache
+      keys: [office_id, staff_id, meeting_date, center_id, group_id, client_id, loan_id, installment_due, savings_due]
+      note: "CACHE_FIRST_SWR mirror of the generated staffId-scoped sheet; the grouped route hydrates from here so an officer captures with no signal."
+
+  - trigger: on_action
+    source: local.enqueue_save_sheet
+    target_state: content
+    loading_state: content
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: save_failed
+    persistence_contract:
+      store: room
+      table: draft_outbox
+      mutation: write
+      keys: [idempotency_key, action, entity, payload_json, status, staff_id, meeting_date]
+      note: >-
+        The whole captured route is enqueued here as ONE command with a durable idempotency_key,
+        action=SAVECOLLECTIONSHEET, entity=COLLECTIONSHEET; the offline-sync-engine replays it via
+        POST /v1/batches (all-or-nothing). A rejected replay routes to needs-attention-inbox, never dropped.
+
+cache:
+  strategy: cache_first_swr
+  note: "The generated sheet revalidates in the background per FreshnessBands; captured amounts live in local state until saved; the outbox is authoritative for the in-flight save batch."
+
+# regenerated-provenance: idea-data-flow re-verified 2026-07-26 — entries + persistence_contract consistent with current ui.yaml + api.yaml; mtime re-stamp (isStale enriched-unstick).

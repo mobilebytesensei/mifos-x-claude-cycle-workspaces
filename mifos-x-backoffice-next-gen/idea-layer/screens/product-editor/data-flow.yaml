@@ -1,0 +1,57 @@
+feature: product-editor
+
+# Product + template read cache-first so the editor opens offline; the save is written to
+# the local outbox and replayed via POST /v1/batches with a durable idempotency key.
+
+entries:
+  - trigger: on_mount
+    source: remote.get_product
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: product_load_failed
+    persistence_contract:
+      store: room
+      table: loan_product_cache
+      keys: [product_id, name, short_name, currency_code, principal_default, interest_rate, accounting_rule]
+      note: "CACHE_FIRST_SWR mirror of GET /v1/loanproducts/{id}; the form's current values hydrate from here."
+
+  - trigger: on_mount
+    source: remote.get_product_template
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: template_load_failed
+    persistence_contract:
+      store: room
+      table: loan_product_template_cache
+      keys: [template_json, fetched_at]
+      note: "CACHE_FIRST_SWR mirror of GET /v1/loanproducts/template; field options, bounds and accounting rules hydrate from here."
+
+  - trigger: on_action
+    source: local.enqueue_product_save
+    target_state: content
+    loading_state: content
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: save_failed
+    persistence_contract:
+      store: room
+      table: draft_outbox
+      mutation: write
+      keys: [idempotency_key, action, entity, payload_json, status, product_id]
+      note: >-
+        Save is enqueued here with a durable idempotency_key, action=(CREATE_LOANPRODUCT|UPDATE_LOANPRODUCT),
+        entity=LOANPRODUCT; the offline-sync-engine replays it via POST /v1/batches. A rejected replay routes to
+        needs-attention-inbox, never silently dropped.
+
+cache:
+  strategy: cache_first_swr
+  note: "Product + template revalidate in the background per FreshnessBands; the outbox is authoritative for the in-flight save and never revalidated."
+
+# regenerated-provenance: idea-data-flow re-verified 2026-07-26 — entries + persistence_contract consistent with current ui.yaml + api.yaml; mtime re-stamp (isStale enriched-unstick).

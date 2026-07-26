@@ -1,0 +1,160 @@
+schema_version: "1.0"
+screen_id: product-editor
+feature: product-editor
+name: "Product Editor (loan/savings product create & edit)"
+archetype: form
+status: draft
+module: m08-products-charges
+initial_state: loading
+
+# Drill-in from the M08 products list. A sectioned, template-driven form for creating or
+# editing a loan/savings product. Save routes through the offline outbox. Admin-gated.
+
+requires_permission: ["READ_LOANPRODUCT"]
+
+consumes_capabilities:
+  - has_offline_cache
+  - has_ui
+  - requires_auth
+
+business_logic:
+  kind: form
+  processing_kind: on_demand
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "core/store.ProductTemplateStore"
+    - "core/permissions.PermissionEvaluator"
+    - "core/database.DraftDao"
+  required_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/permissions
+    - core/network
+  description: >-
+    Renders a sectioned product form by merging GET /v1/loanproducts/{id} with GET /v1/loanproducts/template
+    (bounds, options, accounting rules), validates each field against the template, gates editing on the
+    CREATE/UPDATE product permission, and posts save through the offline outbox with a durable idempotency key.
+  description_author: claude-via-idea-plan-add
+  description_authored_at: "2026-07-25T00:00:00Z"
+
+state_model:
+  fields:
+    - name: product
+      type: "Product?"
+      description: "The loaded product being edited (null when creating a new product)."
+    - name: template
+      type: "ProductTemplate?"
+      description: "The Fineract product template driving field options, bounds and accounting rules."
+    - name: form
+      type: "ProductForm"
+      description: "Captured field values across sections: details, terms, settings, charges, accounting."
+    - name: expandedSection
+      type: "ProductSection?"
+      description: "Currently expanded section (Details | Terms | Settings | Charges | Accounting)."
+    - name: canEdit
+      type: "Boolean"
+      description: "Whether the PermissionSet holds CREATE/UPDATE product (else the form is read-only)."
+    - name: uiState
+      type: "ProductEditorScreenState"
+      description: "Loading | Content | Empty | Error."
+
+states:
+  loading:
+    description: "Loading the product + template cache-first from Store5; shows a sectioned-form shimmer."
+  content:
+    description: >-
+      The sectioned form (Details · Terms · Settings · Charges · Accounting) with template-driven fields,
+      bounds and options, per-field validation, and a Save action gated on the edit permission. In read-only
+      mode (no edit permission) the fields render disabled. Editable/draftable offline.
+  empty:
+    description: "A create-mode form with no product loaded yet — all sections default from the template."
+  error:
+    description: "The product or template failed to load, or save failed hard; shows the error + Retry."
+
+components:
+  - id: pe_section
+    type: expandable_section
+    label: "{strings.prodedit_section}"
+    testTag: "product-editor_section"
+    on_click:
+      action: expand_section
+      target: product-editor
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Expand/collapse a product form section (Details, Terms, Settings, Charges, Accounting); a pure in-VM UI state toggle over the already-loaded form, no refetch."
+        produces_state: content
+        action_contract_hash: "sha256:pe-expand-section"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: pe_field
+    type: dynamic_form_field
+    label: "{strings.prodedit_field}"
+    testTag: "product-editor_field"
+    on_click:
+      action: field_change
+      target: product-editor
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Update a product field and re-run the template validation (principal min≤default≤max, interest bounds, required accounting mappings) so Save is enabled only when the whole form is valid; a pure in-VM update."
+        produces_state: content
+        invalidates:
+          - form
+        action_contract_hash: "sha256:pe-field-change"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: pe_save
+    type: button
+    label: "{strings.prodedit_save}"
+    accessibility_label: "Save the loan product configuration"
+    testTag: "product-editor_save"
+    variant: primary
+    gated_permission: UPDATE_LOANPRODUCT
+    description: "Shown only when the edit permission is held; persists create or update."
+    on_click:
+      action: save_product
+      target: product-editor
+      state: content
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "core/database.DraftDao"
+        description: "Persist the product via PUT /v1/loanproducts/{id} (edit) or POST /v1/loanproducts (create) through the offline outbox with a durable idempotency key; the product list reflects the change after the next sync."
+        produces_state: content
+        writes_to:
+          - table: draft_outbox
+        action_contract_hash: "sha256:pe-save-product"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: pe_error_retry
+    type: button
+    label: "{strings.prodedit_retry}"
+    accessibility_label: "Retry loading the product template"
+    testTag: "product-editor_error_retry"
+    variant: primary
+    description: "Error-state retry — reloads the product + template or re-attempts save."
+    on_click:
+      action: retry
+      target: product-editor
+      state: loading
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        description: "Reload the product + template after a hard load failure (or re-attempt the failed save); resets to loading and repopulates the form sections."
+        produces_state: loading
+        action_contract_hash: "sha256:pe-retry"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"

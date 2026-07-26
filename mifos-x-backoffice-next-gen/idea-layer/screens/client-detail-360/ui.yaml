@@ -1,0 +1,185 @@
+schema_version: "1.0"
+screen_id: client-detail-360
+feature: client-detail-360
+name: "Client 360 (identity · accounts · lifecycle)"
+archetype: detail
+status: draft
+module: m02-clients
+initial_state: loading
+
+# Drill-in from the M02 clients list. Identity/KYC header + tabbed body
+# (General / Accounts / Notes) + a permission-gated client lifecycle action bar.
+# Every account row drills into its own detail; mutations route through the offline outbox.
+
+requires_permission: ["READ_CLIENT"]
+
+consumes_capabilities:
+  - has_offline_cache
+  - has_ui
+  - requires_auth
+
+business_logic:
+  kind: aggregator
+  processing_kind: on_demand
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "core/store.ClientDetailStore"
+    - "core/permissions.PermissionEvaluator"
+    - "core/database.DraftDao"
+  required_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/permissions
+    - core/network
+  description: >-
+    Loads a client aggregate (GET /v1/clients/{clientId}?associations=all) and the client's accounts
+    (GET /v1/clients/{clientId}/accounts) cache-first through Store5, evaluates each lifecycle action against
+    the PermissionSet and the client status, and enqueues mutations to the offline outbox with a durable key.
+  description_author: claude-via-idea-plan-add
+  description_authored_at: "2026-07-25T00:00:00Z"
+
+state_model:
+  fields:
+    - name: client
+      type: "Client?"
+      description: "The resolved client: display name, account no, external id, status, office, staff, KYC/legal form."
+    - name: accounts
+      type: "ClientAccounts"
+      description: "Loan, savings and share accounts the client holds, each with a balance and status."
+    - name: selectedTab
+      type: "ClientDetailTab"
+      description: "General | Accounts | Notes."
+    - name: permittedActions
+      type: "Set<ClientAction>"
+      description: "Lifecycle actions allowed for the current status AND held by the PermissionSet."
+    - name: uiState
+      type: "ClientDetailScreenState"
+      description: "Loading | Content | Empty | Error."
+
+states:
+  loading:
+    description: "Reading the client aggregate + accounts cache-first from Store5 and resolving permitted actions; shows an identity+accounts shimmer."
+  content:
+    description: >-
+      The identity/KYC header (name, account no, status chip, office, assigned staff) over a tabbed body
+      (General · Accounts · Notes) and a permission-gated action bar. Accounts list loans/savings/shares with
+      balances, each drillable. A stale cached client shows a background-refreshing badge; usable offline.
+  empty:
+    description: "The clientId resolved to no client (deleted / wrong id); shows a not-found panel with a back affordance."
+  error:
+    description: "The client failed to load with no usable cache; shows an error message + Retry that re-reads the aggregate."
+
+components:
+  - id: cd_header
+    type: header
+    label: "{strings.cli360_header}"
+    testTag: "client-detail-360_header"
+
+  - id: cd_tabs
+    type: tab_row
+    label: "{strings.cli360_tabs}"
+    testTag: "client-detail-360_tabs"
+    on_click:
+      action: select_tab
+      target: client-detail-360
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Switch the client body between General (address/family/identifiers), Accounts (loans/savings/shares) and Notes; a pure in-VM tab selection over already-loaded associations, no refetch."
+        produces_state: content
+        action_contract_hash: "sha256:cd-select-tab"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: cd_account_row
+    type: list_item
+    label: "{strings.cli360_account_row}"
+    accessibility_label: "Open this account's detail"
+    testTag: "client-detail-360_account_row"
+    on_click:
+      action: open_loan
+      target: loan-detail
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Drill into the tapped account's detail — a loan row opens loan-detail (savings/shares open their own detail) — so the officer can view the schedule, ledger and lifecycle actions for that account."
+        action_contract_hash: "sha256:cd-open-account"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: cd_activate
+    type: button
+    label: "{strings.cli360_activate}"
+    accessibility_label: "Activate this client"
+    testTag: "client-detail-360_activate"
+    variant: primary
+    gated_permission: ACTIVATE_CLIENT
+    description: "Shown for a pending client when ACTIVATE_CLIENT is held."
+    on_click:
+      action: activate_client
+      target: client-detail-360
+      state: content
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "core/database.DraftDao"
+        description: "Activate a pending client via POST /v1/clients/{clientId}?command=activate enqueued to the offline outbox with a durable idempotency key; the status chip flips to Active on success and eligible actions expand."
+        produces_state: content
+        writes_to:
+          - table: draft_outbox
+        action_contract_hash: "sha256:cd-activate-client"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: cd_assign_staff
+    type: button
+    label: "{strings.cli360_assign_staff}"
+    accessibility_label: "Assign a loan officer to this client"
+    testTag: "client-detail-360_assign_staff"
+    variant: secondary
+    gated_permission: ASSIGNSTAFF_CLIENT
+    description: "Shown when ASSIGNSTAFF_CLIENT is held; picks a loan/collections officer for the client."
+    on_click:
+      action: assign_staff
+      target: client-detail-360
+      state: content
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "core/database.DraftDao"
+        description: "Assign a staff member to the client via POST /v1/clients/{clientId}?command=assignStaff through the offline outbox; the assigned-staff field updates and the client enters that officer's collections route."
+        produces_state: content
+        writes_to:
+          - table: draft_outbox
+        action_contract_hash: "sha256:cd-assign-staff"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: cd_error_retry
+    type: button
+    label: "{strings.cli360_retry}"
+    accessibility_label: "Retry loading the client profile"
+    testTag: "client-detail-360_error_retry"
+    variant: primary
+    description: "Error-state retry — re-reads the client aggregate + accounts."
+    on_click:
+      action: retry
+      target: client-detail-360
+      state: loading
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        description: "Re-read the client aggregate and accounts after a hard load failure; resets to loading and repopulates identity, accounts and notes."
+        produces_state: loading
+        action_contract_hash: "sha256:cd-retry"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"

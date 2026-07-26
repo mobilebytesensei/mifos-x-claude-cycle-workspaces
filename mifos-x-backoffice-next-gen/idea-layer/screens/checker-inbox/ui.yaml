@@ -1,0 +1,166 @@
+schema_version: "1.0"
+screen_id: checker-inbox
+feature: checker-inbox
+name: "Maker-Checker Inbox (self-scoped approvals queue)"
+archetype: list
+status: draft
+module: m15-approvals-makerchecker
+initial_state: loading
+
+# Drill-in from the M01 dashboard 'checker inbox' tile. The pure M15 approvals queue,
+# self-scoped to entries the user can approve/reject. Approve/reject/delete route through
+# the offline outbox. Rows the user can't check render read-only.
+
+requires_permission: ["CHECKER_SUPER_USER"]   # any *_CHECKER also satisfies (hasAnyChecker); server is the real gate
+
+consumes_capabilities:
+  - has_offline_cache
+  - has_ui
+  - requires_auth
+
+business_logic:
+  kind: list
+  processing_kind: on_demand
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "core/store.MakerCheckerStore"
+    - "core/permissions.PermissionEvaluator"
+    - "core/database.DraftDao"
+  required_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/permissions
+    - core/network
+  description: >-
+    Loads the self-scoped maker-checker queue (GET /v1/makercheckers) cache-first through Store5, filters in-VM
+    by entity and action, gates the approve/reject/delete controls per-row on canCheck(action,entity), and posts
+    each decision through the offline outbox with a durable idempotency key.
+  description_author: claude-via-idea-plan-add
+  description_authored_at: "2026-07-25T00:00:00Z"
+
+state_model:
+  fields:
+    - name: entries
+      type: "List<MakerCheckerEntry>"
+      description: "Queued commands awaiting a checker: action, entity, maker, made-on, command summary."
+    - name: entityFilter
+      type: "String?"
+      description: "Active entity filter chip (Loan | Client | Savings | GLAccount | …); null = All."
+    - name: actionFilter
+      type: "String?"
+      description: "Active action filter chip (CREATE | APPROVE | DISBURSE | …); null = All."
+    - name: resolvingId
+      type: "Long?"
+      description: "auditId of the entry a decision is currently applied to (drives the resolving row indicator)."
+    - name: uiState
+      type: "CheckerInboxScreenState"
+      description: "Loading | Content | Empty | Error."
+
+states:
+  loading:
+    description: "Reading the self-scoped maker-checker queue cache-first from Store5; shows a list shimmer."
+  content:
+    description: >-
+      A filterable list of queued commands (entity + action chips at top), each row showing action, entity,
+      maker, made-on and a command summary, with inline Approve / Reject / Delete controls shown only where the
+      user canCheck(action,entity). Fully browsable offline; decisions queue offline.
+  empty:
+    description: "No queued commands await this checker; shows an 'all clear' panel with a last-checked timestamp."
+  error:
+    description: "The queue failed to load with no usable cache; shows an error message + Retry."
+
+components:
+  - id: ci_entity_filter
+    type: filter_chip_row
+    label: "{strings.chkinbox_entity_filter}"
+    testTag: "checker-inbox_entity_filter"
+    on_click:
+      action: filter_entity
+      target: checker-inbox
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Narrow the approvals queue to the tapped entity (Loan | Client | Savings | GLAccount | …) or clear back to All; a pure in-VM filter over the loaded entries, no refetch."
+        produces_state: content
+        invalidates:
+          - entries
+        action_contract_hash: "sha256:ci-filter-entity"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: ci_approve
+    type: button
+    label: "{strings.chkinbox_approve}"
+    accessibility_label: "Approve the selected maker-checker entry"
+    testTag: "checker-inbox_approve"
+    variant: primary
+    gated_permission: CHECKER_SUPER_USER
+    description: "Shown only on rows the user canCheck(action,entity)."
+    on_click:
+      action: approve_entry
+      target: checker-inbox
+      state: content
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "core/database.DraftDao"
+        description: "Approve a queued command via POST /v1/makercheckers/{auditId}?command=approve enqueued to the offline outbox with a durable idempotency key; on commit the underlying maker command executes and the row leaves the queue."
+        produces_state: content
+        writes_to:
+          - table: draft_outbox
+        action_contract_hash: "sha256:ci-approve-entry"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: ci_reject
+    type: button
+    label: "{strings.chkinbox_reject}"
+    accessibility_label: "Reject the selected maker-checker entry"
+    testTag: "checker-inbox_reject"
+    variant: destructive
+    gated_permission: CHECKER_SUPER_USER
+    description: "Shown only on rows the user canCheck(action,entity); requires a confirm."
+    on_click:
+      action: reject_entry
+      target: checker-inbox
+      state: content
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "core/database.DraftDao"
+        description: "Reject a queued command via POST /v1/makercheckers/{auditId}?command=reject after a confirm, enqueued to the offline outbox; the maker command is discarded server-side and the row leaves the queue with an audit note, never silently dropped."
+        produces_state: content
+        writes_to:
+          - table: draft_outbox
+        action_contract_hash: "sha256:ci-reject-entry"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: ci_error_retry
+    type: button
+    label: "{strings.chkinbox_retry}"
+    accessibility_label: "Retry loading the checker inbox"
+    testTag: "checker-inbox_error_retry"
+    variant: primary
+    description: "Error-state retry — re-reads the approvals queue."
+    on_click:
+      action: retry
+      target: checker-inbox
+      state: loading
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        description: "Re-read GET /v1/makercheckers after a hard load failure; resets to loading and repopulates the self-scoped approvals queue."
+        produces_state: loading
+        action_contract_hash: "sha256:ci-retry"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"

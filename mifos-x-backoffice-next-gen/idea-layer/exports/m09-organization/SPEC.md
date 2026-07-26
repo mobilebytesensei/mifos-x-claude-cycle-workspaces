@@ -1,6 +1,6 @@
 <!-- source: screens/m09-organization/ui.yaml -->
-<!-- source_hash: b95888726851db82a576989034c365d336893a2bc5d361bfa5f2866806d1f0f7 -->
-<!-- generated: 2026-07-21T17:30:00Z -->
+<!-- source_hash: ui=53e88ea6299a docs=160db54c3a4f flow=12e515ae7cd7 api=d6ff1753fd2c -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

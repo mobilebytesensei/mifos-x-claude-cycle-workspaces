@@ -1,0 +1,159 @@
+schema_version: "1.0"
+screen_id: collection-sheet
+feature: collection-sheet
+name: "Collection Sheet (generate route · capture · save batch)"
+archetype: list
+status: draft
+module: m06-collections
+initial_state: loading
+
+# Drill-in from the M01 dashboard 'today's route' tile. Generate the staffId-scoped sheet,
+# capture actual amounts per row offline, save the whole sheet in one batch through the outbox.
+
+requires_permission: ["READ_COLLECTIONSHEET"]
+
+consumes_capabilities:
+  - has_offline_cache
+  - has_ui
+  - requires_auth
+
+business_logic:
+  kind: aggregator
+  processing_kind: batch
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "core/store.CollectionSheetStore"
+    - "core/permissions.PermissionEvaluator"
+    - "core/database.DraftDao"
+  required_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/permissions
+    - core/network
+  description: >-
+    Generates the staffId-scoped collection sheet (POST /v1/collectionsheet?command=generateCollectionSheet)
+    grouped center→group→client with loan + savings dues, lets the officer capture actual amounts inline, and
+    saves the whole sheet as one transactional batch enqueued to the offline outbox with a durable key.
+  description_author: claude-via-idea-plan-add
+  description_authored_at: "2026-07-25T00:00:00Z"
+
+state_model:
+  fields:
+    - name: sheet
+      type: "CollectionSheet?"
+      description: "The generated route: centers→groups→clients with per-loan installment dues and per-savings deposit dues."
+    - name: captured
+      type: "Map<String, Money>"
+      description: "Actual amounts captured per loan/savings row (defaulting to the due amount)."
+    - name: attendance
+      type: "Map<Long, AttendanceType>"
+      description: "Per-client meeting attendance (present/absent/late) when the sheet is attendance-enabled."
+    - name: office
+      type: "OfficeStaffDate"
+      description: "The office, staffId and meeting/transaction date scoping the sheet."
+    - name: uiState
+      type: "CollectionSheetScreenState"
+      description: "Loading | Content | Empty | Error."
+
+states:
+  loading:
+    description: "Generating (or reading cache-first) the staffId-scoped sheet; shows a grouped route shimmer."
+  content:
+    description: >-
+      The grouped route (centers → groups → clients) with per-row loan installment dues and savings deposit
+      dues, an editable actual-amount field per row (defaulting to the due), optional attendance toggles, running
+      per-group and sheet totals, and a Save action. Fully capturable offline.
+  empty:
+    description: "The route has no dues for the chosen date (no meetings / all paid); shows a 'nothing due today' panel."
+  error:
+    description: "The sheet failed to generate with no cache, or Save failed hard; shows the error + Retry."
+
+components:
+  - id: cs_row_amount
+    type: currency_field
+    label: "{strings.colsheet_row_amount}"
+    testTag: "collection-sheet_row_amount"
+    on_click:
+      action: amount_change
+      target: collection-sheet
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Capture the actual amount collected for a loan installment or savings deposit row (defaulting to the due); a pure in-VM update that revises the running per-group and sheet totals, no network."
+        produces_state: content
+        invalidates:
+          - captured
+        action_contract_hash: "sha256:cs-amount-change"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: cs_attendance
+    type: toggle
+    label: "{strings.colsheet_attendance}"
+    testTag: "collection-sheet_attendance"
+    on_click:
+      action: toggle_attendance
+      target: collection-sheet
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Set a client's meeting attendance (present/absent/late) on an attendance-enabled sheet; a pure in-VM update recorded alongside the captured amounts for the save batch."
+        produces_state: content
+        invalidates:
+          - attendance
+        action_contract_hash: "sha256:cs-attendance"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: cs_save
+    type: button
+    label: "{strings.colsheet_save}"
+    accessibility_label: "Save the collection sheet for this meeting"
+    testTag: "collection-sheet_save"
+    variant: primary
+    gated_permission: SAVECOLLECTIONSHEET
+    description: "Shown when SAVECOLLECTIONSHEET is held; commits the whole route in one batch."
+    on_click:
+      action: save_sheet
+      target: collection-sheet
+      state: content
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "core/database.DraftDao"
+        description: "Save the whole captured route via POST /v1/collectionsheet?command=saveCollectionSheet as ONE transactional batch enqueued to the offline outbox with a durable idempotency key so an entire route captured with no signal replays exactly-once."
+        produces_state: content
+        writes_to:
+          - table: draft_outbox
+        action_contract_hash: "sha256:cs-save-sheet"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: cs_error_retry
+    type: button
+    label: "{strings.colsheet_retry}"
+    accessibility_label: "Retry loading the collection sheet"
+    testTag: "collection-sheet_error_retry"
+    variant: primary
+    description: "Error-state retry — re-generates the sheet or re-attempts save."
+    on_click:
+      action: retry
+      target: collection-sheet
+      state: loading
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        description: "Re-generate the staffId-scoped collection sheet after a hard failure (or re-attempt the failed save); resets to loading and repopulates the route with captured amounts preserved from local state."
+        produces_state: loading
+        action_contract_hash: "sha256:cs-retry"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"

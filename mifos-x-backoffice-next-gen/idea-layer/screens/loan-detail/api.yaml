@@ -1,0 +1,52 @@
+feature: loan-detail
+
+# Single-loan detail: one association-rich GET for the aggregate, plus the loan
+# lifecycle command endpoints. Reads are CACHE_FIRST_SWR; mutations route through the
+# offline outbox (POST /v1/batches) so they replay exactly-once.
+
+endpoints:
+  - id: get_loan
+    method: GET
+    path: "/v1/loans/{loanId}"
+    description: >-
+      Load the full loan aggregate — summary (status, principal, outstanding, arrears, next installment),
+      the amortised repayment schedule, and the transactions ledger — in one association-rich call.
+    query_params:
+      - { name: associations, type: string, required: false }   # all | repaymentSchedule,transactions
+      - { name: exclude, type: string, required: false }
+    response:
+      shape: object
+      dto: LoanAccountDto
+    requires_auth: true
+    requires_permission: ["READ_LOAN"]
+    cache: cache_first_swr
+
+  - id: post_repayment
+    method: POST
+    path: "/v1/loans/{loanId}/transactions"
+    description: >-
+      Capture a repayment (or waiver / fee) against the loan (?command=repayment). Enqueued to the offline
+      outbox with a durable idempotency key and replayed via the transactional batch endpoint.
+    query_params:
+      - { name: command, type: string, required: true }   # repayment | waiveinterest | foreclosure
+    response:
+      shape: object
+      dto: CommandProcessingResultDto
+    requires_auth: true
+    requires_permission: ["REPAYMENT_LOAN"]
+    idempotency: durable
+
+  - id: loan_lifecycle_command
+    method: POST
+    path: "/v1/loans/{loanId}"
+    description: >-
+      Loan lifecycle state command (?command=approve|disburse|undoapproval|reject|withdrawnByApplicant|
+      writeoff|foreclosure). Only the members permitted for the current status + PermissionSet are exposed.
+    query_params:
+      - { name: command, type: string, required: true }
+    response:
+      shape: object
+      dto: CommandProcessingResultDto
+    requires_auth: true
+    requires_permission: ["APPROVE_LOAN"]   # per-command permission gated in the action bar (DISBURSE_LOAN, etc.)
+    idempotency: durable

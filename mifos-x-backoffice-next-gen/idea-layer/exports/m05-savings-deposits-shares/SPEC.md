@@ -1,6 +1,6 @@
 <!-- source: screens/m05-savings-deposits-shares/ui.yaml -->
-<!-- source_hash: 5fa82c3a9c2d80c59e1703f1ef28687fa992a881b950a0d67028573def9ad3e3 -->
-<!-- generated: 2026-07-21T17:34:03Z -->
+<!-- source_hash: ui=7b29e56d075a docs=e45681cd8617 flow=3abe2fb1da48 api=b5e488dda9c6 -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: v2 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

@@ -30,8 +30,11 @@ ref resolves. A future enrich pass may normalize the `api.yaml` refs to one cano
 | `CampaignMessageDto` | `GET /v1/smscampaigns/{id}/messages` | response | m16-communications | medium |
 | `CashierDto` | `GET /v1/tellers/{id}/cashiers/{id}` | response | m11-tellers-cash | medium |
 | `ClientAccountsSummary` | `GET /v1/clients/{id}/accounts` | response | m02-clients | medium |
+| `ClientAccountsDto` | `GET /v1/clients/{id}/accounts` | response | client-detail-360 | medium |
 | `ClientCommandRequest` | `POST /v1/clients/{id}?command=` | request | m02-clients | medium |
 | `ClientDetail` | `GET /v1/clients/{id}` | response | m02-clients | medium |
+| `ClientDto` | `GET /v1/clients/{id}` | response | client-detail-360 | medium |
+| `ClientSummaryDto` | `GET /v1/clients` | response | client-list | medium |
 | `ClientListItem` | `GET /v1/clients` | response | m02-clients | medium |
 | `ClientSearchRequest` | `POST /v2/clients/search` | request | m02-clients | minimal |
 | `ClientSubResourceItem` | `GET /v1/clients/{id}/{subResource}` | response | m02-clients | medium |
@@ -70,6 +73,13 @@ ref resolves. A future enrich pass may normalize the `api.yaml` refs to one cano
 | `StandingInstructionRequest` | `POST /v1/standinginstructions` | request | m05-savings-deposits-shares | medium |
 | `TellerDto` | `GET /v1/tellers/{id}` | response | m11-tellers-cash | medium |
 | `TellerTransactionDto` | `GET /v1/cashiersjournal` | response | m11-tellers-cash | medium |
+| `LoanProductDto` | `GET /v1/loanproducts/{id}` | response | product-editor | high |
+| `LoanProductTemplateDto` | `GET /v1/loanproducts/template` | response | product-editor | high |
+| `PermissionDto` | `GET /v1/permissions` | response | capability-map-detail, permission-set-detail | medium |
+| `ReportDefinitionDto` | `GET /v1/reports` | response | report-runner | medium |
+| `ReportParameterOptionDto` | `GET /v1/runreports/FullParameterList` | response | report-runner | low |
+| `ReportRunResultDto` | `GET /v1/runreports/{name}` | response | report-runner | medium |
+| `SearchResultDto` | `GET /v1/search` | response | client-list | low |
 | `TemplateDto` | `GET /v1/templates/{id}` | response | m16-communications | medium |
 | `UpdateClientRequest` | `PUT /v1/clients/{id}` | request | m02-clients | medium |
 

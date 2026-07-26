@@ -1,6 +1,6 @@
 <!-- source: screens/m12-datatables-config/ (v4.0 siblings: ui, docs, flow, api) -->
-<!-- source_hash: ui=5cf837f96bad docs=c7eef9a33176 flow=76de021fcd5d api=f66982c69591 -->
-<!-- generated: 2026-07-21T17:41:16Z -->
+<!-- source_hash: ui=634cb3575dcb docs=699db22a86a2 flow=76de021fcd5d api=f66982c69591 -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: 2.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

@@ -1,6 +1,6 @@
 <!-- source: screens/m06-collections/ (v4.0 siblings: ui, docs, flow, api) -->
-<!-- source_hash: ui=f2bdbb614c60 docs=22d9ae67e923 flow=8e4dc91a42c5 api=33ab15930dd0 -->
-<!-- generated: 2026-07-21T17:33:58Z -->
+<!-- source_hash: ui=6444e43dcc32 docs=3d1f0511158a flow=8e4dc91a42c5 api=33ab15930dd0 -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: 2.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

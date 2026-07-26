@@ -1,6 +1,6 @@
 <!-- source: screens/permission-capability-engine/ (v4.0 siblings: ui, docs, flow, api) -->
-<!-- source_hash: ui=38febbcb85c2 docs=81b8deac5d60 flow=5b1e73c97cac api=c939683002f6 -->
-<!-- generated: 2026-07-21T18:28:41Z -->
+<!-- source_hash: ui=c4db723f9ed2 docs=81b8deac5d60 flow=5b1e73c97cac api=c939683002f6 -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: 2.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

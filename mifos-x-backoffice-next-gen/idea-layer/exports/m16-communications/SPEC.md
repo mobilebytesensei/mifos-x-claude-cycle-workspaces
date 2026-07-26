@@ -1,6 +1,6 @@
 <!-- source: screens/m16-communications/ (v4.0 siblings: ui, docs, flow, api) -->
-<!-- source_hash: ui=f1148bbba204 docs=c7f5d613ecf1 flow=03d969aaa990 api=d45c14b36f17 -->
-<!-- generated: 2026-07-21T18:23:27Z -->
+<!-- source_hash: ui=e810bdeb5d1b docs=b752d0192248 flow=03d969aaa990 api=d45c14b36f17 -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

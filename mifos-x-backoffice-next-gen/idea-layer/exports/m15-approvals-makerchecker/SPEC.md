@@ -1,6 +1,6 @@
 <!-- source: screens/m15-approvals-makerchecker/ (v4.0 siblings: ui, docs, flow, api) -->
-<!-- source_hash: ui=d6ca6a4119b2 docs=e92e651eb78f flow=0f139c16974c api=5eb3fdb0179f -->
-<!-- generated: 2026-07-21T18:20:00Z -->
+<!-- source_hash: ui=eaa29114b6a8 docs=49a147d73055 flow=0f139c16974c api=5eb3fdb0179f -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

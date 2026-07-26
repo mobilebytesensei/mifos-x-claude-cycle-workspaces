@@ -1,0 +1,175 @@
+schema_version: "1.0"
+screen_id: report-runner
+feature: report-runner
+name: "Report Runner (parameters · run · result table)"
+archetype: detail
+status: draft
+module: m14-reports-search-audit
+initial_state: loading
+
+# Drill-in from the M01 dashboard PAR tile and the M14 reports list. A parameter form
+# resolved from the report's metadata, a Run action, and a sortable result table with export.
+# Read-only; gated on the report's run permission.
+
+requires_permission: ["READ_REPORT"]
+
+consumes_capabilities:
+  - has_offline_cache
+  - has_ui
+  - requires_auth
+
+business_logic:
+  kind: aggregator
+  processing_kind: on_demand
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "core/store.ReportStore"
+    - "core/permissions.PermissionEvaluator"
+  required_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/permissions
+    - core/network
+  description: >-
+    Resolves a report's parameters (office, date range, currency, loan officer — each from its own lookup
+    report), renders a parameter form, runs GET /v1/runreports/{reportName} with the R_ params cache-first
+    through Store5, and renders the columnar result as a sortable table. Gated on the report's run permission.
+  description_author: claude-via-idea-plan-add
+  description_authored_at: "2026-07-25T00:00:00Z"
+
+state_model:
+  fields:
+    - name: reportName
+      type: "String"
+      description: "The selected report (e.g. 'Portfolio at Risk', 'Active Loans by Loan Officer')."
+    - name: parameters
+      type: "List<ReportParameter>"
+      description: "The report's declared parameters with their resolved lookup options."
+    - name: paramValues
+      type: "Map<String, String>"
+      description: "Captured R_ parameter values driving the run."
+    - name: result
+      type: "ReportResult?"
+      description: "The columnar result (column defs + rows) from the last run."
+    - name: sortColumn
+      type: "String?"
+      description: "Active client-side sort column for the result table."
+    - name: uiState
+      type: "ReportRunnerScreenState"
+      description: "Loading | Content | Empty | Error."
+
+states:
+  loading:
+    description: "Resolving the report's parameter metadata + lookup options; shows a parameter-form shimmer."
+  content:
+    description: >-
+      The parameter form (office, from/to date, currency, loan officer, fund) with Run, and — once run — a
+      headline summary over a sortable, horizontally-scrollable result table with a CSV/PDF export action. A
+      recently-run report renders from cache offline.
+  empty:
+    description: "The report ran successfully but returned zero rows for the chosen parameters; shows a no-data panel with adjust-parameters guidance."
+  error:
+    description: "The parameter metadata failed to resolve, or the run failed hard with no cache; shows the error + Retry."
+
+components:
+  - id: rr_param
+    type: dynamic_form_field
+    label: "{strings.reprun_param}"
+    testTag: "report-runner_param"
+    on_click:
+      action: param_change
+      target: report-runner
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Update a report parameter value (and cascade dependent lookups, e.g. loan officer options scoped to the chosen office); a pure in-VM update that enables Run once required params are set."
+        produces_state: content
+        invalidates:
+          - paramValues
+        action_contract_hash: "sha256:rr-param-change"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: rr_run
+    type: button
+    label: "{strings.reprun_run}"
+    accessibility_label: "Run the selected report with the chosen parameters"
+    testTag: "report-runner_run"
+    variant: primary
+    gated_permission: READ_REPORT
+    description: "Runs the report with the captured parameters."
+    on_click:
+      action: run_report
+      target: report-runner
+      state: content
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        description: "Run GET /v1/runreports/{reportName} with the captured R_ parameters (cache-first through Store5) and render the returned columnar data as the result table; a stale cached result shows a refreshing badge."
+        produces_state: content
+        action_contract_hash: "sha256:rr-run-report"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: rr_sort
+    type: table_header
+    label: "{strings.reprun_sort}"
+    testTag: "report-runner_sort"
+    on_click:
+      action: sort_column
+      target: report-runner
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Sort the result table by the tapped column ascending/descending; a pure in-VM sort over the already-loaded rows, no refetch."
+        produces_state: content
+        action_contract_hash: "sha256:rr-sort-column"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: rr_export
+    type: button
+    label: "{strings.reprun_export}"
+    accessibility_label: "Export the report result"
+    testTag: "report-runner_export"
+    variant: secondary
+    description: "Exports the current result as CSV/PDF and hands off to the platform share sheet."
+    on_click:
+      action: export_report
+      target: report-runner
+      action_contract:
+        effect: share_external
+        library_refs: []
+        external_library_refs: ["core/platform.ShareSheet"]
+        description: "Render the current result set to CSV/PDF and hand it to the platform share sheet so the operator can save or send the report; the export reflects the currently-applied sort and parameters."
+        action_contract_hash: "sha256:rr-export"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: rr_error_retry
+    type: button
+    label: "{strings.reprun_retry}"
+    accessibility_label: "Retry loading the report catalog"
+    testTag: "report-runner_error_retry"
+    variant: primary
+    description: "Error-state retry — re-resolves parameters or re-runs the report."
+    on_click:
+      action: retry
+      target: report-runner
+      state: loading
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        description: "Re-resolve the report parameter metadata after a hard failure (or re-run the report); resets to loading and repopulates the parameter form."
+        produces_state: loading
+        action_contract_hash: "sha256:rr-retry"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"

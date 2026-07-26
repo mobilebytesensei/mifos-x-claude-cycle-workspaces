@@ -1,6 +1,6 @@
 <!-- source: screens/m13-scheduler-jobs/ (v4.0 siblings: ui, docs, flow, api, tests) -->
-<!-- source_hash: ui=28ffcedb3403 docs=38d077315987 flow=97b4286dd356 api=5ed5adc849d1 -->
-<!-- generated: 2026-07-21T17:40:28Z -->
+<!-- source_hash: ui=cd6d6520e291 docs=344f53633662 flow=97b4286dd356 api=5ed5adc849d1 -->
+<!-- generated: 2026-07-26T04:07:02Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.2.0 -->
 <!-- prior_version: — -->

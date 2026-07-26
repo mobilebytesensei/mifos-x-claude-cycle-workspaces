@@ -1,0 +1,153 @@
+schema_version: "1.0"
+screen_id: permission-set-detail
+feature: permission-set-detail
+name: "Permission Set Detail (resolved codes · umbrellas · fingerprint)"
+archetype: detail
+status: draft
+module: permission-capability-engine
+initial_state: loading
+
+# Drill-in from the permission-capability-engine (view_permission_set). Read-only detail of
+# the signed-in user's resolved PermissionSet — raw codes grouped by Fineract grouping,
+# umbrella flags, and the sha256 fingerprint used for CapabilityMap drift detection.
+
+requires_permission: []   # every authenticated user may inspect their OWN resolved permission set
+
+consumes_capabilities:
+  - has_offline_cache
+  - has_ui
+  - requires_auth
+
+business_logic:
+  kind: aggregator
+  processing_kind: on_demand
+  library_refs: []
+  external_library_refs:
+    - "core/permissions.PermissionEvaluator"
+    - "core/permissions.PermissionSet"
+    - "core/store.PermissionCatalogStore"
+  required_modules:
+    - core/permissions
+    - core/store
+    - core/database
+    - core/network
+  description: >-
+    Joins the login-normalised PermissionSet (held codes + umbrella short-circuits + sha256 fingerprint from
+    core/permissions) with the permission code catalog + grouping metadata (GET /v1/permissions, cache-first)
+    to render a grouped, searchable, held-vs-total view of exactly what access the signed-in user holds.
+  description_author: claude-via-idea-plan-add
+  description_authored_at: "2026-07-25T00:00:00Z"
+
+state_model:
+  fields:
+    - name: groupings
+      type: "List<PermissionGrouping>"
+      description: "Codes grouped by Fineract grouping (portfolio, transaction_loan, accounting, …) with held-vs-total counts."
+    - name: umbrellas
+      type: "List<String>"
+      description: "Held umbrella / short-circuit grants (ALL_FUNCTIONS, CHECKER_SUPER_USER, …) that widen access."
+    - name: fingerprint
+      type: "String"
+      description: "The PermissionSet's sha256 fingerprint used by the CapabilityMap resolver for drift detection."
+    - name: query
+      type: "String"
+      description: "Active search text filtering permission codes."
+    - name: uiState
+      type: "PermissionSetDetailScreenState"
+      description: "Loading | Content | Empty | Error."
+
+states:
+  loading:
+    description: "Resolving the local PermissionSet + loading the code catalog cache-first; shows a grouped-list shimmer."
+  content:
+    description: >-
+      A search box over groupings (each expandable, showing held-vs-total code counts), the held codes with
+      umbrella grants highlighted, and a header card with the sha256 fingerprint (copyable). Renders fully
+      offline from the local PermissionSet + cached catalog.
+  empty:
+    description: "The resolved PermissionSet is empty (no permissions held / not yet bootstrapped); shows a guidance panel."
+  error:
+    description: "The permission code catalog failed to load with no cache; shows an error message + Retry."
+
+components:
+  - id: psd_search
+    type: search_field
+    label: "{strings.permset_search}"
+    accessibility_label: "Search permission codes within this set"
+    testTag: "permission-set-detail_search"
+    validation:
+      rules:
+        - min_length   # ignore single-character noise before filtering the code list
+      on_violation: "queries below the min length leave the full grouped permission list visible"
+    on_click:
+      action: search_code
+      target: permission-set-detail
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Filter the permission codes by the entered text across code and grouping; a pure in-VM filter over the already-resolved set, no refetch."
+        produces_state: content
+        invalidates:
+          - groupings
+        action_contract_hash: "sha256:psd-search-code"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: psd_grouping
+    type: expandable_section
+    label: "{strings.permset_grouping}"
+    testTag: "permission-set-detail_grouping"
+    on_click:
+      action: expand_grouping
+      target: permission-set-detail
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Expand/collapse a Fineract permission grouping to reveal its held codes; a pure in-VM UI toggle over the loaded set, no refetch."
+        produces_state: content
+        action_contract_hash: "sha256:psd-expand-grouping"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: psd_copy_fingerprint
+    type: button
+    label: "{strings.permset_copy_fingerprint}"
+    accessibility_label: "Copy the permission set fingerprint to the clipboard"
+    testTag: "permission-set-detail_copy_fingerprint"
+    variant: text
+    description: "Copies the PermissionSet sha256 fingerprint for support / drift diagnosis."
+    on_click:
+      action: copy_fingerprint
+      target: permission-set-detail
+      action_contract:
+        effect: copy_clipboard
+        library_refs: []
+        description: "Copy the resolved PermissionSet's sha256 fingerprint to the clipboard so an operator can quote it to support when diagnosing a CapabilityMap drift or an access discrepancy."
+        action_contract_hash: "sha256:psd-copy-fingerprint"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: psd_error_retry
+    type: button
+    label: "{strings.permset_retry}"
+    accessibility_label: "Retry loading the permission catalog"
+    testTag: "permission-set-detail_error_retry"
+    variant: primary
+    description: "Error-state retry — reloads the permission code catalog."
+    on_click:
+      action: retry
+      target: permission-set-detail
+      state: loading
+      action_contract:
+        effect: call_api
+        library_refs: []
+        external_library_refs: ["ktorfit"]
+        description: "Reload the permission code catalog (GET /v1/permissions) after a hard load failure; resets to loading and re-joins it with the local PermissionSet."
+        produces_state: loading
+        action_contract_hash: "sha256:psd-retry"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
