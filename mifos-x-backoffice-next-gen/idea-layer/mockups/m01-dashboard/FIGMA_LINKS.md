@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m01-dashboard
 
-<!-- schema: v3.2 | generated: 2026-07-21T17:46:45.837Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T05:48:29.781Z -->
 
 ## Stitch Project
 
@@ -8,14 +8,14 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-21T17:46:45.748Z |
+| Generated | 2026-07-26T05:48:29.779Z |
 | Success | 6/6 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| loading | 0126902a726d48eca09a655c46c2a703 | 01-m01-dashboard-loading | PNG ✅ | HTML ✅ | ✅ generated |
+| loading | 0126902a726d48eca09a655c46c2a703 | 01-m01-dashboard-loading | PNG ✅ | HTML ✅ | ♻ resumed |
 | content | c458fe024bac40669ab30644b9fb9d5d | 02-m01-dashboard-content | PNG ✅ | HTML ✅ | ♻ resumed |
 | empty | d74b78eb147d4035994f60b80892bd8d | 03-m01-dashboard-empty | PNG ✅ | HTML ✅ | ♻ resumed |
 | partial-tile-error | 92c2853d8c9b4e0192f98fab70b04a0f | 04-m01-dashboard-partial-tile-error | PNG ✅ | HTML ✅ | ♻ resumed |

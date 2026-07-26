@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m14-reports-search-audit
 
-<!-- schema: v3.2 | generated: 2026-07-21T18:45:37.689Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T06:03:20.804Z -->
 
 ## Stitch Project
 
@@ -8,29 +8,29 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-21T18:45:37.688Z |
+| Generated | 2026-07-26T06:03:20.744Z |
 | Success | 6/6 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| loading | — | 01-m14-reports-search-audit-loading | PNG ❌ | HTML ✅ | ⏳ pending |
+| loading | 6393a2b4f9644d568e1cc30e86be80a0 | 01-m14-reports-search-audit-loading | PNG ✅ | HTML ✅ | ✅ generated |
 | content | 6e833e66d67045e388e6a59ea2a09cd1 | 02-m14-reports-search-audit-content | PNG ✅ | HTML ✅ | ♻ resumed |
 | running | cd6539de5c4346c19e597493228a6621 | 03-m14-reports-search-audit-running | PNG ✅ | HTML ✅ | ♻ resumed |
 | result | 6f4b9bc17a174b8b9c2e76584e7a8232 | 04-m14-reports-search-audit-result | PNG ✅ | HTML ✅ | ♻ resumed |
-| empty | — | 05-m14-reports-search-audit-empty | PNG ❌ | HTML ✅ | ⏳ pending |
+| empty | ba13f681646b4d5fb3ada995be35662f | 05-m14-reports-search-audit-empty | PNG ✅ | HTML ✅ | ✅ generated |
 | error | 991f979831af425083fb0a51c1473210 | 06-m14-reports-search-audit-error | PNG ✅ | HTML ✅ | ♻ resumed |
 
 ## Open in Figma / Stitch
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
-| loading | — | — |
+| loading | [Open](https://stitch.google.com/projects/10243803383444073820/screens/6393a2b4f9644d568e1cc30e86be80a0) | — |
 | content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/6e833e66d67045e388e6a59ea2a09cd1) | — |
 | running | [Open](https://stitch.google.com/projects/10243803383444073820/screens/cd6539de5c4346c19e597493228a6621) | — |
 | result | [Open](https://stitch.google.com/projects/10243803383444073820/screens/6f4b9bc17a174b8b9c2e76584e7a8232) | — |
-| empty | — | — |
+| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/c767d4e6bcf5486bac63593edd4a8d72) | — |
 | error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/991f979831af425083fb0a51c1473210) | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.

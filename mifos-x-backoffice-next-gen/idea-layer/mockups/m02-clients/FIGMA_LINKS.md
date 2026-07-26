@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m02-clients
 
-<!-- schema: v3.2 | generated: 2026-07-21T17:40:14.357Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T05:48:30.498Z -->
 
 ## Stitch Project
 
@@ -8,7 +8,7 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-21T17:40:14.279Z |
+| Generated | 2026-07-26T05:48:30.497Z |
 | Success | 5/5 states |
 
 ## Screen Status
@@ -16,7 +16,7 @@
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
 | loading | 58ee481dd5744088b103b896a56c3b9e | 01-m02-clients-loading | PNG ✅ | HTML ✅ | ♻ resumed |
-| content | 829c8cc9b6e3467abb95b41c9ea6db0a | 02-m02-clients-content | PNG ✅ | HTML ✅ | ✅ generated |
+| content | 829c8cc9b6e3467abb95b41c9ea6db0a | 02-m02-clients-content | PNG ✅ | HTML ✅ | ♻ resumed |
 | empty | 29e24b05a9aa4bf9a7b8e347e7b2466e | 03-m02-clients-empty | PNG ✅ | HTML ✅ | ♻ resumed |
 | no-network | 9aa75dec73c44d1d80636a6630d28c44 | 04-m02-clients-no-network | PNG ✅ | HTML ✅ | ♻ resumed |
 | error | bda0421d55934e308f645e8e00a397ce | 05-m02-clients-error | PNG ✅ | HTML ✅ | ♻ resumed |

@@ -1,14 +1,14 @@
 # FIGMA_LINKS.md — offline-sync-engine
 
-<!-- schema: v3.2 | generated: 2026-07-17T10:28:06.265Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T06:15:49.701Z -->
 
 ## Stitch Project
 
 | Field | Value |
 |-------|-------|
-| Project URL | [16649445309504448812](https://stitch.google.com/projects/16649445309504448812) |
-| Design System ID | 6486719301524192685 |
-| Generated | 2026-07-17T10:28:06.264Z |
+| Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
+| Design System ID | 312064780206383264 |
+| Generated | 2026-07-26T06:15:49.701Z |
 | Success | 6/6 states |
 
 ## Screen Status
@@ -26,12 +26,12 @@
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
-| idle | [Open](https://stitch.google.com/projects/16649445309504448812/screens/76c1081edff7401ea68971aa0440a744) | — |
-| content | [Open](https://stitch.google.com/projects/16649445309504448812/screens/477bb1e071db49e495960ed4e4063156) | — |
-| syncing | [Open](https://stitch.google.com/projects/16649445309504448812/screens/b4ffdf32d7a144ee9685e4b5f0b3f813) | — |
-| empty | [Open](https://stitch.google.com/projects/16649445309504448812/screens/0cce3d3672f34a2a9f5aff3eb182101d) | — |
-| error | [Open](https://stitch.google.com/projects/16649445309504448812/screens/7ef81d1f9af64f38b9bfbe26a56669ae) | — |
-| no_network | [Open](https://stitch.google.com/projects/16649445309504448812/screens/7d4905c50c3b4f23944fd4e32421ac46) | — |
+| idle | [Open](https://stitch.google.com/projects/10243803383444073820/screens/76c1081edff7401ea68971aa0440a744) | — |
+| content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/477bb1e071db49e495960ed4e4063156) | — |
+| syncing | [Open](https://stitch.google.com/projects/10243803383444073820/screens/b4ffdf32d7a144ee9685e4b5f0b3f813) | — |
+| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/0cce3d3672f34a2a9f5aff3eb182101d) | — |
+| error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/7ef81d1f9af64f38b9bfbe26a56669ae) | — |
+| no_network | [Open](https://stitch.google.com/projects/10243803383444073820/screens/7d4905c50c3b4f23944fd4e32421ac46) | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >

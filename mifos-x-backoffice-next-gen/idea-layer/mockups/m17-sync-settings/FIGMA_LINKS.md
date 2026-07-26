@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m17-sync-settings
 
-<!-- schema: v3.2 | generated: 2026-07-21T18:46:30.526Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T06:15:48.385Z -->
 
 ## Stitch Project
 
@@ -8,7 +8,7 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-21T18:46:30.525Z |
+| Generated | 2026-07-26T06:15:48.322Z |
 | Success | 6/6 states |
 
 ## Screen Status
@@ -16,22 +16,22 @@
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
 | idle | 07619ded644744c2b60af94bb79b4dd7 | 01-m17-sync-settings-idle | PNG ✅ | HTML ✅ | ♻ resumed |
-| content | — | 02-m17-sync-settings-content | PNG ❌ | HTML ✅ | ⏳ pending |
-| syncing | — | 03-m17-sync-settings-syncing | PNG ❌ | HTML ✅ | ⏳ pending |
+| content | 1f6f23c206df4779864c33d6be95d18a | 02-m17-sync-settings-content | PNG ✅ | HTML ✅ | ✅ generated |
+| syncing | cb4251603d054d4c806963d926266d7d | 03-m17-sync-settings-syncing | PNG ✅ | HTML ✅ | ✅ generated |
 | empty | 7dae146d86244db3bca4f40d4547e9a2 | 04-m17-sync-settings-empty | PNG ✅ | HTML ✅ | ♻ resumed |
 | needs-attention | 2e6cfc64e447441c89bbffd355430b1c | 05-m17-sync-settings-needs-attention | PNG ✅ | HTML ✅ | ♻ resumed |
-| error | — | 06-m17-sync-settings-error | PNG ❌ | HTML ✅ | ⏳ pending |
+| error | 0d43430eb95645ac9c65035d68fab20e | 06-m17-sync-settings-error | PNG ✅ | HTML ✅ | ✅ generated |
 
 ## Open in Figma / Stitch
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
 | idle | [Open](https://stitch.google.com/projects/10243803383444073820/screens/07619ded644744c2b60af94bb79b4dd7) | — |
-| content | — | — |
-| syncing | — | — |
+| content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/1f6f23c206df4779864c33d6be95d18a) | — |
+| syncing | [Open](https://stitch.google.com/projects/10243803383444073820/screens/cb4251603d054d4c806963d926266d7d) | — |
 | empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/7dae146d86244db3bca4f40d4547e9a2) | — |
 | needs-attention | [Open](https://stitch.google.com/projects/10243803383444073820/screens/2e6cfc64e447441c89bbffd355430b1c) | — |
-| error | — | — |
+| error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/0d43430eb95645ac9c65035d68fab20e) | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >

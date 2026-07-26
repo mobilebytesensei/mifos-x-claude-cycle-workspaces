@@ -1,14 +1,14 @@
 # FIGMA_LINKS.md — needs-attention-inbox
 
-<!-- schema: v3.2 | generated: 2026-07-17T10:28:07.883Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T06:15:49.114Z -->
 
 ## Stitch Project
 
 | Field | Value |
 |-------|-------|
-| Project URL | [16649445309504448812](https://stitch.google.com/projects/16649445309504448812) |
-| Design System ID | 6486719301524192685 |
-| Generated | 2026-07-17T10:28:07.882Z |
+| Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
+| Design System ID | 312064780206383264 |
+| Generated | 2026-07-26T06:15:49.114Z |
 | Success | 5/5 states |
 
 ## Screen Status
@@ -25,11 +25,11 @@
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
-| loading | [Open](https://stitch.google.com/projects/16649445309504448812/screens/84141653b34a4193b99802db2057dafe) | — |
-| content | [Open](https://stitch.google.com/projects/16649445309504448812/screens/f19af91a3f6644e98edd171887995353) | — |
-| empty | [Open](https://stitch.google.com/projects/16649445309504448812/screens/2c02a39756ae45d4b55a881277069dfc) | — |
-| resolving | [Open](https://stitch.google.com/projects/16649445309504448812/screens/e4cf89d3565e48e0b1a084f84c1c8728) | — |
-| error | [Open](https://stitch.google.com/projects/16649445309504448812/screens/7c7dce0b382d47aea6df652163b6f364) | — |
+| loading | [Open](https://stitch.google.com/projects/10243803383444073820/screens/84141653b34a4193b99802db2057dafe) | — |
+| content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/f19af91a3f6644e98edd171887995353) | — |
+| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/2c02a39756ae45d4b55a881277069dfc) | — |
+| resolving | [Open](https://stitch.google.com/projects/10243803383444073820/screens/e4cf89d3565e48e0b1a084f84c1c8728) | — |
+| error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/7c7dce0b382d47aea6df652163b6f364) | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >

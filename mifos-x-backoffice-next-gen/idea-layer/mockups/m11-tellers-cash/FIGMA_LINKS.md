@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m11-tellers-cash
 
-<!-- schema: v3.2 | generated: 2026-07-21T18:36:37.197Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T05:58:28.139Z -->
 
 ## Stitch Project
 
@@ -8,16 +8,16 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-21T18:36:37.119Z |
+| Generated | 2026-07-26T05:58:28.139Z |
 | Success | 8/8 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| loading | d79f943d6fd5426fa0ee17c88ab16a27 | 01-m11-tellers-cash-loading | PNG ✅ | HTML ✅ | ✅ generated |
-| content | 5500e0d02c6c40a393a06249c39fed3c | 02-m11-tellers-cash-content | PNG ✅ | HTML ✅ | ✅ generated |
-| empty | 3ff261bd7d914e2fbcffb82326315581 | 03-m11-tellers-cash-empty | PNG ✅ | HTML ✅ | ✅ generated |
+| loading | d79f943d6fd5426fa0ee17c88ab16a27 | 01-m11-tellers-cash-loading | PNG ✅ | HTML ✅ | ♻ resumed |
+| content | 5500e0d02c6c40a393a06249c39fed3c | 02-m11-tellers-cash-content | PNG ✅ | HTML ✅ | ♻ resumed |
+| empty | 3ff261bd7d914e2fbcffb82326315581 | 03-m11-tellers-cash-empty | PNG ✅ | HTML ✅ | ♻ resumed |
 | submitting | 9379bd3de3164c26828bcfe1f4719814 | 04-m11-tellers-cash-submitting | PNG ✅ | HTML ✅ | ♻ resumed |
 | queued_offline | 12f65aca78544c43bf433f8b43314200 | 05-m11-tellers-cash-queued_offline | PNG ✅ | HTML ✅ | ♻ resumed |
 | pending_approval | 64f0213740e642a69c96136308381653 | 06-m11-tellers-cash-pending_approval | PNG ✅ | HTML ✅ | ♻ resumed |
@@ -30,7 +30,7 @@
 |-------|--------------|--------------|
 | loading | [Open](https://stitch.google.com/projects/10243803383444073820/screens/d79f943d6fd5426fa0ee17c88ab16a27) | — |
 | content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/5500e0d02c6c40a393a06249c39fed3c) | — |
-| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/9bd121473b9943abaf8d4468c3f607ce) | — |
+| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/3ff261bd7d914e2fbcffb82326315581) | — |
 | submitting | [Open](https://stitch.google.com/projects/10243803383444073820/screens/9379bd3de3164c26828bcfe1f4719814) | — |
 | queued_offline | [Open](https://stitch.google.com/projects/10243803383444073820/screens/12f65aca78544c43bf433f8b43314200) | — |
 | pending_approval | [Open](https://stitch.google.com/projects/10243803383444073820/screens/64f0213740e642a69c96136308381653) | — |

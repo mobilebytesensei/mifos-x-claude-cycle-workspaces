@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m12-datatables-config
 
-<!-- schema: v3.2 | generated: 2026-07-21T18:34:21.251Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T05:58:28.811Z -->
 
 ## Stitch Project
 
@@ -8,7 +8,7 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-21T18:34:21.172Z |
+| Generated | 2026-07-26T05:58:28.810Z |
 | Success | 6/6 states |
 
 ## Screen Status
@@ -18,9 +18,9 @@
 | loading | 4e528b80629848748c53a0b4cbf420a4 | 01-m12-datatables-config-loading | PNG ✅ | HTML ✅ | ♻ resumed |
 | content | b9625f21e0cf4eb8bf48b94545586caa | 02-m12-datatables-config-content | PNG ✅ | HTML ✅ | ♻ resumed |
 | empty | a937f39a961942f6b97ae68d02b59753 | 03-m12-datatables-config-empty | PNG ✅ | HTML ✅ | ♻ resumed |
-| submitting | 137cb8f63de0454c8e99937e542bc03b | 04-m12-datatables-config-submitting | PNG ✅ | HTML ✅ | ✅ generated |
+| submitting | 137cb8f63de0454c8e99937e542bc03b | 04-m12-datatables-config-submitting | PNG ✅ | HTML ✅ | ♻ resumed |
 | action-disabled | 6f6c022521cd4903ba96d30677a60390 | 05-m12-datatables-config-action-disabled | PNG ✅ | HTML ✅ | ♻ resumed |
-| error | 595953a10bd14c95b8a9d6ece74af0ee | 06-m12-datatables-config-error | PNG ✅ | HTML ✅ | ✅ generated |
+| error | 595953a10bd14c95b8a9d6ece74af0ee | 06-m12-datatables-config-error | PNG ✅ | HTML ✅ | ♻ resumed |
 
 ## Open in Figma / Stitch
 

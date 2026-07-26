@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m13-scheduler-jobs
 
-<!-- schema: v3.2 | generated: 2026-07-21T18:45:59.432Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T06:00:03.600Z -->
 
 ## Stitch Project
 
@@ -8,7 +8,7 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-21T18:45:59.431Z |
+| Generated | 2026-07-26T06:00:03.543Z |
 | Success | 6/6 states |
 
 ## Screen Status
@@ -20,7 +20,7 @@
 | empty | b32f0960c9e14c2e86746af3ba70607a | 03-m13-scheduler-jobs-empty | PNG ✅ | HTML ✅ | ♻ resumed |
 | submitting | 5954b7620a6246eab9e5c0b9c1ea30da | 04-m13-scheduler-jobs-submitting | PNG ✅ | HTML ✅ | ♻ resumed |
 | no_network | 581b1cd574fe4dd9aead57a998c294e1 | 05-m13-scheduler-jobs-no_network | PNG ✅ | HTML ✅ | ♻ resumed |
-| error | — | 06-m13-scheduler-jobs-error | PNG ❌ | HTML ✅ | ⏳ pending |
+| error | c91b0533f715446d8deab582f8316abc | 06-m13-scheduler-jobs-error | PNG ✅ | HTML ✅ | ✅ generated |
 
 ## Open in Figma / Stitch
 
@@ -31,7 +31,7 @@
 | empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/b32f0960c9e14c2e86746af3ba70607a) | — |
 | submitting | [Open](https://stitch.google.com/projects/10243803383444073820/screens/5954b7620a6246eab9e5c0b9c1ea30da) | — |
 | no_network | [Open](https://stitch.google.com/projects/10243803383444073820/screens/581b1cd574fe4dd9aead57a998c294e1) | — |
-| error | — | — |
+| error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/c91b0533f715446d8deab582f8316abc) | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >
