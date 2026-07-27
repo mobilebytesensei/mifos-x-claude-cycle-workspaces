@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m08-products-charges
 
-<!-- schema: v3.2 | generated: 2026-07-26T05:56:08.273Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T10:43:41.980Z -->
 
 ## Stitch Project
 
@@ -8,30 +8,30 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-26T05:56:08.218Z |
+| Generated | 2026-07-26T10:43:41.909Z |
 | Success | 6/6 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| template-loading | 1c10bb6da19f481da9778855715dc577 | 01-m08-products-charges-template-loading | PNG ✅ | HTML ✅ | ♻ resumed |
-| content | 038528d3d72b40b2ae1cbb90ffd3c14a | 02-m08-products-charges-content | PNG ✅ | HTML ✅ | ✅ generated |
-| empty | 56e103dc61154e519f953fef2e1665fa | 03-m08-products-charges-empty | PNG ✅ | HTML ✅ | ♻ resumed |
-| submitting | c40d0bf7a2694db6963fee67c9889e93 | 04-m08-products-charges-submitting | PNG ✅ | HTML ✅ | ♻ resumed |
-| config-online-only | f080b0df87004351809c023f945e3e07 | 05-m08-products-charges-config-online-only | PNG ✅ | HTML ✅ | ♻ resumed |
-| error | 8fcf6e3b308840a0a9bedaaa9041182c | 06-m08-products-charges-error | PNG ✅ | HTML ✅ | ♻ resumed |
+| template-loading | c08608ac858440f7872048c2fc7cc21a | 01-m08-products-charges-template-loading | PNG ✅ | HTML ✅ | ✅ generated |
+| content | e886aa2a4e6f44b38dcfd7ad2f33ea40 | 02-m08-products-charges-content | PNG ✅ | HTML ✅ | ✅ generated |
+| empty | 469919eea7b8436380bbafcccab00fd3 | 03-m08-products-charges-empty | PNG ✅ | HTML ✅ | ✅ generated |
+| submitting | e2af853ba18d40e3a04bdaa6d540b879 | 04-m08-products-charges-submitting | PNG ✅ | HTML ✅ | ✅ generated |
+| config-online-only | 5100636de4da47e7b044946dea20b063 | 05-m08-products-charges-config-online-only | PNG ✅ | HTML ✅ | ✅ generated |
+| error | c9a7bc6a649f4429986497a06fb41fc0 | 06-m08-products-charges-error | PNG ✅ | HTML ✅ | ✅ generated |
 
 ## Open in Figma / Stitch
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
-| template-loading | [Open](https://stitch.google.com/projects/10243803383444073820/screens/1c10bb6da19f481da9778855715dc577) | — |
-| content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/038528d3d72b40b2ae1cbb90ffd3c14a) | — |
-| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/56e103dc61154e519f953fef2e1665fa) | — |
-| submitting | [Open](https://stitch.google.com/projects/10243803383444073820/screens/c40d0bf7a2694db6963fee67c9889e93) | — |
-| config-online-only | [Open](https://stitch.google.com/projects/10243803383444073820/screens/f080b0df87004351809c023f945e3e07) | — |
-| error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/8fcf6e3b308840a0a9bedaaa9041182c) | — |
+| template-loading | [Open](https://stitch.google.com/projects/10243803383444073820/screens/c08608ac858440f7872048c2fc7cc21a) | — |
+| content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/e886aa2a4e6f44b38dcfd7ad2f33ea40) | — |
+| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/469919eea7b8436380bbafcccab00fd3) | — |
+| submitting | [Open](https://stitch.google.com/projects/10243803383444073820/screens/e2af853ba18d40e3a04bdaa6d540b879) | — |
+| config-online-only | [Open](https://stitch.google.com/projects/10243803383444073820/screens/5100636de4da47e7b044946dea20b063) | — |
+| error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/c9a7bc6a649f4429986497a06fb41fc0) | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >

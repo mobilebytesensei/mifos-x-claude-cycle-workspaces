@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m17-sync-settings
 
-<!-- schema: v3.2 | generated: 2026-07-26T06:15:48.385Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T09:36:43.488Z -->
 
 ## Stitch Project
 
@@ -8,7 +8,7 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-26T06:15:48.322Z |
+| Generated | 2026-07-26T09:36:43.488Z |
 | Success | 6/6 states |
 
 ## Screen Status
@@ -16,11 +16,11 @@
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
 | idle | 07619ded644744c2b60af94bb79b4dd7 | 01-m17-sync-settings-idle | PNG ✅ | HTML ✅ | ♻ resumed |
-| content | 1f6f23c206df4779864c33d6be95d18a | 02-m17-sync-settings-content | PNG ✅ | HTML ✅ | ✅ generated |
-| syncing | cb4251603d054d4c806963d926266d7d | 03-m17-sync-settings-syncing | PNG ✅ | HTML ✅ | ✅ generated |
+| content | 1f6f23c206df4779864c33d6be95d18a | 02-m17-sync-settings-content | PNG ✅ | HTML ✅ | ♻ resumed |
+| syncing | cb4251603d054d4c806963d926266d7d | 03-m17-sync-settings-syncing | PNG ✅ | HTML ✅ | ♻ resumed |
 | empty | 7dae146d86244db3bca4f40d4547e9a2 | 04-m17-sync-settings-empty | PNG ✅ | HTML ✅ | ♻ resumed |
 | needs-attention | 2e6cfc64e447441c89bbffd355430b1c | 05-m17-sync-settings-needs-attention | PNG ✅ | HTML ✅ | ♻ resumed |
-| error | 0d43430eb95645ac9c65035d68fab20e | 06-m17-sync-settings-error | PNG ✅ | HTML ✅ | ✅ generated |
+| error | 0d43430eb95645ac9c65035d68fab20e | 06-m17-sync-settings-error | PNG ✅ | HTML ✅ | ♻ resumed |
 
 ## Open in Figma / Stitch
 

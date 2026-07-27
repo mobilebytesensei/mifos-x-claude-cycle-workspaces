@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m12-datatables-config
 
-<!-- schema: v3.2 | generated: 2026-07-26T05:58:28.811Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T09:36:43.213Z -->
 
 ## Stitch Project
 
@@ -8,7 +8,7 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-26T05:58:28.810Z |
+| Generated | 2026-07-26T09:36:43.213Z |
 | Success | 6/6 states |
 
 ## Screen Status

@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m15-approvals-makerchecker
 
-<!-- schema: v3.2 | generated: 2026-07-26T06:05:12.561Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T09:36:43.392Z -->
 
 ## Stitch Project
 
@@ -8,7 +8,7 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-26T06:05:12.494Z |
+| Generated | 2026-07-26T09:36:43.392Z |
 | Success | 5/5 states |
 
 ## Screen Status
@@ -18,7 +18,7 @@
 | loading | 438be47bc2ed4ab9940188c3c9575a62 | 01-m15-approvals-makerchecker-loading | PNG ✅ | HTML ✅ | ♻ resumed |
 | content | 30cf255d0df14c48b9e968ae77d63e62 | 02-m15-approvals-makerchecker-content | PNG ✅ | HTML ✅ | ♻ resumed |
 | empty | d4ba2ecb6ae44f979542cefe41ab6453 | 03-m15-approvals-makerchecker-empty | PNG ✅ | HTML ✅ | ♻ resumed |
-| submitting | facfee79eb0f4540b6a83aaa0abff6e8 | 04-m15-approvals-makerchecker-submitting | PNG ✅ | HTML ✅ | ✅ generated |
+| submitting | facfee79eb0f4540b6a83aaa0abff6e8 | 04-m15-approvals-makerchecker-submitting | PNG ✅ | HTML ✅ | ♻ resumed |
 | error | 4d2c5411304d4682a39cc6e616db98cb | 05-m15-approvals-makerchecker-error | PNG ✅ | HTML ✅ | ♻ resumed |
 
 ## Open in Figma / Stitch

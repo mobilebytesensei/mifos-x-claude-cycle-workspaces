@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m03-groups-centers
 
-<!-- schema: v3.2 | generated: 2026-07-26T05:48:31.179Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T10:02:37.833Z -->
 
 ## Stitch Project
 
@@ -8,28 +8,28 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-26T05:48:31.178Z |
+| Generated | 2026-07-26T10:02:37.771Z |
 | Success | 5/5 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| loading | 8b3440e2eee24234b1c8abfc7b8a08a9 | 01-m03-groups-centers-loading | PNG ✅ | HTML ✅ | ♻ resumed |
-| content | c1e84cc9fc2b48e4987022d8408cab18 | 02-m03-groups-centers-content | PNG ✅ | HTML ✅ | ♻ resumed |
-| empty | fa06aca62de14ac9b4ed09cd94ae3846 | 03-m03-groups-centers-empty | PNG ✅ | HTML ✅ | ♻ resumed |
-| no-network | 28a6358dcbd04e3f973af0c94cbca28b | 04-m03-groups-centers-no-network | PNG ✅ | HTML ✅ | ♻ resumed |
-| error | 241b0a76e7354c3a9f10feeac5d327dd | 05-m03-groups-centers-error | PNG ✅ | HTML ✅ | ♻ resumed |
+| loading | 90db3b1349ce473ba6b13c0e16df476c | 01-m03-groups-centers-loading | PNG ✅ | HTML ✅ | ✅ generated |
+| content | 44da0e863e584caa8ea52897bb45ad7e | 02-m03-groups-centers-content | PNG ✅ | HTML ✅ | ✅ generated |
+| empty | 61e1dd88fbde42ecb74747710f5c5eb5 | 03-m03-groups-centers-empty | PNG ✅ | HTML ✅ | ✅ generated |
+| no-network | 93bc0045a26c47789ccec3fe553e5058 | 04-m03-groups-centers-no-network | PNG ✅ | HTML ✅ | ✅ generated |
+| error | 89b22fc540314094ae8528f67011699b | 05-m03-groups-centers-error | PNG ✅ | HTML ✅ | ✅ generated |
 
 ## Open in Figma / Stitch
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
-| loading | [Open](https://stitch.google.com/projects/10243803383444073820/screens/8b3440e2eee24234b1c8abfc7b8a08a9) | — |
-| content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/c1e84cc9fc2b48e4987022d8408cab18) | — |
-| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/fa06aca62de14ac9b4ed09cd94ae3846) | — |
-| no-network | [Open](https://stitch.google.com/projects/10243803383444073820/screens/28a6358dcbd04e3f973af0c94cbca28b) | — |
-| error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/241b0a76e7354c3a9f10feeac5d327dd) | — |
+| loading | [Open](https://stitch.google.com/projects/10243803383444073820/screens/90db3b1349ce473ba6b13c0e16df476c) | — |
+| content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/44da0e863e584caa8ea52897bb45ad7e) | — |
+| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/61e1dd88fbde42ecb74747710f5c5eb5) | — |
+| no-network | [Open](https://stitch.google.com/projects/10243803383444073820/screens/93bc0045a26c47789ccec3fe553e5058) | — |
+| error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/89b22fc540314094ae8528f67011699b) | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >

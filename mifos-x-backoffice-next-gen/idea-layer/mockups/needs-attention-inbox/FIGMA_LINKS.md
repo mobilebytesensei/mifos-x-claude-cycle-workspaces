@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — needs-attention-inbox
 
-<!-- schema: v3.2 | generated: 2026-07-26T06:15:49.114Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T09:36:43.531Z -->
 
 ## Stitch Project
 
@@ -8,7 +8,7 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-26T06:15:49.114Z |
+| Generated | 2026-07-26T09:36:43.531Z |
 | Success | 5/5 states |
 
 ## Screen Status
