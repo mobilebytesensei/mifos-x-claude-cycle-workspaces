@@ -1,0 +1,58 @@
+feature: client-detail-360
+
+# The client aggregate + accounts read cache-first through Store5 so the client opens
+# offline. Lifecycle mutations are written to the local outbox and replayed via
+# POST /v1/batches with a durable idempotency key (exactly-once).
+
+entries:
+  - trigger: on_mount
+    source: remote.get_client
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: client_load_failed
+    persistence_contract:
+      store: room
+      table: client_cache
+      keys: [client_id, account_no, external_id, display_name, status, office_id, staff_id, legal_form]
+      note: "CACHE_FIRST_SWR mirror of GET /v1/clients/{clientId}?associations=all; the identity header + General tab hydrate from here."
+
+  - trigger: on_mount
+    source: remote.get_client_accounts
+    target_state: content
+    loading_state: loading
+    error_state: content
+    on_error:
+      nav_target: null
+      error_code: accounts_load_failed
+    persistence_contract:
+      store: room
+      table: client_account_cache
+      keys: [client_id, account_type, account_id, account_no, product_name, status, balance]
+      note: "CACHE_FIRST_SWR mirror of GET /v1/clients/{clientId}/accounts; a failed accounts fetch degrades the Accounts tab to a retry strip, the identity header still renders."
+
+  - trigger: on_action
+    source: local.enqueue_client_command
+    target_state: content
+    loading_state: content
+    error_state: content
+    on_error:
+      nav_target: null
+      error_code: action_not_permitted
+    persistence_contract:
+      store: room
+      table: draft_outbox
+      mutation: write
+      keys: [idempotency_key, action, entity, payload_json, status, client_id]
+      note: >-
+        Activate / assignStaff / close etc. are enqueued here with a durable idempotency_key and
+        action=(ACTIVATE_CLIENT|ASSIGNSTAFF_CLIENT|…), entity=CLIENT; the offline-sync-engine replays each via
+        POST /v1/batches. A rejected replay routes to needs-attention-inbox, never silently dropped.
+
+cache:
+  strategy: cache_first_swr
+  note: "The aggregate + accounts revalidate in the background per FreshnessBands; the outbox is authoritative for in-flight mutations and never revalidated."
+
+# regenerated-provenance: idea-data-flow re-verified 2026-07-26 — entries + persistence_contract consistent with current ui.yaml + api.yaml; mtime re-stamp (isStale enriched-unstick).

@@ -1,0 +1,173 @@
+schema_version: "1.0"
+screen_id: client-list
+feature: client-list
+name: "Client Roster (search · filter · paged list)"
+archetype: list
+status: draft
+module: m02-clients
+initial_state: loading
+
+# Searchable, paged, office-scoped client roster drilled into from the M01 dashboard.
+# Each row drills into client-detail-360; a permission-gated New client FAB opens the create form.
+
+requires_permission: ["READ_CLIENT"]
+
+consumes_capabilities:
+  - has_offline_cache
+  - has_ui
+  - requires_auth
+
+business_logic:
+  kind: list
+  processing_kind: on_demand
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "core/store.ClientListStore"
+    - "core/permissions.PermissionEvaluator"
+  required_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/permissions
+    - core/network
+  description: >-
+    Loads the office-scoped client roster via GET /v1/clients (offset/limit paged, CACHE_FIRST_SWR through a
+    Store5 paging source), filters in-VM by search text and status chip, and gates the New-client affordance on
+    the CREATE_CLIENT permission. Rows drill into the 360 view.
+  description_author: claude-via-idea-plan-add
+  description_authored_at: "2026-07-25T00:00:00Z"
+
+state_model:
+  fields:
+    - name: clients
+      type: "List<ClientSummary>"
+      description: "The paged roster rows: display name, account no, status, office, assigned staff."
+    - name: query
+      type: "String"
+      description: "Active search text applied to name / account no / external id."
+    - name: statusFilter
+      type: "ClientStatus?"
+      description: "Active status filter chip; null = All."
+    - name: canCreate
+      type: "Boolean"
+      description: "Whether the PermissionSet holds CREATE_CLIENT (drives the New-client FAB visibility)."
+    - name: uiState
+      type: "ClientListScreenState"
+      description: "Loading | Content | Empty | Error."
+
+states:
+  loading:
+    description: "Reading the first page of the office-scoped roster cache-first from Store5; shows a list shimmer."
+  content:
+    description: >-
+      A paged list of client rows (name, account no, status chip, office) under a search box and status/office
+      filter chips. Scrolling to the end loads the next page. A permission-gated New-client FAB is shown when
+      CREATE_CLIENT is held. Fully browsable offline from cache.
+  empty:
+    description: "The roster (or the active search/filter) returned zero clients; shows an empty panel with a New-client affordance when permitted."
+  error:
+    description: "The first page failed to load with no usable cache; shows an error message + Retry."
+
+components:
+  - id: cl_search
+    type: search_field
+    label: "{strings.cllist_search}"
+    accessibility_label: "Search clients by name, account number or external id"
+    testTag: "client-list_search"
+    validation:
+      rules:
+        - min_length   # ignore single-character noise before issuing a search
+        - max_length   # cap query length to the Fineract search bound
+      on_violation: "queries shorter than the min length keep the current roster and do not escalate to GET /v1/search"
+    on_click:
+      action: search_clients
+      target: client-list
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Filter the roster by the entered text against display name, account no and external id; debounced in-VM over the paged source, escalating to GET /v1/search?resource=clients when the local page set is exhausted."
+        produces_state: content
+        invalidates:
+          - clients
+        action_contract_hash: "sha256:cl-search"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: cl_status_filter
+    type: filter_chip_row
+    label: "{strings.cllist_status_filter}"
+    testTag: "client-list_status_filter"
+    on_click:
+      action: filter_status
+      target: client-list
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Narrow the roster to the tapped client status (pending | active | closed) or clear back to All; a pure in-VM filter over the loaded pages, no refetch."
+        produces_state: content
+        invalidates:
+          - clients
+        action_contract_hash: "sha256:cl-filter-status"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: cl_row
+    type: list_item
+    label: "{strings.cllist_row}"
+    accessibility_label: "Open this client's 360 profile"
+    testTag: "client-list_row"
+    on_click:
+      action: open_client
+      target: client-detail-360
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Drill into the tapped client's 360 view (client-detail-360) to see identity, accounts and lifecycle actions."
+        action_contract_hash: "sha256:cl-open-client"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: cl_new_client
+    type: fab
+    label: "{strings.cllist_new_client}"
+    accessibility_label: "Start a new client application"
+    testTag: "client-list_new_client"
+    variant: primary
+    gated_permission: CREATE_CLIENT
+    description: "Shown only when CREATE_CLIENT is held; opens the dynamic client create form."
+    on_click:
+      action: new_client
+      target: dynamic-template-forms
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Open the dynamic client-create form (rendered from GET /v1/clients/template) so a new client can be captured; on submit it posts through the offline outbox and the new client appears in the roster."
+        action_contract_hash: "sha256:cl-new-client"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: cl_error_retry
+    type: button
+    label: "{strings.cllist_retry}"
+    accessibility_label: "Retry loading the client list"
+    testTag: "client-list_error_retry"
+    variant: primary
+    description: "Error-state retry — re-reads the first page of the roster."
+    on_click:
+      action: retry
+      target: client-list
+      state: loading
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        description: "Re-read the first page of the office-scoped client roster after a hard load failure; resets to loading and repopulates the list."
+        produces_state: loading
+        action_contract_hash: "sha256:cl-retry"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"

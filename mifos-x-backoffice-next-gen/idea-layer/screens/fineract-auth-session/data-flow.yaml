@@ -1,0 +1,60 @@
+feature: fineract-auth-session
+entries:
+  - trigger: on_mount
+    source: local.persisted_session
+    target_state: authenticated
+    loading_state: restoring
+    error_state: input
+    on_error:
+      nav_target: null
+      error_code: secure_store_read_failure
+    persistence_contract:
+      store: secure_settings
+      keys: [base_url, tenant_identifier, basic_auth_token, user_id, permissions_raw]
+      note: >-
+        Session{baseUrl, tenant, basicToken, userId, permissions} persisted via the multiplatform-settings SECURE
+        variant (Keystore/Keychain-wrapped). Restored verbatim on cold start so the offline app is authenticated
+        identically to the last online session. The raw password is NEVER stored — only the derived base64 Basic token.
+        permissions_raw is stored verbatim (never lowercased/split/expanded) so core/permissions rebuilds an identical
+        PermissionSet offline.
+
+  - trigger: on_sign_in
+    source: api.authenticate
+    target_state: authenticated
+    loading_state: authenticating
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: invalid_credentials_401
+    note: >-
+      Online-only login. POST /authentication returns AuthenticatedUserData; the client builds the Basic token,
+      maps the user + permissions[] into a Session, persists it encrypted, and bootstraps the PermissionSet consumed by
+      the permission-capability-engine. Nothing is persisted unless the call succeeds.
+
+  - trigger: on_401
+    source: local.session_clear
+    target_state: input
+    loading_state: restoring
+    error_state: input
+    on_error:
+      nav_target: fineract-auth-session
+      error_code: unauthorized_401_session_drop
+    note: >-
+      A 401 from any authenticated request is treated as an expired/revoked session: the AuthProvider clears the
+      encrypted store, flips isConfigured=false, and routes back to login. Never a crash.
+
+# Reads consumed by the sign_in / retry_sign_in action_contracts (ui.yaml reads_from: form_state)
+reads:
+  - name: form_state
+    source: local.login_form
+    cache: none
+    note: "The in-memory login form values (base-url, tenant, username, password) + per-field validation state."
+
+cache:
+  strategy: encrypted-persist
+  note: >-
+    Not a Store5 read-cache — the Session (base-url, tenant, basic-token, userId, permissions_raw) lives in the encrypted
+    secure settings store, keyed by user_id. The login call is online-only; everything downstream reads the cached
+    session so the app stays authenticated (and offline-usable) between launches until logout or a 401.
+
+# regenerated-provenance: idea-data-flow re-verified 2026-07-26 — entries + persistence_contract consistent with current ui.yaml + api.yaml; mtime re-stamp (isStale enriched-unstick).

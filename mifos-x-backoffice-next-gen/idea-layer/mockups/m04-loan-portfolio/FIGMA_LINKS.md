@@ -1,39 +1,39 @@
 # FIGMA_LINKS.md — m04-loan-portfolio
 
-<!-- schema: v3.2 | generated: 2026-07-17T22:06:54.570Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T10:10:10.646Z -->
 
 ## Stitch Project
 
 | Field | Value |
 |-------|-------|
-| Project URL | [4340646484225532819](https://stitch.google.com/projects/4340646484225532819) |
-| Design System ID | 6486719301524192685 |
-| Generated | 2026-07-17T22:06:54.514Z |
+| Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
+| Design System ID | 312064780206383264 |
+| Generated | 2026-07-26T10:10:10.580Z |
 | Success | 7/7 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| loading | b23e7dc3b204436ca07454a0763864c3 | 01-m04-loan-portfolio-loading | PNG ✅ | HTML ✅ | ♻ resumed |
-| content | 5e5c8251739c48e4b9eea188cef97cea | 02-m04-loan-portfolio-content | PNG ✅ | HTML ✅ | ♻ resumed |
-| empty | 4588d725a7f94d8fb6688c6b06d5d189 | 03-m04-loan-portfolio-empty | PNG ✅ | HTML ✅ | ♻ resumed |
-| action-disabled | e6f10ca994314accbb5989b13a482545 | 04-m04-loan-portfolio-action-disabled | PNG ✅ | HTML ✅ | ♻ resumed |
-| schedule-preview | a87339757c4f4a63af3c7beafb347d2e | 05-m04-loan-portfolio-schedule-preview | PNG ✅ | HTML ✅ | ♻ resumed |
-| submitting | c9b6fa15363e47e0a86f1b3b67f5692f | 06-m04-loan-portfolio-submitting | PNG ✅ | HTML ✅ | ✅ generated |
-| error | fc8a5e26942a46a9840cdbbad36b984c | 07-m04-loan-portfolio-error | PNG ✅ | HTML ✅ | ♻ resumed |
+| loading | e08261bc761843fd85d4ade61f707c6d | 01-m04-loan-portfolio-loading | PNG ✅ | HTML ✅ | ✅ generated |
+| content | 8d789053dc4340729ab95fe7349afc91 | 02-m04-loan-portfolio-content | PNG ✅ | HTML ✅ | ✅ generated |
+| empty | fe596155ae35492bb92be00c58521dd9 | 03-m04-loan-portfolio-empty | PNG ✅ | HTML ✅ | ✅ generated |
+| action-disabled | 95017f95e61a4ef9bf74d1194932c13b | 04-m04-loan-portfolio-action-disabled | PNG ✅ | HTML ✅ | ✅ generated |
+| schedule-preview | 96ddd11decc2436ab196c747d9648049 | 05-m04-loan-portfolio-schedule-preview | PNG ✅ | HTML ✅ | ✅ generated |
+| submitting | 23a8081ee9a24188ac6ec51b569315dc | 06-m04-loan-portfolio-submitting | PNG ✅ | HTML ✅ | ✅ generated |
+| error | 078d2d40800546698bc11cbe64a6c968 | 07-m04-loan-portfolio-error | PNG ✅ | HTML ✅ | ✅ generated |
 
 ## Open in Figma / Stitch
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
-| loading | [Open](https://stitch.google.com/projects/4340646484225532819/screens/b23e7dc3b204436ca07454a0763864c3) | — |
-| content | [Open](https://stitch.google.com/projects/4340646484225532819/screens/5e5c8251739c48e4b9eea188cef97cea) | — |
-| empty | [Open](https://stitch.google.com/projects/4340646484225532819/screens/4588d725a7f94d8fb6688c6b06d5d189) | — |
-| action-disabled | [Open](https://stitch.google.com/projects/4340646484225532819/screens/e6f10ca994314accbb5989b13a482545) | — |
-| schedule-preview | [Open](https://stitch.google.com/projects/4340646484225532819/screens/a87339757c4f4a63af3c7beafb347d2e) | — |
-| submitting | [Open](https://stitch.google.com/projects/4340646484225532819/screens/c9b6fa15363e47e0a86f1b3b67f5692f) | — |
-| error | [Open](https://stitch.google.com/projects/4340646484225532819/screens/fc8a5e26942a46a9840cdbbad36b984c) | — |
+| loading | [Open](https://stitch.google.com/projects/10243803383444073820/screens/e08261bc761843fd85d4ade61f707c6d) | — |
+| content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/8d789053dc4340729ab95fe7349afc91) | — |
+| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/dd31ebea03684eaeba003aeb91c4ebec) | — |
+| action-disabled | [Open](https://stitch.google.com/projects/10243803383444073820/screens/95017f95e61a4ef9bf74d1194932c13b) | — |
+| schedule-preview | [Open](https://stitch.google.com/projects/10243803383444073820/screens/96ddd11decc2436ab196c747d9648049) | — |
+| submitting | [Open](https://stitch.google.com/projects/10243803383444073820/screens/23a8081ee9a24188ac6ec51b569315dc) | — |
+| error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/078d2d40800546698bc11cbe64a6c968) | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >

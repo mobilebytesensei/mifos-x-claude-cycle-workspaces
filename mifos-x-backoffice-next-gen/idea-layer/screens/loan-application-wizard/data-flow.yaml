@@ -1,0 +1,44 @@
+feature: loan-application-wizard
+
+# The template reads cache-first so the wizard opens offline; the schedule preview is a
+# transient compute. The final application is written to the local outbox and replayed via
+# POST /v1/batches with a durable idempotency key (exactly-once).
+
+entries:
+  - trigger: on_mount
+    source: remote.get_loan_template
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: template_load_failed
+    persistence_contract:
+      store: room
+      table: loan_template_cache
+      keys: [client_id, product_id, template_json, fetched_at]
+      note: "CACHE_FIRST_SWR mirror of GET /v1/loans/template; the wizard field set + validation rules hydrate from here so an application can be drafted offline."
+
+  - trigger: on_action
+    source: local.enqueue_loan_application
+    target_state: content
+    loading_state: content
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: submit_failed
+    persistence_contract:
+      store: room
+      table: draft_outbox
+      mutation: write
+      keys: [idempotency_key, action, entity, payload_json, status, client_id]
+      note: >-
+        The completed application is enqueued here with a durable idempotency_key, action=CREATE_LOAN,
+        entity=LOAN; the offline-sync-engine replays it via POST /v1/batches. A rejected replay routes to
+        needs-attention-inbox, never silently dropped.
+
+cache:
+  strategy: cache_first_swr
+  note: "The template revalidates in the background per FreshnessBands; the schedule preview is transient (not persisted); the outbox is authoritative for the in-flight application."
+
+# regenerated-provenance: idea-data-flow re-verified 2026-07-26 — entries + persistence_contract consistent with current ui.yaml + api.yaml; mtime re-stamp (isStale enriched-unstick).

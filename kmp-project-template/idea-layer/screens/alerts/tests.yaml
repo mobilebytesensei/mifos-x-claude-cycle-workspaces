@@ -1,0 +1,147 @@
+schema_version: "1.0"
+feature_id: feat-alerts
+screen_id: alerts-list
+generated_by: "/idea-import (reverse-engineered from core store/data alerts tests; UI tests are proposed — no feature/alerts UI ships yet)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GROUNDING: the DATA-layer tests below are REAL and shipped:
+#   core/store/.../AlertsStoreTest.kt              (store constructability)
+#   core/data/.../AlertsReactiveInvalidationTest.kt (Store5 SoT re-emit across submit/delete)
+#   core/data/.../FakeAlertDao.kt                   (cold-snapshot fake modelling wasmJs)
+# The ViewModel / UI / interaction tests are PROPOSED (marked provenance: proposed) —
+# feature/alerts has no UI source, so no ViewModel/Screen tests exist yet.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Shipped data-layer tests (real source_test refs) ──
+store_and_data_tests:
+  - name: "provideAlertsStore is constructable with an in-memory DAO"
+    source_test: "AlertsStoreTest.storeIsConstructable"
+    provenance: shipped
+    setup: "provideAlertsStore(dao = FakeAlertDao())"
+    assertions: ["the OFFLINE_LOCAL_ONLY store is non-null (SourceOfTruth wiring valid)"]
+
+  - name: "alertsStream re-emits across submit and delete (Store5 SoT invalidation)"
+    source_test: "AlertsReactiveInvalidationTest.alertsStreamReEmitsAcrossSubmitAndDelete"
+    provenance: shipped
+    api_id: observe-all-alerts
+    setup: >-
+      AlertsRepositoryImpl over provideAlertsStore(FakeAlertDao) — FakeAlertDao.observeAll() is a
+      COLD snapshot that never self-re-emits (models Room 3 alpha05 on wasmJs). Live Turbine collector.
+    assertions:
+      - "initial emission is empty"
+      - "after submitAlert(a1) → stream emits {a1}"
+      - "after submitAlert(a2) → stream emits {a1, a2}"
+      - "after deleteAlert(a1) → stream emits {a2}"
+      - "proves daoFlow(\"alerts\") re-subscribes on the RoomChangeBus signal from notifyingWrite(\"alerts\") — store reader and repo writes agree on the exact 'alerts' table name"
+
+# ── Proposed state coverage (once feature/alerts UI is implemented) ──
+state_coverage:
+  provenance: proposed
+  - screen: alerts-list
+    state: loading
+    name: "list starts in Loading before the first stream emission"
+    setup: "PriceAlertsListViewModel created; alertsStream() has not emitted yet"
+    assertions: ["screenState initial value is ScreenState.Loading"]
+  - screen: alerts-list
+    state: empty
+    name: "empty repository produces Empty screen state (default first-run)"
+    setup: "AlertsRepository with no alerts (ships empty)"
+    assertions: ["screenState emits Loading then ScreenState.Empty"]
+  - screen: alerts-list
+    state: content
+    name: "configured alerts produce Content, newest-first"
+    setup: "3 alerts submitted with increasing createdAtMs"
+    assertions:
+      - "ui.alerts.size == 3"
+      - "alerts ordered by createdAt DESC (newest first)"
+  - screen: alert-addedit
+    state: content
+    name: "add-mode starts with a blank form; edit-mode hydrates from the stream item"
+    setup: "EditAlertViewModel(alertId = null) vs EditAlertViewModel(alertId = 'alert-btc-above-01')"
+    assertions:
+      - "add-mode formState.coinId == '' and does not leak an existing alert"
+      - "edit-mode formState hydrates coinId/direction/targetValue from the existing alert"
+  - screen: alert-addedit
+    state: submitted
+    name: "valid submit commits the alert and reaches Submitted"
+    setup: "EditAlertViewModel(alertId = null); coinId='bitcoin', direction=ABOVE, targetValue=75000"
+    assertions:
+      - "uiState.submit is SubmitState.Submitted"
+      - "repository.alertsStream() now contains the new alert; no PENDING draft remains"
+
+# ── Proposed interactions ──
+interactions:
+  provenance: proposed
+  - screen: alerts-list
+    component: "New alert FAB (alerts_list_fab)"
+    trigger: tap
+    name: "tapping New alert navigates to the add form"
+    expected: "nav: AddOrEditAlertRoute(alertId = null)"
+    assertions: ["NavController navigates to the add/edit screen in add mode"]
+  - screen: alerts-list
+    component: "alert row (alerts_list_row_{id})"
+    trigger: tap
+    name: "tapping an alert row opens the edit form"
+    expected: "nav: AddOrEditAlertRoute(alertId)"
+    assertions: ["NavController navigates to alert-addedit with the tapped alert id (edit mode)"]
+  - screen: alerts-list
+    component: "row delete icon (alerts_list_row_delete_{id})"
+    trigger: tap
+    name: "deleting an alert removes it"
+    expected: "action: delete_alert → repository.deleteAlert(id) → AlertDao.deleteById(id)"
+    assertions:
+      - "onDeleteAlert(id) → repository.deleteAlert(id)"
+      - "the reactive stream re-emits without the deleted alert"
+  - screen: alert-addedit
+    component: "Save button (alerts_addedit_submit)"
+    trigger: tap
+    name: "valid submit commits the alert and reaches Submitted"
+    expected: "write: repository.submitAlert(payload); SubmitState.Submitted → onSaved()"
+    assertions: ["uiState.submit is SubmitState.Submitted; the alert is persisted"]
+  - screen: alert-addedit
+    component: "Save button"
+    trigger: tap
+    name: "invalid form (blank coin or non-positive target) submit is a no-op"
+    expected: "no write, SubmitState stays Idle"
+    assertions: ["repo unchanged; outbox empty; submit == Idle"]
+
+# ── Proposed offline-outbox contract (mirrors the shipped feature/loans contract) ──
+draft_outbox_contract:
+  provenance: proposed
+  - name: "a failed (categorized-Network) submit auto-saves a PENDING draft under formKey='price_alert'"
+    setup: "EditAlertViewModel with a repository.submitAlert that throws a categorized-Network error"
+    assertions:
+      - "submit lands in SubmitState.Failed(draftSaved = true)"
+      - "exactly 1 PENDING outbox entry, formKey == 'price_alert', uniqueKey == alertId ?: 'new'"
+      - "on reconnect the OfflineSubmitSyncer(OutboxQualifiers.PriceAlert) commits it via repository.submitAlert"
+
+# ── Known data-integrity regression the UI/tests must eventually cover ──
+lossy_mapping_regression:
+  provenance: proposed
+  note: >-
+    A round-trip test is REQUIRED to catch the lossy AlertEntity mapping. Until the entity is
+    widened, submitAlert(PriceAlert(direction=PCT_CHANGE, enabled=false)) followed by a re-read
+    from alertsStream() yields direction=BELOW, enabled=true. A faithful impl should add
+    `enabled` + a direction discriminant to AlertEntity and assert exact round-trip fidelity.
+
+acceptance_criteria:
+  - ref: "AC-ALERTS-01"
+    name: "Configure a price alert"
+    given: "a user who wants to watch a coin's price"
+    when: "they tap New alert, enter a coin + direction + target value, and Save"
+    then: "the alert is upserted to the local `alerts` table and appears in the list (Saving…/Saved ✓); success pops back — no network involved"
+  - ref: "AC-ALERTS-02"
+    name: "Browse configured alerts"
+    given: "a user with configured alerts"
+    when: "they open Price Alerts"
+    then: "each alert shows coin, direction, and target value, ordered newest-first — all from local Room; an empty list shows the Empty state"
+  - ref: "AC-ALERTS-03"
+    name: "Edit / delete an alert"
+    given: "the user taps a row (edit) or the row delete icon"
+    when: "they update-and-save, or confirm delete"
+    then: "the alert is upserted/removed in the `alerts` table and the reactive list re-renders accordingly"
+  - ref: "AC-ALERTS-04"
+    name: "Offline-resilient edits"
+    given: "the user saves an alert while offline"
+    when: "the save fails as a network error"
+    then: "the edit auto-saves as a PENDING draft (formKey='price_alert') and is committed on reconnect, surfaced via DraftResumeBanner on next form open"

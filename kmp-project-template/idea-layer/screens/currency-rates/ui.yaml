@@ -1,0 +1,411 @@
+schema_version: "1.0"
+screen_id: currency-rates
+feature: feat-currency-rates
+archetype: screen-content
+platforms: [android, ios, desktop, web]
+# ─────────────────────────────────────────────────
+# Currency Rates — live FX rates by base currency, backed by the open-source
+# Frankfurter API (no auth). Reverse-engineered (read-only) from
+# feature/currency-rates + core/{network,data,store,database,model}/demo/currency.
+#
+# TWO physical screens ship in this feature's nav graph
+# (CurrencyRatesNavigation.kt → CurrencyRatesGraphRoute):
+#   - currency-rates-list (CurrencyRatesScreen / CurrencyRatesViewModel) — PRIMARY (this file)
+#       * main FX list: NETWORK_WITH_CACHE ExchangeRatesStore, base = "USD",
+#         search filter + emptyIfContent, TopAppBar FreshnessIndicator.
+#       * EMBEDDED "spot converter" facet: spotConversionRate is a SECOND stream on
+#         the same VM demonstrating CACHE_ONLY (offline) + NETWORK_ONLY (online)
+#         policy routing via SpotRateLookupStore + flatMapLatest on NetworkMonitor.
+#         It is NOT a separate nav destination — see screens[] note + state_model.derived.
+#   - rate-history (RateHistoryScreen / RateHistoryViewModel) — dynamic-key history
+#         (see related_screens).
+#
+# The "Currency Converter" in the project intent = the spotConversionRate facet
+# of CurrencyRatesViewModel; CurrencyConverterViewModelTest exercises exactly that
+# policy-routing. There is no standalone CurrencyConverterScreen/ViewModel in source.
+# ─────────────────────────────────────────────────
+# initial_state made explicit — the list stream starts ScreenState.Loading before the
+# first Room/Frankfurter emission (was implied). offline is a freshness-band overlay,
+# not a discrete entry state. Full component trees live in state_components below.
+states:
+  initial_state: loading
+  loading:
+    components: [currency_rates_root, loading_indicator]
+    description: "ScreenState.Loading — rendered by ScreenContent before the first Room/Frankfurter emission."
+  content:
+    components: [currency_rates_root, search_card, base_label, rates_list]
+    description: "Search card + base/date label + LazyColumn of code→rate rows."
+  empty:
+    components: [currency_rates_root, empty_slot]
+    description: "emptyIfContent collapses a zero-match search (or zero rates) to ScreenState.Empty; search box stays interactive."
+  error:
+    components: [currency_rates_root, error_slot]
+    description: "ScreenState.Error / NoNetwork with retry (network_error variant)."
+  offline:
+    components: [currency_rates_root, freshness_overlay]
+    description: "Freshness-band overlay (Stale/VeryStale); cached rates keep rendering as Content — not a cold entry state."
+
+# Logical surfaces this feature exposes (list + embedded converter facet + history).
+screens:
+  - id: currency-rates-list
+    name: Currency Rates
+    viewmodel: CurrencyRatesViewModel
+    route: CurrencyRatesRoute
+    store_archetype: NETWORK_WITH_CACHE   # ExchangeRatesStore (main list stream)
+    cache_strategy: stale_while_revalidate
+    initial_state: loading                # exchangeRatesStream starts ScreenState.Loading
+    states_handled: [loading, content, empty, error, offline]
+    note: "Primary FX list — base=USD, case-insensitive search filter, emptyIfContent, per-screen FreshnessIndicator."
+  - id: currency-spot-converter
+    name: Spot Conversion Rate (embedded facet)
+    viewmodel: CurrencyRatesViewModel   # same VM — spotConversionRate property
+    route: none                          # NOT a nav destination; renders inside the list VM
+    store_archetype: [NETWORK_ONLY, CACHE_ONLY]   # policy-routed by live connectivity
+    cache_strategy: policy_routed        # online→NETWORK_ONLY (skip cache), offline→CACHE_ONLY (no API call)
+    initial_state: loading                # spotConversionRate stream starts ScreenState.Loading before the first policy-routed emission
+    states_handled: [loading, content, empty, error]
+    note: >-
+      Archetype showcase. spotConversionRate = SpotRateLookupStore.asScreenStream,
+      key="USD", rebuilt via flatMapLatest whenever NetworkMonitor flips: Available
+      → FetchPolicy.NETWORK_ONLY (always-fresh spot rate), Unavailable →
+      FetchPolicy.CACHE_ONLY (read cache, never call API, avoids error flicker).
+  - id: rate-history
+    name: Rate History
+    viewmodel: RateHistoryViewModel
+    route: RateHistoryRoute
+    store_archetype: NETWORK_WITH_CACHE   # RateHistoryStore, dynamic RateHistoryKey
+    cache_strategy: stale_while_revalidate
+    initial_state: loading                # rateHistoryStream(keyFlow) starts ScreenState.Loading on the first (default INR/30d) key
+    states_handled: [loading, content, empty, error, offline]
+    note: "Historical FX for USD→{target} over {days}; currency + period FilterChips; dynamic-key flow; offline stale-fallback banner. See related_screens. Reached via the standalone NavController.navigateToRateHistory() entry (see flow.yaml) — no in-graph list→history edge in source."
+
+# ─────────────────────────────────────────────────
+# Feature business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-3)
+# ─────────────────────────────────────────────────
+business_logic:
+  kind: aggregation
+  processing_kind: on_demand   # + Store5 stale-while-revalidate background revalidation (TTL EXCHANGE_RATES)
+  processing_location: on_device
+  library_refs: [cmp-network-monitor]
+  external_library_refs: [ktorfit, ktor, store5, room]
+  description: >-
+    Stream live foreign-exchange rates for a base currency (hard-coded "USD" at
+    v1) from the open-source Frankfurter API through a Store5 NETWORK_WITH_CACHE
+    cache. On first subscription the Room source-of-truth (exchange_rates table)
+    emits any cached ExchangeRates immediately, then the Ktorfit FrankfurterApi
+    silently refreshes from GET v1/latest?from=USD (stale-while-revalidate). The
+    rates Map<String,Double> is filtered live by a case-insensitive search query
+    over the currency code; emptyIfContent collapses a zero-match filtered result
+    to ScreenState.Empty. A per-screen FreshnessSignal (time-based staleness of
+    the same StoreDataStream snapshot) drives the TopAppBar FreshnessIndicator.
+    The SAME VM also owns spotConversionRate — a second stream over
+    SpotRateLookupStore that demonstrates policy routing: it is rebuilt via
+    flatMapLatest keyed on NetworkMonitor connectivity so it adopts NETWORK_ONLY
+    when online (always-fresh point-in-time rate) and CACHE_ONLY when offline
+    (never fires a request). Rate History (sibling screen) streams a dynamic
+    RateHistoryKey(from=USD, to=<chip>, days=<chip>) — every currency/period chip
+    selection produces a new key (distinctUntilChanged) that re-drives the
+    RateHistoryStore fetch over a [today-days, today] window; a failed new key
+    carries forward the previous selection's data as a stale fallback rendered by
+    an inline OfflineDataBanner instead of a full-screen error.
+  library_note: >-
+    Store5 read-only caches (StoreFactory.createStore) — Fetcher = Ktorfit
+    FrankfurterApi wrapped in NetworkMonitor.executeWithRetry(maxAttempts=1);
+    SourceOfTruth = ExchangeRatesDao / RateHistoryDao (Room). ScreenDataStream
+    (core-base/store) owns the ScreenState + FreshnessSignal projection. Main list
+    + history use DefaultValidator.withTtl; SpotRateLookupStore has NO validator
+    (policy chosen per-callsite instead). cacheKey templates:
+    currency:exchangeRates:{base} · currency:spotRate:{base} ·
+    currency:rateHistory:{from}-{to}-{days}d.
+
+# ─────────────────────────────────────────────────
+# State model — mirrors CurrencyRatesViewModel.kt
+# ─────────────────────────────────────────────────
+state_model:
+  viewmodel: CurrencyRatesViewModel
+  base: "BaseViewModel<RatesLocalState, Nothing, RatesAction>"
+  event_type: Nothing   # no one-shot events — back is an onBackClick callback
+  state:
+    name: RatesLocalState
+    fields:
+      - { name: searchQuery, type: String, default: "\"\"", note: "Live case-insensitive filter over the rates map keys (currency codes)." }
+  derived:
+    - name: screenState
+      type: "StateFlow<ScreenState<RatesDisplay>>"
+      note: >-
+        exchangeRatesStream(base=USD).state combineContent stateFlow → RatesDisplay(base,
+        date, rates filtered by searchQuery) → emptyIfContent{ rates.isEmpty() } →
+        Loading/Content/Empty/Error/NoNetwork. RatesDisplay(base: String, date: String,
+        rates: Map<String,Double>).
+    - name: freshness
+      type: "StateFlow<FreshnessSignal>"
+      note: "Per-screen time-based staleness from the exchange-rates StoreDataStream snapshot → TopAppBar FreshnessIndicator."
+    - name: spotConversionRate
+      type: "StateFlow<ScreenState<ExchangeRates>>"
+      note: >-
+        ARCHETYPE FACET. networkMonitor.networkStatus.map{ isAvailable }.flatMapLatest{ isOnline →
+        spotRateStore.asScreenStream(key=USD, fetchPolicy = if(isOnline) NETWORK_ONLY else CACHE_ONLY) }.
+        Rebuilds whenever connectivity flips.
+  actions:
+    name: RatesAction
+    variants:
+      - { action: "Search(query: String)", payload: "query", effect: "updateState { copy(searchQuery = query) } — filters the rates map live." }
+      - { action: Retry,   payload: none, effect: "exchangeRatesStream.retry() — re-run the Store5 fetch." }
+      - { action: Refresh, payload: none, effect: "exchangeRatesStream.refresh() — force re-fetch from Frankfurter." }
+
+# ─────────────────────────────────────────────────
+# Shell — plain TopAppBar with back + inline FreshnessIndicator; no bottom nav.
+# ─────────────────────────────────────────────────
+shell:
+  bottom_nav:
+    enabled: false
+  top_app_bar:
+    enabled: true
+    title: "Currency Rates"   # screens_currencyrates_list_title
+    leading:
+      - type: icon_button
+        icon: arrow_back
+        aria_label: "Back"     # screens_currencyrates_list_back_cd
+        on_click:
+          action: "navigate_back"
+          action_contract:
+            effect: navigate
+            description: "popBackStackSafely() → return to the caller (calculators/tools hub or home)."
+    trailing:
+      - type: freshness_indicator
+        binds_to: "freshness"
+        aria_label: "Data freshness — tap to refresh"
+        on_click:
+          action: "retry"
+          action_contract:
+            effect: call_api
+            external_library_refs: [ktorfit, store5]
+            reads_from:
+              - { source: "Frankfurter GET v1/latest", query: { from: "USD" }, dto: ExchangeRates }
+            description: "RatesAction.Retry — exchangeRatesStream.retry(): re-fetch USD latest rates via the Store5 NETWORK_WITH_CACHE path and refresh the Room cache."
+
+# ─────────────────────────────────────────────────
+# State components (currency-rates-list). Loading/Empty/Error slots are
+# framework-owned (core-base/ui ScreenContent); Content = search box + base label
+# + LazyColumn of RateItem rows. offline is a freshness-band overlay, not a slot.
+# ─────────────────────────────────────────────────
+state_components:
+
+  # ── LOADING — ScreenContent renders its framework Loading slot ──
+  loading:
+    - type: loading_indicator
+      aria_label: "Loading currency rates"
+      description: "ScreenState.Loading — rendered by ScreenContent before the first Room/Frankfurter emission. Scaffold root (currency_rates_root) is always in the tree."
+
+  # ── EMPTY — emptyIfContent collapses a zero-match search (or zero rates) to Empty ──
+  empty:
+    - type: empty_slot
+      aria_label: "No currencies match your search"
+      description: >-
+        ScreenState.Empty via emptyIfContent{ it.rates.isEmpty() } — fires when the
+        search query matches no currency code (or the base has no rates). Framework
+        Empty slot; the search box stays interactive so the user can clear the query.
+
+  # ── ERROR — ScreenState.Error / NoNetwork with retry ──
+  error:
+    - type: error_slot
+      id: rates_error
+      aria_label: "Couldn't load rates — tap to retry"
+      retry_action: "retry"
+      variants:
+        - id: network_error
+          trigger: "Frankfurter unreachable / offline with cold cache → NetworkMonitor.executeWithRetry fails"
+          message: "Couldn't reach the exchange-rate service. Pull to retry."
+          note: "ScreenState.NoNetwork (or Error isNetworkError=true). With a warm Room cache the last rates render as stale Content instead of an error."
+      on_retry:
+        action: "retry"
+        action_contract:
+          effect: call_api
+          external_library_refs: [ktorfit, store5]
+          reads_from:
+            - { source: "Frankfurter GET v1/latest", query: { from: "USD" }, dto: ExchangeRates }
+          description: "RatesAction.Retry — exchangeRatesStream.retry(): re-fetch USD latest rates."
+
+  # ── OFFLINE — freshness-band overlay (Stale/VeryStale); cached rates render as Content ──
+  offline:
+    - type: freshness_overlay
+      binds_to: "freshness (FreshnessBand)"
+      aria_label: "Showing last synced rates"
+      description: >-
+        When offline with a warm cache the Store keeps serving cached ExchangeRates
+        as Content; the FreshnessIndicator in the app bar reflects a Stale/VeryStale
+        band. (Rate History renders a dedicated inline OfflineDataBanner — see
+        related_screens.)
+
+  # ── CONTENT — search card + base/date label + LazyColumn of code→rate rows ──
+  content:
+    - type: stack
+      direction: column
+      scroll: none
+      test_tag: "currency_rates_root"
+      children:
+        - type: card
+          variant: app_card
+          id: search_card
+          children:
+            - type: text_field
+              id: search_field
+              placeholder: "Search currency..."   # screens_currencyrates_list_search_placeholder
+              single_line: true
+              binds_to: "localState.searchQuery"
+              on_change:
+                action: "search"
+                action_contract:
+                  effect: update_state
+                  writes_to: { field: "RatesLocalState.searchQuery" }
+                  description: "RatesAction.Search(query) — filters data.rates by currency code, case-insensitive; emptyIfContent handles no-match."
+        - type: text
+          id: base_label
+          variant: label_medium
+          content_source: "screens_currencyrates_list_base_label — \"Base: {data.base} • {data.date}\" (e.g. Base: USD • 2026-05-25)"
+        - type: list
+          component: LazyColumn
+          id: rates_list
+          binds_to: "data.rates.entries → RateItem(code, rate)"
+          item:
+            type: row
+            id: rate_item
+            children:
+              - { type: text, variant: title_small, content_source: "currency code (e.g. EUR)" }
+              - { type: text, variant: body_medium, content_source: "rate.formatDecimal(4) (e.g. 0.9200)" }
+            note: "HorizontalDivider between rows. Row is display-only — no on_click / navigation."
+
+# ─────────────────────────────────────────────────
+# Related screen — Rate History (dynamic-key historical FX, second nav destination).
+# ─────────────────────────────────────────────────
+related_screens:
+  - screen_id: rate-history
+    viewmodel: RateHistoryViewModel
+    base: "BaseViewModel<HistoryLocalState, Nothing, HistoryAction>"
+    archetype: screen-content
+    route: "RateHistoryRoute"
+    store_archetype: NETWORK_WITH_CACHE
+    states: [loading, content, empty, error, offline]
+    initial_state: loading   # first key (default target=INR, period=30d) starts ScreenState.Loading
+    description: >-
+      Streams historical FX for USD→<target> over the last <days> days through the
+      RateHistoryStore (Store5 NETWORK_WITH_CACHE, dynamic RateHistoryKey). The VM
+      maps its local state (targetCurrency, periodDays) into a RateHistoryKey flow
+      (distinctUntilChanged) — every currency/period chip tap emits a new key that
+      re-drives the fetch over [today-days, today]. Defaults: target=INR,
+      period=30d. Currency FilterChips [INR, EUR, GBP, JPY, AUD]; period FilterChips
+      [7, 14, 30, 90]. On a failed new key the previous selection's data is carried
+      forward as a stale fallback: when FreshnessBand ∈ {Stale, VeryStale} an inline
+      OfflineDataBanner ("No network · Updated <ago>" / "No network · Cached data")
+      renders above the list instead of a full-screen NoNetwork. Body = a header
+      "USD → <to> (<start> to <end>)" (Material ArrowForward icon, not U+2192, for
+      wasmJs font safety) + a LazyColumn of (date → value.formatDecimal(4)) rows.
+    state_model:
+      state:
+        name: HistoryLocalState
+        fields:
+          - { name: targetCurrency, type: String, default: "\"INR\"", note: "USD→target; one of the currency chips." }
+          - { name: periodDays,     type: Int,    default: "30",      note: "Window in days; one of the period chips." }
+      derived:
+        - { name: screenState, type: "StateFlow<ScreenState<RateHistory>>", note: "rateHistoryStream(keyFlow).state." }
+        - { name: freshness,   type: "StateFlow<FreshnessSignal>",          note: "Per-card freshness; drives OfflineDataBanner + TopAppBar FreshnessIndicator." }
+      actions:
+        name: HistoryAction
+        variants:
+          - { action: "SelectCurrency(code: String)", payload: code, effect: "updateState { copy(targetCurrency = code) } → new RateHistoryKey." }
+          - { action: "SelectPeriod(days: Int)",       payload: days, effect: "updateState { copy(periodDays = days) } → new RateHistoryKey." }
+          - { action: Retry,                           payload: none, effect: "rateHistoryStream.retry() — re-fetch current key." }
+    components:
+      - type: card
+        variant: app_card
+        id: history_controls
+        children:
+          - { type: text, variant: label_medium, content_source: "screens_currencyrates_history_currency_label (Currency)" }
+          - type: chip_group
+            id: currency_chips
+            component: FilterChip
+            options: [INR, EUR, GBP, JPY, AUD]
+            binds_to: "localState.targetCurrency"
+            on_select:
+              action: "select_currency"
+              action_contract:
+                effect: call_api
+                external_library_refs: [ktorfit, store5]
+                reads_from:
+                  - { source: "Frankfurter GET v1/{start}..{end}", query: { from: "USD", to: "<chip>" }, dto: RateHistory }
+                description: "HistoryAction.SelectCurrency(code) — mutates targetCurrency → new RateHistoryKey re-drives the Store5 fetch."
+          - { type: text, variant: label_medium, content_source: "screens_currencyrates_history_period_label (Period)" }
+          - type: chip_group
+            id: period_chips
+            component: FilterChip
+            options: [7, 14, 30, 90]
+            label_format: "%1$dd"   # screens_currencyrates_history_period_days
+            binds_to: "localState.periodDays"
+            on_select:
+              action: "select_period"
+              action_contract:
+                effect: call_api
+                external_library_refs: [ktorfit, store5]
+                reads_from:
+                  - { source: "Frankfurter GET v1/{start}..{end}", query: { from: "USD", to: "<target>" }, dto: RateHistory }
+                description: "HistoryAction.SelectPeriod(days) — mutates periodDays → new RateHistoryKey over [today-days, today]."
+      - type: banner
+        id: offline_data_banner
+        condition: "FreshnessBand ∈ {Stale, VeryStale}"
+        content_source: "\"No network · Updated {timeAgo}\" | \"No network · Cached data\" (CloudOff icon, errorContainer)"
+      - type: row
+        id: history_header
+        content_source: "screens_currencyrates_history_usd_label (USD) + ArrowForward icon + screens_currencyrates_history_to_label \"{to} ({start} to {end})\""
+      - type: list
+        component: LazyColumn
+        id: history_list
+        binds_to: "history.rates → (point.date  →  point.value.formatDecimal(4)) rows with ArrowForward icon"
+    shell:
+      top_app_bar:
+        title: "Rate History"   # screens_currencyrates_history_title
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"   # screens_currencyrates_history_back_cd
+            on_click:
+              action: "navigate_back"
+              action_contract:
+                effect: navigate
+                description: "popBackStackSafely() → return to the currency-rates list / caller."
+        trailing:
+          - type: freshness_indicator
+            binds_to: "freshness"
+            on_click:
+              action: "retry"
+              action_contract:
+                effect: call_api
+                external_library_refs: [ktorfit, store5]
+                reads_from:
+                  - { source: "Frankfurter GET v1/{start}..{end}", query: { from: "USD", to: "<target>" }, dto: RateHistory }
+                description: "HistoryAction.Retry — rateHistoryStream.retry(): re-fetch the current key's window."
+
+# ─────────────────────────────────────────────────
+# Test tags present in source (feature/currency-rates/.../TestTags.kt) — APPEND-ONLY
+# ─────────────────────────────────────────────────
+test_tags:
+  - { id: "currency_rates_root", screen: currency-rates-list, note: "Root Scaffold of the FX list screen; always in the tree irrespective of ScreenState (asserted by CurrencyRatesScreenUiTest)." }
+  - { id: "rate_history_root",   screen: rate-history,        note: "Root Scaffold of the rate-history screen; always in the tree (asserted by RateHistoryScreenUiTest)." }
+
+# ─────────────────────────────────────────────────
+# Source provenance (reverse-engineered, read-only)
+# ─────────────────────────────────────────────────
+source_refs:
+  list_screen: "feature/currency-rates/src/commonMain/kotlin/kpt/feature/currencyrates/ui/CurrencyRatesScreen.kt"
+  list_viewmodel: "feature/currency-rates/src/commonMain/kotlin/kpt/feature/currencyrates/ui/CurrencyRatesViewModel.kt"
+  history_screen: "feature/currency-rates/src/commonMain/kotlin/kpt/feature/currencyrates/ui/RateHistoryScreen.kt"
+  history_viewmodel: "feature/currency-rates/src/commonMain/kotlin/kpt/feature/currencyrates/ui/RateHistoryViewModel.kt"
+  navigation: "feature/currency-rates/src/commonMain/kotlin/kpt/feature/currencyrates/navigation/CurrencyRatesNavigation.kt"
+  di: "feature/currency-rates/src/commonMain/kotlin/kpt/feature/currencyrates/di/CurrencyRatesModule.kt"
+  test_tags: "feature/currency-rates/src/commonMain/kotlin/kpt/feature/currencyrates/ui/TestTags.kt"
+  strings: "feature/currency-rates/src/commonMain/composeResources/values/strings.xml"
+  repository: "core/data/src/commonMain/kotlin/kpt/core/data/demo/currency/{CurrencyRepository.kt,impl/CurrencyRepositoryImpl.kt}"
+  store: "core/store/src/commonMain/kotlin/kpt/core/store/demo/currency/impl/{ExchangeRatesStore.kt,RateHistoryStore.kt} + core/store/demo/exchange/impl/SpotRateLookupStore.kt"
+  network: "core/network/src/commonMain/kotlin/kpt/core/network/demo/currency/{api/FrankfurterApi.kt,config/FrankfurterApiConfig.kt,dto/ExchangeRatesDto.kt,dto/RateHistoryDto.kt}"
+  database: "core/database/src/commonMain/kotlin/kpt/core/database/demo/currency/{dao/ExchangeRatesDao.kt,dao/RateHistoryDao.kt,entity/ExchangeRatesEntity.kt,entity/RateHistoryEntity.kt}"
+  model: "core/model/src/commonMain/kotlin/kpt/core/model/demo/currency/ExchangeRates.kt (ExchangeRates, RateHistory, RateHistoryKey, RatePoint)"
+  design_system: ["core-base/designsystem AppCard", "core-base/ui ScreenContent + FreshnessIndicator", "core/common formatDecimal + formatTimeAgo", "core/designsystem theme.spacing"]

@@ -6,8 +6,12 @@
 # Project: mifos-x-field-officer-app
 
 **Created**: 2026-03-04
-**Project Type**: kmp (kmp-app)
 **Status**: Active - Onboarding Complete
+
+| Field | Value |
+|-------|-------|
+| Type | kmp |
+| Subtype | kmp-app |
 
 ---
 

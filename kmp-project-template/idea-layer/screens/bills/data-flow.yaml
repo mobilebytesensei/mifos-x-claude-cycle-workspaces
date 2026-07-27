@@ -1,0 +1,136 @@
+# data-flow.yaml — per-screen local data flows for feature/bills (B4 Bill Reminders).
+# OFFLINE_LOCAL_ONLY: every DB entry is a Room read/write on banking_bill_reminders — NO
+# network, NO remote endpoint, NO auth. Source: BillRemindersStore (Store5 offline store) →
+# BillReminderRepository. The distinguishing B4 side-effect is the platform notification
+# scheduler (BillReminderScheduler via BillNotificationGateway) fired on submit / cancelled
+# on delete/mark-paid/disable.
+sibling: data-flow
+schema_version: "2.2.0"
+feature_id: feat-bills
+
+store:
+  name: BillRemindersStore
+  archetype: OFFLINE_LOCAL_ONLY
+  key: Unit
+  value: "List<BillReminderEntity>"
+  source_of_truth: "Room banking_bill_reminders (BillReminderDao)"
+  remote_fetcher: none
+  invalidation: "core-base/database daoFlow{}(banking_bill_reminders) — absorbs Room 3 alpha05 wasmJs async-fan-out gap"
+
+platform_side_effect:
+  capability: notification_scheduling
+  seam: BillNotificationGateway            # feature-local mockable interface
+  contract: BillReminderScheduler          # expect/actual (WorkManager · UNUserNotificationCenter · no-op stubs)
+  payload: BillReminderSchedule            # {billId, title, body, triggerAtMs}
+  compute: "BillReminderRecurrence.nextDueDate(payload, today) + reminderTriggerMs(reminderDaysBefore, 09:00 local)"
+  best_effort: true                        # permission-denied / past-instant → silent no-op; bill still persists
+
+entries:
+  # ── bills-list: reactive read — full list + upcoming window + total ──
+  - screen_id: bills-list
+    trigger: on_mount
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: banking_bill_reminders
+        mutation: read
+        columns: [id, name, amount, dueDay, recurrence, category, enabled, reminderDaysBefore, createdAtMs, updatedAtMs]
+        order: "dueDay ASC, createdAtMs ASC"
+    dtos:
+      - { name: BillReminder, role: response, api_id: observe-all-bills }
+    derived:
+      - { name: upcoming, from: "observeUpcoming(7): enabled rows whose dueDay is within next 7 days", api_id: observe-upcoming-bills }
+      - { name: totalUpcomingAmount, from: "sum(amount) over next-30-day window", api_id: observe-total-upcoming-amount }
+    produces_state: content            # empty list → empty state
+    cache:
+      strategy: source_of_truth_only   # Store5 offline — Room IS the SoT, no TTL, always FRESH
+      ttl_seconds: 0
+      key_template: "bills:all"
+    error_paths: []                    # local read — no network error class
+    notes: "Zero bills → ScreenState.Empty. combine() of 3 Flows → one BillRemindersUiState. DataFreshness.FRESH unconditionally."
+
+  # ── bills-list: mark-paid — read-modify-write + cancel notification ──
+  - screen_id: bills-list
+    trigger: on_mark_paid
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: banking_bill_reminders
+        mutation: upsert
+        filter: { id: "{billId}" }
+        columns: [updatedAtMs]
+    dtos:
+      - { name: BillReminder, role: request, api_id: upsert-bill }
+    side_effects:
+      - { capability: notification_scheduling, op: cancel, api_id: cancel-bill-notification }
+    produces_state: content
+    cache: { strategy: source_of_truth_only, ttl_seconds: 0 }
+    error_paths: []
+    notes: "getById(id) → upsert(copy(updatedAtMs=now)) → scheduler.cancel(id). Reactive stream re-emits; row bubbles to 'recently touched'."
+
+  # ── bills-list: delete — remove row + cancel notification ──
+  - screen_id: bills-list
+    trigger: on_delete
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: banking_bill_reminders
+        mutation: delete
+        filter: { id: "{billId}" }
+    dtos:
+      - { name: BillReminder, role: request, api_id: delete-bill }
+    side_effects:
+      - { capability: notification_scheduling, op: cancel, api_id: cancel-bill-notification }
+    produces_state: content
+    cache: { strategy: source_of_truth_only, ttl_seconds: 0 }
+    error_paths: []
+    notes: "repository.delete(id) + scheduler.cancel(id). VM action exposed; delete/toggle controls not yet surfaced in the shipped list row UI."
+
+  # ── bill-addedit: hydrate (edit mode) then local write + notification schedule ──
+  - screen_id: bill-addedit
+    trigger: on_mount_edit_mode         # only when billId != null
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: banking_bill_reminders
+        mutation: read
+        filter: { id: "{billId}" }
+        columns: ["*"]
+    dtos:
+      - { name: BillReminder, role: response, api_id: get-bill-by-id }
+    produces_state: content
+    cache: { strategy: none }
+    error_paths: []
+    notes: "One-shot getById in init → hydrate _formState; skipped in add-mode (billId == null). Form is user-owned thereafter — not a Flow (would clobber in-progress edits)."
+
+  - screen_id: bill-addedit
+    trigger: on_submit
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: banking_bill_reminders
+        mutation: upsert
+        columns: ["*"]
+    dtos:
+      - { name: BillReminder, role: request, api_id: upsert-bill }
+    side_effects:
+      - { capability: notification_scheduling, op: "schedule (enabled) | cancel (disabled)", api_id: schedule-bill-notification }
+    produces_state: submitted
+    write_pipeline:
+      handler: DraftSubmitHandler       # BaseDraftMutationViewModel, multi-formKey
+      form_key: bill
+      unique_key: "{billId} ?: new"
+      auto_save_draft: true
+      draft_outbox: "SubmitOutbox<BillReminder> (OutboxQualifiers.BillReminder)"
+      submit_target: "repository.upsert(payload) + scheduler.schedule/cancel  # local Room commit + best-effort OS notification"
+      states: [Idle, Submitting, Submitted, Failed]
+    error_paths:
+      - error_code: categorized.Network   # simulated in tests via an IOException-like throw
+        behavior: auto_save_draft         # silent draft → 'Saved offline — will sync when online.'
+        retry: "OfflineSubmitSyncer commits pending drafts serially on reconnect"
+    notes: >-
+      performSubmit is two-step: (1) repository.upsert; (2) if enabled → compute nextDueDate +
+      reminderTriggerMs and scheduler.schedule(BillReminderSchedule), else scheduler.cancel.
+      The scheduler call is best-effort — an OS rejection does NOT fail the submit (the bill
+      persists; in-app upcoming tile is the fallback). The 'offline' failure path is a framework
+      showcase — the real local commit does not fail on-device.

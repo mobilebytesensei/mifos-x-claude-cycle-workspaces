@@ -1,0 +1,306 @@
+schema_version: "1.0"
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/alerts — Price Alerts (reverse-engineered from shipped DATA layer).
+# A user-configured price-threshold alert for a crypto coin: "notify me when
+# <coin> goes ABOVE / BELOW <targetValue>" (or a 24h % change). Persisted
+# LOCALLY only — Room table `alerts` + a Store5 OFFLINE_LOCAL_ONLY store
+# (AlertsStore, key=Unit → List<AlertEntity>, StoreFactory.createOfflineStore).
+# NO remote fetcher, NO backend, NO auth.
+#
+# ⚠ PROVENANCE: the DATA layer (model / entity / DAO / repository / store / DI /
+# outbox / syncer) is FULLY SHIPPED and is the ground truth for this import.
+# The feature/alerts UI MODULE IS NOT YET IMPLEMENTED (feature/alerts/ has only a
+# build/ dir, no src). The two screens below are MODELED FROM THE DATA CONTRACT
+# + the repository's own doc comments (which name the intended form screen,
+# formKey="price_alert", and DraftResumeBanner). They describe the surface the
+# idea-layer SoT prescribes for implementation — they are NOT reverse-engineered
+# from shipped Compose. Composable / ViewModel / Route names are PROPOSED,
+# following the loans/rates naming convention.
+#
+# ⚠ DATA-INTEGRITY SURPRISE (lossy persistence): the domain model PriceAlert has
+# `enabled: Boolean` and a 3-way `direction` (ABOVE/BELOW/PCT_CHANGE), but the
+# Room AlertEntity has NEITHER — only `conditionAbove: Boolean`. The mapper
+# collapses ABOVE→true and BOTH BELOW & PCT_CHANGE→false; on read-back true→ABOVE,
+# false→BELOW, and `enabled` is hardcoded back to `true`. So across a save/reload
+# round-trip: PCT_CHANGE degrades to BELOW, and a disabled alert reappears enabled.
+# The form models the full domain shape; a faithful implementation must widen the
+# entity (add `enabled` + a direction discriminant) to avoid this loss.
+# ─────────────────────────────────────────────────────────────────────────────
+screen_id: alerts-list           # primary entry screen of the feature
+feature: feat-alerts
+archetype: paging-list
+platforms: [android, ios, desktop, web]
+states: [loading, content, empty, error]
+initial_state: loading          # /idea sync STEP 3 — alerts-list opens in Loading until alertsStream() first emits (mirrors state_model.initial: ScreenState.Loading)
+
+business_logic:
+  kind: crud
+  processing_kind: reactive_local
+  library_refs: [store5, room]
+  external_library_refs: [store5]
+  description: >-
+    User-configured price alerts with purely local persistence — NO backend, NO network.
+    Reads flow reactively from a Room-backed Store5 OFFLINE_LOCAL_ONLY store
+    (AlertsStore, key=Unit → List<AlertEntity>, StoreFactory.createOfflineStore) surfaced
+    through AlertsRepository.alertsStream(): Flow<List<PriceAlert>>. Writes (create / edit)
+    go through repository.submitAlert(alert) → AlertDao.upsert; delete through
+    repository.deleteAlert(id) → AlertDao.deleteById. Both writes wrap the DAO call in
+    core-base `notifyingWrite("alerts")` so the wasmJs invalidation bridge re-emits the
+    reactive stream after a mutation. The add/edit form wraps its local upsert in the
+    framework DraftSubmitHandler (multi-formKey, formKey="price_alert") + an
+    OfflineSubmitSyncer (OutboxQualifiers.PriceAlert → RoomSubmitOutbox →
+    framework_submit_drafts) so the Saving… / Saved ✓ / Saved-offline UX applies even
+    though the "submit" is a local commit with no remote call. NO notification is
+    scheduled — despite the name, an "alert" here is a stored threshold row, not a
+    push/reminder (only feature/bills wires a notification scheduler).
+
+# The Room table backing every read/write in this feature.
+data_source:
+  kind: local_room
+  store: AlertsStore                   # core/store/demo/alerts/impl/AlertsStore.kt (provideAlertsStore)
+  store_archetype: OFFLINE_LOCAL_ONLY
+  store_factory: StoreFactory.createOfflineStore
+  repository: AlertsRepository         # core/data/demo/alerts/
+  table: alerts                        # core/database/demo/alerts/AlertEntity.kt (v8→v10 migration)
+  dto: PriceAlert                      # core/model/demo/alerts/PriceAlert.kt
+  remote: none
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SCREENS  (MODELED FROM DATA CONTRACT — UI module not yet shipped)
+# ═════════════════════════════════════════════════════════════════════════════
+screens:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 1) PriceAlertsListScreen — the alerts list (paging-list, read side)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: alerts-list
+    composable: PriceAlertsListScreen        # PROPOSED — not yet in source
+    viewmodel: PriceAlertsListViewModel      # PROPOSED
+    route: PriceAlertsListRoute              # PROPOSED
+    archetype: paging-list
+    provenance: modeled-from-data-contract
+    states: [loading, content, empty, error]
+    business_logic:
+      kind: list
+      processing_kind: reactive_local
+      library_refs: [store5, room]
+      description: >-
+        Collects repository.alertsStream() into a list UiState projected to ScreenState.
+        Empty list → Empty; any alerts → Content. Each alert renders as a row: coin/symbol,
+        a direction chip (Above / Below / % Change), the target value, an enabled toggle,
+        and created-at. Rows are ordered newest-first by the DAO
+        (AlertDao.observeAll(): ORDER BY createdAt DESC).
+    shell:
+      top_app_bar:
+        enabled: true
+        title: "Price Alerts"          # screens_alerts_list_title (PROPOSED string key)
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"          # screens_alerts_list_back_cd
+            on_click:
+              action: "navigate_back"
+              action_contract:
+                effect: navigate
+                description: "popBackStackSafely() to the previous destination."
+      fab:
+        type: extended_fab
+        label: "New alert"              # screens_alerts_list_new_fab_text
+        icon: add
+        test_tag: alerts_list_fab
+        on_click:
+          action: "navigate"
+          target: "alert-addedit"
+          params: { alertId: null }
+          action_contract:
+            effect: navigate
+            description: "Navigate to AddOrEditAlertRoute(alertId=null) to add a brand-new price alert."
+    components:
+      - id: alert_row
+        type: list_item
+        variant: alert_row_card
+        test_tag: "alerts_list_row_{alert.id}"
+        repeat_for: alerts
+        description: "Per-alert card: coinId/symbol, direction chip (ABOVE/BELOW/PCT_CHANGE), targetValue, enabled state, createdAt."
+        binds:
+          - { field: coinId }
+          - { field: direction }
+          - { field: targetValue }
+          - { field: enabled }
+          - { field: createdAtMs }
+        on_click:
+          action: "navigate"
+          target: "alert-addedit"
+          params: { alertId: "{alert.id}" }
+          action_contract:
+            effect: navigate
+            description: "Tap a row → navigate to AddOrEditAlertRoute(alertId) to edit this alert (edit-mode hydrates from the current stream item)."
+      - id: alert_row_delete
+        type: icon_button
+        icon: delete
+        label: "Delete alert"           # screens_alerts_list_row_delete_cd
+        test_tag: "alerts_list_row_delete_{alert.id}"
+        repeat_for: alerts
+        on_click:
+          action: "delete_alert"
+          params: { id: "{alert.id}" }
+          action_contract:
+            effect: write
+            writes_to:
+              - { table: alerts, dto: PriceAlert, op: delete }
+            description: "viewModel.onDeleteAlert(id) → repository.deleteAlert(id) → AlertDao.deleteById(id) inside notifyingWrite(\"alerts\"); the reactive stream re-emits without the row."
+    state_model:
+      viewmodel_base: "BaseViewModel<Unit, Nothing, AlertsListAction>"   # PROPOSED
+      screen_state: "StateFlow<ScreenState<AlertsListUiState>>"
+      initial: ScreenState.Loading
+      states:
+        loading:
+          when: "alertsStream() has not yet emitted"
+          render: "ScreenContent Loading (framework default skeleton/spinner)"
+        content:
+          when: "alertsStream() emits a non-empty list"
+          render: "LazyColumn of alert rows, newest-first"
+          data: AlertsListUiState
+        empty:
+          when: "alertsStream() emits an empty list (default on first run — no alerts ship)"
+          render: "framework ScreenState.Empty default (no alerts yet)"
+        error:
+          when: "ScreenContent error slot (onRetry is a no-op — local source rarely errors)"
+          render: "framework ScreenContent error surface"
+      ui_state:
+        name: AlertsListUiState
+        fields:
+          - { name: alerts, type: "List<PriceAlert>" }
+      actions:
+        - { name: "AlertsListAction.DeleteAlert", params: { id: String }, effect: "repository.deleteAlert(id)" }
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 2) AddOrEditAlertScreen — create/edit form (input, write side, DraftSubmitHandler)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: alert-addedit
+    composable: AddOrEditAlertScreen         # PROPOSED — not yet in source
+    viewmodel: EditAlertViewModel            # PROPOSED
+    route: AddOrEditAlertRoute               # PROPOSED
+    route_args: { alertId: "String?" }       # null → add; non-null → edit
+    archetype: input
+    provenance: modeled-from-data-contract
+    states: [content, submitting, submitted, failed]
+    business_logic:
+      kind: crud
+      processing_kind: draft_mutation
+      library_refs: [store5, room]
+      external_library_refs: [store5]
+      description: >-
+        A multi-formKey BaseDraftMutationViewModel form (formKey="price_alert" — named
+        verbatim in AlertsRepository's doc). alertId==null → add (uniqueKey="new");
+        alertId!=null → edit. onSubmit() validates, builds a PriceAlert payload
+        (id = alertId ?: randomId(), createdAtMs = now for add), and performs
+        performSubmit → repository.submitAlert(payload) (purely local Room upsert).
+        autoSaveDraft=true — a failed (categorized-Network) submit silently auto-saves the
+        draft to framework_submit_drafts; on the next form open the DraftResumeBanner
+        surfaces it with Restore / Discard, and OfflineSubmitSyncer commits pending drafts
+        on reconnect via the same submit block.
+    shell:
+      top_app_bar:
+        enabled: true
+        title_add: "Add Alert"          # screens_alerts_add_title
+        title_edit: "Edit Alert"        # screens_alerts_edit_title
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"          # screens_alerts_addedit_back_cd
+            on_click:
+              action: "navigate_back"
+              action_contract: { effect: navigate, description: "popBackStackSafely()." }
+      test_tag: addedit_alert_scaffold
+    components:
+      - id: draft_resume_banner
+        type: draft_resume_banner
+        description: "core-base DraftResumeBanner — shown above the form when a PENDING/failed draft exists for formKey=\"price_alert\", uniqueKey; Restore rehydrates, Discard clears."
+        visible_when: "draftResumeState is HasDraft"
+      - { id: coin_field, type: text_field, label: "Coin (CoinGecko id or symbol)", string_key: screens_alerts_addedit_coin_label, binds: [{ field: coinId }], on_change: onCoinIdChange, note: "maps to AlertEntity.symbol; e.g. 'bitcoin', 'ethereum'" }
+      - id: direction_dropdown
+        type: dropdown
+        label: "Trigger when price is"
+        string_key: screens_alerts_addedit_direction_label      # /idea sync STEP 3 — extracted literal
+        options: [Above, Below, "% Change (24h)"]     # AlertDirection.ABOVE / BELOW / PCT_CHANGE
+        option_string_keys:                             # /idea sync STEP 3 — direction labels extracted to i18n keys
+          - { value: ABOVE,      key: screens_alerts_direction_above }
+          - { value: BELOW,      key: screens_alerts_direction_below }
+          - { value: PCT_CHANGE, key: screens_alerts_direction_pct_change }
+        binds: [{ field: direction }]
+        on_change: onDirectionChange
+        note: "⚠ AlertEntity has no PCT_CHANGE — the current mapper degrades PCT_CHANGE→BELOW on save. A faithful impl must widen the entity."
+      - { id: target_value_field, type: decimal_field, label: "Target value", string_key: screens_alerts_addedit_target_label, binds: [{ field: targetValue }], on_change: onTargetValueChange, note: "USD for ABOVE/BELOW; percent for PCT_CHANGE (per PriceAlert doc)" }
+      - id: enabled_toggle
+        type: switch
+        label: "Alert enabled"
+        string_key: screens_alerts_addedit_enabled_label        # /idea sync STEP 3 — extracted literal
+        binds: [{ field: enabled }]
+        on_change: onEnabledChange
+        note: "⚠ AlertEntity has no `enabled` column — the current mapper hardcodes enabled=true on read-back, so a disabled alert reappears enabled after reload."
+      - id: submit_button
+        type: button
+        label_add: "Save Alert"         # screens_alerts_add_submit
+        label_edit: "Update Alert"      # screens_alerts_edit_submit
+        test_tag: alerts_addedit_submit
+        enabled_when: "form.isValid && submit !is Submitting"
+        on_click:
+          action: "submit"
+          action_contract:
+            effect: write
+            writes_to:
+              - { table: alerts, dto: PriceAlert, op: upsert }
+            description: >-
+              viewModel.onSubmit() → validate → build PriceAlert payload (id = alertId ?: randomId())
+              → BaseDraftMutationViewModel.onSubmit → performSubmit → repository.submitAlert(payload)
+              → AlertDao.upsert inside notifyingWrite("alerts"). On Submitted → onSaved() pops back.
+      - id: submit_status_line
+        type: status_text
+        description: "SubmitState surface — Saving… / Saved ✓ / 'Saved offline — will sync when online.' / 'Save failed: {msg}' with Retry + Dismiss."
+        states: [Idle, Submitting, Submitted, Failed]
+      - { id: retry_button, type: button, label: "Retry", string_key: screens_alerts_addedit_retry_button, visible_when: "submit is Failed", on_change: onRetry, action_contract: { effect: write, description: "re-attempt repository.submitAlert" } }
+      - { id: dismiss_button, type: button, label: "Dismiss", string_key: screens_alerts_addedit_dismiss_button, visible_when: "submit is Failed", on_change: onDismissResult, action_contract: { effect: transform_state, description: "reset submit + clear form" } }
+    state_model:
+      viewmodel_base: "BaseDraftMutationViewModel<PriceAlert, PriceAlert>(formKey=\"price_alert\", uniqueKey=alertId ?: \"new\", autoSaveDraft=true)"   # PROPOSED
+      alertId_injection: "Koin parametersOf(alertId); koinViewModel(key = alertId)"
+      form_state:
+        name: AlertFormState
+        fields:
+          - { name: coinId, type: String, default: "" }
+          - { name: direction, type: AlertDirection, default: ABOVE }
+          - { name: targetValue, type: Double, default: 0.0 }
+          - { name: enabled, type: Boolean, default: true }
+        derived:
+          - { name: isValid, expr: "coinId.isNotBlank() && targetValue > 0" }
+      submit_state: "SubmitState { Idle | Submitting | Submitted | Failed(draftSaved) }"
+      submit_target: "repository.submitAlert(payload)  # local Room upsert — no network"
+
+# ─────────────────────────────────────────────────
+# Proposed test tags (NO source TestTags.kt exists yet — feature/alerts UI unshipped).
+# Provided so a faithful implementation adopts stable tags; NOT reverse-engineered.
+# ─────────────────────────────────────────────────
+test_tags:
+  provenance: proposed          # not present in source (UI module unshipped)
+  - { id: "alerts_list_fab", screen: alerts-list, note: "New-alert extended FAB." }
+  - { id: "alerts_list_row_{id}", screen: alerts-list, note: "Per-alert list row card." }
+  - { id: "alerts_list_row_delete_{id}", screen: alerts-list, note: "Per-row delete icon button." }
+  - { id: "addedit_alert_scaffold", screen: alert-addedit, note: "Root Scaffold of the add/edit form." }
+  - { id: "alerts_addedit_submit", screen: alert-addedit, note: "Save / Update submit button." }
+
+# ─────────────────────────────────────────────────
+# Source provenance (reverse-engineered, read-only). DATA layer is REAL + shipped;
+# UI (screen/viewmodel/navigation/strings/testtags) is NOT YET IN SOURCE.
+# ─────────────────────────────────────────────────
+source_refs:
+  model: "core/model/src/commonMain/kotlin/kpt/core/model/demo/alerts/PriceAlert.kt"
+  database: "core/database/src/commonMain/kotlin/kpt/core/database/demo/alerts/{AlertEntity.kt,AlertDao.kt}"
+  store: "core/store/src/commonMain/kotlin/kpt/core/store/demo/alerts/impl/AlertsStore.kt"
+  store_registry: "core/store/src/commonMain/kotlin/kpt/core/store/{AppStoreRegistry.kt#Alerts,di/StoreModule.kt}"
+  repository: "core/data/src/commonMain/kotlin/kpt/core/data/demo/alerts/{AlertsRepository.kt,impl/AlertsRepositoryImpl.kt}"
+  di: "core/data/src/commonMain/kotlin/kpt/core/data/di/{RepositoryModule.kt,OutboxQualifiers.kt#PriceAlert}"
+  database_schema: "core/database/src/commonMain/kotlin/kpt/core/database/AppDatabase.kt (v8→v10 migration adds `alerts`)"
+  tests: "core/store/.../AlertsStoreTest.kt · core/data/.../AlertsReactiveInvalidationTest.kt · core/data/.../FakeAlertDao.kt"
+  invalidation_bridge: "core-base/database/.../invalidation/{daoFlow,notifyingWrite}"
+  draft_pipeline: "core-base/store/.../submit/{DraftSubmitHandler,OfflineSubmitSyncer,RoomSubmitOutbox} · core-base/ui/.../submit/{MutationScreenContent,DraftResumeBanner}"
+  ui: "NOT SHIPPED — feature/alerts/ contains only build/ (no src). Screens above are modeled from the data contract."

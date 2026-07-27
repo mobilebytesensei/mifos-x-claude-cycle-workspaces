@@ -1,0 +1,125 @@
+schema_version: "1.0"
+screen_id: bills-list
+feature_id: feat-bills
+
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/bills is OFFLINE_LOCAL_ONLY — there are NO remote/RPC endpoints.
+# Every "operation" is a LOCAL Room read or write against banking_bill_reminders,
+# surfaced through BillReminderRepository (backed by BillRemindersStore, a Store5
+# offline store). The ONE non-Room operation is the platform notification-scheduling
+# side-effect (schedule-bill-notification / cancel-bill-notification) routed through
+# BillNotificationGateway → BillReminderScheduler (expect/actual). The concrete
+# transport/table wiring lives in data-flow.yaml.
+# ─────────────────────────────────────────────────────────────────────────────
+remote_endpoints: none
+source: local_room
+store: BillRemindersStore          # core/store/demo/banking/impl/BillRemindersStore.kt (OFFLINE_LOCAL_ONLY)
+repository: BillReminderRepository # core/data/demo/banking/BillReminderRepository.kt
+table: banking_bill_reminders      # core/database/demo/banking/entity/BillReminderEntity.kt
+dto: BillReminder                  # core/model/demo/banking/BillReminder.kt
+
+# Local data operations (all on-device — no network round-trip).
+api:
+  # ── Reads (reactive Flow from Room via Store5) ──
+  - operation: observe-all-bills
+    method: local-read
+    source: room
+    kind: reactive
+    request: { key: Unit, order: "dueDay ASC, createdAtMs ASC" }
+    response: { dto: BillReminder, shape: list }
+    dao: "BillReminderDao.observeAll()"
+    demo_source: bills
+    used_by: [bills-list]
+
+  - operation: observe-upcoming-bills
+    method: local-read
+    source: room
+    kind: reactive
+    request: { key: "maxDays (7)", filter: "enabled = 1 AND dueDay IN (:dueDays)" }
+    response: { dto: BillReminder, shape: list }
+    dao: "BillReminderDao.observeUpcoming(dueDays)"
+    note: "Repository computes the dueDays set from today + maxDays (calendar math lives in the repo, not the DAO)."
+    demo_source: bills
+    used_by: [bills-list]
+
+  - operation: observe-total-upcoming-amount
+    method: local-read
+    source: room
+    kind: reactive
+    request: { key: "maxDays (30)", aggregate: "sum(amount) over upcoming window" }
+    response: { dto: Double, shape: scalar }
+    dao: "BillReminderDao.observeUpcoming(...) → sumOf { amount }"
+    demo_source: bills
+    used_by: [bills-list]
+
+  - operation: observe-bill-by-id
+    method: local-read
+    source: room
+    kind: reactive
+    request: { key: billId }
+    response: { dto: BillReminder, shape: single, nullable: true }
+    dao: "BillReminderDao.observeById(id)"
+    demo_source: bills
+
+  - operation: get-bill-by-id
+    method: local-read
+    source: room
+    kind: one_shot
+    request: { key: billId }
+    response: { dto: BillReminder, shape: single, nullable: true }
+    dao: "BillReminderDao.getById(id)"
+    demo_source: bills
+    used_by: [bill-addedit]        # edit-mode form hydration + mark-paid read-modify-write
+
+  - operation: observe-bill-count
+    method: local-read
+    source: room
+    kind: reactive
+    request: { key: Unit, aggregate: count }
+    response: { dto: Int, shape: scalar }
+    dao: "BillReminderDao.count()"
+    note: "Reactive dashboard badge — exposed by the repository; not currently bound in the list UI."
+
+  # ── Writes (suspend, local commit; add/edit wraps in DraftSubmitHandler) ──
+  - operation: upsert-bill
+    method: local-write
+    source: room
+    kind: suspend
+    request: { dto: BillReminder }
+    response: { dto: BillReminder, shape: single }
+    dao: "BillReminderDao.upsert(entity)"   # @Upsert — insert-or-replace by primary key id
+    used_by: [bill-addedit, bills-list]     # bills-list uses it for mark-paid / toggle-enabled
+
+  - operation: delete-bill
+    method: local-write
+    source: room
+    kind: suspend
+    request: { key: billId }
+    response: { shape: none }
+    dao: "BillReminderDao.deleteById(id)"
+    used_by: [bills-list]
+
+  # ── Platform side-effect (NOT Room; expect/actual notification scheduler) ──
+  - operation: schedule-bill-notification
+    method: platform-schedule
+    source: platform_notification
+    kind: suspend
+    capability: notification_scheduling
+    contract: "BillNotificationGateway.schedule(BillReminderSchedule) → BillReminderScheduler.schedule(...)"
+    request: { payload: BillReminderSchedule, fields: [billId, title, body, triggerAtMs] }
+    response: { shape: none }
+    behavior: >-
+      Best-effort. triggerAtMs is computed by BillReminderRecurrence.nextDueDate +
+      reminderTriggerMs (09:00 local, reminderDaysBefore days before next due-date).
+      Past instant OR permission-denied → silent no-op; the bill still persists.
+    used_by: [bill-addedit]
+
+  - operation: cancel-bill-notification
+    method: platform-schedule
+    source: platform_notification
+    kind: suspend
+    capability: notification_scheduling
+    contract: "BillNotificationGateway.cancel(billId) → BillReminderScheduler.cancel(billId)"
+    request: { key: billId }
+    response: { shape: none }
+    used_by: [bills-list, bill-addedit]   # delete / mark-paid / toggle-disable / submit-when-disabled

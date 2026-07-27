@@ -1,0 +1,114 @@
+schema_version: "1.0"
+screen_id: coinMarkets
+# ─────────────────────────────────────────────────
+# Crypto — external CoinGecko public API v3.
+# Reverse-engineered from core/network/demo/crypto/api/CoinGeckoApi.kt (Ktorfit).
+# TWO physical endpoints:
+#   - api/v3/coins/markets   → paged coin-markets list (SHIPS: CoinMarketsScreen)
+#   - api/v3/coins/{id}      → per-coin detail (WIRED at HEAD via CoinDetailStore;
+#                              the CoinDetailScreen UI is NOT shipped yet)
+# NOT Supabase — this is a public REST API consumed through Store5 caches.
+# NO auth — CoinGecko's free public tier requires no api key.
+# ─────────────────────────────────────────────────
+external_source:
+  name: CoinGecko
+  full_name: "CoinGecko Public API v3"
+  base_url: "https://api.coingecko.com/"          # CoinGeckoApi.BASE_URL
+  transport: rest
+  client: ktorfit                                  # de.jensklingenberg.ktorfit
+  auth:
+    type: none
+    note: >-
+      No api key — the free public tier is unauthenticated. (The Ktor Auth
+      interceptor still transparently handles an HTTP 401 refresh-and-retry once
+      at the client layer, but CoinGecko public endpoints do not require a token.)
+  rate_limit: >-
+    CoinGecko free public tier ~5-15 calls/min (subject to CoinGecko's shared
+    demo-tier limits; HTTP 429 on breach). The per-page Store5 caches (2-min
+    markets TTL, 5-min detail TTL) keep round-trips well under the ceiling.
+  docs: "https://docs.coingecko.com/reference/introduction"
+
+api:
+  - operation: coingecko-coins-markets
+    method: GET
+    path: "api/v3/coins/markets"
+    source: coingecko
+    consumed_by_screen: coinMarkets                # SHIPS
+    request:
+      query:
+        vs_currency: "usd"                         # default — quote currency
+        order: "market_cap_desc"                   # default — top coins by market cap
+        per_page: "PageKey.pageSize (20; CoinMarketsViewModel.DEFAULT_PAGE_SIZE)"
+        page: "PageKey.page + 1"                   # wire is 1-indexed; PageKey.page is 0-indexed
+    response:
+      dto: "List<CoinMarketDto>"
+      shape: array
+      body:
+        item: >-
+          CoinMarketDto { id, symbol, name, image, current_price, market_cap,
+          market_cap_rank, price_change_percentage_24h?, high_24h?, low_24h? }
+        note: >-
+          CoinMarketDto.toDomain() maps to CoinMarket { id, symbol, name, imageUrl,
+          currentPrice, marketCap, marketCapRank, priceChangePercent24h, high24h,
+          low24h }. Nullable wire fields default: priceChangePercentage24h ?: 0.0;
+          high_24h/low_24h ?: currentPrice.
+    cache:
+      strategy: stale_while_revalidate             # Store5 NETWORK_WITH_CACHE archetype, paged
+      ttl: "2m"                                     # AppStoreRegistry.Ttl.COIN_MARKETS
+      source_of_truth: "CoinMarketDao (Room table coin_markets, primaryKey id, ordered by marketCapRank; page column tags the fetch page)"
+      key_template: "crypto:coinMarkets"            # PagingScreenStream cacheKey; per-page PageKey(page, pageSize)
+      store: "CoinMarketsStore (StoreFactory.createStore; reader getPage(limit, offset=page*pageSize); writer deleteByPage(page)+upsertAll)"
+      retry: "NetworkMonitor.executeWithRetry(RetryPolicy{ maxAttempts = 1 })"
+    pagination:
+      kind: offset_page
+      page_size: 20
+      wire_page_base: 1                             # requested page = PageKey.page + 1
+      room_offset: "page * pageSize"
+      order: "market_cap_desc (server) / marketCapRank ASC (Room reader)"
+      load_more: "PagingScreenContent footer trigger requests the next page on tail-scroll; end-of-list when a page returns fewer than pageSize rows"
+    demo_source: coin_markets                       # see demo-data.yaml
+    notes: >-
+      The list screen's ONLY endpoint. Each scroll page is an independent Store5
+      fetch keyed by PageKey; pages persist to Room so deep-scroll position and
+      prior pages survive process-death (store5-screen-state-persistence AC-17).
+
+  - operation: coingecko-coin-detail
+    method: GET
+    path: "api/v3/coins/{id}"
+    source: coingecko
+    consumed_by_screen: coinDetail                  # PLANNED — data-wired, UI not shipped
+    status: planned
+    request:
+      path_params:
+        id: "coin id (e.g. bitcoin, ethereum) — CoinMarket.id from the tapped row"
+      query:
+        localization: false                         # forced — drop i18n description blob
+        tickers: false
+        community_data: false
+        developer_data: false
+    response:
+      dto: CoinDetailDto
+      shape: object
+      body:
+        fields: >-
+          CoinDetailDto { id, name, symbol, image{large?}, market_data{ current_price{usd},
+          market_cap{usd}, market_cap_rank, price_change_percentage_24h, high_24h{usd},
+          low_24h{usd}, circulating_supply, max_supply? }, description{en?} }
+        note: >-
+          CoinDetailDto.toDomain() maps to CoinDetail (adds circulatingSupply,
+          maxSupply?, description over CoinMarket). USD values pulled from the
+          per-currency maps (marketData.currentPrice["usd"] etc.); absent fields
+          default to 0.0 / 0L / "".
+    cache:
+      strategy: stale_while_revalidate
+      ttl: "5m"                                     # AppStoreRegistry.Ttl.COIN_DETAIL
+      source_of_truth: "CoinDetailDao (Room table coin_detail, primaryKey id)"
+      key_template: "crypto:coinDetail:{coinId}"    # ScreenDataStream cacheKey (single String key)
+      store: "CoinDetailStore (StoreFactory.createStore; reader getById(coinId); writer upsert)"
+      retry: "NetworkMonitor.executeWithRetry(RetryPolicy{ maxAttempts = 1 })"
+    demo_source: coin_detail
+    notes: >-
+      Wired end-to-end in the data layers at HEAD (Store + repository ScreenDataStream
+      + DTO + DAO + entity) but the CoinDetailScreen UI is NOT shipped —
+      CryptoNavigation passes an intentional-noop onCoinClick. Modelled here so the
+      idea-layer reflects the full reverse-engineered API surface.

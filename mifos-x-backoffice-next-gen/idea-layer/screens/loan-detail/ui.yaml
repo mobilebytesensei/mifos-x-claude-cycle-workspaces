@@ -1,0 +1,214 @@
+schema_version: "1.0"
+screen_id: loan-detail
+feature: loan-detail
+name: "Loan Account Detail (summary · schedule · ledger · actions)"
+archetype: detail
+status: draft
+module: m04-loan-portfolio
+initial_state: loading
+
+# Single-loan drill-in from the M01 dashboard repayment tile and the M04 loan list.
+# Summary header + tabbed body (schedule / transactions / details) + a permission-gated
+# lifecycle action bar. Mutating actions route through the offline outbox (exactly-once replay).
+
+requires_permission: ["READ_LOAN"]
+
+consumes_capabilities:
+  - has_offline_cache
+  - has_ui
+  - requires_auth
+
+business_logic:
+  kind: aggregator
+  processing_kind: on_demand
+  library_refs:
+    - cmp-network-monitor
+  external_library_refs:
+    - "core/store.LoanDetailStore"
+    - "core/permissions.PermissionEvaluator"
+    - "core/database.DraftDao"
+  required_modules:
+    - core/store
+    - core/data
+    - core/database
+    - core/permissions
+    - core/network
+  description: >-
+    Loads a single loan via GET /v1/loans/{loanId}?associations=all (summary, repayment schedule,
+    transactions) cache-first through Store5, evaluates each lifecycle action against the PermissionSet and
+    the loan status, and enqueues every mutation to the offline outbox with a durable idempotency key.
+  description_author: claude-via-idea-plan-add
+  description_authored_at: "2026-07-25T00:00:00Z"
+
+state_model:
+  fields:
+    - name: loan
+      type: "LoanAccount?"
+      description: "The resolved loan aggregate: client, product, principal, status, outstanding, arrears, next installment."
+    - name: schedule
+      type: "List<RepaymentPeriod>"
+      description: "The amortised repayment schedule rows (due date, principal, interest, fees, outstanding)."
+    - name: transactions
+      type: "List<LoanTransaction>"
+      description: "Posted transactions ledger (disbursement, repayment, waiver, fee, accrual)."
+    - name: selectedTab
+      type: "LoanDetailTab"
+      description: "Schedule | Transactions | Details."
+    - name: permittedActions
+      type: "Set<LoanAction>"
+      description: "Lifecycle actions allowed for the current status AND held by the PermissionSet."
+    - name: uiState
+      type: "LoanDetailScreenState"
+      description: "Loading | Content | Empty | Error."
+
+states:
+  loading:
+    description: "Reading the loan aggregate cache-first from Store5 and resolving permitted actions; shows a summary+schedule shimmer."
+  content:
+    description: >-
+      The loan summary header (client, product, status chip, outstanding, arrears, next due) over a tabbed body
+      (Repayment schedule · Transactions · Details) and a permission-gated action bar. A stale cached loan shows
+      a background-refreshing badge; the screen is fully usable offline.
+  empty:
+    description: "The loanId resolved to no account (deleted or wrong id); shows a not-found panel with a back affordance."
+  error:
+    description: "The loan failed to load with no usable cache; shows an error message + Retry that re-reads the aggregate."
+
+components:
+  - id: ld_header
+    type: header
+    label: "{strings.loandet_header}"
+    testTag: "loan-detail_header"
+
+  - id: ld_client_link
+    type: list_item
+    label: "{strings.loandet_client_link}"
+    accessibility_label: "Open the borrower's client 360 profile"
+    testTag: "loan-detail_client_link"
+    on_click:
+      action: open_client
+      target: client-detail-360
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Open the owning client's 360 view (client-detail-360) from the loan summary header so the officer can see the client's other accounts and KYC before actioning the loan."
+        action_contract_hash: "sha256:ld-open-client"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: ld_tabs
+    type: tab_row
+    label: "{strings.loandet_tabs}"
+    testTag: "loan-detail_tabs"
+    on_click:
+      action: select_tab
+      target: loan-detail
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Switch the loan body between the repayment schedule, the transactions ledger, and the details tab; a pure in-VM tab selection over already-loaded associations, no refetch."
+        produces_state: content
+        action_contract_hash: "sha256:ld-select-tab"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: ld_repayment
+    type: button
+    label: "{strings.loandet_repayment}"
+    accessibility_label: "Make a repayment on this loan"
+    testTag: "loan-detail_repayment"
+    variant: primary
+    gated_permission: REPAYMENT_LOAN
+    description: "Shown only for an active loan when REPAYMENT_LOAN is held."
+    on_click:
+      action: make_repayment
+      target: loan-detail
+      state: content
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "core/database.DraftDao"
+        description: "Capture a repayment against the loan and enqueue POST /v1/loans/{loanId}/transactions?command=repayment to the offline outbox with a fresh durable idempotency key so it replays exactly-once on the next sync; the schedule and outstanding update on success."
+        produces_state: content
+        writes_to:
+          - table: draft_outbox
+        action_contract_hash: "sha256:ld-make-repayment"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: ld_approve
+    type: button
+    label: "{strings.loandet_approve}"
+    accessibility_label: "Approve this loan application"
+    testTag: "loan-detail_approve"
+    variant: primary
+    gated_permission: APPROVE_LOAN
+    description: "Shown for a pending-approval loan when APPROVE_LOAN is held (maker step; a checker may still be required)."
+    on_click:
+      action: approve_loan
+      target: loan-detail
+      state: content
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "core/database.DraftDao"
+        description: "Submit the loan approval command POST /v1/loans/{loanId}?command=approve through the offline outbox; if maker-checker is on, the command lands as a queued entry for a checker rather than posting immediately."
+        produces_state: content
+        writes_to:
+          - table: draft_outbox
+        action_contract_hash: "sha256:ld-approve-loan"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: ld_disburse
+    type: button
+    label: "{strings.loandet_disburse}"
+    accessibility_label: "Disburse this approved loan"
+    testTag: "loan-detail_disburse"
+    variant: primary
+    gated_permission: DISBURSE_LOAN
+    description: "Shown for an approved loan when DISBURSE_LOAN is held."
+    on_click:
+      action: disburse_loan
+      target: loan-detail
+      state: content
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "core/database.DraftDao"
+        description: "Disburse an approved loan via POST /v1/loans/{loanId}?command=disburse through the offline outbox with a durable idempotency key; the transactions ledger gains the disbursement and the schedule activates on success."
+        produces_state: content
+        writes_to:
+          - table: draft_outbox
+        action_contract_hash: "sha256:ld-disburse-loan"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"
+
+  - id: ld_error_retry
+    type: button
+    label: "{strings.loandet_retry}"
+    accessibility_label: "Retry loading the loan detail"
+    testTag: "loan-detail_error_retry"
+    variant: primary
+    description: "Error-state retry — re-reads the loan aggregate."
+    on_click:
+      action: retry
+      target: loan-detail
+      state: loading
+      action_contract:
+        effect: call_api
+        library_refs:
+          - cmp-network-monitor
+        description: "Re-read GET /v1/loans/{loanId}?associations=all after a hard load failure; resets to loading and repopulates the summary, schedule and transactions."
+        produces_state: loading
+        action_contract_hash: "sha256:ld-retry"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-07-25T00:00:00Z"

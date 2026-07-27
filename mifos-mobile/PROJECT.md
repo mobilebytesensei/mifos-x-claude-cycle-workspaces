@@ -8,6 +8,11 @@
 **Created**: 2024 (Migrated to multi-project: 2025-01-06)
 **Status**: Active (79% complete)
 
+| Field | Value |
+|-------|-------|
+| Type | kmp |
+| Subtype | kmp-app |
+
 ---
 
 ## Idea & Purpose

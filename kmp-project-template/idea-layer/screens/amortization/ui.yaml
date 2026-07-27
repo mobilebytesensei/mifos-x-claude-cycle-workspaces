@@ -1,0 +1,195 @@
+schema_version: "1.0"
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/amortization — B5 Amortization Schedule (reverse-engineered from source).
+# Full month-by-month payment schedule for ANY tracked loan.
+#
+# A READ-SIDE PROJECTION: reads ONE loan by id from LoanRepository (the same
+# OFFLINE_LOCAL_ONLY LoansStore backing feature/loans) and derives a complete
+# reducing-balance amortization table locally (computeSchedule) — NO network,
+# NO Room insert of its own, NO paging (rows are finite, ≤ 360, computed in µs;
+# LazyColumn renders lazily at draw time).
+#
+# One feature, one screen:
+#   amortization-schedule → AmortizationScheduleScreen (screen-content, read-only)
+#
+# GROUNDED: only the screen / route param / computation / columns that exist in
+# source are represented. The screen has NO user actions beyond Back — it is a
+# terminal read-only leaf reached from loan-detail's "Schedule" button.
+# ─────────────────────────────────────────────────────────────────────────────
+screen_id: amortization-schedule
+feature: feat-amortization
+archetype: screen-content
+platforms: [android, ios, desktop, web]
+states: [loading, content, empty]
+# Data-backed: the VM observes the loan by id before it can compute the schedule,
+# so the screen opens in loading until repository.observeById(loanId) first emits.
+initial_state: loading
+
+business_logic:
+  kind: projection
+  processing_kind: reactive_local
+  library_refs: [store5, room]
+  external_library_refs: [store5]
+  description: >-
+    Read-side projection of LoanRepository. The AmortizationScheduleViewModel takes
+    a loanId (Koin parametersOf), observes that single loan reactively
+    (repository.observeById(loanId)) and MAPS each emission to a ScreenState:
+    loan == null OR loan.monthsRemaining <= 0 → ScreenState.Empty; otherwise
+    ScreenState.Content(computeSchedule(loan)). computeSchedule is a pure local
+    reducing-balance amortization calculator (kotlin math only, no coroutine, no I/O):
+    for each of monthsRemaining rows —
+      interest  = balance × (annualRatePercent / 100 / 12)   (0 when rate == 0)
+      principal = min(monthlyPayment − interest, balance)     (last row clamps to balance)
+      balance   = max(0, balance − principal)
+    yielding an AmortizationRow(month, payment, principal, interest, balance) per month.
+    The screen renders these as a table (month · principal · interest · balance) plus
+    a Summary total row (total payments / total principal / total interest). There is
+    NO loading spinner beyond the framework ScreenState.Loading (WhileSubscribed initial),
+    NO error state emitted (onRetry is a no-op — a local read of an in-memory/Room loan
+    does not fail), and NO write of any kind.
+  processing_location: on_device
+  library_note: >-
+    computeSchedule + AmortizationScheduleViewModel are co-located in
+    feature/amortization/.../ui/AmortizationScheduleViewModel.kt. AmortizationRow (the
+    computed row model) lives in core/model/demo/banking/. The read source is
+    LoanRepository (core/data/demo/banking, backed by the LoansStore OFFLINE_LOCAL_ONLY
+    Store5 store). No PagingScreenStream — rows are finite and never network-fetched.
+
+# The store/table read to produce the projection. Amortization owns NO table of its
+# own — it reads a single banking_loans row and computes the schedule in memory.
+data_source:
+  kind: local_room
+  store: LoansStore                    # core/store/demo/banking/impl/LoansStore.kt (shared with feature/loans)
+  store_archetype: OFFLINE_LOCAL_ONLY
+  repository: LoanRepository           # core/data/demo/banking/LoanRepository.kt
+  table: banking_loans                 # read only (observeById) — no amortization table exists
+  dto: Loan                            # core/model/demo/banking/Loan.kt (read)
+  computed_model: AmortizationRow      # core/model/demo/banking/AmortizationRow.kt (derived, not persisted)
+  remote: none
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SCREENS
+# ═════════════════════════════════════════════════════════════════════════════
+screens:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # AmortizationScheduleScreen — the payment-schedule table (read-only projection)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: amortization-schedule
+    composable: AmortizationScheduleScreen
+    viewmodel: AmortizationScheduleViewModel
+    route: AmortizationScheduleRoute
+    route_args: { loanId: String }        # required — the loan to amortize
+    archetype: screen-content
+    states: [loading, content, empty]
+    business_logic:
+      kind: projection
+      processing_kind: reactive_local
+      library_refs: [store5, room]
+      description: >-
+        observeById(loanId).map { loan -> ScreenState } .stateIn(WhileSubscribed(5000),
+        initial = Loading). Content data is the computed List<AmortizationRow>. The table
+        is a LazyColumn: a sticky-styled header row, one zebra-striped data row per month
+        (month #, principal, interest, balance), then a HorizontalDivider + Summary total
+        row (total payments, total principal, total interest — total interest tinted error).
+        Money is formatted by a local formatMoney helper (2-dp, '$' prefix, '—' for NaN/Inf).
+    shell:
+      top_app_bar:
+        enabled: true
+        title: "Payment Schedule"          # screens_amortization_schedule_title
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"             # screens_amortization_schedule_back_cd
+            on_click:
+              action: "navigate_back"
+              action_contract:
+                effect: navigate
+                description: "popBackStackSafely() → return to the loan-detail screen that launched the schedule."
+      bottom_nav:
+        enabled: false                     # pushed destination — no bottom nav
+      test_tag: amortization_schedule_screen
+    components:
+      - id: schedule_table
+        type: table
+        variant: lazy_column
+        description: >-
+          LazyColumn amortization table. Rendered only in the Content state via the
+          framework ScreenContent { rows, _ -> AmortizationTable(rows) } slot.
+        binds:
+          - { field: rows, from: "computeSchedule(loan)", type: "List<AmortizationRow>" }
+        children:
+          - id: table_header
+            type: table_header_row
+            description: "Column headings — end-aligned labels."
+            columns:
+              - { label: "#",         weight: 0.6, from: month,     text_key: screens_amortization_schedule_header_month }
+              - { label: "Principal", weight: 1.3, from: principal, text_key: screens_amortization_schedule_header_principal }
+              - { label: "Interest",  weight: 1.3, from: interest,  text_key: screens_amortization_schedule_header_interest }
+              - { label: "Balance",   weight: 1.3, from: balance,   text_key: screens_amortization_schedule_header_balance }
+          - id: table_row
+            type: table_data_row
+            repeat_for: rows
+            description: >-
+              Per-month row (zebra striped by index parity): month number (center),
+              principal, interest (onSurfaceVariant tint), remaining balance (medium weight).
+              Note: AmortizationRow.payment exists but is NOT shown as a per-row column —
+              only its sum appears in the Summary total row.
+            binds:
+              - { field: month }
+              - { field: principal }
+              - { field: interest }
+              - { field: balance }
+          - id: summary_total_row
+            type: summary_card
+            visible_when: "rows.isNotEmpty()"
+            description: "Summary block appended after the last row (divider above)."
+            title: "Summary"                # screens_amortization_schedule_summary_title
+            lines:
+              - { label: "Total payments",  from: "rows.sumOf { payment }",   text_key: screens_amortization_schedule_summary_total_payments }
+              - { label: "Total principal", from: "rows.sumOf { principal }", text_key: screens_amortization_schedule_summary_total_principal }
+              - { label: "Total interest",  from: "rows.sumOf { interest }",  text_key: screens_amortization_schedule_summary_total_interest, emphasis: error }
+    state_model:
+      viewmodel: AmortizationScheduleViewModel
+      viewmodel_base: "BaseViewModel<Unit, Nothing, Nothing>"   # no MVI State, Event, or Action — pure read projection
+      event_type: Nothing
+      action_type: Nothing
+      loanId_injection: "Koin parametersOf(loanId); koinViewModel(key = loanId) { parametersOf(loanId) }"
+      streams:
+        - name: screenState
+          type: "StateFlow<ScreenState<List<AmortizationRow>>>"
+          note: "observeById(loanId).map { … }.stateIn(WhileSubscribed(5000), initial = ScreenState.Loading)"
+      initial: ScreenState.Loading
+      states:
+        loading:
+          when: "observeById has not yet emitted (WhileSubscribed initial value)"
+          render: "framework ScreenContent Loading (default skeleton/spinner)"
+        content:
+          when: "loan != null && loan.monthsRemaining > 0"
+          render: "AmortizationTable — header + per-month rows + Summary total row"
+          data: "List<AmortizationRow>"
+        empty:
+          when: "loan == null (unknown / deleted id) OR loan.monthsRemaining <= 0 (fully paid)"
+          render: "framework ScreenState.Empty default (nothing to amortize)"
+      handle_action: "override fun handleAction(action: Nothing) = Unit   # no user actions"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test tags present in source (feature/amortization/.../ui/TestTags.kt)
+# ─────────────────────────────────────────────────────────────────────────────
+test_tags:
+  - { id: "amortization_schedule_screen", note: "Root scaffold — always rendered regardless of load state (TestTags.AmortizationSchedule.SCREEN)." }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Source provenance (reverse-engineered, read-only)
+# ─────────────────────────────────────────────────────────────────────────────
+source_refs:
+  screen: "feature/amortization/src/commonMain/kotlin/kpt/feature/amortization/ui/AmortizationScheduleScreen.kt"
+  viewmodel: "feature/amortization/src/commonMain/kotlin/kpt/feature/amortization/ui/AmortizationScheduleViewModel.kt"
+  navigation: "feature/amortization/src/commonMain/kotlin/kpt/feature/amortization/navigation/AmortizationNavigation.kt"
+  di: "feature/amortization/src/commonMain/kotlin/kpt/feature/amortization/di/AmortizationModule.kt"
+  test_tags: "feature/amortization/src/commonMain/kotlin/kpt/feature/amortization/ui/TestTags.kt"
+  strings: "feature/amortization/src/commonMain/composeResources/values/strings.xml"
+  read_repository: "core/data/demo/banking/LoanRepository.kt (observeById)"
+  read_model: "core/model/demo/banking/Loan.kt"
+  computed_model: "core/model/demo/banking/AmortizationRow.kt"
+  design_system: ["Material3 Scaffold + TopAppBar", "core/base/ui ScreenContent", "MaterialTheme surfaceVariant zebra striping"]

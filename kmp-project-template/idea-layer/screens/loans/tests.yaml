@@ -1,0 +1,198 @@
+schema_version: "1.0"
+feature_id: feat-loans
+screen_id: loans-list
+generated_by: "/idea-import (reverse-engineered from feature/loans commonTest + core store/data tests)"
+
+# Grounded in the real source test suite:
+#   core/store/.../LoansStoreTest.kt
+#   core/data/.../LoanRepositoryTest.kt, LoanDaoTest.kt (core/database)
+#   feature/loans/commonTest: PersonalLoansListViewModelTest, LoanDetailViewModelTest,
+#     EditLoanViewModelTest, PersonalLoansListScreenUiTest, LoanDetailScreenUiTest,
+#     AddOrEditLoanScreenUiTest, LoanReminderUseCaseTest
+
+state_coverage:
+  - screen: loans-list
+    state: loading
+    name: "list starts in Loading before the first stream emission"
+    setup: "PersonalLoansListViewModel created; combine() has not emitted yet"
+    assertions:
+      - "screenState initial value is ScreenState.Loading"
+  - screen: loans-list
+    state: empty
+    name: "empty repository produces Empty screen state"
+    setup: "FakeLoanRepository with no loans"
+    source_test: "PersonalLoansListViewModelTest.emptyRepositoryProducesEmptyScreenState"
+    assertions:
+      - "screenState emits Loading then ScreenState.Empty"
+  - screen: loans-list
+    state: content
+    name: "loaned repository produces Content with consolidated totals"
+    setup: "3 loans upserted (monthlyPayment 500 + 250 + 125.50; principalRemaining 10000 + 4000 + 1500)"
+    source_test: "PersonalLoansListViewModelTest.loanedRepositoryProducesContentWithConsolidatedTotals"
+    assertions:
+      - "ui.loans.size == 3"
+      - "totalMonthlyEmi == 875.50"
+      - "totalPrincipalRemaining == 15500.0"
+      - "loans sorted soonest-due-first (L1, L2, L3)"
+  - screen: loan-detail
+    state: empty
+    name: "unknown loanId emits Empty"
+    setup: "LoanDetailViewModel(loanId = 'missing') against empty repo"
+    source_test: "LoanDetailViewModelTest.unknownLoanIdEmitsEmpty"
+    assertions:
+      - "screenState emits Loading then ScreenState.Empty"
+  - screen: loan-detail
+    state: content
+    name: "known loanId emits Content, then Empty after delete"
+    setup: "loan L1 upserted; LoanDetailViewModel(loanId = 'L1')"
+    source_test: "LoanDetailViewModelTest.knownLoanIdEmitsContentThenEmptyAfterDelete"
+    assertions:
+      - "Content.data == the saved loan"
+      - "after onDelete() the stream emits ScreenState.Empty"
+  - screen: loan-addedit
+    state: content
+    name: "add-mode starts with a blank form; edit-mode hydrates from repo"
+    setup: "EditLoanViewModel(loanId = null) vs EditLoanViewModel(loanId = 'L1') with an existing loan"
+    source_test: "EditLoanViewModelTest.addModeStartsWithBlankForm + editModeHydratesFormFromExistingLoan"
+    assertions:
+      - "add-mode formState.name == '' and does not leak an existing loan"
+      - "edit-mode formState.name == 'Old Name', principal == 12345.67"
+
+interactions:
+  - screen: loans-list
+    component: "New loan FAB (loans_list_fab)"
+    trigger: tap
+    name: "tapping New loan navigates to the add form"
+    expected: "nav: AddOrEditLoanRoute(loanId = null)"
+    assertions: ["NavController navigates to the add/edit screen in add mode"]
+  - screen: loans-list
+    component: "loan row (loans_list_row_{id})"
+    trigger: short_tap
+    name: "tapping a loan row opens its detail"
+    expected: "nav: LoanDetailRoute(loanId)"
+    assertions: ["NavController navigates to loan-detail with the tapped loan id"]
+  - screen: loans-list
+    component: "loan row (loans_list_row_{id})"
+    trigger: long_press
+    name: "long-press opens the delete-confirmation dialog"
+    expected: "action: confirm_delete (pendingDelete = loan)"
+    assertions: ["AlertDialog with the loan name is shown"]
+  - screen: loans-list
+    component: "delete dialog confirm (loans_list_delete_confirm)"
+    trigger: tap
+    name: "confirming delete removes the loan"
+    expected: "action: delete_loan → repository.delete(id)"
+    source_test: "PersonalLoansListViewModelTest.deleteLoanRemovesItFromScreenState"
+    assertions:
+      - "onDeleteLoan(id) dispatches LoansListAction.DeleteLoan"
+      - "the deleted loan is gone; remaining loan(s) intact"
+  - screen: loan-detail
+    component: "Edit button"
+    trigger: tap
+    name: "tapping Edit opens the form in edit mode"
+    expected: "nav: AddOrEditLoanRoute(loanId)"
+    assertions: ["NavController navigates to loan-addedit with the loan id"]
+  - screen: loan-detail
+    component: "Schedule button"
+    trigger: tap
+    name: "tapping Schedule opens the amortization schedule"
+    expected: "nav: AmortizationScheduleRoute(loanId)  # external feature"
+    assertions: ["NavController navigates to the amortization feature"]
+  - screen: loan-detail
+    component: "Delete button + confirm"
+    trigger: tap
+    name: "delete confirm removes the loan and pops back"
+    expected: "action: delete_loan → repository.delete(loanId) → popBack"
+    assertions: ["repository.delete(loanId) runs; nav pops to the list"]
+  - screen: loan-addedit
+    component: "Save button"
+    trigger: tap
+    name: "valid submit commits the loan and reaches Submitted"
+    expected: "write: repository.upsert(payload); SubmitState.Submitted → onSaved()"
+    source_test: "EditLoanViewModelTest.submitOnlineCommitsLoanAndReachesSubmittedState"
+    assertions:
+      - "uiState.submit is SubmitState.Submitted"
+      - "repo has 1 loan; no PENDING draft remains"
+  - screen: loan-addedit
+    component: "Save button"
+    trigger: tap
+    name: "invalid form submit is a no-op"
+    expected: "no write, SubmitState stays Idle"
+    source_test: "EditLoanViewModelTest.submitWithInvalidFormIsNoOp"
+    assertions: ["repo empty; outbox empty; submit == Idle"]
+  - screen: loan-addedit
+    component: "Save button (computed EMI)"
+    trigger: tap
+    name: "submit computes monthlyPayment from form inputs"
+    expected: "computeMonthlyEmi(10000, 12%, 12) ≈ 888.49"
+    source_test: "EditLoanViewModelTest.submitComputesMonthlyPaymentFromFormInputs"
+    assertions: ["persisted.monthlyPayment in (800, 900)"]
+  - screen: loan-addedit
+    component: "Retry / Dismiss after failure"
+    trigger: tap
+    name: "dismiss after a successful submit clears the form"
+    expected: "onDismissResult() resets submit + form"
+    source_test: "EditLoanViewModelTest.dismissResultClearsFormFields"
+    assertions: ["formState.name == ''; principal == 0.0"]
+
+api_integration:
+  - operation: observe-all-loans
+    name: "observeAll sorts soonest-due first"
+    source_test: "PersonalLoansListViewModelTest.observeAllSortsBySoonestDueFirst"
+    assertions: ["order == [early, mid, late] by nextDueDate ASC"]
+  - operation: upsert-loan
+    name: "provideLoansStore is constructable with an in-memory DAO"
+    source_test: "LoansStoreTest.storeIsConstructable"
+    assertions: ["provideLoansStore(FakeLoanDao()) is non-null"]
+
+# The multi-formKey DraftSubmitHandler contract — the feature's flagship behavior test.
+draft_outbox_contract:
+  - name: "three concurrent offline edits produce three independent PENDING drafts"
+    source_test: "EditLoanViewModelTest.threeConcurrentLoanEditsProduceThreeIndependentPendingDrafts"
+    setup: "3 VMs (loanId L1/L2/L3), shared SubmitOutbox<Loan>, repository.upsert throws a categorized-Network error"
+    assertions:
+      - "all 3 submits land in SubmitState.Failed(draftSaved = true)"
+      - "exactly 3 PENDING outbox entries, uniqueKeys == {L1, L2, L3}, all formKey == 'loan'"
+      - "each draft carries the newest payload principalRemaining (99000 / 7500 / 21000) — none overwritten"
+  - name: "add-new draft (uniqueKey='new') is distinct from an existing-loan edit draft"
+    source_test: "EditLoanViewModelTest.addNewLoanDraftIsDistinctFromExistingLoanEditDraft"
+    assertions: ["2 PENDING; keys == {NEW_LOAN_KEY, L1}"]
+  - name: "re-submit on the same loanId upserts the same draft (no duplicate)"
+    source_test: "EditLoanViewModelTest.resubmitOnSameLoanIdUpdatesTheSamePendingDraft"
+    assertions: ["1 PENDING; payload.principalRemaining == 200.0"]
+
+archetype_showcase_tests:
+  - name: "LOAD_ONCE — background Room writes do not overwrite in-progress edits"
+    source_test: "LoanDetailViewModelTest.loadOnce_stream_is_used"
+    assertions:
+      - "loadOnceScreenState emits first Content, then a background upsert produces NO further emission (expectNoEvents)"
+
+cross_module_tests:
+  - name: "LoanReminderUseCase schedules a due-date notification via WorkScheduler"
+    source_test: "LoanReminderUseCaseTest"
+    assertions:
+      - "scheduleDueDateReminder returns null when due-date is within the 1-day lead window / past"
+      - "otherwise a WorkHandle is returned for a notification 1 day before nextDueDate"
+      - "refreshLoansData enqueues a background data sync"
+
+acceptance_criteria:
+  - ref: "AC-LOANS-01"
+    name: "Track loans locally"
+    given: "a user with tracked personal loans"
+    when: "they open the loans list"
+    then: "each loan shows name, kind, principal remaining, monthly EMI, payoff progress, and next-due; totals summarize outstanding + monthly EMI — all from local Room, no network"
+  - ref: "AC-LOANS-02"
+    name: "Add / edit a loan"
+    given: "the user taps New loan (or Edit on a loan)"
+    when: "they fill the form and Save"
+    then: "monthly EMI is computed, the loan is upserted to banking_loans, and the Saving…/Saved ✓ status shows; success pops back to the list"
+  - ref: "AC-LOANS-03"
+    name: "Delete a loan"
+    given: "the user long-presses a row (or opens detail)"
+    when: "they confirm delete"
+    then: "the loan is removed from banking_loans and the reactive list re-renders without it"
+  - ref: "AC-LOANS-04"
+    name: "Offline-resilient edits (multi-draft)"
+    given: "the user edits several loans while offline"
+    when: "each save fails as a network error"
+    then: "each edit auto-saves as its own PENDING draft (one per loan), and all are committed serially on reconnect with none lost or overwritten"

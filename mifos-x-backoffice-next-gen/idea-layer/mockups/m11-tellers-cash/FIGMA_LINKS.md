@@ -1,41 +1,41 @@
 # FIGMA_LINKS.md — m11-tellers-cash
 
-<!-- schema: v3.2 | generated: 2026-07-17T22:45:08.439Z -->
+<!-- schema: v3.2 | generated: 2026-07-26T09:36:43.142Z -->
 
 ## Stitch Project
 
 | Field | Value |
 |-------|-------|
-| Project URL | [4340646484225532819](https://stitch.google.com/projects/4340646484225532819) |
-| Design System ID | 6971225134039640611 |
-| Generated | 2026-07-17T22:45:08.438Z |
-| Success | 7/8 states |
+| Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
+| Design System ID | 312064780206383264 |
+| Generated | 2026-07-26T09:36:43.142Z |
+| Success | 8/8 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| loading | ff85f8f8ed8942dfb3c70c9002c9e178 | 01-m11-tellers-cash-loading | PNG ✅ | HTML ✅ | ♻ resumed |
-| content | cbac413a480a4abab502eca0c368018e | 02-m11-tellers-cash-content | PNG ✅ | HTML ✅ | ♻ resumed |
-| empty | 43adb90fa43643c9b16c030f083f4d19 | 03-m11-tellers-cash-empty | PNG ✅ | HTML ✅ | ♻ resumed |
-| submitting | ae844bdd064045f4a9f9fd9ca1ef6a4b | 04-m11-tellers-cash-submitting | PNG ✅ | HTML ✅ | ♻ resumed |
-| queued_offline | 6e445c3710b2482e95ff6725d690f9af | 05-m11-tellers-cash-queued_offline | PNG ✅ | HTML ✅ | ♻ resumed |
-| pending_approval | — | 06-m11-tellers-cash-pending_approval | PNG ❌ | HTML ❌ | ❌ canon-lock-fallback-source-missing: preview-missing: /Users/therajanmaurya/project-development/claude-product-cycle/workspaces/mifos-x/mifos-x-backoffice-next-gen/idea-layer/screens/m11-tellers-cash/preview/pending_approval.html (No such file or directory (os error 2): readfile '/Users/therajanmaurya/project-development/claude-product-cycle/workspaces/mifos-x/mifos-x-backoffice-next-gen/idea-layer/screens/m11-tellers-cash/preview/pending_approval.html') |
-| error | 584055c0375d4881b058e5c1805d4742 | 07-m11-tellers-cash-error | PNG ✅ | HTML ✅ | ♻ resumed |
-| no_network | bfa5e2a4d8764cfea58ae392e0a8e54d | 08-m11-tellers-cash-no_network | PNG ✅ | HTML ✅ | ♻ resumed |
+| loading | d79f943d6fd5426fa0ee17c88ab16a27 | 01-m11-tellers-cash-loading | PNG ✅ | HTML ✅ | ♻ resumed |
+| content | 5500e0d02c6c40a393a06249c39fed3c | 02-m11-tellers-cash-content | PNG ✅ | HTML ✅ | ♻ resumed |
+| empty | 3ff261bd7d914e2fbcffb82326315581 | 03-m11-tellers-cash-empty | PNG ✅ | HTML ✅ | ♻ resumed |
+| submitting | 9379bd3de3164c26828bcfe1f4719814 | 04-m11-tellers-cash-submitting | PNG ✅ | HTML ✅ | ♻ resumed |
+| queued_offline | 12f65aca78544c43bf433f8b43314200 | 05-m11-tellers-cash-queued_offline | PNG ✅ | HTML ✅ | ♻ resumed |
+| pending_approval | 64f0213740e642a69c96136308381653 | 06-m11-tellers-cash-pending_approval | PNG ✅ | HTML ✅ | ♻ resumed |
+| error | 4b57c415ad324aa4a12f6e45b636027d | 07-m11-tellers-cash-error | PNG ✅ | HTML ✅ | ♻ resumed |
+| no_network | dfcb33ec98b74216bb905575b0f51dfa | 08-m11-tellers-cash-no_network | PNG ✅ | HTML ✅ | ♻ resumed |
 
 ## Open in Figma / Stitch
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
-| loading | [Open](https://stitch.google.com/projects/4340646484225532819/screens/ff85f8f8ed8942dfb3c70c9002c9e178) | — |
-| content | [Open](https://stitch.google.com/projects/4340646484225532819/screens/cbac413a480a4abab502eca0c368018e) | — |
-| empty | [Open](https://stitch.google.com/projects/4340646484225532819/screens/43adb90fa43643c9b16c030f083f4d19) | — |
-| submitting | [Open](https://stitch.google.com/projects/4340646484225532819/screens/ae844bdd064045f4a9f9fd9ca1ef6a4b) | — |
-| queued_offline | [Open](https://stitch.google.com/projects/4340646484225532819/screens/6e445c3710b2482e95ff6725d690f9af) | — |
-| pending_approval | — | — |
-| error | [Open](https://stitch.google.com/projects/4340646484225532819/screens/584055c0375d4881b058e5c1805d4742) | — |
-| no_network | [Open](https://stitch.google.com/projects/4340646484225532819/screens/bfa5e2a4d8764cfea58ae392e0a8e54d) | — |
+| loading | [Open](https://stitch.google.com/projects/10243803383444073820/screens/d79f943d6fd5426fa0ee17c88ab16a27) | — |
+| content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/5500e0d02c6c40a393a06249c39fed3c) | — |
+| empty | [Open](https://stitch.google.com/projects/10243803383444073820/screens/3ff261bd7d914e2fbcffb82326315581) | — |
+| submitting | [Open](https://stitch.google.com/projects/10243803383444073820/screens/9379bd3de3164c26828bcfe1f4719814) | — |
+| queued_offline | [Open](https://stitch.google.com/projects/10243803383444073820/screens/12f65aca78544c43bf433f8b43314200) | — |
+| pending_approval | [Open](https://stitch.google.com/projects/10243803383444073820/screens/64f0213740e642a69c96136308381653) | — |
+| error | [Open](https://stitch.google.com/projects/10243803383444073820/screens/4b57c415ad324aa4a12f6e45b636027d) | — |
+| no_network | [Open](https://stitch.google.com/projects/10243803383444073820/screens/dfcb33ec98b74216bb905575b0f51dfa) | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >

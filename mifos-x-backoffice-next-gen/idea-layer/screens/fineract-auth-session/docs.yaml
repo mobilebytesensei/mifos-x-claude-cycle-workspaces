@@ -1,0 +1,194 @@
+feature: fineract-auth-session
+status: designed
+cluster: foundation
+module: foundation
+priority: must_have
+new_infra: true
+is_primary_flow: true
+is_auth_feature: true
+has_ui: true
+has_api: true
+has_server: false
+capabilities: []
+requires_features:
+  - permission-capability-engine
+acceptance_refs:
+  - >-
+    Login with base-URL + tenant + username + password authenticates via HTTP Basic (base64 username:password) +
+    Fineract-Platform-TenantId; a real AuthProvider replaces NoOpAuthProvider and reports isConfigured=true
+  - >-
+    Session (base-url, tenant, basic-token, userId, permission code set) persisted encrypted via secure
+    multiplatform-settings; restored on cold start; cleared on logout; a 401 drops the session and routes to login
+  - >-
+    An authenticated Ktorfit/Ktor Fineract client over core-base/network injects the dynamic base-URL + Basic auth +
+    tenant header — the transport every data feature consumes; POST /authentication returns the user + permissions[]
+plan_ref: idea-plan.yaml#features[fineract-auth-session]
+summary: >-
+  core/auth — the classic Fineract Basic-auth login + session foundation. A tenant login screen (base-URL, tenant
+  identifier default `default`, username, password) authenticates against POST /fineract-provider/api/v1/authentication;
+  the returned user + permissions[] populate the PermissionSet that core/permissions PermissionEvaluator consumes. A
+  real AuthProvider (replacing NoOpAuthProvider) holds the session (base-url, tenant, basic-token, authenticated userId,
+  permission codes), persists it encrypted, restores it on cold start, clears it on logout, and drops it on 401. An
+  authenticated Fineract client over core-base/network KtorHttpClient injects the dynamic base-URL + Basic auth + tenant
+  header — the transport every one of the 21 data features rides on. Offline-first: the session is cached; the login
+  call itself is online-only.
+metadata:
+  category: native-capability
+  implementation_ready: true
+  impl_ready_at: '2026-07-22T01:20:00Z'
+  impl_ready_schema: v2
+contracts:
+  - capability: basic_auth_login
+    platform_spec: >-
+      POST /fineract-provider/api/v1/authentication?tenantIdentifier={tenant} with {username,password}; on success build
+      basicToken=base64("{username}:{password}"), store Session{baseUrl,tenant,basicToken,userId,permissions}; every
+      subsequent request carries Authorization: Basic {basicToken} + Fineract-Platform-TenantId: {tenant}
+    permission: none
+    error_cases:
+      - invalid_credentials_401
+      - invalid_base_url
+      - network_unreachable
+      - two_factor_or_password_change_required
+  - capability: session_persist_restore
+    platform_spec: >-
+      Session persisted encrypted via multiplatform-settings secure variant (Keystore/Keychain-wrapped): keys base_url,
+      tenant_identifier, basic_auth_token, user_id, permissions_raw. Restored verbatim on cold start so the offline app
+      is authenticated identically to the last online session; cleared atomically on logout / 401 drop
+    permission: none
+    error_cases:
+      - secure_store_read_failure
+      - secure_store_write_failure
+  - capability: authenticated_fineract_client
+    platform_spec: >-
+      Ktorfit client over core-base/network KtorHttpClient with a dynamic base-URL provider + an auth+tenant request
+      interceptor (Authorization: Basic + Fineract-Platform-TenantId); a 401 emits an unauthorized event that drops the
+      session and routes to login. The single transport every data feature's services are built on
+    permission: none
+    error_cases:
+      - unauthorized_401_session_drop
+      - client_not_configured
+libraries:
+  - capability: authenticated_fineract_client
+    library: ktorfit
+    version: 2.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: basic_auth_login
+    library: ktor-client
+    version: 3.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: basic_auth_login
+    library: kotlinx-serialization
+    version: 1.7.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: session_persist_restore
+    library: multiplatform-settings
+    version: 1.2.x
+    targets:
+      - android
+      - ios
+      - desktop
+vm_actions:
+  - name: RestoreSession
+    signature: private fun restoreSession()
+    state_mutations:
+      - uiState=Restoring
+      - uiState=Authenticated(session)
+      - uiState=Input
+    side_effects:
+      - AuthProvider.restoreFromSecureStore()
+    error_handling:
+      SecureStoreReadFailure: uiState=Input; log; require fresh login
+  - name: UpdateField
+    signature: 'private fun onFieldChanged(field: LoginField, value: String)'
+    state_mutations:
+      - formState=<field updated>
+      - validationErrors=<recomputed>
+    side_effects: []
+    error_handling: {}
+  - name: SignIn
+    signature: private fun signIn()
+    state_mutations:
+      - uiState=Authenticating
+      - uiState=Authenticated(session) | uiState=Error(reason)
+      - session=<built from AuthenticatedUserData>
+    side_effects:
+      - AuthProvider.authenticate(baseUrl, tenant, username, password)
+      - SecureSessionStore.persist(session)
+      - PermissionEvaluator.bootstrap(session.permissions)
+    error_handling:
+      InvalidCredentials401: uiState=Error(invalid_credentials); keep form values; do not persist
+      InvalidBaseUrl: uiState=Error(invalid_base_url); highlight base-url field
+      NetworkError: uiState=Error(network); offer Retry
+      PasswordChangeOr2FARequired: uiState=Error(auth_step_required); surface the server-required next step
+  - name: RetrySignIn
+    signature: private fun retrySignIn()
+    state_mutations:
+      - uiState=Authenticating
+      - uiState=Authenticated | Error
+    side_effects:
+      - AuthProvider.authenticate(baseUrl, tenant, username, password)
+    error_handling:
+      NetworkError: uiState=Error(network); keep last inputs
+  - name: Logout
+    signature: fun logout()
+    state_mutations:
+      - session=null
+      - uiState=Input
+    side_effects:
+      - SecureSessionStore.clear()
+      - AuthProvider.clearSession()
+    error_handling: {}
+  - name: OnUnauthorized
+    signature: fun onUnauthorized()
+    state_mutations:
+      - session=null
+      - uiState=Input
+    side_effects:
+      - SecureSessionStore.clear()
+      - sendEvent(NavigateToLogin)
+    error_handling: {}
+error_cases:
+  - invalid_credentials_401
+  - invalid_base_url
+  - network_unreachable
+  - two_factor_or_password_change_required
+  - secure_store_read_failure
+  - secure_store_write_failure
+  - unauthorized_401_session_drop
+  - client_not_configured
+test_fixtures:
+  source: screens/fineract-auth-session/tests.yaml
+  scenario_count: 8
+  priority_distribution:
+    high: 6
+    medium: 2
+    low: 0
+scaffolded_at: '2026-07-22T01:20:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-22T01:35:00Z'
+enriched_by: /idea-feature-enrich
+approve_hash: sha256:618df2a0e663a094e5b68702355e5cdc5b6557808d0bfdc4f1443567697a7d54
+approved_at: '2026-07-22T01:45:00Z'
+approved_by: /idea approve
+approve_predicate_version: 1.0.0
+approve_contract_version: 2.0.0
+status_history:
+  - from: enriched
+    to: approved
+    at: '2026-07-22T01:45:00Z'
+    by: /idea approve
+    contract_version: 2.0.0
+    bypass_flags: []
+  - from: approved
+    to: designed
+    at: '2026-07-26T05:41:18.394Z'
+    by: /idea-feature-stitch

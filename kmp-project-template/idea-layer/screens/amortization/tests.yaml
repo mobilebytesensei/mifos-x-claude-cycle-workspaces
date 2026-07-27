@@ -1,0 +1,118 @@
+schema_version: "1.0"
+feature_id: feat-amortization
+screen_id: amortization-schedule
+generated_by: "/idea-import (reverse-engineered from feature/amortization commonTest)"
+
+# Grounded in the real source test suite:
+#   feature/amortization/commonTest:
+#     AmortizationScheduleViewModelTest.kt (computeSchedule unit + ViewModel state tests)
+#     AmortizationScheduleScreenUiTest.kt  (Compose UI — always-rendered scaffold)
+#     FakeLoanRepository.kt                (in-memory LoanRepository for both suites)
+
+state_coverage:
+  - screen: amortization-schedule
+    state: loading
+    name: "schedule starts in Loading before the first stream emission"
+    setup: "AmortizationScheduleViewModel(FakeLoanRepository(), loanId = 'x'); observeById has not emitted"
+    source_test: "AmortizationScheduleViewModelTest.screenState_emitsLoading_initially"
+    assertions:
+      - "screenState.value is ScreenState.Loading"
+  - screen: amortization-schedule
+    state: empty
+    name: "unknown loanId emits Empty"
+    setup: "empty FakeLoanRepository; viewModel('nonexistent')"
+    source_test: "AmortizationScheduleViewModelTest.screenState_emitsEmpty_whenLoanNotFound"
+    assertions:
+      - "screenState emits Loading then ScreenState.Empty"
+  - screen: amortization-schedule
+    state: empty
+    name: "fully-paid loan (monthsRemaining == 0) emits Empty"
+    setup: "seed a loan with monthsRemaining = 0; viewModel('l3')"
+    source_test: "AmortizationScheduleViewModelTest.screenState_emitsEmpty_whenMonthsRemainingIsZero"
+    assertions:
+      - "screenState emits Loading then ScreenState.Empty"
+  - screen: amortization-schedule
+    state: content
+    name: "known loan emits Content with a row per remaining month"
+    setup: "seed a loan (monthsRemaining = 6); viewModel('l2')"
+    source_test: "AmortizationScheduleViewModelTest.screenState_emitsContent_withCorrectRowCount"
+    assertions:
+      - "screenState emits Loading then ScreenState.Content<List<AmortizationRow>>"
+      - "Content.data.size == 6 (== loan.monthsRemaining)"
+  - screen: amortization-schedule
+    state: content
+    name: "the always-rendered scaffold is displayed (Compose UI)"
+    setup: "real AmortizationScheduleViewModel(FakeLoanRepository(), 'test-loan') wrapped in KptTheme"
+    source_test: "AmortizationScheduleScreenUiTest.screenIsDisplayed"
+    assertions:
+      - "node with tag amortization_schedule_screen is displayed regardless of load state"
+
+interactions:
+  - screen: amortization-schedule
+    component: "top_app_bar back (icon_button)"
+    trigger: tap
+    name: "tapping back pops the back stack to the loan detail"
+    expected: "nav: back"
+    assertions:
+      - "onBackClick invoked → popBackStackSafely() returns to LoanDetailScreen"
+  - screen: amortization-schedule
+    component: "schedule table"
+    trigger: none
+    name: "the table is display-only — no rows are clickable"
+    expected: "no action, no forward navigation"
+    assertions:
+      - "the table renders header + per-month rows + Summary; no on_click on any row"
+
+computation:
+  - name: "row count equals monthsRemaining"
+    setup: "computeSchedule(loan with monthsRemaining = 12)"
+    source_test: "AmortizationScheduleViewModelTest.computeSchedule_rowCount_equalsMonthsRemaining"
+    assertions:
+      - "rows.size == 12"
+  - name: "month numbers are 1-indexed and sequential"
+    setup: "computeSchedule(loan with monthsRemaining = 3)"
+    source_test: "AmortizationScheduleViewModelTest.computeSchedule_monthNumbers_are1Indexed"
+    assertions:
+      - "rows.map { month } == [1, 2, 3]"
+  - name: "final balance lands at ~zero (last row clamps, no overshoot)"
+    setup: "principalRemaining=10000, annualRatePercent=6.0, monthsRemaining=24, monthlyPayment=443.21"
+    source_test: "AmortizationScheduleViewModelTest.computeSchedule_lastBalanceIsNearZero"
+    assertions:
+      - "rows.last().balance < 5.0"
+  - name: "zero interest rate → every payment is 100% principal"
+    setup: "principalRemaining=1200, annualRatePercent=0.0, monthsRemaining=12, monthlyPayment=100"
+    source_test: "AmortizationScheduleViewModelTest.computeSchedule_zeroInterestRate_allPaymentIsPrincipal"
+    assertions:
+      - "every row.interest == 0.0"
+  - name: "(KNOWN-IGNORED) principal component grows month over month"
+    setup: "principalRemaining=10000, annualRatePercent=6.0, monthsRemaining=6, monthlyPayment=1700"
+    source_test: "AmortizationScheduleViewModelTest.computeSchedule_principalGrowsEachMonth"
+    status: ignored
+    note: >-
+      Marked @Ignore in source — flagged by the original author as an unresolved
+      fixture-vs-math question (short-amortization loan may not satisfy the
+      principal-grows-monotonically invariant). Carried over as-is; NOT fixed by this import.
+    assertions:
+      - "(when enabled) rows[i].principal > rows[i-1].principal for all i"
+
+acceptance_criteria:
+  - ref: "AC-AMORT-01"
+    name: "Full local schedule"
+    given: "a tracked loan with a positive principal, rate, and monthsRemaining"
+    when: "the user opens the Payment Schedule from the loan detail"
+    then: "a month-by-month table of principal, interest, and remaining balance is derived on-device and rendered, with a Summary of total payments / principal / interest — no network call"
+  - ref: "AC-AMORT-02"
+    name: "Nothing to amortize"
+    given: "the loan is unknown/deleted (null) or fully paid (monthsRemaining <= 0)"
+    when: "the schedule screen renders"
+    then: "the framework Empty state is shown instead of an empty table"
+  - ref: "AC-AMORT-03"
+    name: "Zero-interest loan"
+    given: "a loan with a 0% annual rate"
+    when: "the schedule computes"
+    then: "each row's interest is 0 and the balance reduces linearly by the full payment"
+  - ref: "AC-AMORT-04"
+    name: "Return to loan detail"
+    given: "the user is on the Payment Schedule"
+    when: "the user taps the back arrow"
+    then: "the app pops back to the loan-detail screen that launched the schedule"

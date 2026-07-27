@@ -1,0 +1,52 @@
+# data-flow.yaml — per-screen local data flow for feature/amortization (B5 Amortization).
+# OFFLINE_LOCAL_ONLY read projection: ONE reactive Room read of banking_loans (by id),
+# then a purely local in-memory amortization computation. NO network, NO write, NO auth,
+# NO amortization table of its own. Source: LoansStore (Store5 offline store) → LoanRepository.
+sibling: data-flow
+schema_version: "2.2.0"
+feature_id: feat-amortization
+
+store:
+  name: LoansStore
+  archetype: OFFLINE_LOCAL_ONLY
+  key: Unit
+  value: "List<LoanEntity>"
+  source_of_truth: "Room banking_loans (LoanDao) — SHARED with feature/loans; amortization owns no table"
+  remote_fetcher: none
+  invalidation: "core-base/database daoFlow{} + notifyingWrite{} (loan edits re-emit; the schedule recomputes)"
+
+entries:
+  # ── amortization-schedule: reactive read of ONE loan by id → local schedule computation ──
+  - screen_id: amortization-schedule
+    trigger: on_mount               # route carries loanId; VM observes on subscription
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: banking_loans
+        mutation: read
+        filter: { id: "{loanId}" }
+        columns: [id, name, kind, principal, principalRemaining, annualRatePercent, tenureMonths, monthsRemaining, monthlyPayment, nextDueDate, totalPaid, createdAtMs, updatedAtMs]
+    dtos:
+      - { name: Loan, role: response, api_id: observe-loan-by-id }
+    derived:
+      # Not a DB aggregate — a pure in-memory reducing-balance schedule computed from the single loan.
+      - name: schedule
+        type: "List<AmortizationRow>"
+        from: "computeSchedule(loan)"
+        api_id: compute-amortization-schedule
+        note: >-
+          Per row: interest = balance × (annualRatePercent/100/12) [0 when rate==0];
+          principal = min(monthlyPayment − interest, balance) [last row clamps];
+          balance = max(0, balance − principal). Row count == loan.monthsRemaining.
+    produces_state: content         # loan==null OR monthsRemaining<=0 → empty
+    cache:
+      strategy: source_of_truth_only   # Store5 offline — Room IS the SoT; the schedule is recomputed, never cached
+      ttl_seconds: 0
+      key_template: "loans:{loanId}"
+    error_paths: []                    # local read + in-memory math — no network error class; onRetry is a no-op
+    notes: >-
+      Read-only projection. loan==null (unknown/deleted id) OR loan.monthsRemaining<=0 (fully
+      paid) → ScreenState.Empty. Otherwise ScreenState.Content(computeSchedule(loan)). The
+      computation is finite (≤360 rows) and runs in microseconds — deliberately NOT
+      PagingScreenStream (no network page cursor to paginate); LazyColumn handles lazy draw.
+      DataFreshness.FRESH unconditionally (no network to be STALE about).

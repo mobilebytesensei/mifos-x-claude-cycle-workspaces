@@ -1,0 +1,45 @@
+feature: checker-inbox
+
+# The queue reads cache-first through Store5 so it browses offline. Each approve/reject/delete
+# decision is written to the local outbox and replayed via POST /v1/batches with a durable
+# idempotency key (exactly-once).
+
+entries:
+  - trigger: on_mount
+    source: remote.list_maker_checker_entries
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: inbox_load_failed
+    persistence_contract:
+      store: room
+      table: maker_checker_cache
+      keys: [audit_id, action_name, entity_name, maker, made_on_date, command_json, processing_result]
+      note: "CACHE_FIRST_SWR mirror of GET /v1/makercheckers scoped to the checker; rows are shown only where canCheck(action,entity). Shared with the needs-attention-inbox approvals source."
+
+  - trigger: on_action
+    source: local.enqueue_checker_decision
+    target_state: content
+    loading_state: content
+    error_state: content
+    on_error:
+      nav_target: null
+      error_code: approve_failed
+    persistence_contract:
+      store: room
+      table: draft_outbox
+      mutation: write
+      keys: [idempotency_key, action, entity, payload_json, status, audit_id]
+      note: >-
+        Approve / reject / delete are enqueued here with a durable idempotency_key, action=CHECKER_DECISION,
+        entity=MAKERCHECKER, referencing the auditId; the offline-sync-engine replays each via POST /v1/batches.
+        A decision whose permission was revoked since queueing surfaces as BLOCKED_PERMISSION_REVOKED in
+        needs-attention-inbox, never silently dropped.
+
+cache:
+  strategy: cache_first_swr
+  note: "The queue revalidates in the background per FreshnessBands; the outbox is authoritative for in-flight decisions and never revalidated."
+
+# regenerated-provenance: idea-data-flow re-verified 2026-07-26 — entries + persistence_contract consistent with current ui.yaml + api.yaml; mtime re-stamp (isStale enriched-unstick).

@@ -1,0 +1,44 @@
+feature: loan-detail
+
+# The loan aggregate reads cache-first through Store5 so a loan opens offline. Lifecycle
+# mutations never hit the network directly — they are written to the local outbox and replayed
+# via POST /v1/batches with a durable idempotency key (exactly-once).
+
+entries:
+  - trigger: on_mount
+    source: remote.get_loan
+    target_state: content
+    loading_state: loading
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: loan_load_failed
+    persistence_contract:
+      store: room
+      table: loan_cache
+      keys: [loan_id, client_id, product_id, status, principal, total_outstanding, in_arrears, next_due_date, next_due_amount]
+      note: "CACHE_FIRST_SWR mirror of GET /v1/loans/{loanId}?associations=all; the summary + schedule + transactions hydrate from here so the loan opens offline."
+
+  - trigger: on_action
+    source: local.enqueue_loan_command
+    target_state: content
+    loading_state: content
+    error_state: content
+    on_error:
+      nav_target: null
+      error_code: repayment_post_failed
+    persistence_contract:
+      store: room
+      table: draft_outbox
+      mutation: write
+      keys: [idempotency_key, action, entity, payload_json, status, loan_id]
+      note: >-
+        Repayment / approve / disburse / undo / foreclose are enqueued here with a durable idempotency_key
+        and action=(REPAYMENT_LOAN|APPROVE_LOAN|DISBURSE_LOAN|…), entity=LOAN; the offline-sync-engine replays
+        each via POST /v1/batches. A rejected replay routes to needs-attention-inbox, never silently dropped.
+
+cache:
+  strategy: cache_first_swr
+  note: "The loan aggregate revalidates in the background per FreshnessBands; the outbox is authoritative for in-flight mutations and never revalidated."
+
+# regenerated-provenance: idea-data-flow re-verified 2026-07-26 — entries + persistence_contract consistent with current ui.yaml + api.yaml; mtime re-stamp (isStale enriched-unstick).
