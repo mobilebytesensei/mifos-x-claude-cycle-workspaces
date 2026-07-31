@@ -24,6 +24,38 @@
 #   g-1002). Endpoint shapes were derived from core/network model DTOs and iterated against live
 #   on-device SERIALIZATION errors until each screen deserialized. Empty-array responses were used
 #   where the DTO permits, so empty-state renders (valid verified behaviors) are exercised too.
+#
+# ── REBUILD ATTEMPT 2026-07-31T21:10Z (defect-fix re-verify run) ────────────────────────────────
+#   Two source fixes were supposed to land and be re-verified on-device this run:
+#     (fix1) core-base/store/.../StorePagingSource.kt  — empty-page NPE guard `response.value ?: emptyList()`
+#     (fix2) feature/group-type-picker/.../GroupTypePickerViewModel.kt — enum-vs-String slug resolution
+#   `./gradlew :cmp-android:assembleDemoDebug` FAILED (BUILD RED, exit != 0). Root cause: fix2 is
+#   itself broken — GroupTypePickerViewModel.kt:202 `it.typeSlug.name == slug` compares String to
+#   GroupTypeSlug (line 197 already converts `slug` to the enum). Compiler:
+#     "e: ...GroupTypePickerViewModel.kt:202:54 Operator '==' cannot be applied to 'String' and 'GroupTypeSlug'."
+#   Correct form: `it.typeSlug == slug` (enum==enum). fix1's module (:core-base:store) compiles GREEN
+#   in isolation, but the whole-app APK cannot be produced while fix2 breaks the shared build, so
+#   NEITHER fix is installable. Built APK md5 UNCHANGED (still c6cebed…) — the stale pre-fix build.
+#   Per the leaf-subagent constraint (never edit app source) fix2 was NOT patched here; it is an OPEN
+#   source blocker for the parent to route through the pipeline. Consequences for this run:
+#     - fix1 (loan-list empty-page crash): NOT device-verifiable — no fresh APK. Prior loan-list
+#       real-behavior verdict (whose evidence documents the EMPTY-page FATAL) is UNCHANGED; the guard
+#       is written+compiles but is NOT on device, so the crash is NOT proven-fixed. pending re-verify.
+#     - fix2 (group-type-picker card → group-create): still BROKEN (won't compile) → group-create
+#       stays pending-device-verify (unreachable).
+#   The MEMBER-IDENTITY pass below is INDEPENDENT of both fixes and was verified honestly against the
+#   installed valid build c6cebed (device_md5 == c6cebed, confirmed by md5sum of /data/app/.../base.apk)
+#   — the same build that verified the 17 features above.
+#
+# ── MEMBER-IDENTITY note ─────────────────────────────────────────────────────────────────────────
+#   The app routes on groupMemberships (LoginSignupViewModel.routeEvent): ANY ORGANIZER membership →
+#   organizer-dashboard, else → personal-dashboard. grace_w has an ORGANIZER role so always lands
+#   organizer. To reach member mode the host mock (scratchpad/companion-mock.mjs — host infra, NOT
+#   app/idea source) was extended: /companion/auth/login now reads body.emailPhone; a non-'grace'
+#   handle (e.g. 'peter_k') → activeRole=MEMBER → MEMBER-only memberships → personal-dashboard. Also
+#   fixed a MOCK DATA-SHAPE bug: member-dashboard recentTransactions[].date must be date-only
+#   ("2026-07-30"), parsed via LocalDate.parse at MemberDashboardStore.kt:187 (a full ISO timestamp
+#   threw DateTimeParseException — mock artifact, not an app bug).
 
 verdicts:
   - feature: login-signup
@@ -219,13 +251,16 @@ verdicts:
   # ────────────────────────────────────────────────────────────────────────────────────────
   - feature: group-create
     verdict: pending-device-verify
-    verified_at: "2026-07-31T15:15:00Z"
+    verified_at: "2026-07-31T21:10:00Z"
     evidence: |
-      group-type-picker renders (verified) but selecting a group-type card does NOT navigate to
-      the group-create form — the card on_click produced no navigation, no state-change, and no
-      click/nav logcat (25-grouptypepicker.png). Likely a dead-clickable / disconnected-navigation
-      defect on the picker cards; group-create form itself was therefore unreachable on-device.
-      pending-device-verify (blocked by upstream nav defect — needs a source fix, then re-verify).
+      Still unreachable. A source fix for the group-type-picker card→group-create nav defect
+      (feature/group-type-picker/.../GroupTypePickerViewModel.kt) was committed (860a516) but it
+      DOES NOT COMPILE — GroupTypePickerViewModel.kt:202 `it.typeSlug.name == slug` compares String
+      to GroupTypeSlug (correct form: `it.typeSlug == slug`), so
+      `./gradlew :cmp-android:assembleDemoDebug` is BUILD RED and no fixed APK could be installed.
+      group-create therefore remains unreachable on-device. pending-device-verify — blocked on the
+      broken fix2 (needs the one-line source correction, then rebuild + re-verify the card tap
+      navigates to the create-group form).
 
   - feature: share-out-preview
     verdict: pending-device-verify
@@ -256,10 +291,13 @@ verdicts:
 
   - feature: loan-request
     verdict: pending-device-verify
-    verified_at: "2026-07-31T15:15:00Z"
+    verified_at: "2026-07-31T21:10:00Z"
     evidence: |
-      Member-facing loan-request flow — no entry point in the reachable organizer flow. Not reached
-      on-device. pending-device-verify (member-context entry not reachable in organizer identity).
+      Member-facing loan-request flow. Its only in-app entry is personal-loans'
+      `OnRequestLoanClick → NavigateToLoanRequest` — but personal-loans is itself unreachable
+      (personalLoansScreen not registered in the NavHost, no navigate caller — see personal-loans).
+      So loan-request is transitively unreachable even in the verified member-mode this run.
+      pending-device-verify (blocked by the personal-loans nav gap upstream).
 
   - feature: loan-repayment-dialog
     verdict: pending-device-verify
@@ -289,35 +327,64 @@ verdicts:
 
   - feature: join-with-code
     verdict: pending-device-verify
-    verified_at: "2026-07-31T15:15:00Z"
+    verified_at: "2026-07-31T21:10:00Z"
     evidence: |
-      Invite-code join flow — entry is a deep-link / code-entry path not surfaced in the reachable
-      organizer navigation (the ORGANIZER already belongs to groups). Companion mock serves
-      validateInviteToken + group-preview + associate-clients, but no in-app entry was reachable
-      this run. pending-device-verify (entry path is deep-link/code; not reachable in this flow).
+      Confirmed (code read) the only wired entries to join-with-code are (a) group-list's
+      `onNavigateToJoinGroup` and (b) login-signup's `onNavigateToJoinWithCode`. group-list's Join
+      affordance ("Join with Code" CTA) renders ONLY on the group-list EMPTY state
+      (GroupListTestTags.kt:49) — a member WITH groups never sees it — and group-list is not
+      reachable from personal-dashboard (its NavigateToGroupList is documented "currently unreachable
+      from any wired on_click"). So even in the verified member-mode there is no in-app affordance to
+      reach join-with-code (it is otherwise a deep-link/invite-code entry). Companion mock serves
+      validateInviteToken + associate-clients. pending-device-verify (no reachable in-app entry;
+      needs a zero-group identity on an empty group-list, or a deep-link harness).
 
   - feature: personal-dashboard
-    verdict: pending-device-verify
-    verified_at: "2026-07-31T15:15:00Z"
+    verdict: real-behavior
+    verified_at: "2026-07-31T21:10:00Z"
     evidence: |
-      Member-role personal dashboard (GET /companion/member/dashboard — mocked and serving valid
-      data). No navigation path to it was found from the ORGANIZER landing (tapping the group where
-      Grace is a MEMBER still routes to the organizer group-dashboard). pending-device-verify
-      (no reachable entry in organizer identity; likely a member-mode/role-switch entry).
+      MEMBER-IDENTITY pass on the installed valid build c6cebed (device_md5 == c6cebed). Logged in
+      via the mock member handle 'peter_k' (activeRole=MEMBER, MEMBER-only memberships): logcat
+      "(LoginSignupViewModel) login success groupCount=2" then
+      "GroupBankingNavHost destination changed: ...personaldashboard.PersonalDashboardRoute" —
+      routeEvent() correctly chose personal-dashboard (no ORGANIZER role). Renders full content
+      (56-personaldash-rendered.png): "Good evening, Grace Wanjiku", group selector tabs
+      (Umoja Savings Group / Harambee Welfare Circle), Total Savings KES 24,700 (Group-linked
+      KES 18,500 + Individual KES 6,200), Projected Share-Out KES 21,000, Recent Activity
+      (+KES 1,500 DEPOSIT 2026-07-30, -KES 800 WITHDRAWAL 2026-07-22). GET /companion/member/dashboard
+      200, deserialized (after mock date-shape fix). on_click verified TWICE with real effects:
+      (a) Total Savings card tap → logcat "(PersonalDashboardViewModel) savings card tapped
+      groupId=g-1001 poolModel=ACCUMULATING" → navigated to SavingsDashboardRoute (savings-dashboard
+      loaded 200, 58-savings-from-member.png); (b) group-tab switch to Harambee → logcat
+      "getMemberDashboard: GET /companion/member/dashboard (selectedGroupId=g-1002)" real scoped
+      refetch (59-grouptab-switch.png). Zero FATAL/serialization. real-behavior (member mode).
 
   - feature: personal-savings
     verdict: pending-device-verify
-    verified_at: "2026-07-31T15:15:00Z"
+    verified_at: "2026-07-31T21:10:00Z"
     evidence: |
-      Member-context personal savings screen — no reachable entry from the organizer flow (see
-      personal-dashboard). pending-device-verify (member-mode entry not reachable this run).
+      DISCONNECTED-NAVIGATION (source nav gap, confirmed by code read — RULE-IMPL-NAV-CONN):
+      `personalSavingsScreen(...)` is NEVER registered in GroupBankingNavHost, and
+      `navigateToPersonalSavings(...)` has ZERO callers anywhere. personal-dashboard's
+      `savings_summary_card.on_click` is intentionally bridged to the GROUP savings-dashboard
+      (`onNavigateToSavings = { groupId, _ -> navController.navigateToSavingsDashboard(groupId) }`,
+      documented TODO(nav) at GroupBankingNavHost.kt: personal-savings' route needs
+      clientId/groupLinkedSavingsId/individualSavingsId not available at that seam). The screen is
+      thus unreachable on-device (not a mock/data issue). pending-device-verify — needs source
+      nav-wiring: register personalSavingsScreen in the NavHost + forward the member's
+      clientId/savingsId through PersonalDashboardEvent.NavigateToSavings.
 
   - feature: personal-loans
     verdict: pending-device-verify
-    verified_at: "2026-07-31T15:15:00Z"
+    verified_at: "2026-07-31T21:10:00Z"
     evidence: |
-      Member-context personal loans screen — no reachable entry from the organizer flow (see
-      personal-dashboard). pending-device-verify (member-mode entry not reachable this run).
+      DISCONNECTED-NAVIGATION (source nav gap, confirmed by code read — RULE-IMPL-NAV-CONN):
+      `personalLoansScreen(...)` is NEVER registered in GroupBankingNavHost and
+      `navigateToPersonalLoans(...)` has ZERO callers. No in-app path reaches it from
+      personal-dashboard (which exposes no loans affordance; its `NavigateToGroupList` is itself
+      documented "currently unreachable from any wired on_click"). Unreachable on-device (not a
+      mock/data issue). pending-device-verify — needs source nav-wiring (register personalLoansScreen
+      + a member-facing entry that supplies clientId).
 
   - feature: settings
     verdict: pending-device-verify
