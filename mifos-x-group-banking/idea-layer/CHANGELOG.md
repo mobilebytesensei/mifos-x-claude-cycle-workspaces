@@ -34,3 +34,4 @@
 - idea-plan.yaml with two client types (admin + end_user)
 - Fineract MCP bridge run: 65 MCP tools resolved
 - 10 custom datatables designed for missing Fineract capabilities
+- [design-system-stitch] 2026-07-31 — DESIGN.md uploaded to Stitch (asset_id=18068522450062802666, design_md_sha=c3a638b3a935)

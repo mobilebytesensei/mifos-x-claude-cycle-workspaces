@@ -3,7 +3,7 @@
 **Feature**: member-list | **Route**: `/groups/{groupId}/members` | **Type**: list
 **Feature group**: member-management | **Flow**: member-management-flow
 **Generated from**: `screens/member-list/ui.yaml`, `screens/member-list/demo-data.yaml`, `screens/member-list/preview/*.html` (4 states rendered 2026-07-17)
-**Generated at**: 2026-07-18 (by `/idea-render-mockup --feature member-list`, headless LLM driver — Stitch external, MD-only fallback per RULE-STITCH-OPTIN-CONSISTENCY-001)
+**Generated at**: 2026-07-31 (by `/idea-render-mockup --feature member-list`, headless LLM driver — Stitch external, MD-only fallback per RULE-STITCH-OPTIN-CONSISTENCY-001). Foundation-wave refresh: top_bar now carries the **Invite** action (→ member-invite).
 
 ---
 
@@ -37,8 +37,10 @@
 ┌─────────────────────────────────────────┐
 │ 9:41                     ●●● 5G ▮       │  Status bar
 ├─────────────────────────────────────────┤
-│ [‹]  Members                            │  TopAppBar — primary #2E7D32, onPrimary text
-│      Mwangaza Women's Group             │  subtitle · {{groupName}} · titleSmall / 0.87
+│ [‹]  Members              [👤﹢ Invite] │  TopAppBar — primary #2E7D32, onPrimary text;
+│      Mwangaza Women's Group             │  trailing invite_action (icon person_add_alt,
+│                                          │  label "Invite") → OnInviteMember → member-invite
+│                                          │  subtitle · {{groupName}} · titleSmall / 0.87
 ├─────────────────────────────────────────┤
 │  ┌──────────────────────────────────┐   │
 │  │ ⓐⓦ  Amina Wanjiru      [TREAS. ] │   │  member_list_item · 72dp min touch,
@@ -121,7 +123,7 @@ Shimmer skeleton mirroring the content layout — parallel fetch of `members` fr
 
 - Rows: 72dp × full width, corner 4dp, `surfaceVariant` background shimmering 1.4s ease-in-out infinite.
 - Respects `prefers-reduced-motion: reduce` (animation disabled).
-- Top bar retains title "Members" and the group name subtitle (both text-only, no interactive controls beyond the back arrow).
+- Top bar retains title "Members" and the group name subtitle, the back arrow, and the trailing **Invite** action (`invite_action` → OnInviteMember → member-invite) — the invite action is present in every state's top bar.
 - FAB is NOT rendered in the loading state (per `states.loading.components`).
 - Back arrow remains enabled — user can always retreat to `group-dashboard`.
 
