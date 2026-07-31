@@ -1,6 +1,7 @@
 <!-- source: screens/capability-map-detail/ (v4.0 siblings: ui, docs, flow, api) -->
 <!-- source_hash: ui=6a89fb489c5f docs=e9e363da9489 flow=b43595fde1f6 api=d14d3384d0b7 -->
 <!-- generated: 2026-07-31T03:19:28Z -->
+<!-- re-verified: 2026-07-31 (post-21:09 ui enrich; spec still matches current ui/api — mtime re-stamp to clear content-hash staleness) -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

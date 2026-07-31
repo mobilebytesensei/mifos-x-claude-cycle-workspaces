@@ -1,6 +1,7 @@
 <!-- source: screens/product-editor/ui.yaml (+ docs.yaml, flow.yaml, demo-data.yaml) -->
 <!-- source_hash: ui=ab4944d66c85 docs=badac140d422 flow=1f63e8b76f99 -->
 <!-- generated: 2026-07-31T03:24:55Z -->
+<!-- re-verified: 2026-07-31 (post-21:09 ui enrich; mockup still matches current ui — mtime re-stamp) -->
 
 # Product Editor — Visual Mockup (Design Hand-off)
 

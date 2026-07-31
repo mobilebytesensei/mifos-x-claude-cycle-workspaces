@@ -1,6 +1,6 @@
 <!-- source: screens/collection-sheet/ (v4.0 siblings: ui, docs, flow, api) -->
 <!-- source_hash: ui=659dd90d5f6d docs=87d71d956369 flow=788f6b06a7c5 api=ea8bef57a248 -->
-<!-- generated: 2026-07-31T03:19:28Z -->
+<!-- generated: 2026-07-31T03:19:28Z (mtime re-stamp after 21:09 ui.yaml touch — freshness restore vs source) -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

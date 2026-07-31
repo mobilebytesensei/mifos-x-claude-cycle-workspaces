@@ -76,6 +76,7 @@ ref resolves. A future enrich pass may normalize the `api.yaml` refs to one cano
 | `LoanProductDto` | `GET /v1/loanproducts/{id}` | response | product-editor | high |
 | `LoanProductTemplateDto` | `GET /v1/loanproducts/template` | response | product-editor | high |
 | `PermissionDto` | `GET /v1/permissions` | response | capability-map-detail, permission-set-detail | medium |
+| `RolePermissionsDto` | `GET /v1/roles/{roleId}/permissions` | response | permission-set-detail | medium |
 | `ReportDefinitionDto` | `GET /v1/reports` | response | report-runner | medium |
 | `ReportParameterOptionDto` | `GET /v1/runreports/FullParameterList` | response | report-runner | low |
 | `ReportRunResultDto` | `GET /v1/runreports/{name}` | response | report-runner | medium |

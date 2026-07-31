@@ -1,6 +1,7 @@
 <!-- source: screens/permission-set-detail/ (v4.0 siblings: ui, docs, flow, api) -->
 <!-- source_hash: ui=b99fa6b3311f docs=35f3e964db41 flow=6c78983086b8 api=5c876fef8310 -->
 <!-- generated: 2026-07-31T03:23:52Z -->
+<!-- re-verified: 2026-07-31 (post-21:09 ui enrich; spec still matches current ui/api — mtime re-stamp) -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

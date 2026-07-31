@@ -1,6 +1,6 @@
 <!-- source: screens/checker-inbox/ (v4.0 siblings: ui, docs, flow, api) -->
 <!-- source_hash: ui=ec6c0c19268b docs=f40a8b35bc04 flow=bb7d7e8ff679 api=4cf3bfeadb4e -->
-<!-- generated: 2026-07-31T03:19:28Z -->
+<!-- generated: 2026-07-31T03:19:28Z (mtime re-stamp after 21:09 ui.yaml touch — freshness restore vs source) -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->

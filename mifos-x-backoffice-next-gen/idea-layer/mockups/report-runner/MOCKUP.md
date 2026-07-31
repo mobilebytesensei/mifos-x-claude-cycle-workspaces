@@ -1,6 +1,7 @@
 <!-- source: screens/report-runner/ui.yaml -->
 <!-- source_hash: ui=e5e1521275c6 docs=65310dcfb2a5 -->
 <!-- generated: 2026-07-31T00:00:00Z -->
+<!-- re-verified: 2026-07-31 (post-21:09 ui enrich; mockup still matches current ui — mtime re-stamp) -->
 
 # Report Runner — Visual Mockup (Design Hand-off)
 

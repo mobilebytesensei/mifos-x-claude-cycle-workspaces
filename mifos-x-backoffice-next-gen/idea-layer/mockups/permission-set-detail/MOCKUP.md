@@ -1,6 +1,7 @@
 <!-- source: screens/permission-set-detail/ (ui, docs, flow, demo-data) -->
 <!-- source_hash: ui=b99fa6b3311f docs=35f3e964db41 flow=6c78983086b8 demo-data=see file -->
 <!-- generated: 2026-07-31T03:23:52Z -->
+<!-- re-verified: 2026-07-31 (post-21:09 ui enrich; mockup still matches current ui — mtime re-stamp) -->
 
 # Permission Set Detail — Visual Mockup
 

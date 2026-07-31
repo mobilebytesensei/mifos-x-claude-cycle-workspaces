@@ -1,6 +1,7 @@
 <!-- source: screens/product-editor/ (v4.0 siblings: ui, docs, flow, api) -->
 <!-- source_hash: ui=ab4944d66c85 docs=badac140d422 flow=1f63e8b76f99 api=db840353a13a -->
 <!-- generated: 2026-07-31T03:24:55Z -->
+<!-- re-verified: 2026-07-31 (post-21:09 ui enrich; spec still matches current ui/api — mtime re-stamp) -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 1.0.0 -->
 <!-- prior_version: — -->

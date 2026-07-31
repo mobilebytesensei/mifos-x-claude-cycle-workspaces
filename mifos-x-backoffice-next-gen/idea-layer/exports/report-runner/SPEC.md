@@ -1,6 +1,7 @@
 <!-- source: screens/report-runner/ (v4.0 siblings: ui, docs, flow, api) -->
 <!-- source_hash: ui=e5e1521275c6 docs=65310dcfb2a5 flow=5f7fd901faf1 api=17704cb1fdc1 -->
 <!-- generated: 2026-07-31T00:00:00Z -->
+<!-- re-verified: 2026-07-31 (post-21:09 ui enrich; spec still matches current ui/api — mtime re-stamp) -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: 1.0.0 -->

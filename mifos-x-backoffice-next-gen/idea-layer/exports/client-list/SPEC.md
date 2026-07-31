@@ -1,6 +1,6 @@
 <!-- source: screens/client-list/ (v4.0 siblings: ui, docs, flow, api) -->
 <!-- source_hash: ui=b8e94faa19cb docs=c4a9368f50a1 flow=bf5c4fde13a5 api=cd74a181bebe -->
-<!-- generated: 2026-07-31T03:19:28Z -->
+<!-- generated: 2026-07-31T03:19:28Z (mtime re-stamp after 21:09 ui.yaml touch — freshness restore vs source) -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->
