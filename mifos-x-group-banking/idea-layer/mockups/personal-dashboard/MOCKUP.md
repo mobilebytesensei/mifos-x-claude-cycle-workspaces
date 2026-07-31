@@ -2,8 +2,8 @@
 
 **Feature**: personal-dashboard | **Route**: `/dashboard/member` | **Type**: dashboard
 **Feature group**: end-user-dashboard | **Flow**: end-user-dashboard-flow
-**Generated from**: `screens/personal-dashboard/ui.yaml`, `screens/personal-dashboard/demo-data.yaml`, `screens/personal-dashboard/preview/*.html` (5 states rendered 2026-07-17)
-**Generated at**: 2026-07-18 (by `/idea-render-mockup --feature personal-dashboard`, headless LLM driver — Stitch external, MD-only fallback per RULE-STITCH-OPTIN-CONSISTENCY-001)
+**Generated from**: `screens/personal-dashboard/ui.yaml`, `screens/personal-dashboard/demo-data.yaml`, `screens/personal-dashboard/preview/*.html` (5 states)
+**Generated at**: 2026-08-01 (by `/idea-render-mockup --feature personal-dashboard`, headless LLM driver — Stitch external, MD-only fallback per RULE-STITCH-OPTIN-CONSISTENCY-001). Regenerated for the un-deferred **loan entry card** + top-bar **profile overflow menu** (Settings / Sync Status).
 
 ---
 
@@ -41,8 +41,12 @@
 ┌─────────────────────────────────────────┐
 │ 9:41                     ●●● 5G ▮       │  Status bar
 ├─────────────────────────────────────────┤
-│  Good morning, Amina Wanjiru       [🔔³] │  top_bar · primary #2E7D32,
-│                                          │  onPrimary text, notification badge
+│  Good morning, Amina Wanjiru    [🔔³][⋮] │  top_bar · primary #2E7D32, onPrimary
+│                                          │  text, notification badge + overflow (⋮)
+│                                 ┌────────┐│  profile_overflow_menu (more_vertical):
+│                                 │Settings ││  → OnSettingsClick → settings
+│                                 │Sync…    ││  → OnSyncStatusClick → sync-status
+│                                 └────────┘│
 ├═════════════════════════════════════════┤  (group_banner — primary, flat, 16/24dp)
 │  Mwangaza Women's Group      [ KES ]    │  group_name_text · bodyLarge/semibold,
 │                                          │  currency_chip · primaryContainer pill
@@ -58,6 +62,12 @@
 │  │  ● Individual:   KES 800           │  │  amber dot · bodySmall, --secondary
 │  └───────────────────────────────────┘  │  → OnSavingsCardClick → personal-savings
 ├─────────────────────────────────────────┤
+│  ┌───────────────────────────────────┐  │  loan_card · surface, corner lg,
+│  │ [💳]  My Loans               [›]  │  │  elevation 2dp, 20dp padding, 12dp top
+│  │       View your loans and          │  │  loan_icon tertiary tint; labelLarge +
+│  │       request a new one            │  │  bodyMedium sublabel; trailing chevron
+│  └───────────────────────────────────┘  │  → OnLoansCardClick → personal-loans
+├─────────────────────────────────────────┤  (pure nav, forwards clientId; no balance)
 │  ┌───────────────────────────────────┐  │  shareout_projection_card
 │  │ [🏆]  Projected Share-Out          │  │  secondaryContainer #FFE082, corner 16dp,
 │  │                                    │  │  elevation 0dp, 16dp padding
@@ -223,8 +233,11 @@ Error types (from `DashboardError`):
 2. **Group chip tap** (multi-group only) → `OnSelectGroup(groupId)` (effect: `call_api`) → `MemberDashboardRepository` re-fetches with `selectedGroupId = groupId`; `cmp-network-monitor` serves cache when offline; savings + share-out cards + recent activity all recompute against the new group's payload.
 3. **Pull-to-refresh** → `OnRefresh` (flow `invalidate_cache: true`) → Store5 `fresh=true` reload with `selectedGroupId = selectedGroup.groupId`; state transitions `content → refreshing → content|error`.
 4. **Retry tap (error state)** → `OnRetry` (effect: `call_api`, external: Store5) → same Store5 stream re-hit; clears `error` and re-enters `loading` before landing in `content` or bouncing back to `error`.
-5. **Notification icon tap** → shell-owned; opens the notifications tray (delegated to the app shell — no in-screen action).
-6. **Back tap** → intercepted by app shell (root member surface); no manual pop, no state to persist.
+5. **Loan card tap** → `OnLoansCardClick` (effect: `navigate`) → `NavigateToLoans(clientId)` → NavController push `personal-loans` forwarding `clientId`. Pure navigation — no cache write, no network call. The loans screen's FAB then reaches `loan-request`.
+6. **Overflow menu → Settings** → `OnSettingsClick` (effect: `navigate`) → `NavigateToSettings` → NavController push shared `settings`. No data mutation.
+7. **Overflow menu → Sync Status** → `OnSyncStatusClick` (effect: `navigate`) → `NavigateToSyncStatus` → NavController push shared `sync-status`. No data mutation.
+8. **Notification icon tap** → shell-owned; opens the notifications tray (delegated to the app shell — no in-screen action).
+9. **Back tap** → intercepted by app shell (root member surface); no manual pop, no state to persist.
 
 ---
 

@@ -30,9 +30,9 @@
 ## Screen: Sync Status
 
 ### Entry
-- From **bottom_nav** "Sync" tab (always visible; icon reflects `overallStatus` — cloud_done / cloud_sync / cloud_off)
+- From the **personal-dashboard profile overflow menu** → Sync Status (`trigger: profile_overflow_menu_sync_status_selected`)
 - From **sync_indicator_tap** on any screen when `pending_or_failed_ops_exist == true`
-- Back navigation pops the route to whichever screen was previously topmost — this is a **terminal** dashboard (no outbound navigation)
+- Back navigation pops the route to whichever screen was previously topmost (typically personal-dashboard) — this is a **terminal** dashboard (no outbound navigation)
 
 ### Layout (state: `content`, `overallStatus = PENDING`, isOnline = true)
 
@@ -161,9 +161,9 @@ Local DB read failed (SQLDelight `DbRead` error). The overall status card render
 1. **Sync Now tap** → `OnSyncNow` (effect: `call_api`; libs: `cmp-network-monitor` + `Fineract batch API` + `Store5`) — collects every pending `SyncQueueItem`, composes a `BatchSyncRequest`, POSTs to Fineract `/batches`. On per-request 2xx, the Store5 `Bookkeeper` advances that row `pending → in_progress → synced` and stamps `lastSyncAt`; on non-2xx, the row transitions to `failed` with the response body captured as `errorMessage`. Conflicts surface via `conflictCount` for review before another drain.
 2. **Retry tap on failed row** → `OnRetryOperation(itemId)` (effect: `call_api`; same lib set) — re-submits one previously failed row through the same Bookkeeper drain. Requires online; disabled otherwise.
 3. **Pull to refresh** → `OnRefresh` — re-reads the local `SyncQueue` table via `SyncQueueRepository`. Does NOT trigger a network call (this is a local-state refresh — the drain is user-initiated only).
-4. **Bottom nav "Sync" tap on this screen** — no-op (already at destination).
+4. **Re-selecting Sync Status from the overflow menu** — no-op (already at destination).
 5. **Conflict chip tap** (when visible) — no interaction contract declared; chip is informational only. Conflicts are resolved on entity-specific screens (loan-detail, member-profile, etc.).
-6. **Terminal screen** — no outbound navigation. `SessionManager` back stack pops directly to the previous destination.
+6. **Terminal screen** — no outbound navigation. `SessionManager` back stack pops directly to the previous destination (typically personal-dashboard).
 
 ---
 
@@ -173,7 +173,7 @@ Local DB read failed (SQLDelight `DbRead` error). The overall status card render
 - Pending breakdown badges expose `{{count}}` as their accessible name; entity labels ship humanized (`MEETING → Meeting Records`) with the same i18n set.
 - Sync Now button announces its offline state via `disabled_label` — screen readers hear "Offline — Connect to sync" instead of the disabled Sync Now.
 - Retry buttons on failed rows have a 40dp min touch target and expose the entity + operation in the accessible name ("Retry Attendance Records — CREATE").
-- Bottom nav icon reflects `overallStatus` (cloud_done / cloud_sync / cloud_off) so the state is visible without opening the screen.
+- The overflow-menu Sync Status item + the global sync indicator surface `overallStatus` (cloud_done / cloud_sync / cloud_off) so the state is visible without opening the screen.
 - Locales covered: English, Swahili (`Hali ya Usawazishaji` / `Sawazisha Sasa`), French (`État de Synchronisation` / `Synchroniser Maintenant`), Hindi (`सिंक स्थिति` / `अभी सिंक करें`).
 - Font stack respects system settings (Roboto / SF Pro system) — dynamic type honored on iOS; density stays legible at 200% scale (three cards spill into scroll rather than truncate).
 
@@ -212,7 +212,7 @@ Write path (`OnSyncNow` / `OnRetryOperation`, external: Store5 MutableStore + Bo
 
 Offline behavior: when `NetworkMonitor.isOffline == true`, all rows remain in the local queue; `sync_now_button` and every `retry_button` disable; no snackbar is shown (the disabled label is the message). The screen itself never renders the `error` state solely because of connectivity — that surface is reserved for local DB failures.
 
-Terminal-screen invariant: the ViewModel emits `SyncStatusEvent.SyncCompleted` on a clean drain but never navigates — the caller (bottom nav / sync indicator) decides where the user returns to.
+Terminal-screen invariant: the ViewModel emits `SyncStatusEvent.SyncCompleted` on a clean drain but never navigates — the caller (personal-dashboard overflow menu / sync indicator) decides where the user returns to.
 
 ---
 
@@ -239,7 +239,7 @@ Terminal-screen invariant: the ViewModel emits `SyncStatusEvent.SyncCompleted` o
 ## Notes
 
 - Stitch generation was NOT run in this pass (external dep — probe deferred per RULE-STITCH-OPTIN-CONSISTENCY-001). This MOCKUP.md is the LLM-driven analog synthesized from `ui.yaml` (v4.0), `demo-data.yaml` (v2.1.0), and `design-system/DESIGN.md` per RULE-CI-001 (Claude-Intelligence only on idea-layer).
-- Terminal-screen contract: no outbound `on_click.target`. Bottom nav owns re-entry. Any future extension (conflict resolution flow, drain history detail) must add explicit action contracts to ui.yaml — this MOCKUP.md is not a nav authority.
+- Terminal-screen contract: no outbound `on_click.target`. The personal-dashboard overflow menu (and the global sync indicator) own re-entry. Any future extension (conflict resolution flow, drain history detail) must add explicit action contracts to ui.yaml — this MOCKUP.md is not a nav authority.
 - The `overall_status_card` uses `style_by_status` + `value_by_status` maps in ui.yaml (single component, three visual variants) rather than three separate cards; this MOCKUP.md renders the PENDING variant as canonical and enumerates SYNCED / FAILED in the States section.
 - The `pending_breakdown_card` iterates `pendingByType` as a map (`EntityType → Int`) — the six `entity_*` i18n keys cover the closed enum (`MEETING`, `LOAN`, `SAVINGS`, `ATTENDANCE`, `SHARE_OUT`, `MEMBER`).
 - Re-run with Stitch (once vault key + connectivity available):

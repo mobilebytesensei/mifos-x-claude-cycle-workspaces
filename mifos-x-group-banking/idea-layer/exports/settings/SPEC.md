@@ -6,7 +6,8 @@
 
 ## Overview
 
-Full-featured settings screen reached from the bottom-nav Settings tab. It reads and writes
+Full-featured settings screen reached from the profile overflow menu on the personal-dashboard
+(the authenticated member home). It reads and writes
 CommonPurse app preferences — language (English / Swahili / French / Hindi per FR-010), appearance
 theme (Light / Dark / System), biometric-unlock and push-notification toggles — via
 `multiplatform-settings` local key-value storage (DataStore), applying locale/theme changes
@@ -100,7 +101,7 @@ confirmation in `settings-logout-dialog`). Biometric toggle is disabled when har
 ## Navigation
 
 - **Route**: `/settings` (no nav_params)
-- **From**: `bottom_nav` (settings tab)
+- **From**: `personal-dashboard` (profile overflow menu → `profile_overflow_menu_settings_selected`)
 - **To**: `settings-logout-dialog` (via `ShowLogoutDialog`), `login-signup` (on 401 / logout)
 
 | Action | Destination | Params |

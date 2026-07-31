@@ -8,6 +8,9 @@
 
 **Identity:** No userId, selfServiceToken, or clientId params. Bearer token resolves identity.
 
+The loan-card, Settings, and Sync-Status affordances are **pure client-side navigation** —
+they call no endpoint.
+
 ## Request / Response Details
 
 ### GET /companion/member/dashboard
@@ -25,24 +28,26 @@ Cache key is `userId:selectedGroupId` — each group selection has its own cache
 
 | Field | Type | Description |
 |---|---|---|
+| memberName | String | Display name (session identity) |
+| clientId | Long | Signed-in member's Fineract client id — forwarded to personal-savings + personal-loans nav_params |
+| groupLinkedSavingsId | Long | Selected group's linked savings account id — forwarded to personal-savings |
+| individualSavingsId | Long? | Optional voluntary individual savings account id (null when none) |
 | myGroups | List<GroupSummary> | All groups the caller belongs to |
-| selectedGroupId | String | Which group's summary is in this response |
-| selectedGroupName | String | Display name of selected group |
-| poolModel | String | ACCUMULATING \| ROTATING_PAYOUT \| NONE |
-| contributionModel | String | SHARE_BASED_VARIABLE \| FIXED_AMOUNT \| FIXED_NEGOTIATED |
-| myTotalSavings | Long | KES saved in selected group |
-| mySharesHeld | Int? | SHARE_BASED_VARIABLE only |
-| projectedShareOut | Long? | ACCUMULATING: projected end-of-cycle payout |
-| rotationQueuePosition | Int? | ROTATING_PAYOUT: caller's queue position |
-| nextPayoutEta | String? | ROTATING_PAYOUT: ISO-8601 date of next payout for caller |
-| recentTransactions | List<SavingsTransaction> | Last 5 transactions in selected group |
+| selectedGroup | GroupSummary | Which group's summary is in this response |
+| poolModel | String | ACCUMULATING \| ROTATING_PAYOUT \| NONE (from selectedGroup.typeConfig) |
+| groupLinkedSavingsBalance | Double | KES saved in the selected group |
+| individualSavingsBalance | Double | KES in the voluntary individual account |
+| shareOutProjection | Double? | ACCUMULATING: projected end-of-cycle payout |
+| rotationPosition | Int? | ROTATING_PAYOUT: caller's queue position |
+| nextRecipientEta | String? | ROTATING_PAYOUT: ISO-8601 date of next payout for caller |
+| recentTransactions | List<SavingsTransactionDto> | Recent transactions in selected group |
 
 **Errors**
 
 | Code | Meaning |
 |---|---|
-| 401 | Unauthorized → navigate to login-signup |
-| 404 | selectedGroupId not found or caller not a member → reset to primary group |
+| 401 | Unauthorized → clear session (app shell re-auth; no in-screen navigate) |
+| 404 | Member not found in any group |
 | 500 | Server error |
 
 ---
@@ -51,64 +56,65 @@ Cache key is `userId:selectedGroupId` — each group selection has its own cache
 
 ### MemberDashboardResponse
 ```
+memberName: String
+clientId: Long
+groupLinkedSavingsId: Long
+individualSavingsId: Long?
 myGroups: List<GroupSummary>
-selectedGroupId: String
-selectedGroupName: String
+selectedGroup: GroupSummary
 poolModel: String
-contributionModel: String
-myTotalSavings: Long
-mySharesHeld: Int?
-projectedShareOut: Long?
-rotationQueuePosition: Int?
-nextPayoutEta: String?
-recentTransactions: List<SavingsTransaction>
+groupLinkedSavingsBalance: Double
+individualSavingsBalance: Double
+shareOutProjection: Double?
+rotationPosition: Int?
+nextRecipientEta: String?
+recentTransactions: List<SavingsTransactionDto>
 ```
 
 ### GroupSummary (for group selector chips)
 ```
 groupId: String
 name: String
-poolModel: String   // drives chip icon
+poolModel: String   // ACCUMULATING | ROTATING_PAYOUT | NONE — drives chip + card variant
 ```
 
-### SavingsTransaction (shared DTO)
+### SavingsTransactionDto (shared DTO)
 ```
-transactionId: String
-transactionDate: String    // ISO-8601
-amount: Long               // KES (cents)
-transactionType: String    // CREDIT | DEBIT
-description: String
+id: String
+date: String     // ISO-8601
+type: String     // DEPOSIT | WITHDRAWAL
+amount: Double   // KES
 ```
 
-## Shareout Projection Display Logic (client-side)
+## Share-out Projection Display Logic (client-side)
 
 | poolModel | Card content |
 |---|---|
-| ACCUMULATING | "Projected Share-Out KES {projectedShareOut}" |
-| ROTATING_PAYOUT | "#{rotationQueuePosition} in queue · Next payout {nextPayoutEta}" |
-| NONE | Card hidden |
+| ACCUMULATING | `shareout_amount` "Projected Share-Out KES {shareOutProjection}" |
+| ROTATING_PAYOUT | `rotation_position_text` "#{rotationPosition} in queue" + `next_recipient_eta_text` "Your turn: ~{nextRecipientEta}" |
+| NONE | Card content minimal (no pool projection) |
 
 ## Cache Design
 
 `member_dashboard_cache` is keyed `userId:groupId`:
-- Initial load: `selectedGroupId = null` → server returns primary group; client caches with key `userId:primaryGroupId`
+- Initial load: `selectedGroupId = null` → server returns primary group; cached at `userId:primaryGroupId`
 - Group chip tap: new call with `selectedGroupId = {groupId}` → cached separately at `userId:{groupId}`
 - Each group chip has independent cache; switching chips may serve stale or fresh depending on recency
+- Pull-to-refresh: `bypass_and_refresh` replaces the current group's cache row
 
 ## Offline Behaviour
 
-When offline, `member_dashboard_cache` (keyed per selected group) serves stale data.
-A "Last synced" banner shown. Group chip switches while offline serve the stale cache
-for that group if available, or show "Loading unavailable offline" for groups not yet
-cached.
+When offline, `member_dashboard_cache` (keyed per selected group) serves stale data via
+`cmp-network-monitor` + Store5; an offline badge/snackbar is shown. Group chip switches while
+offline serve the stale cache for that group if available.
 
 ## Error Type Map
 
 | Error Class | Behaviour |
 |---|---|
-| `network.offline (cache available)` | Serve stale + last-synced banner |
-| `network.offline (no cache)` | Offline error state with retry |
-| `empty myGroups` | ZeroGroups state — Create Group + Join with Code CTAs |
-| `404 selectedGroupId` | Reset to null (primary group) and retry |
-| `401 Unauthorized` | Navigate to login-signup |
-| `500 Server` | Error banner + retry |
+| `network.offline (cache available)` | Serve stale + offline badge |
+| `network.offline (no cache)` | Error state with retry |
+| `empty myGroups` | Empty state (layout collapses to top_bar + group_banner) |
+| `404 Member not found` | Error / reset to primary group |
+| `401 Unauthorized` | Clear session — app shell handles re-auth (no in-screen navigate) |
+| `500 Server` | Error state + retry |
