@@ -56,6 +56,33 @@
 #   fixed a MOCK DATA-SHAPE bug: member-dashboard recentTransactions[].date must be date-only
 #   ("2026-07-30"), parsed via LocalDate.parse at MemberDashboardStore.kt:187 (a full ISO timestamp
 #   threw DateTimeParseException — mock artifact, not an app bug).
+#
+# ── 3-GAP RE-VERIFY RUN 2026-08-01T00:29Z (build 1b08d279) ───────────────────────────────────────
+#   Fresh GREEN build under test:
+#     apk:        cmp-android/build/outputs/apk/demo/debug/cmp-android-demo-debug.apk
+#     built_md5:  1b08d279eef9ba8eaeec05b0dd0986c5
+#     device_md5: 1b08d279eef9ba8eaeec05b0dd0986c5  (emulator-5556 headless — MATCH, read back from
+#                 /data/app/~~ttb4t0Y20yJyUEq9U_E-IA==/org.mifos.groupbanking-.../base.apk)
+#     install:    adb install -r Success; Room AppDatabase v15→v16 migration — NO crash on launch
+#                 (clean login path, zero FATAL/AndroidRuntime).
+#   This run re-verified the 6 features that the enrich+implement stage unblocked (3 gaps closed):
+#     GAP-1 viewerRole nav-param forwarded → loan-apply (canApplyLoan) + loan-repayment-dialog
+#            (canRecordRepayment) + loan-mark-defaulted-dialog (canMarkDefaulted+OVERDUE)
+#     GAP-2 GroupCorpusDto.isCycleEnd server field → share-out-preview + share-out-execute
+#     GAP-3 MemberDashboardDto clientId/savingsIds forwarded → personal-savings (real screen, not
+#            the group savings-dashboard drift-bridge)
+#   ALL 6 → real-behavior (each on_click produced a real nav/dialog/API effect on a fresh post-
+#   force-stop capture). Implementation quality: GENUINELY WIRED, no stubs/mis-wiring found — the
+#   handlers touch their declared targets (repayment→POST command=repayment, defaulted→POST
+#   command=writeoff, share-out→POST shareout/execute, savings→GET /self/savingsaccounts). Mock
+#   (scratchpad/companion-mock.mjs, host infra) extended: corpus.isCycleEnd=true, member-dashboard
+#   clientId/groupLinkedSavingsId/individualSavingsId, loan 9002 status OVERDUE,
+#   /self/savingsaccounts/{id}/transactions ledger, /companion/groups/{id}/shareout/{preview,execute},
+#   and RecordRepaymentResponseDto shape. Two NON-BLOCKING cosmetic nits observed: (a) double-percent
+#   "0.3%%"/"30%%" formatting on share-out screens; (b) execute request cycleNumber=0 (not threaded
+#   through memberPayoutsJson route seam). Screenshots: scratchpad/verify6-002920/.
+#
+# verified_at_run: 2026-08-01T00:44:00Z
 
 verdicts:
   - feature: login-signup
@@ -280,31 +307,53 @@ verdicts:
       blocked only by the mock shape, not by app behavior.
 
   - feature: share-out-preview
-    verdict: pending-device-verify
-    verified_at: "2026-07-31T15:15:00Z"
+    verdict: real-behavior
+    verified_at: "2026-08-01T00:33:00Z"
     evidence: |
-      The group-dashboard Share-Out action is correctly GATED/disabled with copy "Available at
-      cycle end only" for the current in-cycle demo group (verified — the gate renders and blocks).
-      The share-out-preview screen is thus not reachable without a cycle-end group fixture.
-      pending-device-verify (external-dep: needs a cycle-end/eligible group seed). The gate itself
-      is verified-correct behavior.
+      GAP-CLOSED RE-VERIFY on build 1b08d279 (device_md5 == 1b08d279, fresh capture after
+      am force-stop). isCycleEnd now backed by server-computed GroupCorpusDto.isCycleEnd
+      (@SerialName("isCycleEnd")) — mock corpus extended isCycleEnd:true. ORGANIZER (grace_w) →
+      group-dashboard (Umoja g-1001, ACCUMULATING): Share-Out Quick-Action renders ENABLED (dark
+      text, not greyed — 06c-group-dashboard.png). on_click fired: logcat "(GroupDashboardViewModel)
+      OnShareOut groupId=g-1001 distributionStrategy=PROPORTIONAL_TO_SHARES" → NavHost →
+      ShareOutPreviewRoute → real API GET /companion/groups/g-1001/shareout/preview 200 →
+      "(ShareOutPreviewViewModel) preview loaded pool=210000.0 payouts=4". Screen renders full
+      distribution table: Total Corpus KES 185,000, Total Profit KES 25,000, Total Pool KES 210,000,
+      4 member payout rows (Grace 63,000 / John 46,200 / Mary 37,800 / Peter 63,000)
+      (07-shareout-preview.png). real-behavior. Minor cosmetic: sharePercent renders "0.3%%"
+      (double-% format bug), non-blocking.
 
   - feature: share-out-execute
-    verdict: pending-device-verify
-    verified_at: "2026-07-31T15:15:00Z"
+    verdict: real-behavior
+    verified_at: "2026-08-01T00:36:00Z"
     evidence: |
-      Downstream of share-out-preview, which is gated (Share-Out disabled "Available at cycle end
-      only"). Not reachable without a cycle-end group fixture. pending-device-verify (external-dep:
-      cycle-end group seed).
+      GAP-CLOSED RE-VERIFY on build 1b08d279 (device_md5 == 1b08d279). From share-out-preview,
+      "Confirm & Proceed to Execute" on_click fired: logcat "(ShareOutPreviewViewModel) confirm
+      accepted" → NavHost → ShareOutExecuteRoute (08-shareout-execute.png, 4 member payouts +
+      irreversible-confirm gate). Double-confirm phrase gate works (button DISABLED until exact
+      "SHARE OUT" typed — validation "Must type exactly SHARE OUT" shown for a mistyped phrase,
+      11-execute-result.png). After typing exact phrase, Execute Share-Out on_click fired real
+      mutation: mock POST /companion/groups/g-1001/shareout/execute 200 → logcat
+      "(ShareOutExecuteViewModel) share-out executed recordId=so-rec-1 succeeded=4 failed=0" →
+      screen shows "Share-Out Complete! KES 210,000 distributed to 4 members successfully" + Done
+      (14-execute-fired.png). real-behavior. Minor: execute request carried cycleNumber=0
+      (cycleNumber not threaded through the memberPayoutsJson route seam) — non-blocking data nit.
 
   - feature: loan-apply
-    verdict: pending-device-verify
-    verified_at: "2026-07-31T15:15:00Z"
+    verdict: real-behavior
+    verified_at: "2026-08-01T00:37:00Z"
     evidence: |
-      No apply-loan entry point was exposed in the reachable organizer flow (loan-list shows a
-      view-only list + row->detail; loan-detail exposes no apply/record action in the current
-      role/status). Not reached on-device this run. pending-device-verify (entry path not found in
-      organizer identity; likely gated to a member/eligibility context).
+      GAP-CLOSED RE-VERIFY on build 1b08d279 (device_md5 == 1b08d279). canApplyLoan now seeded from
+      the viewerRole nav-param (LoanListViewModel: canApplyLoan = viewerRole in LOAN_APPLY_ROLES
+      {ORGANIZER,CHAIRPERSON,TREASURER}); viewerRole forwarded group-dashboard→loan-list
+      (LoanListRoute(groupId, viewerRole)). ORGANIZER: logcat "(GroupDashboardViewModel) OnViewLoans
+      groupId=g-1001 viewerRole=ORGANIZER" → loan-list renders WITH the "Apply for Loan" FAB
+      (content-desc "Apply for a new group loan", 16-loan-list.png) — previously hidden for everyone.
+      FAB on_click fired: NavHost → LoanApplyRoute → loan-apply form renders (Select Member,
+      Requested Amount, Loan Duration, Loan Purpose, Submit Application — 17-loan-apply.png).
+      real-behavior. Note: groupId nav-param "g-1001" degrades to 0 via toLongOrNull()?:0L
+      (pre-existing documented groupId-type drift, unrelated to this gap; mock returns loans
+      regardless so list still renders).
 
   - feature: loan-request
     verdict: pending-device-verify
@@ -317,21 +366,38 @@ verdicts:
       pending-device-verify (blocked by the personal-loans nav gap upstream).
 
   - feature: loan-repayment-dialog
-    verdict: pending-device-verify
-    verified_at: "2026-07-31T15:15:00Z"
+    verdict: real-behavior
+    verified_at: "2026-08-01T00:40:00Z"
     evidence: |
-      loan-detail (reachable, verified) exposes no Record-Repayment action button in the current
-      role/status — only Schedule / Repayment History tabs. The repayment dialog is likely
-      triggered from the meeting-conduct wizard's repayment step or a gated action. Not triggered
-      on-device this run. pending-device-verify.
+      GAP-CLOSED RE-VERIFY on build 1b08d279 (device_md5 == 1b08d279). canRecordRepayment now seeded
+      from the viewerRole nav-param (LoanDetailViewModel: canRecordRepayment = viewerRole in
+      RECORD_REPAYMENT_ROLES {TREASURER,ORGANIZER}); button gated canRecordRepayment && loan.status
+      ==ACTIVE (LoanActionButtonsRow). ORGANIZER → loan-detail loanId=9001 (ACTIVE, GET /loans/9001
+      200): "Record Repayment" button renders (19-loan-detail-active.png). on_click fired: logcat
+      "(LoanDetailViewModel) OnRecordRepayment tapped loanId=9001" → dialog opens (feature=
+      loan-repayment-dialog, Amount KES 1000.00 / M-Pesa|Cash / Reference — 20/21-repayment-dialog.png).
+      Submit on_click fired REAL mutation: mock POST /loans/9001/transactions?command=repayment 200 →
+      logcat "(LoanRepaymentDialogViewModel) make_repayment succeeded loanId=9001 resourceId=1;
+      loan-detail cache invalidated" → dialog dismissed (23-repayment-success.png). real-behavior
+      (submit produces real API effect). Test-infra note: initial POST hit a mock-DTO shortfall
+      (RecordRepaymentResponseDto requires officeId/clientId/loanId) surfaced honestly as an
+      on-screen "Could not record repayment" error; mock response corrected, re-fired → success.
 
   - feature: loan-mark-defaulted-dialog
-    verdict: pending-device-verify
-    verified_at: "2026-07-31T15:15:00Z"
+    verdict: real-behavior
+    verified_at: "2026-08-01T00:42:00Z"
     evidence: |
-      No Mark-Defaulted / write-off action was exposed on the reachable loan-detail screen this
-      run. Not triggered on-device. pending-device-verify (action entry not found in current
-      role/status).
+      GAP-CLOSED RE-VERIFY on build 1b08d279 (device_md5 == 1b08d279). canMarkDefaulted seeded from
+      viewerRole nav-param (MARK_DEFAULTED_ROLES {CHAIRPERSON,ORGANIZER}); button gated
+      canMarkDefaulted && loan.status==OVERDUE. Mock loan 9002 returns status OVERDUE. ORGANIZER →
+      loan-detail loanId=9002 (OVERDUE, GET /loans/9002 200): "Mark Defaulted" button renders AND
+      "Record Repayment" is correctly HIDDEN (status!=ACTIVE) — both gates independently correct
+      (25-loan-detail-overdue.png). on_click fired: logcat "(LoanDetailViewModel) OnMarkDefaulted
+      tapped loanId=9002" → confirm dialog opens (feature=loan-mark-defaulted-dialog, "Member Mary
+      Achieng's loan of KES 3,200 will be marked as defaulted" — 26-defaulted-dialog.png). Confirm
+      on_click fired REAL mutation: mock POST /loans/9002/transactions?command=writeoff 200 → logcat
+      "(LoanMarkDefaultedDialogViewModel) write_off_loan succeeded loanId=9002 resourceId=1; cache
+      invalidated" → dialog dismissed (27-defaulted-confirmed.png). real-behavior.
 
   - feature: meeting-summary
     verdict: pending-device-verify
@@ -377,19 +443,24 @@ verdicts:
       refetch (59-grouptab-switch.png). Zero FATAL/serialization. real-behavior (member mode).
 
   - feature: personal-savings
-    verdict: pending-device-verify
-    verified_at: "2026-07-31T21:10:00Z"
+    verdict: real-behavior
+    verified_at: "2026-08-01T00:44:00Z"
     evidence: |
-      DISCONNECTED-NAVIGATION (source nav gap, confirmed by code read — RULE-IMPL-NAV-CONN):
-      `personalSavingsScreen(...)` is NEVER registered in GroupBankingNavHost, and
-      `navigateToPersonalSavings(...)` has ZERO callers anywhere. personal-dashboard's
-      `savings_summary_card.on_click` is intentionally bridged to the GROUP savings-dashboard
-      (`onNavigateToSavings = { groupId, _ -> navController.navigateToSavingsDashboard(groupId) }`,
-      documented TODO(nav) at GroupBankingNavHost.kt: personal-savings' route needs
-      clientId/groupLinkedSavingsId/individualSavingsId not available at that seam). The screen is
-      thus unreachable on-device (not a mock/data issue). pending-device-verify — needs source
-      nav-wiring: register personalSavingsScreen in the NavHost + forward the member's
-      clientId/savingsId through PersonalDashboardEvent.NavigateToSavings.
+      GAP-CLOSED RE-VERIFY on build 1b08d279 (device_md5 == 1b08d279). The prior DISCONNECTED-NAV
+      gap is FIXED: member-dashboard now carries clientId/groupLinkedSavingsId/individualSavingsId
+      (MemberDashboardDto), PersonalDashboardEvent.NavigateToSavings forwards them, and
+      personalSavingsScreen IS registered + navigateToPersonalSavings IS wired in GroupBankingNavHost
+      (the savings_summary_card no longer drift-bridges to the group savings-dashboard). MEMBER
+      (peter_k) → personal-dashboard → tapped Total Savings card: logcat "(PersonalDashboardViewModel)
+      savings card tapped groupId=g-1001 clientId=7004 groupLinkedSavingsId=8001 poolModel=ACCUMULATING"
+      → NavHost destination = PersonalSavingsRoute/{clientId}/{groupLinkedSavingsId}?individualSavingsId=
+      (NOT SavingsDashboardRoute). personal-savings loaded clientId=7004: real API GET
+      /self/savingsaccounts/8001/transactions + /8002/transactions → "(SavingsRepository)
+      loadMemberSavings succeeded (groupLinked=3 rows, individual=3 rows)". Screen renders "My Savings"
+      with Group-linked/Individual tabs, KES 6,200 hero (Acc: 8001), Contribution Progress, and a
+      color-coded Transaction History (Deposit +KES 1,500 bal 6,200 / Withdrawal -KES 800 bal 4,700 /
+      Deposit +KES 1,500 bal 5,500) — 32-personal-savings.png. real-behavior (reaches the real
+      personal-savings screen with real per-member ledger content, not the group drift-bridge).
 
   - feature: personal-loans
     verdict: pending-device-verify
