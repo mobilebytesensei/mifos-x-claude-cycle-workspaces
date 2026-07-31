@@ -19,12 +19,18 @@ entries:
     on_error:
       nav_target: null
       error_code: template_fetch_failed
+    tables:
+      - name: cached_templates
+        source_endpoint: api.get_entity_template
+    mutation: upsert
     persistence_contract:
+      is_durable: true
+      storage_backend: local_db
       store: room
       table: cached_templates
-      mutation: upsert
+      offline: cache-first-swr
       keys: [entity, command, template_json, fetched_at]
-      note: "Base GET /{entity}/template payload cached per (entity, command). CACHE_FIRST_SWR: the cached copy renders instantly, a background revalidate refreshes it — so a back-office field change appears on the next sync with no app release."
+      note: "Base GET /{entity}/template payload cached per (entity, command). CACHE_FIRST_SWR: the cached copy renders instantly, a background revalidate refreshes it — so a back-office field change appears on the next sync with no app release. Read-cache upsert (not an outbox write) — durable Room row, no idempotency/replay."
 
   - trigger: on_mount
     source: api.get_datatables
@@ -34,12 +40,18 @@ entries:
     on_error:
       nav_target: null
       error_code: datatable_schema_fetch_failed
+    tables:
+      - name: cached_datatable_schemas
+        source_endpoint: api.get_datatables
+    mutation: upsert
     persistence_contract:
+      is_durable: true
+      storage_backend: local_db
       store: room
       table: cached_datatable_schemas
-      mutation: upsert
+      offline: cache-first-swr
       keys: [entity, datatable_name, columns_json, fetched_at]
-      note: "Registered datatable (custom-field) schemas attached to the entity, cached so the extra field groups render offline alongside the base template."
+      note: "Registered datatable (custom-field) schemas attached to the entity, cached so the extra field groups render offline alongside the base template. Read-cache upsert (not an outbox write) — durable Room row, no idempotency/replay."
 
   - trigger: on_action
     action: submit_form
@@ -50,12 +62,22 @@ entries:
     on_error:
       nav_target: null
       error_code: command_rejected
+    tables:
+      - name: framework_submit_drafts
+        source_endpoint: api.submit_entity_command
+    mutation: write
     persistence_contract:
+      is_durable: true
+      storage_backend: local_db
       store: room
       table: framework_submit_drafts
-      mutation: write
+      idempotency_key: durable-uuid-v4
+      action: caller-supplied
+      entity: caller-supplied
+      replay: exactly-once-via-batches
+      offline: queued-and-replay
       keys: [formKey, uniqueKey, payload, action, entity, idempotency_key, status, created_at]
-      note: "The assembled command JsonObject is enqueued to the durable outbox with a UUIDv4 idempotency_key reused on retry. status PENDING → RETRYING → SUBMITTED | FAILED; replay via POST /v1/batches attaches the key as the Fineract Idempotency-Key header — exactly-once, zero double-post. A FAILED row surfaces in the Needs-Attention inbox."
+      note: "The assembled command JsonObject is enqueued to the durable outbox with a UUIDv4 idempotency_key reused on retry. status PENDING → RETRYING → SUBMITTED | FAILED; replay via POST /v1/batches attaches the key as the Fineract Idempotency-Key header — exactly-once, zero double-post. A FAILED row surfaces in the Needs-Attention inbox. Entity-agnostic engine — the caller's (action, entity) rides on the DraftEntity row; offline-queued (the caller's command endpoint owns the eventual server mutation)."
 
 cache:
   strategy: cache_first_swr

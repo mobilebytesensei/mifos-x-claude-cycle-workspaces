@@ -1,47 +1,215 @@
 schema_version: v1.0.0
 feature: product-editor
-# Regenerated 2026-07-25 (/idea-test-generate) against the enriched ui.yaml —
-# coverage verified: one scenario per ui.yaml state (loading/content/empty/error)
-# + per api operation (get_product, get_product_template, save_product).
+# Regenerated 2026-07-31 (/idea-test-generate) against the enriched ui.yaml/api.yaml —
+# coverage: one scenario per ui.yaml state (loading/content/empty/error×2)
+# + per on_click (expand_section/field_change/add_charge/save_product/retry)
+# + per api operation (get_product/get_product_template/save_product PUT/save_product POST).
+# Grounded in demo-data: "Group Business Loan" GBL id=4 KES 60000, interest 2.0%/month,
+# Processing Fee KES 500, accounting Accrual (periodic).
 scenarios:
+
+  # ── state coverage ──
+
   - id: loading_shows_sectioned_shimmer
-    preconditions: ["a productId is opened", "the product + template have not resolved yet"]
-    actions: ["open a product from the M08 list"]
-    assertions: ["the loading state shows a sectioned-form shimmer", "no error is shown"]
-    priority: medium
-  - id: content_shows_sections_from_template
-    preconditions: ["the product + template resolve", "the user holds the edit permission"]
-    actions: ["open the product"]
+    preconditions:
+      - "the user opens the Group Business Loan (productId=4) from the M08 product list"
+      - "GET /v1/loanproducts/4 and GET /v1/loanproducts/template have not yet resolved"
+    actions:
+      - "navigate to the product editor for productId=4"
     assertions:
-      - "sections Details / Terms / Settings / Charges / Accounting are shown"
-      - "every field, bound and option comes from the Fineract template"
-      - "Save is enabled only when the whole form validates"
+      - "the screen renders in the loading state (ProductEditorScreenState.Loading)"
+      - "a sectioned-form shimmer is shown — one shimmer block per section (Details / Terms / Settings / Charges / Accounting)"
+      - "no product name, no field values, and no error message are visible"
+    priority: medium
+
+  - id: content_displays_group_business_loan_form
+    preconditions:
+      - "GET /v1/loanproducts/4 resolves with Group Business Loan (GBL, KES, principal 60000)"
+      - "GET /v1/loanproducts/template resolves with KES/USD currency options, Declining Balance / Flat interest types, Accrual (periodic) accounting rule options"
+      - "the user holds UPDATE_LOANPRODUCT permission"
+    actions:
+      - "open the product editor for productId=4"
+    assertions:
+      - "the screen transitions to ProductEditorScreenState.Content"
+      - "the Details section shows name='Group Business Loan', shortName='GBL', currency='KES'"
+      - "the Terms section shows principalDefault=60000, minPrincipal=5000, maxPrincipal=100000, numberOfRepayments=12, interestRatePerPeriod=2.0 Per month, interestType=Declining Balance"
+      - "the Settings section shows amortizationType=Equal installments, interestCalculationPeriodType=Same as repayment period"
+      - "the Charges section lists Processing Fee (id=12) at KES 500 on Disbursement"
+      - "the Accounting section shows accountingRule=Accrual (periodic)"
+      - "the Save button is visible and enabled (UPDATE_LOANPRODUCT is held)"
     priority: high
+
   - id: empty_create_mode_defaults_from_template
-    preconditions: ["create mode — only the template loaded, no product"]
-    actions: ["open the new-product form"]
-    assertions: ["all sections default from the template", "no product values are pre-filled"]
-    priority: low
-  - id: error_when_load_or_save_fails
-    preconditions: ["the product or template failed to load, or save failed hard"]
-    actions: ["open the product / attempt save"]
-    assertions: ["the error state is shown", "Retry reloads or re-attempts save"]
-    priority: medium
-  - id: read_only_without_edit_permission
-    preconditions: ["the user lacks CREATE/UPDATE_LOANPRODUCT"]
-    actions: ["open the product"]
-    assertions: ["all fields render disabled", "no Save action is shown"]
-    priority: high
-  - id: save_enqueues_through_outbox
-    preconditions: ["a product is edited", "the user holds UPDATE_LOANPRODUCT"]
-    actions: ["edit a field", "tap Save product"]
+    preconditions:
+      - "the user opens the new-product form (no productId — create mode)"
+      - "GET /v1/loanproducts/template resolves with the full template options"
+    actions:
+      - "navigate to the product editor in create mode"
     assertions:
-      - "the save is enqueued to the offline outbox with a durable idempotency key"
-      - "the next sync replays PUT /v1/loanproducts/{id} (or POST for create)"
-      - "the product list reflects the change after sync"
-    priority: high
-  - id: template_validation_blocks_invalid_save
-    preconditions: ["principal default is set above the template max"]
-    actions: ["edit the principal field"]
-    assertions: ["the field shows a validation error from the template", "Save stays disabled until the form is valid"]
+      - "the screen reaches ProductEditorScreenState.Empty"
+      - "all sections (Details / Terms / Settings / Charges / Accounting) are shown with default values from the template"
+      - "no pre-filled product name, shortName, principal amount, or charges are present"
+      - "field option lists (currencyOptions, interestTypeOptions, accountingRuleOptions) are populated from the template"
+    priority: low
+
+  - id: error_product_load_failed_shows_retry
+    preconditions:
+      - "GET /v1/loanproducts/4 fails with a network or server error"
+      - "the loan_product_cache entry for productId=4 is absent (cold start or evicted)"
+    actions:
+      - "open the product editor for productId=4"
+    assertions:
+      - "the screen renders ProductEditorScreenState.Error with error_code=product_load_failed"
+      - "an error message and the Retry button (testTag=product-editor_error_retry) are visible"
+      - "no shimmer or form fields are shown"
     priority: medium
+
+  - id: error_template_load_failed_shows_retry
+    preconditions:
+      - "GET /v1/loanproducts/template fails with a network or server error"
+      - "the loan_product_template_cache is absent"
+    actions:
+      - "open the product editor for any product"
+    assertions:
+      - "the screen renders ProductEditorScreenState.Error with error_code=template_load_failed"
+      - "the error message and Retry button are visible"
+      - "without the template the form cannot render field options or validation rules"
+    priority: medium
+
+  # ── interaction coverage ──
+
+  - id: expand_section_toggles_pure_ui_state
+    preconditions:
+      - "the screen is in the content state with all five sections rendered"
+      - "the Terms section is collapsed"
+    actions:
+      - "tap the Terms section header (testTag=product-editor_section)"
+    assertions:
+      - "the Terms section expands to reveal its fields (principal, interest, repayments)"
+      - "no network call is made — expand_section is a pure in-VM UI state toggle"
+      - "tapping Terms again collapses it"
+      - "other sections are unaffected"
+    priority: medium
+
+  - id: field_change_reruns_template_validation
+    preconditions:
+      - "the content state is active with principal default=60000, min=5000, max=100000"
+      - "all fields are valid and Save is enabled"
+    actions:
+      - "edit the interestRatePerPeriod field (testTag=product-editor_field) from 2.0 to 3.5"
+    assertions:
+      - "the form model updates in-VM without a network call (field_change is pure transform_state)"
+      - "template bounds validation reruns — 3.5 is within valid range so no error appears"
+      - "Save remains enabled"
+    priority: medium
+
+  - id: validation_error_blocks_save_when_principal_out_of_bounds
+    preconditions:
+      - "the content state is active with minPrincipal=5000, maxPrincipal=100000"
+      - "Save is currently enabled"
+    actions:
+      - "edit the principalDefault field (testTag=product-editor_field) to 120000 (above maxPrincipal)"
+    assertions:
+      - "the Terms section shows validation error: 'Min principal must be less than max principal — correct the Terms section'"
+      - "the Save button is disabled until the form is valid"
+      - "no network call or outbox write occurs while the form is invalid"
+    priority: high
+
+  - id: add_charge_appends_to_charges_section
+    preconditions:
+      - "the content state is active; the Charges section shows Processing Fee (id=12) at KES 500"
+      - "the template chargeOptions include Late Payment Penalty (id=15)"
+      - "the user holds UPDATE_LOANPRODUCT permission (OnAddCharge VM action is available)"
+    actions:
+      - "expand the Charges section"
+      - "invoke OnAddCharge to add Late Payment Penalty (id=15) from the template chargeOptions"
+    assertions:
+      - "the Charges section now lists both Processing Fee (id=12) and Late Payment Penalty (id=15)"
+      - "the addition is reflected in the in-VM form state only — the outbox is not written until Save is tapped"
+      - "Save becomes enabled because the form is still valid overall"
+    priority: medium
+
+  - id: retry_reloads_from_error_state
+    preconditions:
+      - "the screen is in the error state (error_code=product_load_failed)"
+      - "the network connection is restored"
+    actions:
+      - "tap the Retry button (testTag=product-editor_error_retry)"
+    assertions:
+      - "the screen resets to ProductEditorScreenState.Loading"
+      - "GET /v1/loanproducts/4 and GET /v1/loanproducts/template are re-attempted"
+      - "on success the screen transitions to ProductEditorScreenState.Content"
+      - "the produce_state contract of retry resolves to loading then content"
+    priority: medium
+
+  - id: read_only_mode_without_edit_permission
+    preconditions:
+      - "GET /v1/loanproducts/4 and template resolve successfully"
+      - "the user lacks both CREATE_LOANPRODUCT and UPDATE_LOANPRODUCT permissions (canEdit=false)"
+    actions:
+      - "open the product editor for productId=4"
+    assertions:
+      - "all form fields render disabled (no input accepted)"
+      - "the Save button (testTag=product-editor_save, gated_permission=UPDATE_LOANPRODUCT) is absent"
+      - "the product terms (KES 60000 principal, 2.0% per month, Accrual periodic) remain visible but non-editable"
+    priority: high
+
+  # ── endpoint / behavior coverage ──
+
+  - id: get_product_serves_cache_first_then_revalidates
+    preconditions:
+      - "loan_product_cache contains a prior entry for productId=4 (name=Group Business Loan, currency=KES, principal_default=60000)"
+      - "the app is opening the product editor (possibly offline)"
+    actions:
+      - "open the product editor for productId=4"
+    assertions:
+      - "the cached entry from loan_product_cache hydrates the form immediately (cache_first)"
+      - "GET /v1/loanproducts/4 is issued in the background for SWR revalidation"
+      - "on successful revalidation the form reflects any server-side changes"
+      - "if offline, the cached values are used with no error (requires READ_LOANPRODUCT permission)"
+    priority: high
+
+  - id: get_product_template_populates_all_field_options
+    preconditions:
+      - "loan_product_template_cache is populated with the standard template (template_json, fetched_at)"
+    actions:
+      - "open the product editor (create or edit mode)"
+    assertions:
+      - "the currency selector is populated with KES (Kenyan Shilling) and USD (US Dollar)"
+      - "the interestType selector shows Declining Balance (id=0) and Flat (id=1)"
+      - "the amortizationType selector shows Equal principal payments (id=0) and Equal installments (id=1)"
+      - "the accountingRule selector shows None / Cash / Accrual (periodic)"
+      - "chargeOptions include Processing Fee (id=12) and Late Payment Penalty (id=15)"
+      - "all field bounds (principal min/default/max, repayment count, interest rate) come from the template"
+    priority: high
+
+  - id: save_product_put_enqueues_to_outbox_for_edit
+    preconditions:
+      - "the screen is in content state for Group Business Loan (productId=4)"
+      - "the user holds UPDATE_LOANPRODUCT permission"
+      - "the form is valid after editing interestRatePerPeriod from 2.0 to 2.5"
+    actions:
+      - "edit the interestRatePerPeriod field to 2.5"
+      - "tap Save (testTag=product-editor_save)"
+    assertions:
+      - "a row is written to draft_outbox with action=UPDATE_LOANPRODUCT, entity=LOANPRODUCT, product_id=4"
+      - "the row carries a unique durable idempotency_key and status=pending"
+      - "the offline-sync-engine will replay PUT /v1/loanproducts/4 via POST /v1/batches"
+      - "the UI remains in content state after the outbox write (no full-screen reload)"
+      - "a rejected replay routes to the needs-attention inbox, never silently dropped"
+    priority: high
+
+  - id: save_product_post_enqueues_to_outbox_for_create
+    preconditions:
+      - "the screen is in create mode (empty state, no productId)"
+      - "the user holds CREATE_LOANPRODUCT permission"
+      - "the form is filled: name='Micro Enterprise Loan', shortName='MEL', currency=KES, principalDefault=20000, interestRatePerPeriod=1.5, accountingRule=Cash"
+    actions:
+      - "complete all required sections"
+      - "tap Save (testTag=product-editor_save)"
+    assertions:
+      - "a row is written to draft_outbox with action=CREATE_LOANPRODUCT, entity=LOANPRODUCT, payload_json containing the new product details"
+      - "the row carries a unique durable idempotency_key and status=pending"
+      - "the offline-sync-engine will replay POST /v1/loanproducts via POST /v1/batches"
+      - "on successful replay the new product appears in the M08 products list after the next sync"
+    priority: high

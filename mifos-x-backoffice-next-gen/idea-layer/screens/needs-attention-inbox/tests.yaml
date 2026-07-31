@@ -1,109 +1,308 @@
 schema_version: v1.0.0
 feature: needs-attention-inbox
-# Regenerated 2026-07-26 (/idea-test-generate) against the enriched ui.yaml (a11y-label enrich) —
-# coverage re-verified: one scenario per ui.yaml state (loading/content/empty/resolving/error)
+# Regenerated 2026-07-31 (/idea-test-generate) against the enriched ui.yaml/api.yaml —
+# coverage: one scenario per ui.yaml state (loading/content/empty/resolving/error)
 # + per api operation (list_pending_approvals, approve_or_reject_entry, replay_failed_command,
-# list_overdue_collections, list_notifications, mark_notification_read). Cascade re-stamp (isStale enriched-unstick).
+#   list_overdue_collections, list_notifications, mark_notification_read)
+# + per on_click (filter_by_category, open_item_in_owning_module, retry_failed_command,
+#   discard_failed_command, approve_inline, snooze_item, retry_category_source,
+#   go_to_sync_console, retry_aggregation)
+# + permission filtering, per-source degradation, docs.yaml acceptance refs.
+# Demo-data ground truth: 9 items across 4 groups (2 approvals, 3 failed_syncs, 2 overdue_tasks, 2 alerts).
 scenarios:
   # ── state coverage ──
   - id: loading_shows_grouped_shimmer
-    preconditions: ["the inbox is opened", "sources have not resolved yet"]
-    actions: ["open needs-attention inbox"]
-    assertions: ["the loading state shows a grouped shimmer list", "no source error is shown"]
+    preconditions:
+      - "the inbox is opened"
+      - "all four sources (outbox Room, makercheckers, collectionsheet, notifications) have not resolved yet"
+    actions:
+      - "open needs-attention inbox"
+    assertions:
+      - "the loading state renders a grouped shimmer list of placeholder rows"
+      - "no group count or item content is visible during loading"
+      - "no source error strip appears during initial loading"
     priority: medium
 
   - id: content_aggregates_four_sources_grouped_and_ranked
-    preconditions: ["the user has approvals to check, failed replays, overdue tasks, and unread alerts"]
-    actions: ["open needs-attention inbox"]
+    preconditions:
+      - "the user is a branch supervisor with CHECKER_SUPER_USER and READ_COLLECTIONSHEET"
+      - "all four sources resolve with demo data"
+    actions:
+      - "open needs-attention inbox"
     assertions:
-      - "rows appear grouped under Approvals / Failed syncs / Overdue tasks / Alerts headers"
-      - "each group shows its item count"
-      - "rows within the feed are ordered by priority (Critical > High > Normal)"
+      - "rows appear grouped under Approvals (2), Failed syncs (3), Overdue tasks (2), Alerts (2) headers"
+      - "Approvals group shows 'Approve loan disbursement · KES 75,000' (na_ap_001, submitted by loan_officer_meena, Anitha Kumar LN-482655) and 'Approve new client onboarding' (na_ap_002, Suresh Babu CL-FLD-20114)"
+      - "Failed syncs shows 'Collection sheet rejected · Center 33' (na_fs_001), 'Repayment rejected · Loan 482911' (na_fs_002), 'Deposit rejected · Savings 771210' (na_fs_003)"
+      - "Overdue tasks shows 'Collection sheet due today · Group 58 (Sunrise SHG)' (na_ot_001, KES 18,400) and 'Repayment 4 days overdue · Loan 479002' (na_ot_002, Fatima Sheikh KES 2,150)"
+      - "Alerts shows 'Client transfer proposed · needs your acceptance' (na_al_001) and 'Nightly COB job failed · Apply Charges' (na_al_002)"
+      - "na_ot_001 carries a Critical priority badge; na_ap_001 and na_fs_001 carry High; na_ap_002 and na_fs_002 carry Normal"
+      - "rows within each group are ordered Critical > High > Normal"
     priority: high
 
   - id: empty_state_when_all_sources_clear
-    preconditions: ["no approvals, no failed replays, no overdue tasks, no unread alerts"]
-    actions: ["open needs-attention inbox"]
-    assertions: ["the 'all caught up' empty state is shown", "a 'Sync now' affordance is present"]
-    priority: medium
-
-  - id: error_state_only_on_hard_init_failure
-    preconditions: ["the local Room outbox read throws before any source contributes"]
-    actions: ["open needs-attention inbox"]
-    assertions: ["the whole-screen error state is shown", "a Retry re-runs the full fan-in"]
+    preconditions:
+      - "all four sources return zero items"
+    actions:
+      - "open needs-attention inbox"
+    assertions:
+      - "the 'All caught up' empty state illustration is shown"
+      - "a last-synced timestamp is displayed"
+      - "a 'Sync now' button is present (testTag: needs-attention-inbox_empty_sync)"
+      - "no group headers are rendered"
     priority: medium
 
   - id: resolving_state_on_inline_action
-    preconditions: ["a failed-sync row is visible"]
-    actions: ["tap Retry on the row"]
-    assertions: ["the row shows a resolving/progress indicator", "the rest of the list stays interactive"]
+    preconditions:
+      - "content state is shown with 'Deposit rejected · Savings 771210' (na_fs_003) visible"
+    actions:
+      - "tap Retry (testTag: needs-attention-inbox_retry) on the na_fs_003 row"
+    assertions:
+      - "the na_fs_003 row shows a progress indicator (resolving state)"
+      - "the other list rows (na_fs_001, na_fs_002, approval rows, etc.) remain interactive during resolution"
+    priority: medium
+
+  - id: error_state_only_on_hard_init_failure
+    preconditions:
+      - "DraftDao.observeAllFailed() throws before any source has contributed rows"
+    actions:
+      - "open needs-attention inbox"
+    assertions:
+      - "the whole-screen error state is shown with an error icon and message"
+      - "a Retry button (testTag: needs-attention-inbox_error_retry) re-runs the full fan-in"
+      - "the per-group error strip is NOT used; this is not an approvals_source_failed / partial case"
+    priority: medium
+
+  # ── interaction coverage ──
+  - id: filter_by_category_narrows_feed
+    preconditions:
+      - "content state shows all four groups with their demo items"
+    actions:
+      - "tap 'Failed syncs' filter chip (testTag: needs-attention-inbox_filters)"
+    assertions:
+      - "only the Failed syncs group remains visible (na_fs_001, na_fs_002, na_fs_003)"
+      - "Approvals, Overdue tasks, and Alerts groups are hidden"
+      - "no network refetch is triggered — this is a pure in-VM filter over the already-aggregated items list"
+      - "tapping 'Failed syncs' again clears the filter and restores all four groups"
+    priority: high
+
+  - id: item_drills_into_owning_module
+    preconditions:
+      - "content state shows na_ot_001 (Group 58) and na_ap_001 (audit_id 90112)"
+    actions:
+      - "tap 'Collection sheet due today · Group 58 (Sunrise SHG)' row (testTag: needs-attention-inbox_item)"
+    assertions:
+      - "navigation goes to the Collections module (M06) for group/58"
+      - "tapping approval row na_ap_001 navigates to the Approvals detail (M15) for audit_id 90112"
+      - "tapping alert na_al_002 deep-links to m13-scheduler-jobs/12"
+    priority: high
+
+  - id: retry_failed_command_reenqueues_with_fresh_idempotency
+    preconditions:
+      - "na_fs_003 ('Deposit rejected · Savings 771210') is in draft_outbox with status=rejected and idempotency_key=ob-1c77de-sav771210-20260115"
+      - "connectivity is up"
+    actions:
+      - "tap Retry (testTag: needs-attention-inbox_retry) on the na_fs_003 row"
+    assertions:
+      - "the command is re-enqueued to draft_outbox with a FRESH durable idempotency key (not ob-1c77de-sav771210-20260115)"
+      - "the row enters the resolving state during re-enqueue"
+      - "POST /v1/batches is called on the next sync replay for this command"
+    priority: high
+
+  - id: discard_failed_command_requires_explicit_confirm
+    preconditions:
+      - "na_fs_002 ('Repayment rejected · Loan 482911') is visible with conflict_strategy=discard"
+    actions:
+      - "tap Discard (testTag: needs-attention-inbox_discard) on the na_fs_002 row"
+      - "confirm the discard dialog"
+    assertions:
+      - "a confirm dialog is shown before any deletion occurs"
+      - "the command is deleted from draft_outbox with ConflictStrategy=discard"
+      - "the command is never silently dropped — the confirm step is mandatory per docs.yaml acceptance refs"
+    priority: high
+
+  - id: approve_inline_posts_to_makercheckers
+    preconditions:
+      - "content state shows na_ap_001 (audit_id 90112, DISBURSE_LOAN, loan/482655)"
+      - "the user canCheck(DISBURSE_LOAN, loan/482655)"
+    actions:
+      - "tap Approve (testTag: needs-attention-inbox_approve) on the na_ap_001 row"
+    assertions:
+      - "POST /v1/makercheckers/90112?command=approve is issued"
+      - "the row is removed from the Approvals group on success"
+      - "the Approvals group count decrements from 2 to 1"
+    priority: high
+
+  - id: reject_inline_posts_to_makercheckers_reject
+    preconditions:
+      - "content state shows na_ap_002 (audit_id 90118, CREATE_CLIENT)"
+      - "the user is authorized to check na_ap_002"
+    actions:
+      - "tap Reject on the na_ap_002 row"
+    assertions:
+      - "POST /v1/makercheckers/90118?command=reject is issued"
+      - "the row is removed from the Approvals group on success"
+    priority: medium
+
+  - id: snooze_item_suppresses_without_resolving
+    preconditions:
+      - "alert row na_al_001 ('Client transfer proposed · needs your acceptance') is visible"
+    actions:
+      - "tap Snooze (testTag: needs-attention-inbox_snooze) on the na_al_001 row"
+      - "select 'Tomorrow' as the snooze window"
+    assertions:
+      - "a snooze_until timestamp is persisted locally via multiplatform-settings"
+      - "notification_cache.snooze_until is updated for na_al_001 (object_id=30291)"
+      - "the row is suppressed from the Alerts feed until the snooze window elapses"
+      - "PUT /v1/notifications is NOT called on snooze alone"
+      - "the alert is not marked resolved or deleted"
+    priority: medium
+
+  - id: retry_category_source_reloads_only_that_source
+    preconditions:
+      - "the Approvals group shows an inline error strip (approvals_source_failed)"
+      - "Failed syncs, Overdue tasks, and Alerts groups are loaded with their demo rows"
+    actions:
+      - "tap 'Retry loading' (testTag: needs-attention-inbox_group_retry) on the Approvals strip"
+    assertions:
+      - "only the makercheckers source (GET /v1/makercheckers) refetches"
+      - "the already-loaded Failed syncs, Overdue tasks, and Alerts groups retain their rows"
+      - "the whole-screen state does not reset to loading"
+    priority: medium
+
+  - id: go_to_sync_console_from_empty_state
+    preconditions:
+      - "the empty state is shown (all sources returned zero items)"
+    actions:
+      - "tap 'Sync now' (testTag: needs-attention-inbox_empty_sync)"
+    assertions:
+      - "navigation goes to the M17 Sync & Settings console"
+    priority: medium
+
+  - id: retry_aggregation_reruns_full_fanin
+    preconditions:
+      - "the whole-screen error state is shown after a hard init failure"
+    actions:
+      - "tap Retry (testTag: needs-attention-inbox_error_retry)"
+    assertions:
+      - "the screen transitions back to the loading state"
+      - "all four sources are re-evaluated from scratch (Room + 3 remote)"
+    priority: medium
+
+  # ── endpoint / behavior coverage ──
+  - id: list_pending_approvals_populates_approvals_group
+    preconditions:
+      - "the user holds CHECKER_SUPER_USER"
+      - "GET /v1/makercheckers returns audit_id 90112 (DISBURSE_LOAN) and audit_id 90118 (CREATE_CLIENT)"
+    actions:
+      - "open needs-attention inbox"
+    assertions:
+      - "the Approvals group populates with 2 rows matching na_ap_001 and na_ap_002"
+      - "canCheck(action, entity) client-side gate is applied per entry"
+      - "the maker_checker_cache Room table mirrors the response (CACHE_FIRST_SWR)"
+    priority: high
+
+  - id: replay_failed_command_posts_to_batches
+    preconditions:
+      - "na_fs_001 ('Collection sheet rejected · Center 33') is in draft_outbox with status=rejected and idempotency_key=ob-8f21c4-center33-20260115"
+      - "connectivity is up"
+    actions:
+      - "tap Retry (testTag: needs-attention-inbox_retry) on na_fs_001"
+    assertions:
+      - "POST /v1/batches with enclosingTransaction is issued for the SAVECOLLECTIONSHEET_CENTER command"
+      - "a fresh durable idempotency key (not ob-8f21c4-center33-20260115) is used"
+      - "the draft_outbox row status transitions from rejected to queued"
+    priority: high
+
+  - id: list_overdue_collections_staffid_scoped
+    preconditions:
+      - "the user has READ_COLLECTIONSHEET and a staffId"
+      - "POST /v1/collectionsheet?command=generateCollectionSheet returns group/58 (Sunrise SHG, KES 18,400) and loan/479002 (Fatima Sheikh, KES 2,150) as overdue"
+    actions:
+      - "open needs-attention inbox"
+    assertions:
+      - "Overdue tasks group shows na_ot_001 ('Collection sheet due today · Group 58 (Sunrise SHG)') with Critical badge and KES 18,400"
+      - "Overdue tasks group shows na_ot_002 ('Repayment 4 days overdue · Loan 479002') with High badge and KES 2,150 arrears"
+      - "collection_task_cache Room table caches the derived overdue rows"
+      - "a user without READ_COLLECTIONSHEET sees no Overdue tasks group"
+    priority: high
+
+  - id: list_notifications_populates_alerts_group
+    preconditions:
+      - "GET /v1/notifications?isRead=false returns na_al_001 (client/30291) and na_al_002 (job/12)"
+    actions:
+      - "open needs-attention inbox"
+    assertions:
+      - "Alerts group shows 'Client transfer proposed · needs your acceptance' (na_al_001, deep_link=m02-clients/30291)"
+      - "Alerts group shows 'Nightly COB job failed · Apply Charges' (na_al_002, deep_link=m13-scheduler-jobs/12)"
+      - "notification_cache Room table mirrors the response (CACHE_FIRST_SWR)"
+    priority: high
+
+  - id: mark_notification_read_after_alert_actioned
+    preconditions:
+      - "alert na_al_002 ('Nightly COB job failed · Apply Charges', object_id=12) is visible in the Alerts group"
+    actions:
+      - "tap the na_al_002 row to open its deep-link (m13-scheduler-jobs/12)"
+    assertions:
+      - "PUT /v1/notifications is issued to mark na_al_002 as read"
+      - "na_al_002 no longer appears in the Alerts group on next feed refresh"
     priority: medium
 
   # ── permission filtering ──
   - id: only_permitted_categories_contribute
-    preconditions: ["the user holds no *_CHECKER permission"]
-    actions: ["open needs-attention inbox"]
-    assertions: ["no Approvals group is present", "failed-sync / task / alert groups still render if they have items"]
-    priority: high
-
-  - id: approve_control_only_for_authorized_entries
-    preconditions: ["an approval row exists for an entry the user is NOT authorized to check"]
-    actions: ["open needs-attention inbox"]
-    assertions: ["that row shows no Approve control"]
-    priority: high
-
-  # ── drill-through ──
-  - id: item_drills_into_owning_module
-    preconditions: ["an overdue collections task row is visible"]
-    actions: ["tap the overdue collections row"]
-    assertions: ["navigation goes to the Collections module (M06) for that group"]
-    priority: high
-
-  # ── per-source degradation (never blank) ──
-  - id: one_source_failing_degrades_to_group_strip
-    preconditions: ["the maker-checker source times out but the outbox + alerts load"]
-    actions: ["open needs-attention inbox"]
+    preconditions:
+      - "the user holds NO *_CHECKER permission"
+      - "the user has no READ_COLLECTIONSHEET permission"
+    actions:
+      - "open needs-attention inbox"
     assertions:
-      - "the Approvals group shows an inline retry strip"
-      - "the Failed syncs and Alerts groups still render their rows"
-      - "the whole-screen error state is NOT shown"
+      - "no Approvals group is rendered"
+      - "no Overdue tasks group is rendered"
+      - "Failed syncs group still renders if draft_outbox has rejected rows"
+      - "Alerts group still renders if unread notifications exist"
     priority: high
 
-  - id: retry_group_reloads_only_that_source
-    preconditions: ["the Approvals group shows a load-error strip"]
-    actions: ["tap 'Retry loading' on the Approvals strip"]
-    assertions: ["only the approvals source refetches", "already-loaded groups are not discarded"]
-    priority: medium
-
-  # ── resolutions ──
-  - id: retry_reenqueues_with_fresh_idempotency
-    preconditions: ["a rejected outbox command is retryable"]
-    actions: ["tap Retry on the command"]
+  - id: approve_control_hidden_for_unauthorized_entry
+    preconditions:
+      - "an approval row exists whose canCheck(action, entity) returns false for the current user"
+    actions:
+      - "open needs-attention inbox"
     assertions:
-      - "the command is re-enqueued to the outbox with a FRESH durable idempotency key"
-      - "the next sync replays it via POST /v1/batches"
+      - "the Approve button (testTag: needs-attention-inbox_approve) is NOT rendered on that row"
+      - "the row itself remains visible in the Approvals group"
     priority: high
 
-  - id: discard_removes_command_explicitly
-    preconditions: ["a rejected command can never succeed (e.g. loan already closed)"]
-    actions: ["tap Discard", "confirm"]
-    assertions: ["the command is removed with an explicit ConflictStrategy=discard", "it is never silently dropped"]
+  # ── per-source degradation ──
+  - id: one_source_failing_degrades_to_group_strip_not_blank
+    preconditions:
+      - "the maker-checker source returns error_code=approvals_source_failed"
+      - "outbox, collections, and notifications sources load their demo rows successfully"
+    actions:
+      - "open needs-attention inbox"
+    assertions:
+      - "the Approvals group shows an inline retry strip with an error indicator"
+      - "Failed syncs (na_fs_001/002/003), Overdue tasks (na_ot_001/002), and Alerts (na_al_001/002) groups render normally"
+      - "the whole-screen error state is NOT triggered — a single source failure never blanks the inbox"
     priority: high
-
-  - id: approve_inline_posts_to_makercheckers
-    preconditions: ["an approval row the user can check is visible"]
-    actions: ["tap Approve on the row"]
-    assertions: ["POST /v1/makercheckers/{id}?command=approve is issued", "the row leaves the inbox on success"]
-    priority: high
-
-  - id: snooze_suppresses_alert_without_resolving
-    preconditions: ["an alert row is visible"]
-    actions: ["tap Snooze", "pick a window"]
-    assertions: ["the row is suppressed from the feed until the window elapses", "the alert is not marked resolved or lost"]
-    priority: medium
 
   - id: replay_blocked_when_permission_revoked
-    preconditions: ["a queued command's permission was revoked since it was queued"]
-    actions: ["tap Retry on the command"]
-    assertions: ["the row is surfaced as BLOCKED_PERMISSION_REVOKED", "it is never silently dropped"]
+    preconditions:
+      - "a queued outbox command's required permission was revoked since it was enqueued (permission_revoked_on_replay error)"
+    actions:
+      - "tap Retry on the command row"
+    assertions:
+      - "the row is surfaced as BLOCKED_PERMISSION_REVOKED in the inbox"
+      - "the command is never silently dropped from draft_outbox"
+    priority: high
+
+  # ── acceptance refs (docs.yaml) ──
+  - id: acceptance_offline_commands_never_silently_dropped
+    preconditions:
+      - "draft_outbox contains na_fs_001 (server_error='Collection sheet meeting date must not be in the future'), na_fs_002 ('Loan is already closed'), and na_fs_003 ('Insufficient teller cash')"
+    actions:
+      - "open needs-attention inbox"
+    assertions:
+      - "each rejected command displays its server error message verbatim"
+      - "Retry and Discard controls are present on every failed-sync row"
+      - "ConflictStrategy (retry/discard/edit_and_resubmit) is resolved explicitly for each command"
+      - "no command is silently removed from the inbox without user action"
     priority: high

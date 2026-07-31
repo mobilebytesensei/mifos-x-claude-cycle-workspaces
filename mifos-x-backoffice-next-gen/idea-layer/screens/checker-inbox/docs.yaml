@@ -1,5 +1,5 @@
 feature: checker-inbox
-status: designed
+status: approved
 cluster: approvals
 module: m15-approvals-makerchecker
 priority: must_have
@@ -28,26 +28,141 @@ summary: >-
   The dedicated maker-checker approvals inbox (M15) drilled into from the M01 dashboard "checker inbox" tile. Loads GET
   /v1/makercheckers (self-scoped to entries this user canCheck({action},{entity}) or CHECKER_SUPER_USER) into a
   filterable list — filter chips by entity (Loan · Client · Savings · GL · …) and by action (create/approve/disburse).
-  Each row shows the queued command's action, entity, maker, made-on date and the command JSON summary. Inline Approve /
-  Reject post POST /v1/makercheckers/{auditId}?command=approve|reject, and Delete removes a withdrawn command — all
-  enqueued through the offline outbox with a durable idempotency key so a checker working offline commits exactly-once
-  on the next sync. Rows the user cannot check render read-only. Distinct from needs-attention-inbox (which aggregates
-  four sources); this is the pure approvals queue.
+  Each row shows the queued command's action, entity, maker, made-on date and the command JSON summary, and taps open
+  the command detail. Inline Approve / Reject post POST /v1/makercheckers/{auditId}?command=approve|reject, and Delete
+  removes a withdrawn command — all enqueued through the offline outbox with a durable idempotency key so a checker
+  working offline commits exactly-once on the next sync. Rows the user cannot check render read-only. Distinct from
+  needs-attention-inbox (which aggregates four sources); this is the pure approvals queue.
+metadata:
+  category: crud
+  implementation_ready: true
+  impl_ready_at: "2026-07-31T00:00:00Z"
+  impl_ready_schema: "v2"
+contracts: []
+libraries: []
 vm_actions:
-  - OnLoad
-  - OnFilterEntity
-  - OnFilterAction
-  - OnApprove
-  - OnReject
-  - OnDelete
-  - OnRetry
+  - name: LoadInbox
+    signature: private fun loadInbox()
+    state_mutations:
+      - uiState=Loading
+      - entries=<self-scoped queue from Store5>
+      - uiState=Content | Empty
+    side_effects:
+      - MakerCheckerStore.stream(cacheFirst)
+      - PermissionEvaluator.canCheck(action,entity) per row
+    error_handling:
+      InboxLoadFailed: uiState=Error when no usable cache; offer Retry
+      CacheStale: serve cached rows, revalidate in background per FreshnessBands
+  - name: FilterByEntity
+    handles: filter_entity
+    signature: "private fun onFilterEntity(entity: String?)"
+    state_mutations:
+      - entityFilter=<entity | null>
+      - uiState=Content(filtered)
+    side_effects: []
+    error_handling:
+      NoMatchingRows: keep Content with an in-list empty hint; never transition to Empty on a pure filter
+  - name: FilterByAction
+    handles: filter_action
+    signature: "private fun onFilterAction(action: String?)"
+    state_mutations:
+      - actionFilter=<action | null>
+      - uiState=Content(filtered)
+    side_effects: []
+    error_handling:
+      NoMatchingRows: keep Content with an in-list empty hint; composes with entityFilter
+  - name: ApproveEntry
+    signature: "private fun onApprove(auditId: Long)"
+    state_mutations:
+      - resolvingId=auditId
+      - uiState=Resolving
+      - entries=<row removed on enqueue-success>
+      - uiState=Content | Empty
+    side_effects:
+      - DraftDao.enqueue(CHECKER_APPROVE, MAKERCHECKER, auditId, idempotencyKey)
+    error_handling:
+      ApproveFailed: clear resolvingId; keep row; surface a retriable inline error, never silently drop
+      PermissionRevoked: block enqueue; surface BLOCKED_PERMISSION_REVOKED; route to needs-attention-inbox
+      Offline: queue in outbox; show "queued — will sync" affordance
+  - name: RejectEntry
+    signature: "private fun onReject(auditId: Long)"
+    state_mutations:
+      - resolvingId=auditId
+      - uiState=Resolving
+      - entries=<row removed on enqueue-success>
+      - uiState=Content | Empty
+    side_effects:
+      - confirmDialog()
+      - DraftDao.enqueue(CHECKER_REJECT, MAKERCHECKER, auditId, idempotencyKey)
+    error_handling:
+      RejectFailed: clear resolvingId; keep row; surface a retriable inline error with an audit note
+      ConfirmDismissed: no-op; stay in Content
+      PermissionRevoked: block enqueue; surface BLOCKED_PERMISSION_REVOKED
+  - name: DeleteEntry
+    signature: "private fun onDelete(auditId: Long)"
+    state_mutations:
+      - resolvingId=auditId
+      - uiState=Resolving
+      - entries=<row removed on enqueue-success>
+      - uiState=Content | Empty
+    side_effects:
+      - confirmDialog()
+      - DraftDao.enqueue(CHECKER_DELETE, MAKERCHECKER, auditId, idempotencyKey)
+    error_handling:
+      DeleteFailed: clear resolvingId; keep row; surface a retriable inline error, never silently drop
+      ConfirmDismissed: no-op; stay in Content
+      PermissionRevoked: block enqueue; surface BLOCKED_PERMISSION_REVOKED
+  - name: OpenEntry
+    signature: "private fun onOpenEntry(auditId: Long)"
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToCheckerDetail(auditId))
+    error_handling:
+      EntryNotFound: refuse navigation; refresh the queue in place
+  - name: RetryLoad
+    handles: retry
+    signature: private fun onRetry()
+    state_mutations:
+      - uiState=Loading
+      - entries=<re-read queue>
+      - uiState=Content | Empty | Error
+    side_effects:
+      - MakerCheckerStore.stream(fresh)
+    error_handling:
+      InboxLoadFailed: uiState=Error; keep last-known cache if any; offer Retry again
 error_cases:
   - inbox_load_failed
   - approve_failed
   - reject_failed
+  - delete_failed
   - permission_revoked
+  - offline_decision_queued
+test_fixtures:
+  source: "screens/checker-inbox/tests.yaml"
+  scenario_count: 9
+  priority_distribution:
+    high: 4
+    medium: 4
+    low: 1
 scaffolded_by: /idea-plan-add
+enriched_at: "2026-07-31T00:00:00Z"
+enriched_by: /idea-feature-enrich
+approved_by: /idea approve
+approve_predicate_version: 1.0.0
+approve_contract_version: 2.0.0
+approve_hash: sha256:8bf0f6e116151b23a8c1be470cff0806431de34d36a1ec36a56b3cd7ef30ffff
+approved_at: '2026-07-31T07:34:06Z'
 status_history:
+  - from: designed
+    to: approved
+    at: '2026-07-31T07:34:06Z'
+    by: /idea approve
+    contract_version: 2.0.0
+    reason: >-
+      Autonomous /idea-agent --auto re-approval — DRILL-DOWN feature promoted designed→approved as the
+      pipeline's own gate. impl-ready-clean (impl-ready-validator IR-1..IR-4: 0 violations) and docs.yaml
+      internally consistent. Fresh approve_hash stamped over the 7 canonical sibling YAMLs (approve-hash.md
+      §Computation; RULE-GAP-IDEA-FIRST-001).
   - from: draft
     to: designed
     at: '2026-07-26T05:25:02.234Z'

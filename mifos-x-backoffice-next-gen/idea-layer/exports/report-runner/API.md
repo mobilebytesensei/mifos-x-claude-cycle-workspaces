@@ -1,6 +1,6 @@
 <!-- source: screens/report-runner/api.yaml -->
-<!-- source_hash: api=cce638d5ac6c -->
-<!-- generated: 2026-07-26T04:07:02Z -->
+<!-- source_hash: api=17704cb1fdc1 -->
+<!-- generated: 2026-07-31T00:00:00Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 
@@ -14,9 +14,9 @@
 
 | Function | Method | Table | Auth | Params | Response | Cache |
 |----------|--------|-------|------|--------|----------|-------|
-| list_reports | GET | cached_reports | Yes | (none) | ReportDefinitionDto[]: reportName, reportCategory, reportType (Table/Pentaho/Chart) | CACHE_FIRST_SWR |
-| resolve_report_parameter | GET | cached_report_parameters | Yes | parameterId(Integer)?, parameterType(Boolean)? | ReportParameterOptionDto[]: id, name (option lookups per parameter) | CACHE_FIRST_SWR |
-| run_report | GET | cached_report_results | Yes | reportName(String), R_officeId(String)?, R_startDate(String)?, R_endDate(String)?, R_loanOfficerId(String)?, R_currencyId(String)? | ReportRunResultDto: columnHeaders[], data[] rows | CACHE_FIRST_SWR |
+| list_reports | GET | report_catalog_cache | Yes | (none) | ReportDefinitionDto[]: reportName, reportCategory, reportType (Table/Pentaho/Chart) | CACHE_FIRST_SWR |
+| resolve_report_parameter | GET | report_parameter_cache | Yes | parameterId(Integer)?, parameterType(Boolean)? | ReportParameterOptionDto[]: id, name (option lookups per parameter) | CACHE_FIRST_SWR |
+| run_report | GET | report_result_cache | Yes | reportName(String), R_officeId(String)?, R_startDate(String)?, R_endDate(String)?, R_loanOfficerId(String)?, R_currencyId(String)? | ReportRunResultDto: columnHeaders[], data[] rows | CACHE_FIRST_SWR |
 
 ## Error Handling
 
@@ -28,8 +28,8 @@ All endpoints follow standard error mapping:
 - 500 -> Server error (retryable; error state + Retry)
 
 Notes:
-- All three endpoints are reads — CACHE_FIRST_SWR. `run_report` is cached keyed by the parameter hash so a recently-run report opens offline; a stale cached result shows a refreshing badge.
-- Parameter lookups are themselves reports run with a parameter type (`resolve_report_parameter`) — dependent parameters cascade (loan-officer options re-resolve scoped to the chosen office). Sort + export are purely client-side over the loaded rows; the runner is read-only (no mutations).
+- All three endpoints are reads — CACHE_FIRST_SWR. `run_report` is cached keyed by the parameter hash (`report_result_cache`) so a recently-run report opens offline; a stale cached result shows a refreshing badge.
+- Parameter lookups are themselves reports run with a parameter type (`resolve_report_parameter`) — dependent parameters cascade (loan-officer options re-resolve scoped to the chosen office), cached to `report_parameter_cache`. Sort + export are purely client-side over the loaded rows; the runner is read-only (no mutations). The report catalog itself (`list_reports`) caches to `report_catalog_cache` for the M14 picker.
 
 ## Full Contracts
 

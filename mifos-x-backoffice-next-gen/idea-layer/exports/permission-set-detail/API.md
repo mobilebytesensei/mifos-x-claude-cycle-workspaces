@@ -1,6 +1,6 @@
 <!-- source: screens/permission-set-detail/api.yaml -->
-<!-- source_hash: api=8bda03c69a0e -->
-<!-- generated: 2026-07-26T04:07:02Z -->
+<!-- source_hash: api=5c876fef8310 -->
+<!-- generated: 2026-07-31T03:23:52Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 
@@ -14,7 +14,7 @@
 
 | Function | Method | Table | Auth | Params | Response | Cache |
 |----------|--------|-------|------|--------|----------|-------|
-| get_permissions_catalog | GET | cached_permissions | Yes | makerCheckerable(Boolean)? | PermissionDto[]: grouping, code, entityName, actionName | CACHE_FIRST_SWR |
+| get_permissions_catalog | GET | permission_catalog_cache | Yes | makerCheckerable(Boolean)? | PermissionDto[]: grouping, code, entityName, actionName | CACHE_FIRST_SWR |
 
 ## Error Handling
 
@@ -26,7 +26,8 @@ All endpoints follow standard error mapping:
 
 Notes:
 - `get_permissions_catalog` is a reference-data read — CACHE_FIRST_SWR: the code catalog renders grouping labels instantly and a background revalidate refreshes it, so the detail works offline.
-- The HELD subset is NOT this call — it is the login-normalised core/permissions PermissionSet (held codes + umbrella short-circuits + sha256 fingerprint). This endpoint only supplies the catalog + grouping metadata for the grouped, held-vs-total view.
+- The HELD subset is NOT this call — it is the login-normalised `core/permissions` PermissionSet (held codes + umbrella short-circuits + sha256 fingerprint). This endpoint only supplies the catalog + grouping metadata for the grouped, held-vs-total view.
+- No per-endpoint `errors[]` array is declared in `api.yaml`; the standard error mapping above applies uniformly.
 
 ## Full Contracts
 

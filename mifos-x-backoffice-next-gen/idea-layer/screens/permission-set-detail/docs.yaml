@@ -1,5 +1,5 @@
 feature: permission-set-detail
-status: draft
+status: approved
 cluster: foundation
 module: permission-capability-engine
 priority: should_have
@@ -22,23 +22,142 @@ acceptance_refs:
     The resolved PermissionSet detail lists every raw permission code the signed-in user holds, grouped by
     Fineract grouping (portfolio, transaction_loan, accounting, …), flags umbrella/short-circuit grants, and
     shows the sha256 fingerprint used for CapabilityMap drift detection; read-only, self-scoped.
+  - >-
+    A Refresh-from-role action re-pulls the role permission union (GET /v1/roles/{roleId}/permissions) so
+    core/permissions can rebuild + atomically swap the resolved set on a fingerprint change; on failure the
+    last-known set is kept — the screen never mutates permissions.
 plan_ref: idea-plan.yaml#features[permission-set-detail]
 summary: >-
-  The read-only detail of the signed-in user's resolved PermissionSet, drilled into from the
+  The read-mostly detail of the signed-in user's resolved PermissionSet, drilled into from the
   permission-capability-engine (view_permission_set). It renders every raw permission code the user holds
   grouped by Fineract grouping (portfolio · transaction_loan · transaction_savings · accounting · organisation
   · authorisation · …), marks umbrella / short-circuit grants (e.g. ALL_FUNCTIONS, CHECKER_SUPER_USER) that
   widen access, and shows the PermissionSet's sha256 fingerprint — the value the CapabilityMap resolver keys on
-  for drift detection. A search box filters codes, and each grouping shows its held-vs-total count. The set is
-  the union of the user's enabled roles' permissions (GET /v1/permissions supplies the code catalog + grouping
-  metadata; the held set comes from the login-normalised PermissionSet in core/permissions). Purely diagnostic.
+  for drift detection. A search box filters codes, each grouping shows its held-vs-total count, and a
+  Refresh-from-role action re-pulls the role union so core/permissions can rebuild the set. The held set is the
+  union of the user's enabled roles' permissions (GET /v1/permissions supplies the code catalog + grouping
+  metadata; the held set comes from the login-normalised PermissionSet in core/permissions). Diagnostic +
+  refresh; it never mutates permissions.
+metadata:
+  category: crud
+  implementation_ready: true
+  impl_ready_at: "2026-07-31T00:00:00Z"
+  impl_ready_schema: "v2"
+contracts: []
+libraries: []
 vm_actions:
-  - OnLoad
-  - OnSearchCode
-  - OnExpandGrouping
-  - OnCopyFingerprint
-  - OnRetry
+  - name: LoadPermissionSet
+    signature: private fun loadPermissionSet()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content(roleName,groupings,umbrellas,fingerprint)
+      - uiState=Empty
+      - uiState=Error
+    side_effects:
+      - PermissionEvaluator.resolvedSet()
+      - PermissionCatalogStore.stream()
+    error_handling:
+      PermissionSetUnavailable: uiState=Empty; error_code=permission_set_unavailable; render guidance panel
+      PermissionsCatalogLoadFailed: uiState=Error; error_code=permissions_catalog_load_failed; offer Retry when no cache
+  - name: FilterCodes
+    handles: search_code
+    signature: "private fun filterCodes(query: String)"
+    state_mutations:
+      - query=<entered text>
+      - groupings=<in-VM filtered subset>
+    side_effects: []
+    error_handling:
+      BelowMinLength: ignore filter; retain the full grouped list; no user-facing error
+  - name: ToggleUmbrella
+    signature: "private fun toggleUmbrella(umbrella: String)"
+    state_mutations:
+      - selectedUmbrella=<tapped grant | null>
+    side_effects: []
+    error_handling:
+      UnknownUmbrella: no-op; leave selectedUmbrella unchanged
+  - name: ToggleGroup
+    handles: expand_grouping
+    signature: "private fun toggleGroup(groupingId: String)"
+    state_mutations:
+      - expandedGroupings=<groupingId added or removed>
+    side_effects: []
+    error_handling:
+      UnknownGrouping: no-op; leave expandedGroupings unchanged
+  - name: CopyFingerprint
+    signature: private fun copyFingerprint()
+    state_mutations: []
+    side_effects:
+      - ClipboardManager.setText(fingerprint)
+      - sendEvent(ShowCopyConfirmation)
+    error_handling:
+      ClipboardUnavailable: surface a transient snackbar; do not crash; state unchanged
+  - name: RefreshPermissions
+    signature: private fun refreshPermissions()
+    state_mutations:
+      - uiState=Refreshing
+      - groupings=<rebuilt on fingerprint change>
+      - umbrellas=<rebuilt on fingerprint change>
+      - fingerprint=<rebuilt>
+      - uiState=Content
+    side_effects:
+      - PermissionRepository.refreshFromRole()
+      - PermissionEvaluator.reResolve()
+    error_handling:
+      PermissionRefreshFailure: uiState=Content; error_code=permission_refresh_failure; keep last-known set; surface transient error
+      NetworkError: uiState=Content; keep last-known set; notify once
+  - name: RetryLoad
+    handles: retry
+    signature: private fun retryLoad()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content | Error
+    side_effects:
+      - PermissionCatalogStore.fresh()
+    error_handling:
+      PermissionsCatalogLoadFailed: uiState=Error; error_code=permissions_catalog_load_failed; keep Retry visible
+  - name: GoBack
+    signature: private fun onGoBack()
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToPermissionCapabilityEngine)
+    error_handling:
+      NavHostUnavailable: no-op; the PermissionSet detail remains on screen; state unchanged
 error_cases:
   - permissions_catalog_load_failed
   - permission_set_unavailable
+  - permission_refresh_failure
+test_fixtures:
+  source: screens/permission-set-detail/tests.yaml
+  scenario_count: 17
+  priority_distribution:
+    high: 6
+    medium: 6
+    low: 5
 scaffolded_by: /idea-plan-add
+enriched_at: "2026-07-31T00:00:00Z"
+enriched_by: /idea-feature-enrich
+approved_by: /idea approve
+approve_predicate_version: 1.0.0
+approve_contract_version: 2.0.0
+approve_hash: sha256:f53b7ac2cd4e292179230a15c34b18e99cf583ef6a145888d9771fa6e7b1d311
+approved_at: '2026-07-31T07:34:06Z'
+status_history:
+  - from: designed
+    to: approved
+    at: '2026-07-31T07:34:06Z'
+    by: /idea approve
+    contract_version: 2.0.0
+    reason: >-
+      Autonomous /idea-agent --auto re-approval — DRILL-DOWN feature promoted designed→approved as the
+      pipeline's own gate. impl-ready-clean (impl-ready-validator IR-1..IR-4: 0 violations) and docs.yaml
+      internally consistent. Fresh approve_hash stamped over the 7 canonical sibling YAMLs (approve-hash.md
+      §Computation; RULE-GAP-IDEA-FIRST-001).
+  - from: draft
+    to: designed
+    at: "2026-07-31T00:00:00Z"
+    by: /idea-feature-enrich
+    reason: >-
+      Enriched to v2 (implementation_ready) — completed business_logic (crud), 5-state model,
+      full per-component action_contracts, rich vm_actions with non-empty error_handling, and a
+      role-permission Refresh (GET /v1/roles/{roleId}/permissions) grounded in the parent
+      permission-capability-engine permission_refresh contract; no permission-mutation endpoint invented.

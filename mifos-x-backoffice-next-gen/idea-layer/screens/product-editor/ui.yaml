@@ -1,14 +1,15 @@
 schema_version: "1.0"
 screen_id: product-editor
 feature: product-editor
-name: "Product Editor (loan/savings product create & edit)"
-archetype: form
-status: draft
+name: "Loan Product Editor (create & edit)"
+archetype: form_screen
+status: designed
 module: m08-products-charges
 initial_state: loading
 
-# Drill-in from the M08 products list. A sectioned, template-driven form for creating or
-# editing a loan/savings product. Save routes through the offline outbox. Admin-gated.
+# Drill-in from the M08 products & charges list. A sectioned, template-driven form for creating or
+# editing a LOAN product (api.yaml declares only /v1/loanproducts). Every field, option and bound is
+# driven by GET /v1/loanproducts/template; save routes through the offline outbox. Admin-gated.
 
 requires_permission: ["READ_LOANPRODUCT"]
 
@@ -18,7 +19,7 @@ consumes_capabilities:
   - requires_auth
 
 business_logic:
-  kind: form
+  kind: crud
   processing_kind: on_demand
   library_refs:
     - cmp-network-monitor
@@ -33,50 +34,78 @@ business_logic:
     - core/permissions
     - core/network
   description: >-
-    Renders a sectioned product form by merging GET /v1/loanproducts/{id} with GET /v1/loanproducts/template
-    (bounds, options, accounting rules), validates each field against the template, gates editing on the
-    CREATE/UPDATE product permission, and posts save through the offline outbox with a durable idempotency key.
-  description_author: claude-via-idea-plan-add
-  description_authored_at: "2026-07-25T00:00:00Z"
+    Renders a sectioned loan-product form by merging GET /v1/loanproducts/{productId} with
+    GET /v1/loanproducts/template (currencies, amortisation/interest-type options, accounting rules,
+    charge options, principal/term/interest bounds). Every field option and validation rule is derived
+    from the template; client-side validation checks each value against the template bounds (principal
+    min<=default<=max, interest bounds, required GL mappings for the chosen accounting rule) so Save is
+    enabled only when the whole form is valid. Editing is gated on CREATE/UPDATE_LOANPRODUCT; save posts
+    PUT (edit) or POST (create) through the offline outbox with a durable idempotency key.
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-31T00:00:00Z"
 
 state_model:
   fields:
     - name: product
-      type: "Product?"
-      description: "The loaded product being edited (null when creating a new product)."
+      type: "LoanProduct?"
+      description: "The loaded loan product being edited (null when creating a new product)."
     - name: template
-      type: "ProductTemplate?"
-      description: "The Fineract product template driving field options, bounds and accounting rules."
+      type: "LoanProductTemplate?"
+      description: "The Fineract loan-product template driving field options, bounds and accounting rules."
     - name: form
-      type: "ProductForm"
-      description: "Captured field values across sections: details, terms, settings, charges, accounting."
+      type: "LoanProductForm"
+      description: "Captured field values across sections: Details, Terms, Settings, Charges, Accounting (incl. GL mappings)."
     - name: expandedSection
       type: "ProductSection?"
       description: "Currently expanded section (Details | Terms | Settings | Charges | Accounting)."
+    - name: validationErrors
+      type: "Map<String, String>"
+      description: "Per-field validation messages produced by re-validating the form against the template bounds; empty when the form is valid."
+    - name: mode
+      type: "EditorMode"
+      description: "Create (no product loaded) | Edit (existing productId)."
     - name: canEdit
       type: "Boolean"
-      description: "Whether the PermissionSet holds CREATE/UPDATE product (else the form is read-only)."
+      description: "Whether the PermissionSet holds CREATE/UPDATE_LOANPRODUCT (else the form is read-only)."
     - name: uiState
       type: "ProductEditorScreenState"
-      description: "Loading | Content | Empty | Error."
+      description: "Loading | Content | Validating | Saving | Empty | Error."
 
 states:
   loading:
-    description: "Loading the product + template cache-first from Store5; shows a sectioned-form shimmer."
+    description: >-
+      Fetching the loan product + template cache-first from Store5 (loan_product_cache +
+      loan_product_template_cache); shows a sectioned-form shimmer, one block per section.
   content:
     description: >-
-      The sectioned form (Details · Terms · Settings · Charges · Accounting) with template-driven fields,
-      bounds and options, per-field validation, and a Save action gated on the edit permission. In read-only
-      mode (no edit permission) the fields render disabled. Editable/draftable offline.
+      The sectioned editable form (Details · Terms · Settings · Charges · Accounting) with template-driven
+      fields, bounds and option lists, per-field validation messages, and a Save action gated on the edit
+      permission. In read-only mode (no edit permission) all fields render disabled and Save is hidden.
+  validating:
+    description: >-
+      A field change (or an explicit Validate tap) is re-running the client-side template-bounds check
+      (principal min<=default<=max, interest bounds, required GL mappings for the chosen accounting rule);
+      Save is disabled while validationErrors is non-empty. A synchronous in-VM pass over the current form.
+  saving:
+    description: >-
+      Save was tapped on a valid form; the create/update command is being enqueued to the durable offline
+      outbox (draft_outbox) with a UUIDv4 idempotency key. The Save button shows a progress indicator; the
+      form stays visible. Returns to content on enqueue success, or error on a hard enqueue failure.
   empty:
-    description: "A create-mode form with no product loaded yet — all sections default from the template."
+    description: >-
+      Create mode — only the template resolved, no product loaded. All sections render with default values
+      drawn from the template (currency/interest/amortisation/accounting option lists populated, no pre-filled
+      name, short name, principal or charges).
   error:
-    description: "The product or template failed to load, or save failed hard; shows the error + Retry."
+    description: >-
+      The product or template failed to load with no usable cache, or a save enqueue failed hard; shows the
+      error message + Retry (reloads product + template or re-attempts the failed save).
 
 components:
   - id: pe_section
     type: expandable_section
     label: "{strings.prodedit_section}"
+    accessibility_label: "Expand or collapse this product section"
     testTag: "product-editor_section"
     on_click:
       action: expand_section
@@ -89,28 +118,222 @@ components:
         description: "Expand/collapse a product form section (Details, Terms, Settings, Charges, Accounting); a pure in-VM UI state toggle over the already-loaded form, no refetch."
         produces_state: content
         action_contract_hash: "sha256:pe-expand-section"
-        action_contract_author: "claude-via-idea-plan-add"
-        action_contract_authored_at: "2026-07-25T00:00:00Z"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
 
   - id: pe_field
     type: dynamic_form_field
     label: "{strings.prodedit_field}"
+    accessibility_label: "Edit this loan product field"
     testTag: "product-editor_field"
     on_click:
       action: field_change
+      target: product-editor
+      state: validating
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Update a template-driven text/number product field (name, short name, principal min/default/max, interest rate, repayment count, arrears tolerance) and re-run the template-bounds validation so Save enables only when the whole form is valid; a pure in-VM update."
+        produces_state: validating
+        invalidates:
+          - form
+          - validationErrors
+        action_contract_hash: "sha256:pe-field-change"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: pe_currency_select
+    type: dropdown_select
+    label: "{strings.prodedit_currency}"
+    accessibility_label: "Select the loan product currency"
+    testTag: "product-editor_currency_select"
+    on_click:
+      action: select_currency
+      target: product-editor
+      state: validating
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Choose the product currency (e.g. KES) from the template currencyOptions; updates the form's currency code and re-validates principal/charge amounts under the new currency's decimal places. Pure in-VM transform, no refetch."
+        produces_state: validating
+        reads_from:
+          - table: loan_product_template_cache
+        invalidates:
+          - form
+        action_contract_hash: "sha256:pe-select-currency"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: pe_amortisation_select
+    type: dropdown_select
+    label: "{strings.prodedit_amortisation}"
+    accessibility_label: "Select the amortisation type"
+    testTag: "product-editor_amortisation_select"
+    on_click:
+      action: select_amortisation
+      target: product-editor
+      state: validating
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Choose the amortisation type (Equal principal payments | Equal installments) from the template amortizationTypeOptions and write it to the form's Settings section; a pure in-VM transform over the loaded template options."
+        produces_state: validating
+        reads_from:
+          - table: loan_product_template_cache
+        invalidates:
+          - form
+        action_contract_hash: "sha256:pe-select-amortisation"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: pe_interest_type_select
+    type: dropdown_select
+    label: "{strings.prodedit_interest_type}"
+    accessibility_label: "Select the interest calculation type"
+    testTag: "product-editor_interest_type_select"
+    on_click:
+      action: select_interest_type
+      target: product-editor
+      state: validating
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Choose the interest-calculation type (Declining Balance | Flat) from the template interestTypeOptions and write it to the form's Terms section; a pure in-VM transform over the loaded template options."
+        produces_state: validating
+        reads_from:
+          - table: loan_product_template_cache
+        invalidates:
+          - form
+        action_contract_hash: "sha256:pe-select-interest-type"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: pe_accounting_rule_select
+    type: dropdown_select
+    label: "{strings.prodedit_accounting_rule}"
+    accessibility_label: "Select the accounting rule"
+    testTag: "product-editor_accounting_rule_select"
+    on_click:
+      action: select_accounting_rule
+      target: product-editor
+      state: validating
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Choose the accounting rule (None | Cash | Accrual periodic) from the template accountingRuleOptions; toggles whether GL account mappings are required and re-validates the Accounting section accordingly. Pure in-VM transform, no refetch."
+        produces_state: validating
+        reads_from:
+          - table: loan_product_template_cache
+        invalidates:
+          - form
+          - validationErrors
+        action_contract_hash: "sha256:pe-select-accounting-rule"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: pe_add_charge
+    type: button
+    label: "{strings.prodedit_add_charge}"
+    accessibility_label: "Add a charge to this loan product"
+    testTag: "product-editor_add_charge"
+    variant: secondary
+    gated_permission: UPDATE_LOANPRODUCT
+    description: "Shown when the edit permission is held; appends a charge from the template chargeOptions to the form."
+    on_click:
+      action: add_charge
       target: product-editor
       state: content
       action_contract:
         effect: transform_state
         library_refs: []
         external_library_refs: ["androidx.compose.runtime"]
-        description: "Update a product field and re-run the template validation (principal min≤default≤max, interest bounds, required accounting mappings) so Save is enabled only when the whole form is valid; a pure in-VM update."
+        description: "Append a charge selected from the template chargeOptions (e.g. Processing Fee, Late Payment Penalty) to the form's Charges section; the addition lives in-VM only and is not persisted until Save is tapped."
+        produces_state: content
+        reads_from:
+          - table: loan_product_template_cache
+        invalidates:
+          - form
+        action_contract_hash: "sha256:pe-add-charge"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: pe_remove_charge
+    type: icon_button
+    label: "{strings.prodedit_remove_charge}"
+    accessibility_label: "Remove this charge from the loan product"
+    testTag: "product-editor_remove_charge"
+    variant: destructive
+    gated_permission: UPDATE_LOANPRODUCT
+    description: "Shown per charge row when the edit permission is held; removes the charge from the in-VM form."
+    on_click:
+      action: remove_charge
+      target: product-editor
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Remove a charge from the form's Charges section; a pure in-VM list mutation over the working form draft, not persisted until Save is tapped (never writes to the outbox on its own)."
         produces_state: content
         invalidates:
           - form
-        action_contract_hash: "sha256:pe-field-change"
-        action_contract_author: "claude-via-idea-plan-add"
-        action_contract_authored_at: "2026-07-25T00:00:00Z"
+        action_contract_hash: "sha256:pe-remove-charge"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: pe_gl_mapping
+    type: dropdown_select
+    label: "{strings.prodedit_gl_mapping}"
+    accessibility_label: "Map a GL account for this posting"
+    testTag: "product-editor_gl_mapping"
+    on_click:
+      action: edit_gl_mapping
+      target: product-editor
+      state: validating
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Assign a GL account (fund source, loan portfolio, interest income, fee income, losses-written-off) required by the chosen accounting rule from the template GL account options; updates the form's Accounting section and re-validates that all required mappings are set. Pure in-VM transform."
+        produces_state: validating
+        reads_from:
+          - table: loan_product_template_cache
+        invalidates:
+          - form
+          - validationErrors
+        action_contract_hash: "sha256:pe-edit-gl-mapping"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: pe_validate
+    type: button
+    label: "{strings.prodedit_validate}"
+    accessibility_label: "Validate the loan product form"
+    testTag: "product-editor_validate"
+    variant: text
+    description: "Explicitly re-runs client-side validation against the template bounds before saving."
+    on_click:
+      action: validate_form
+      target: product-editor
+      state: validating
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Re-run the full client-side validation of the form against the template bounds (principal min<=default<=max, interest-rate bounds, required GL mappings for the chosen accounting rule) and surface per-field validationErrors; a synchronous in-VM pass that gates whether Save can be enqueued."
+        produces_state: validating
+        reads_from:
+          - table: loan_product_template_cache
+        invalidates:
+          - validationErrors
+        action_contract_hash: "sha256:pe-validate-form"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
 
   - id: pe_save
     type: button
@@ -119,29 +342,47 @@ components:
     testTag: "product-editor_save"
     variant: primary
     gated_permission: UPDATE_LOANPRODUCT
-    description: "Shown only when the edit permission is held; persists create or update."
+    description: "Shown only when the edit permission is held and the form is valid; persists create or update."
     on_click:
       action: save_product
       target: product-editor
-      state: content
+      state: saving
       action_contract:
         effect: call_api
         library_refs:
           - cmp-network-monitor
         external_library_refs:
           - "core/database.DraftDao"
-        description: "Persist the product via PUT /v1/loanproducts/{id} (edit) or POST /v1/loanproducts (create) through the offline outbox with a durable idempotency key; the product list reflects the change after the next sync."
-        produces_state: content
+        description: "Persist the loan product via PUT /v1/loanproducts/{id} (edit) or POST /v1/loanproducts (create) through the offline outbox with a durable UUIDv4 idempotency key, replayed exactly-once via POST /v1/batches; the M08 product list reflects the change after the next sync. Only enqueues when validationErrors is empty."
+        produces_state: saving
         writes_to:
           - table: draft_outbox
         action_contract_hash: "sha256:pe-save-product"
-        action_contract_author: "claude-via-idea-plan-add"
-        action_contract_authored_at: "2026-07-25T00:00:00Z"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: pe_cancel
+    type: button
+    label: "{strings.prodedit_cancel}"
+    accessibility_label: "Cancel and return to the products list"
+    testTag: "product-editor_cancel"
+    variant: text
+    description: "Discards the in-VM form draft and returns to the M08 products & charges list."
+    on_click:
+      action: cancel
+      target: m08-products-charges
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Abandon the unsaved form draft and navigate back to the M08 products & charges list without writing anything to the outbox; no persisted state changes."
+        action_contract_hash: "sha256:pe-cancel"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
 
   - id: pe_error_retry
     type: button
     label: "{strings.prodedit_retry}"
-    accessibility_label: "Retry loading the product template"
+    accessibility_label: "Retry loading the loan product template"
     testTag: "product-editor_error_retry"
     variant: primary
     description: "Error-state retry — reloads the product + template or re-attempts save."
@@ -153,8 +394,20 @@ components:
         effect: call_api
         library_refs:
           - cmp-network-monitor
-        description: "Reload the product + template after a hard load failure (or re-attempt the failed save); resets to loading and repopulates the form sections."
+        description: "Reload the loan product + template after a hard load failure (or re-attempt the failed save enqueue); resets to loading and repopulates the form sections cache-first."
         produces_state: loading
+        reads_from:
+          - table: loan_product_cache
+          - table: loan_product_template_cache
         action_contract_hash: "sha256:pe-retry"
-        action_contract_author: "claude-via-idea-plan-add"
-        action_contract_authored_at: "2026-07-25T00:00:00Z"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+# enriched-provenance: /idea-feature-enrich 2026-07-31 — loan-product only (api.yaml declares solely
+# /v1/loanproducts: get_product · get_product_template · save_product). status draft->designed; renamed the
+# feature to "Loan Product Editor" and stripped every loan/savings ambiguity (no /v1/savingsproducts contract,
+# action, state or DTO added). Added 6 exhaustive states (loading/content/validating/saving/empty/error) and
+# 9 net-new interactive components with full action_contracts (currency/amortisation/interest-type/accounting-rule
+# selects, add/remove charge, GL mapping, validate, cancel) alongside the existing expand/field/save/retry; save
+# is effect:call_api writes_to draft_outbox (exactly-once via POST /v1/batches). accessibility_label added to every
+# interactive component; new prodedit_* string keys reported to the orchestrator (not written to _strings/strings.yaml).

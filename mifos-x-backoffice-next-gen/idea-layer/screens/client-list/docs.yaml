@@ -1,5 +1,5 @@
 feature: client-list
-status: designed
+status: approved
 cluster: clients
 module: m02-clients
 priority: must_have
@@ -32,20 +32,180 @@ summary: >-
   client-detail-360. A permission-gated "New client" FAB opens the dynamic create form (GET /v1/clients/template → POST
   /v1/clients through the offline outbox). The roster reads cache-first through Store5 with paging, so it is fully
   browsable offline; new clients created offline appear immediately.
+metadata:
+  category: back-office-domain
+  implementation_ready: true
+  impl_ready_at: '2026-07-31T00:00:00Z'
+  impl_ready_schema: v2
+contracts:
+  - capability: client_list_read
+    platform_spec: >-
+      Store<PageKey,List<Client>> over Room (client_roster_cache) + asPagingScreenStream(CACHE_FIRST_SWR);
+      offset/limit ≙ Fineract paging; GET /v1/clients scoped by officeId (query params officeId/status/offset/limit/
+      orderBy) → ClientSummaryDto pageItems mapped to roster rows (display name, account no, status chip, office,
+      assigned staff). @Transaction replacePage keeps each offset/limit page atomic so pagination never races;
+      on_scroll_end appends the next page. Reads cache-first so the roster is fully browsable offline; a stale page
+      renders immediately while SWR revalidates in the background per FreshnessBands. Renders all ScreenState
+      variants (loading/content/empty/error) free via PagingScreenContent.
+    permission: READ_CLIENT
+    error_cases:
+      - clients_load_failed
+      - page_load_failed
+      - client_list_offline_no_cache
+  - capability: client_search
+    platform_spec: >-
+      GET /v1/search?resource=clients&query= (bare_array, SearchResultDto) — a global-search escalation issued ONLY
+      when the debounced in-VM filter over the loaded office-scoped pages is exhausted. Cross-office matches (name /
+      account no / external id) render in a transient search-results panel and are NOT written to client_roster_cache
+      (they may fall outside office scope). A failed search degrades to an inline retry on the search panel; the paged
+      roster underneath is untouched.
+    permission: READ_CLIENT
+    error_cases:
+      - search_failed
+libraries:
+  - capability: client_list_read
+    library: org.mobilenativefoundation.store.store5
+    version: 5.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: client_list_read
+    library: androidx.room
+    version: 3.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: client_list_read
+    library: cmp-network-monitor
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: client_list_read
+    library: openMF Fineract Client KMP SDK
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: client_search
+    library: kotlinx-serialization
+    version: 1.7.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: client_search
+    library: openMF Fineract Client KMP SDK
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
 vm_actions:
-  - OnLoad
-  - OnSearch
-  - OnFilterStatus
-  - OnOpenClient
-  - OnNewClient
-  - OnLoadNextPage
-  - OnRetry
+  - name: OnLoad
+    signature: private fun onLoad()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content(clients) | Empty | Error
+      - canCreate=<resolved from PermissionSet holds CREATE_CLIENT>
+    side_effects:
+      - ClientListStore.asPagingScreenStream(officeId, CACHE_FIRST_SWR)
+      - PermissionEvaluator.evaluate(CREATE_CLIENT)
+    error_handling:
+      NetworkError: uiState=Content from cache if present else Error; offer Retry (clients_load_failed)
+      OfflineNoCache: uiState=Error; client_list_offline_no_cache
+  - name: OnSearch
+    handles: search_clients
+    signature: 'private fun onSearch(query: String)'
+    state_mutations:
+      - query=<entered text>
+      - clients=<filtered over loaded pages, then global-search results>
+    side_effects:
+      - in-VM debounced filter over loaded pages (name / account no / external id)
+      - ClientSearchService.search(query, resource=clients) when the local page set is exhausted
+    error_handling:
+      SearchFailed: inline retry on the search panel; paged roster untouched (search_failed)
+  - name: OnFilterStatus
+    signature: 'private fun onFilterStatus(status: ClientStatus?)'
+    state_mutations:
+      - statusFilter=<pending | active | closed | null(All)>
+      - clients=<filtered over loaded pages>
+    side_effects: []
+    error_handling:
+      NetworkError: >-
+        if the selected status filter needs a server-scoped refetch (filtered page set exhausted) and it fails,
+        keep the locally-filtered rows and offer Retry (clients_load_failed)
+  - name: OnOpenClient
+    signature: 'private fun onOpenClient(clientId: String)'
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToClientDetail360(clientId))
+    error_handling:
+      NavigationTargetUnavailable: >-
+        if client-detail-360 cannot resolve clientId (row deleted or now out of office scope), suppress the
+        navigation and surface an inline toast "This client is no longer available"; roster stays browsable
+        (client_list_offline_no_cache)
+  - name: OnNewClient
+    signature: private fun onNewClient()
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToDynamicClientCreateForm)  # gated on CREATE_CLIENT; posts via offline outbox on submit
+    error_handling:
+      PermissionDenied: >-
+        if CREATE_CLIENT was revoked between render and tap, suppress navigation and show
+        "You no longer have permission to create clients"; the FAB is then hidden on next re-evaluation
+  - name: OnLoadNextPage
+    signature: private fun onLoadNextPage()
+    state_mutations:
+      - clients=<append next offset/limit page>
+    side_effects:
+      - ClientListStore next page (offset += limit) appended atomically via @Transaction replacePage
+    error_handling:
+      PageLoadFailed: inline retry footer; already-loaded rows stay (page_load_failed)
+  - name: OnRetry
+    signature: private fun onRetry()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content | Error
+    side_effects:
+      - ClientListStore.asPagingScreenStream(officeId).refreshFresh()  # re-reads the first page
+    error_handling:
+      NetworkError: uiState=Error; offer Retry again (clients_load_failed)
 error_cases:
   - clients_load_failed
   - search_failed
   - page_load_failed
+  - client_list_offline_no_cache
+test_fixtures:
+  source: screens/client-list/tests.yaml
+  scenario_count: 8
+  priority_distribution:
+    high: 3
+    medium: 4
+    low: 1
 scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-31T00:00:00Z'
+enriched_by: /idea-feature-enrich
+approved_by: /idea approve
+approve_predicate_version: 1.0.0
+approve_contract_version: 2.0.0
+approve_hash: sha256:4568a671e48886a07fd3c7b0ed4880c0071d39e33b7a89aa3925330c2a83a4c4
+approved_at: '2026-07-31T07:34:06Z'
 status_history:
+  - from: designed
+    to: approved
+    at: '2026-07-31T07:34:06Z'
+    by: /idea approve
+    contract_version: 2.0.0
+    reason: >-
+      Autonomous /idea-agent --auto re-approval — DRILL-DOWN feature promoted designed→approved as the
+      pipeline's own gate. impl-ready-clean (impl-ready-validator IR-1..IR-4: 0 violations) and docs.yaml
+      internally consistent. Fresh approve_hash stamped over the 7 canonical sibling YAMLs (approve-hash.md
+      §Computation; RULE-GAP-IDEA-FIRST-001).
   - from: draft
     to: designed
     at: '2026-07-26T05:33:13.878Z'

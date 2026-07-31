@@ -1,5 +1,5 @@
 feature: product-editor
-status: draft
+status: approved
 cluster: admin
 module: m08-products-charges
 priority: should_have
@@ -21,29 +21,224 @@ requires_features:
   - dynamic-template-forms
 acceptance_refs:
   - >-
-    Opening a loan/savings product shows its terms (principal/interest/repayment bounds, charges, accounting
-    rule) rendered from GET /{product}/template; edits are permission-gated (CREATE/UPDATE product) and post
-    through the offline outbox; a new product can be created from the same template-driven form.
+    Opening a loan product shows its terms (principal/interest/repayment bounds, charges, accounting
+    rule + GL mappings) rendered from GET /v1/loanproducts/template; edits are permission-gated
+    (CREATE/UPDATE_LOANPRODUCT) and post through the offline outbox; a new loan product can be created
+    from the same template-driven form.
 plan_ref: idea-plan.yaml#features[product-editor]
 summary: >-
-  The loan/savings product create-and-edit surface drilled into from the M08 products & charges list
-  (open_product_detail). Loads GET /v1/loanproducts/{productId} (or /v1/savingsproducts/{id}) merged with
-  GET /v1/loanproducts/template into a sectioned form — Details (name, short name, currency) · Terms (principal
-  min/default/max, interest rate & method, repayment frequency & count) · Settings (amortisation,
-  interest-calculation period, arrears tolerance) · Charges · Accounting (rule + GL mappings). Every field,
-  bound and option comes from the Fineract template so the form always matches the server's product schema.
-  Save posts PUT /v1/loanproducts/{id} (edit) or POST /v1/loanproducts (create) through the offline outbox with
-  a durable idempotency key. Admin-only: gated on CREATE_LOANPRODUCT / UPDATE_LOANPRODUCT.
+  The loan-product create-and-edit surface drilled into from the M08 products & charges list
+  (open_product_detail). Loads GET /v1/loanproducts/{productId} merged with GET /v1/loanproducts/template
+  into a sectioned form — Details (name, short name, currency) · Terms (principal min/default/max, interest
+  rate & method, repayment frequency & count) · Settings (amortisation, interest-calculation period, arrears
+  tolerance) · Charges · Accounting (rule + GL mappings). Every field, bound and option comes from the
+  Fineract loan-product template so the form always matches the server's product schema, and client-side
+  validation checks each value against the template bounds before Save enables. Save posts PUT
+  /v1/loanproducts/{id} (edit) or POST /v1/loanproducts (create) through the offline outbox with a durable
+  idempotency key, replayed exactly-once via POST /v1/batches. Admin-only: gated on CREATE_LOANPRODUCT /
+  UPDATE_LOANPRODUCT.
+metadata:
+  category: crud
+  implementation_ready: true
+  impl_ready_at: "2026-07-31T00:00:00Z"
+  impl_ready_schema: "v2"
+contracts: []
+libraries: []
 vm_actions:
-  - OnLoadTemplate
-  - OnFieldChange
-  - OnSectionExpand
-  - OnAddCharge
-  - OnSaveProduct
-  - OnRetry
+  - name: LoadProductAndTemplate
+    signature: "private fun loadProductAndTemplate(productId: Long?)"
+    state_mutations:
+      - uiState=Loading
+      - product=<hydrated from loan_product_cache when editing>
+      - template=<hydrated from loan_product_template_cache>
+      - form=<merged from product + template defaults>
+      - mode=<Edit when productId!=null else Create>
+      - uiState=Content
+      - uiState=Empty
+    side_effects:
+      - ProductTemplateStore.stream(productId)
+      - PermissionEvaluator.resolve(READ_LOANPRODUCT)
+    error_handling:
+      ProductLoadFailed: "uiState=Error(product_load_failed); keep last cache if present; offer Retry"
+      TemplateLoadFailed: "uiState=Error(template_load_failed); form cannot render options; offer Retry"
+      PermissionDenied: "uiState=Error(permission_denied); READ_LOANPRODUCT absent — block the editor"
+  - name: ExpandSection
+    signature: "fun onExpandSection(section: ProductSection)"
+    state_mutations:
+      - expandedSection=<toggled section or null>
+    side_effects: []
+    error_handling:
+      InvalidSection: "ignore an unknown section id; keep current expandedSection (no crash)"
+  - name: ChangeField
+    handles: field_change
+    signature: "fun onFieldChange(field: ProductField, value: String)"
+    state_mutations:
+      - form=<field updated>
+      - uiState=Validating
+      - validationErrors=<recomputed against template bounds>
+      - uiState=Content
+    side_effects: []
+    error_handling:
+      ValidationFailed: "populate validationErrors[field]; keep uiState=Content with Save disabled"
+      TemplateAbsent: "cannot validate without template; route to RetryLoad"
+  - name: SelectCurrency
+    signature: "fun onSelectCurrency(code: String)"
+    state_mutations:
+      - form.currencyCode=<selected>
+      - uiState=Validating
+      - validationErrors=<recomputed for new decimalPlaces>
+      - uiState=Content
+    side_effects: []
+    error_handling:
+      ValidationFailed: "re-flag principal/charge amounts invalid under the new currency; Save disabled"
+      OptionNotInTemplate: "reject a currency absent from template.currencyOptions; keep prior selection"
+  - name: SelectAmortisation
+    signature: "fun onSelectAmortisation(id: Int)"
+    state_mutations:
+      - form.amortizationType=<selected>
+      - uiState=Validating
+      - uiState=Content
+    side_effects: []
+    error_handling:
+      OptionNotInTemplate: "reject an amortisation id absent from template.amortizationTypeOptions; keep prior"
+      ValidationFailed: "populate validationErrors for the Settings section; Save disabled"
+  - name: SelectInterestType
+    signature: "fun onSelectInterestType(id: Int)"
+    state_mutations:
+      - form.interestType=<selected>
+      - uiState=Validating
+      - uiState=Content
+    side_effects: []
+    error_handling:
+      OptionNotInTemplate: "reject an interest-type id absent from template.interestTypeOptions; keep prior"
+      ValidationFailed: "populate validationErrors for the Terms section; Save disabled"
+  - name: SelectAccountingRule
+    signature: "fun onSelectAccountingRule(id: Int)"
+    state_mutations:
+      - form.accountingRule=<selected>
+      - form.glMappings=<reset to required set for the rule>
+      - uiState=Validating
+      - validationErrors=<recomputed for required GL mappings>
+      - uiState=Content
+    side_effects: []
+    error_handling:
+      OptionNotInTemplate: "reject an accounting-rule id absent from template.accountingRuleOptions; keep prior"
+      RequiredGlMappingMissing: "flag each unmapped required GL account in validationErrors; Save disabled"
+  - name: AddCharge
+    signature: "fun onAddCharge(chargeId: Long)"
+    state_mutations:
+      - form.charges=<charge appended from template.chargeOptions>
+      - uiState=Validating
+      - uiState=Content
+    side_effects: []
+    error_handling:
+      ChargeNotInTemplate: "reject a chargeId absent from template.chargeOptions; no-op"
+      DuplicateCharge: "ignore a charge already present in form.charges; no duplicate row"
+      PermissionDenied: "UPDATE_LOANPRODUCT absent — AddCharge is not offered (read-only form)"
+  - name: RemoveCharge
+    signature: "fun onRemoveCharge(chargeId: Long)"
+    state_mutations:
+      - form.charges=<charge removed>
+      - uiState=Content
+    side_effects: []
+    error_handling:
+      ChargeNotFound: "no-op when the chargeId is not in form.charges"
+      PermissionDenied: "UPDATE_LOANPRODUCT absent — RemoveCharge is not offered (read-only form)"
+  - name: EditGlMapping
+    signature: "fun onEditGlMapping(posting: GlPosting, glAccountId: Long)"
+    state_mutations:
+      - form.glMappings=<posting mapped to glAccountId>
+      - uiState=Validating
+      - validationErrors=<recomputed for the Accounting section>
+      - uiState=Content
+    side_effects: []
+    error_handling:
+      GlAccountNotInTemplate: "reject a GL account absent from the template GL options; keep prior mapping"
+      RequiredGlMappingMissing: "keep the posting flagged in validationErrors until mapped; Save disabled"
+  - name: ValidateForm
+    signature: "fun onValidateForm(): Boolean"
+    state_mutations:
+      - uiState=Validating
+      - validationErrors=<full recompute against template bounds>
+      - uiState=Content
+    side_effects: []
+    error_handling:
+      ValidationFailed: "return false; populate validationErrors (principal/interest bounds, required GL mappings); Save disabled"
+      TemplateAbsent: "cannot validate without template; route to RetryLoad"
+  - name: SaveProduct
+    signature: "fun onSaveProduct()"
+    state_mutations:
+      - uiState=Validating
+      - uiState=Saving
+      - uiState=Content
+    side_effects:
+      - "DraftDao.enqueue(action=(CREATE|UPDATE)_LOANPRODUCT, entity=LOANPRODUCT, payload_json, idempotencyKey=UUIDv4)"
+      - "offline-sync-engine replays PUT/POST /v1/loanproducts via POST /v1/batches"
+    error_handling:
+      ValidationFailed: "block enqueue; keep uiState=Content with validationErrors surfaced; Save disabled"
+      OutboxEnqueueFailed: "uiState=Error(save_failed); the draft was not written; offer Retry"
+      SaveConflict: "a rejected replay surfaces in needs-attention-inbox; reuse the same idempotency key on resubmit (exactly-once)"
+      NetworkError: "product/config save is online-only — block with a connect banner; do not silently queue"
+      PermissionDenied: "CREATE/UPDATE_LOANPRODUCT absent — Save is not offered (read-only form)"
+  - name: Cancel
+    signature: "fun onCancel()"
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateBackToProductList)
+    error_handling:
+      UnsavedChanges: "prompt a discard confirmation before navigating; on confirm drop the in-VM draft"
+  - name: RetryLoad
+    handles: retry
+    signature: "fun onRetry()"
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content
+      - uiState=Empty
+      - uiState=Error
+    side_effects:
+      - ProductTemplateStore.refresh(productId)
+    error_handling:
+      ProductLoadFailed: "uiState=Error(product_load_failed); keep Retry available"
+      TemplateLoadFailed: "uiState=Error(template_load_failed); keep Retry available"
 error_cases:
-  - template_load_failed
   - product_load_failed
+  - template_load_failed
   - validation_failed
   - save_failed
+  - outbox_enqueue_failed
+  - save_conflict
+  - permission_denied
+test_fixtures:
+  source: "screens/product-editor/tests.yaml"
+  scenario_count: 15
+  priority_distribution:
+    high: 7
+    medium: 7
+    low: 1
 scaffolded_by: /idea-plan-add
+enriched_at: "2026-07-31T00:00:00Z"
+enriched_by: /idea-feature-enrich
+approved_by: /idea approve
+approve_predicate_version: 1.0.0
+approve_contract_version: 2.0.0
+approve_hash: sha256:66f202c4a718b45ae46a1503f3696ff852b17e94d4e6acd92bbd4ad4c619b3d7
+approved_at: '2026-07-31T07:34:06Z'
+status_history:
+  - from: designed
+    to: approved
+    at: '2026-07-31T07:34:06Z'
+    by: /idea approve
+    contract_version: 2.0.0
+    reason: >-
+      Autonomous /idea-agent --auto re-approval — DRILL-DOWN feature promoted designed→approved as the
+      pipeline's own gate. impl-ready-clean (impl-ready-validator IR-1..IR-4: 0 violations) and docs.yaml
+      internally consistent. Fresh approve_hash stamped over the 7 canonical sibling YAMLs (approve-hash.md
+      §Computation; RULE-GAP-IDEA-FIRST-001).
+  - from: draft
+    to: designed
+    at: "2026-07-31T00:00:00Z"
+    by: /idea-feature-enrich
+    reason: >-
+      v2 enrichment — loan-product-only surface (api.yaml declares solely /v1/loanproducts). Rich vm_actions
+      with error_handling, contracts: [] (form + offline outbox, no native platform capability), libraries: []
+      (empty list), 15 test fixtures. Savings references removed from summary/acceptance to hold scope.

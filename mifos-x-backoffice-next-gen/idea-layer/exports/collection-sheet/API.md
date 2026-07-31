@@ -1,6 +1,6 @@
 <!-- source: screens/collection-sheet/api.yaml -->
-<!-- source_hash: api=36284e212192 -->
-<!-- generated: 2026-07-26T04:07:02Z -->
+<!-- source_hash: api=ea8bef57a248 -->
+<!-- generated: 2026-07-31T03:19:28Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 

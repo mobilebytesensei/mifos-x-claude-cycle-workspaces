@@ -2,14 +2,15 @@ schema_version: "1.0"
 screen_id: permission-set-detail
 feature: permission-set-detail
 name: "Permission Set Detail (resolved codes · umbrellas · fingerprint)"
-archetype: detail
-status: draft
+archetype: detail_screen
+status: designed
 module: permission-capability-engine
 initial_state: loading
 
-# Drill-in from the permission-capability-engine (view_permission_set). Read-only detail of
-# the signed-in user's resolved PermissionSet — raw codes grouped by Fineract grouping,
-# umbrella flags, and the sha256 fingerprint used for CapabilityMap drift detection.
+# Drill-in from the permission-capability-engine (view_permission_set). Read-mostly detail of the
+# signed-in user's (or a role's) resolved PermissionSet — raw codes grouped by Fineract grouping,
+# umbrella short-circuit flags, and the sha256 fingerprint used for CapabilityMap drift detection —
+# plus a role-permission refresh that re-pulls the role union so core/permissions can rebuild the set.
 
 requires_permission: []   # every authenticated user may inspect their OWN resolved permission set
 
@@ -19,7 +20,7 @@ consumes_capabilities:
   - requires_auth
 
 business_logic:
-  kind: aggregator
+  kind: crud
   processing_kind: on_demand
   library_refs: []
   external_library_refs:
@@ -32,20 +33,32 @@ business_logic:
     - core/database
     - core/network
   description: >-
-    Joins the login-normalised PermissionSet (held codes + umbrella short-circuits + sha256 fingerprint from
-    core/permissions) with the permission code catalog + grouping metadata (GET /v1/permissions, cache-first)
-    to render a grouped, searchable, held-vs-total view of exactly what access the signed-in user holds.
-  description_author: claude-via-idea-plan-add
-  description_authored_at: "2026-07-25T00:00:00Z"
+    Reads and inspects the login-normalised PermissionSet (held codes + umbrella short-circuits + sha256
+    fingerprint from core/permissions) joined with the permission code catalog + grouping metadata
+    (GET /v1/permissions, cache-first) to render a grouped, searchable, held-vs-total view of exactly what
+    access the signed-in user holds; a Refresh-from-role action re-pulls the role permission union
+    (GET /v1/roles/{roleId}/permissions) so core/permissions can rebuild + atomically swap the set. Read-only
+    inspection plus a refresh — never mutates permissions.
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-31T00:00:00Z"
 
 state_model:
   fields:
+    - name: roleName
+      type: "String"
+      description: "The role whose resolved PermissionSet is being inspected (e.g. Branch Manager)."
     - name: groupings
       type: "List<PermissionGrouping>"
       description: "Codes grouped by Fineract grouping (portfolio, transaction_loan, accounting, …) with held-vs-total counts."
+    - name: expandedGroupings
+      type: "Set<String>"
+      description: "The grouping ids currently expanded in the list; drives per-section expand/collapse."
     - name: umbrellas
       type: "List<String>"
       description: "Held umbrella / short-circuit grants (ALL_FUNCTIONS, CHECKER_SUPER_USER, …) that widen access."
+    - name: selectedUmbrella
+      type: "String?"
+      description: "The umbrella chip whose short-circuit explanation is currently expanded; null = none."
     - name: fingerprint
       type: "String"
       description: "The PermissionSet's sha256 fingerprint used by the CapabilityMap resolver for drift detection."
@@ -54,7 +67,7 @@ state_model:
       description: "Active search text filtering permission codes."
     - name: uiState
       type: "PermissionSetDetailScreenState"
-      description: "Loading | Content | Empty | Error."
+      description: "Loading | Content | Empty | Refreshing | Error."
 
 states:
   loading:
@@ -62,8 +75,14 @@ states:
   content:
     description: >-
       A search box over groupings (each expandable, showing held-vs-total code counts), the held codes with
-      umbrella grants highlighted, and a header card with the sha256 fingerprint (copyable). Renders fully
-      offline from the local PermissionSet + cached catalog.
+      umbrella grants highlighted as tappable chips, a header card with the sha256 fingerprint (copyable), and
+      a Refresh-from-role action. Renders fully offline from the local PermissionSet + cached catalog.
+  refreshing:
+    description: >-
+      A role-permission refresh is in flight (GET /v1/roles/{roleId}/permissions) — the existing grouped content
+      stays visible and interactive under a progress indicator while core/permissions rebuilds the set; on a
+      fingerprint change the groupings/umbrellas/fingerprint re-render, on failure the last-known set is kept
+      with a transient error surfaced (never a blank screen).
   empty:
     description: "The resolved PermissionSet is empty (no permissions held / not yet bootstrapped); shows a guidance panel."
   error:
@@ -92,12 +111,34 @@ components:
         invalidates:
           - groupings
         action_contract_hash: "sha256:psd-search-code"
-        action_contract_author: "claude-via-idea-plan-add"
-        action_contract_authored_at: "2026-07-25T00:00:00Z"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: psd_umbrella_chip
+    type: chip
+    label: "{strings.permset_umbrella_grants}"
+    accessibility_label: "Toggle the explanation of this umbrella grant's short-circuit effect"
+    testTag: "permission-set-detail_umbrella_chip"
+    on_click:
+      action: toggle_umbrella
+      target: permission-set-detail
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Expand/collapse an inline explanation of a held umbrella grant (e.g. ALL_FUNCTIONS grants every action, CHECKER_SUPER_USER short-circuits all checker gates); a pure in-VM toggle over the already-resolved set, no refetch."
+        produces_state: content
+        invalidates:
+          - selectedUmbrella
+        action_contract_hash: "sha256:psd-toggle-umbrella"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
 
   - id: psd_grouping
     type: expandable_section
     label: "{strings.permset_grouping}"
+    accessibility_label: "Expand or collapse this permission grouping to reveal its held codes"
     testTag: "permission-set-detail_grouping"
     on_click:
       action: expand_grouping
@@ -109,9 +150,11 @@ components:
         external_library_refs: ["androidx.compose.runtime"]
         description: "Expand/collapse a Fineract permission grouping to reveal its held codes; a pure in-VM UI toggle over the loaded set, no refetch."
         produces_state: content
+        invalidates:
+          - expandedGroupings
         action_contract_hash: "sha256:psd-expand-grouping"
-        action_contract_author: "claude-via-idea-plan-add"
-        action_contract_authored_at: "2026-07-25T00:00:00Z"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
 
   - id: psd_copy_fingerprint
     type: button
@@ -128,8 +171,35 @@ components:
         library_refs: []
         description: "Copy the resolved PermissionSet's sha256 fingerprint to the clipboard so an operator can quote it to support when diagnosing a CapabilityMap drift or an access discrepancy."
         action_contract_hash: "sha256:psd-copy-fingerprint"
-        action_contract_author: "claude-via-idea-plan-add"
-        action_contract_authored_at: "2026-07-25T00:00:00Z"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: psd_refresh
+    type: button
+    label: "{strings.permset_refresh}"
+    accessibility_label: "Refresh the permission set from the role"
+    testTag: "permission-set-detail_refresh"
+    variant: text
+    description: "Re-pulls the role's permission union so core/permissions can rebuild + swap the resolved set."
+    on_click:
+      action: refresh_permissions
+      target: permission-set-detail
+      state: refreshing
+      action_contract:
+        effect: call_api
+        reads_from:
+          - secure_session
+        library_refs: []
+        external_library_refs: ["ktorfit"]
+        description: "Re-fetch the role's permission union (GET /v1/roles/{roleId}/permissions, password-less) and hand it to core/permissions.PermissionEvaluator to rebuild the PermissionSet + sha256 fingerprint; only on a fingerprint change does it atomically swap the encrypted session set and re-render the groupings/umbrellas. On failure the last-known set is kept and a transient error is surfaced."
+        produces_state: content
+        invalidates:
+          - groupings
+          - umbrellas
+          - fingerprint
+        action_contract_hash: "sha256:psd-refresh-permissions"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
 
   - id: psd_error_retry
     type: button
@@ -144,10 +214,38 @@ components:
       state: loading
       action_contract:
         effect: call_api
+        reads_from:
+          - permission_catalog_cache
         library_refs: []
         external_library_refs: ["ktorfit"]
         description: "Reload the permission code catalog (GET /v1/permissions) after a hard load failure; resets to loading and re-joins it with the local PermissionSet."
         produces_state: loading
         action_contract_hash: "sha256:psd-retry"
-        action_contract_author: "claude-via-idea-plan-add"
-        action_contract_authored_at: "2026-07-25T00:00:00Z"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: psd_back
+    type: button
+    label: "{strings.permset_back}"
+    accessibility_label: "Go back to the permission and capability engine"
+    testTag: "permission-set-detail_back"
+    variant: text
+    description: "Returns to the permission-capability-engine surface this detail was drilled into from."
+    on_click:
+      action: go_back
+      target: permission-capability-engine
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Navigate back to the permission-capability-engine capability surface that opened this PermissionSet detail (view_permission_set drill-down)."
+        action_contract_hash: "sha256:psd-go-back"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+# enriched-provenance: /idea-feature-enrich 2026-07-31 — status draft→designed; business_logic.kind
+# composite→crud (read-mostly inspect + refresh); added the refreshing state (5 states total) and the
+# psd_umbrella_chip / psd_refresh / psd_back interactive components; every on_click now carries a full
+# action_contract (effect from closed enum + description + library_refs + reads_from real data-flow tables
+# + produces_state + hash + author/authored_at) and every interactive component carries an accessibility_label.
+# psd_refresh calls the real Fineract read/refresh GET /v1/roles/{roleId}/permissions (added to api.yaml,
+# mirrors permission-capability-engine's permission_refresh contract) — no permission-MUTATION endpoint invented.

@@ -1,21 +1,26 @@
-feature: m16-communications
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: m16-communications
+
 # Reads (campaign list + recipient reports, template library, hooks, email config) ride
 # CACHE_FIRST_SWR Store5 over a Room communications table: the cached row emits instantly
 # (offline-safe) and a background revalidation replaces it when FreshnessBands mark it Stale.
-# Campaign lifecycle commands (create/activate/close) and management commands (create template /
+# Campaign lifecycle commands (create/update/activate/close) and management commands (create template /
 # register hook / save email config) are command-shaped and side-effecting: they are assembled as
 # command JsonObjects and written to the durable framework_submit_drafts outbox (offline-sync-engine)
 # with an idempotency key, then replayed exactly-once via POST /v1/batches — never a direct online
-# call that could double-activate a campaign.
+# call that could double-activate a campaign. Every call sends the global Fineract-Platform-TenantId
+# header.
+
 entries:
-  - trigger: on_mount
-    source: api.list_sms_campaigns
-    target_state: content
-    loading_state: loading
-    error_state: error
-    on_error:
-      nav_target: null
-      error_code: campaigns_read_failed
+  # ── 1. On-mount: campaign list (CACHE_FIRST_SWR) ──────────────────────
+  - screen_id: m16-communications
+    trigger: on_mount
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_sms_campaigns
+        transport: rest
     tables:
       - name: communications
         mutation: upsert
@@ -24,18 +29,34 @@ entries:
           storage_backend: local_db
         persistence_note: >-
           Room communications cache (entity_type, entity_id, name, status, payload_json, fetched_at)
-          keyed by entity_type=campaign|template|hook|email_config. CACHE_FIRST_SWR — the campaign list
-          renders instantly from cache offline; validator.markFresh() follows every successful fetch so
-          TTL starts.
+          keyed by entity_type=campaign|template|hook|email_config. CACHE_FIRST_SWR — the campaign
+          list renders instantly from cache offline; validator.markFresh() follows every successful
+          fetch so TTL starts.
+    dtos:
+      - name: SmsCampaignDto
+        role: response
+        api_id: list_sms_campaigns
+    cache:
+      strategy: cache_first
+      ttl_seconds: 900
+      key_template: "fineract:communications:campaign"
+      shape: paged
+    error_paths:
+      - error_code: campaigns_read_failed
+        behavior: fallback_cache
+        message_key: m16_list_failed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m16_showing_cached
 
-  - trigger: on_open_campaign
-    source: api.get_campaign_recipient_report
-    target_state: content
-    loading_state: loading
-    error_state: error
-    on_error:
-      nav_target: null
-      error_code: recipient_report_read_failed
+  # ── 2. On-interact: open campaign — per-recipient delivery report ─────
+  - screen_id: m16-communications
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: get_campaign_recipient_report
+        transport: rest
     tables:
       - name: communications
         mutation: upsert
@@ -43,18 +64,34 @@ entries:
           is_durable: true
           storage_backend: local_db
         persistence_note: >-
-          The per-recipient delivery report for the selected campaign (campaign_id, message_id, recipient,
-          delivery_status, sent_at) upserted under the campaign row. Cached per campaign_id so the report
-          renders offline; switch_comms_tab re-projects over cached rows without a refetch.
+          The per-recipient delivery report for the selected campaign (campaign_id, message_id,
+          recipient, delivery_status, sent_at) upserted under the campaign row. Cached per campaign_id
+          so the report renders offline; switch_comms_tab re-projects over cached rows without a refetch.
+    dtos:
+      - name: CampaignMessageDto
+        role: response
+        api_id: get_campaign_recipient_report
+    cache:
+      strategy: cache_first
+      ttl_seconds: 900
+      key_template: "fineract:communications:campaign:{campaignId}:recipients"
+      shape: flat
+    error_paths:
+      - error_code: recipient_report_read_failed
+        behavior: fallback_cache
+        message_key: m16_detail_failed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m16_showing_cached
 
-  - trigger: on_view_templates
-    source: api.list_templates
-    target_state: content
-    loading_state: loading
-    error_state: error
-    on_error:
-      nav_target: null
-      error_code: templates_read_failed
+  # ── 3. On-interact: Templates tab — message/document template library ─
+  - screen_id: m16-communications
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_templates
+        transport: rest
     tables:
       - name: communications
         mutation: upsert
@@ -63,17 +100,30 @@ entries:
           storage_backend: local_db
         persistence_note: >-
           The message / UGD document template library (template_id, name, entity, type, mustache_body)
-          upserted as entity_type=template rows. Read-only, CACHE_FIRST_SWR so the library renders instantly
-          offline and feeds the create-campaign template picker.
+          upserted as entity_type=template rows. Read-only, CACHE_FIRST_SWR so the library renders
+          instantly offline and feeds the create-campaign template picker.
+    dtos:
+      - name: TemplateDto
+        role: response
+        api_id: list_templates
+    cache:
+      strategy: cache_first
+      ttl_seconds: 900
+      key_template: "fineract:communications:template"
+      shape: paged
+    error_paths:
+      - error_code: templates_read_failed
+        behavior: fallback_cache
+        message_key: m16_showing_cached
 
-  - trigger: on_view_hooks
-    source: api.list_hooks
-    target_state: content
-    loading_state: loading
-    error_state: error
-    on_error:
-      nav_target: null
-      error_code: hooks_read_failed
+  # ── 4. On-interact: Hooks tab — registered outbound webhooks ──────────
+  - screen_id: m16-communications
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_hooks
+        transport: rest
     tables:
       - name: communications
         mutation: upsert
@@ -81,63 +131,218 @@ entries:
           is_durable: true
           storage_backend: local_db
         persistence_note: >-
-          Registered outbound webhooks (hook_id, name, is_active, events_json, payload_url) upserted as
-          entity_type=hook rows. CACHE_FIRST_SWR so the hooks list renders offline.
+          Registered outbound webhooks (hook_id, name, is_active, events_json, payload_url) upserted
+          as entity_type=hook rows. CACHE_FIRST_SWR so the hooks list renders offline.
+    dtos:
+      - name: HookDto
+        role: response
+        api_id: list_hooks
+    cache:
+      strategy: cache_first
+      ttl_seconds: 900
+      key_template: "fineract:communications:hook"
+      shape: paged
+    error_paths:
+      - error_code: hooks_read_failed
+        behavior: fallback_cache
+        message_key: m16_showing_cached
 
-  - trigger: on_command
-    source: api.activate_sms_campaign
-    target_state: submitting
-    loading_state: submitting
-    error_state: error
-    on_error:
-      nav_target: needs-attention-inbox
-      error_code: campaign_command_rejected
+  # ── 5. On-interact: Email config tab — outbound SMTP gateway config ───
+  - screen_id: m16-communications
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: get_email_config
+        transport: rest
+    tables:
+      - name: communications
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          The outbound email (SMTP) gateway config (host, port, username, use_tls, from_address)
+          upserted as the single entity_type=email_config row. The secret password is never returned
+          nor cached. CACHE_FIRST_SWR so the config tab renders offline.
+    privacy_constraint:
+      scope: user_synced
+      notes: "SMTP host/username are tenant-admin config; the password is never returned by the read and is stored only via secure storage on save."
+    cache:
+      strategy: cache_first
+      ttl_seconds: 900
+      key_template: "fineract:communications:email_config"
+      shape: flat
+    error_paths:
+      - error_code: email_config_read_failed
+        behavior: fallback_cache
+        message_key: m16_showing_cached
+
+  # ── 6. On-interact: form template loads (campaign / template / hook) ──
+  - screen_id: m16-communications
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: get_campaign_template
+        transport: rest
+      - api_id: get_template_form
+        transport: rest
+      - api_id: get_hook_template
+        transport: rest
+    tables:
+      - name: comms_templates
+        mutation: read
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Campaign / template / hook form templates (campaign-type, trigger-type, run-type, provider,
+          message-template, entity, grouped-events, config-field option lists + field defaults) cached
+          CACHE_FIRST_SWR so dynamic-template-forms renders the create/edit forms offline. Never
+          hardcode the option lists.
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 3600
+      key_template: "fineract:communications:form-template:{entityType}"
+      shape: flat
+    error_paths:
+      - error_code: template_load_failed
+        behavior: fallback_cache
+        message_key: m16_showing_cached
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m16_showing_cached
+
+  # ── 7. On-interact: campaign lifecycle command (create/update/activate/close) — queued ──
+  - screen_id: m16-communications
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: create_sms_campaign
+        transport: rest
+      - api_id: update_sms_campaign
+        transport: rest
+      - api_id: activate_sms_campaign
+        transport: rest
+      - api_id: close_sms_campaign
+        transport: rest
     tables:
       - name: draft_outbox
-        mutation: write
+        mutation: upsert
         persistence_contract:
           is_durable: true
           storage_backend: local_db
         persistence_note: >-
           RoomSubmitOutbox over framework_submit_drafts (Room v11). Every campaign lifecycle command
-          (create / activate / close) and management command (create template / register hook / save email
-          config) is serialized as a command JsonObject with a DURABLE idempotency_key + (action, entity)
-          composite key BEFORE it is sent — the local system-of-record until replayed exactly-once via
-          POST /v1/batches. PENDING never pruned; a killed-mid-submit activation reuses its stored
-          idempotency key on replay so a campaign never double-activates. A server rejection routes the
-          entry to needs-attention-inbox with the Fineract server_error; the (action, entity) permission is
-          re-checked before replay.
+          (create / update / activate / close) is serialized as a command JsonObject with a DURABLE
+          idempotency_key + (action, entity) composite key BEFORE it is sent — the local
+          system-of-record until replayed exactly-once via POST /v1/batches. PENDING never pruned; a
+          killed-mid-submit activation reuses its stored idempotency key on replay so a campaign never
+          double-activates. A server rejection routes the entry to needs-attention-inbox; the (action,
+          entity) permission is re-checked before replay.
       - name: communications
         mutation: upsert
         persistence_contract:
           is_durable: true
           storage_backend: local_db
+        persistence_note: "Optimistic campaign-status update (Pending -> Active, Active -> Closed) marked pending-sync until the outbox replay confirms; reconciled on delta-pull."
+    dtos:
+      - name: CommandProcessingResult
+        role: response
+        api_id: activate_sms_campaign
+    side_effects:
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer drains the queued campaign command via offline-sync-engine's POST /v1/batches on reconnect"
+      - kind: invalidate_cache
+        target: "the campaign list cache — revalidated by the follow-on delta-pull"
+    error_paths:
+      - error_code: campaign_command_rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: m16_command_rejected
+      - error_code: permission.drift
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: m16_access_changed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m16_queued_offline
+
+  # ── 8. On-interact: management command (create template / register hook / save email config) — queued ──
+  - screen_id: m16-communications
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: create_template
+        transport: rest
+      - api_id: create_hook
+        transport: rest
+      - api_id: save_email_config
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
         persistence_note: >-
-          Optimistic campaign-status update (Pending -> Active, Active -> Closed) marked pending-sync until
-          the outbox replay confirms; reconciled against the server on delta-pull.
+          Create-template / register-hook / save-email-config commands carry their
+          dynamic-template-forms JsonObject payload straight into the outbox with a durable
+          idempotency_key + (action, entity) key and replay exactly-once via POST /v1/batches. The
+          email-config password is written to secure storage and never logged nor placed in the outbox
+          payload in cleartext.
+      - name: communications
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: "Optimistic template/hook/email-config row marked pending-sync until the outbox replay confirms; reconciled on delta-pull."
+    dtos:
+      - name: CommandProcessingResult
+        role: response
+        api_id: create_template
+    side_effects:
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer drain for this outbox entry"
+      - kind: invalidate_cache
+        target: "the templates / hooks / email-config caches — revalidated by the follow-on delta-pull"
+    error_paths:
+      - error_code: management_command_rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: m16_command_rejected
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m16_queued_offline
 
-# Reads consumed by the ui.yaml action_contracts (reads_from) + writes (writes_to).
-reads:
-  - name: communications
-    source: api.list_sms_campaigns
-    cache: room
-    note: "The campaigns + recipient reports + templates + hooks + email-config working set keyed by (entity_type, entity_id); read by every action_contract's reads_from and re-projected by switch_comms_tab."
-writes:
-  - name: draft_outbox
-    target: api.activate_sms_campaign
-    cache: room
-    note: "The durable command outbox (framework_submit_drafts) that every create/activate/close-campaign, create-template, register-hook and save-email-config action_contract writes_to for exactly-once replay."
+  # ── 9. On-timer: periodic SWR revalidate of the campaign working set ──
+  - screen_id: m16-communications
+    trigger: on_timer
+    interval_seconds: 900
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_sms_campaigns
+        transport: rest
+    tables:
+      - name: communications
+        mutation: read
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 900
+      key_template: "fineract:communications:campaign"
+      shape: paged
+    error_paths:
+      - error_code: network.offline
+        behavior: silent
+        message_key: m16_showing_cached
 
-cache:
-  strategy: cache_first
-  ttl_seconds: 900
-  key_template: "fineract:communications:{entityType}"
-  shape: list
-  note: >-
-    Campaigns, recipient reports, templates, hooks and email config are CACHE_FIRST_SWR over the Room
-    communications table: the cached row emits immediately and a background revalidation refreshes it only
-    when FreshnessBands mark it Stale. validator.markFresh() follows every successful fetch so TTL starts;
-    offline the cached campaign list is the source of truth and the offline banner is shown, while any
-    queued create/activate/close command carries an optimistic pending-sync marker until it replays.
-
-# regenerated-provenance: idea-data-flow re-verified 2026-07-26 — entries + persistence_contract consistent with current ui.yaml + api.yaml; mtime re-stamp (isStale enriched-unstick).
+# regenerated-provenance: idea-data-flow refreshed 2026-07-31 — migrated legacy trigger/source shape to
+# v2.2.0 (screen_id/endpoints/dtos/cache/error_paths) and completed endpoint coverage: all 15 api.yaml
+# endpoints now wired across 9 entries (was 4 explicit sources — templates + update/close/create-template/
+# register-hook/save-email-config were previously only mentioned in notes). Grounded in current api.yaml +
+# ui.yaml + demo-data.yaml; DTO refs resolve (SmsCampaignDto/CampaignMessageDto/TemplateDto/HookDto/
+# CommandProcessingResult).

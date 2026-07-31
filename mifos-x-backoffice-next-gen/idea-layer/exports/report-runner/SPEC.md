@@ -1,9 +1,9 @@
 <!-- source: screens/report-runner/ (v4.0 siblings: ui, docs, flow, api) -->
-<!-- source_hash: ui=ecd38a567c14 docs=65310dcfb2a5 flow=90190f151d11 api=cce638d5ac6c -->
-<!-- generated: 2026-07-26T04:07:02Z -->
+<!-- source_hash: ui=e5e1521275c6 docs=65310dcfb2a5 flow=5f7fd901faf1 api=17704cb1fdc1 -->
+<!-- generated: 2026-07-31T00:00:00Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
-<!-- prior_version: — -->
+<!-- prior_version: 1.0.0 -->
 
 # Report Runner (parameters · run · result table) -- Implementation Specification
 
@@ -15,10 +15,21 @@
 
 ## Capabilities
 
-- **has_ui** — Compose screen: a template-driven parameter form + Run + a sortable, horizontally-scrollable result table with export.
-- **has_offline_cache** — parameter metadata + run results read CACHE_FIRST_SWR through Store5 (keyed by parameter hash); a recently-run report opens offline.
-- **has_flow** — entered from the M01 PAR tile / M14 reports list; loading → content/empty/error with an in-content param → run → sort → export loop.
-- **requires_auth** — the parameter reads + report run run under the authenticated Fineract session, gated by READ_REPORT.
+### has_ui
+
+Compose screen: a report-metadata-driven parameter form + Run + a sortable, horizontally-scrollable result table with export.
+
+### has_offline_cache
+
+Report catalog, parameter metadata, and run results read CACHE_FIRST_SWR through Store5 (results keyed by parameter hash); a recently-run report opens offline.
+
+### has_flow
+
+Entered from the M01 PAR tile / M14 reports list; loading → content/empty/error with an in-content param → run → sort → export loop.
+
+### requires_auth
+
+The parameter reads + report run execute under the authenticated Fineract session, gated by READ_REPORT.
 
 ## Screens (1)
 
@@ -41,9 +52,9 @@
 
 | Function | Method | Params | Response | Errors | Table |
 |----------|--------|--------|----------|--------|-------|
-| list_reports | GET | (none) | ReportDefinitionDto[] | 401, 403 | cached_reports |
-| resolve_report_parameter | GET | parameterId(Integer)?, parameterType(Boolean)? | ReportParameterOptionDto[] | 401, 403 | cached_report_parameters |
-| run_report | GET | reportName(String), R_officeId(String)?, R_startDate(String)?, R_endDate(String)?, R_loanOfficerId(String)?, R_currencyId(String)? | ReportRunResultDto | 401, 403 | cached_report_results |
+| list_reports | GET | (none) | ReportDefinitionDto[] | 401, 403 | report_catalog_cache |
+| resolve_report_parameter | GET | parameterId(Integer)?, parameterType(Boolean)? | ReportParameterOptionDto[] | 401, 403 | report_parameter_cache |
+| run_report | GET | reportName(String), R_officeId(String)?, R_startDate(String)?, R_endDate(String)?, R_loanOfficerId(String)?, R_currencyId(String)? | ReportRunResultDto | 401, 403 | report_result_cache |
 
 ## Dependencies (Tier 2)
 
@@ -69,14 +80,24 @@
 | Run hard-fail | params metadata failed / run failed AND no cache | error (message + Retry) | content | GET failure with empty cache |
 | Sort / export | a column header is tapped, or Export is tapped | content — in-VM sort / CSV·PDF to the share sheet | content | pure transform_state / share_external |
 
-## Testing (7 scenarios)
+## Testing (17 scenarios)
 
 | ID | Scenario | Priority |
 |----|----------|----------|
 | loading_shows_param_form_shimmer | The loading state shows a parameter-form shimmer with no error | medium |
-| content_shows_params_run_and_table | The param form (office/date/currency/loan-officer from lookup reports); Run issues GET /v1/runreports; the result is a sortable, scrollable table with export | high |
-| empty_when_zero_rows | A no-data panel with adjust-parameters guidance when the run returns zero rows | low |
-| error_when_params_or_run_fail | The error state is shown and Retry re-resolves parameters or re-runs | medium |
-| recent_report_opens_offline | The cached result renders offline (CACHE_FIRST_SWR keyed by parameter hash) | high |
-| dependent_param_cascades | Changing the office parameter re-resolves the loan-officer options scoped to that office | medium |
-| sort_and_export_are_local | A column header sorts the table in-VM; Export renders CSV/PDF and hands off to the platform share sheet | low |
+| content_param_form_populated_after_resolution | Parameter metadata resolves and populates Office/date/currency/loan-officer dropdowns, Run becomes visible | high |
+| content_result_table_shows_active_loans_data | Run with office/loan-officer params returns the columnar table (Client, Account No, Principal, Outstanding) | high |
+| empty_when_zero_rows_returns | A run that matches no data shows the no-data panel with adjust-parameters guidance | low |
+| error_params_load_failed_shows_retry | Parameter metadata load fails with no cache — error state + Retry, no parameter form | medium |
+| error_run_failed_shows_retry | The run fails hard with no cached result — error state + Retry, prior param form state preserved | medium |
+| param_change_cascades_loan_officer_options | Changing Office re-resolves the loan-officer dropdown scoped to the new office, no other refetch | medium |
+| run_report_fires_get_with_r_params | Run issues GET /v1/runreports/{reportName} with the captured R_ params and caches by (reportName, paramHash) | high |
+| sort_column_sorts_in_vm_no_refetch | Tapping a column header re-orders rows in-VM with no network call | low |
+| export_report_hands_to_share_sheet | Export opens the platform share sheet reflecting the current sort + parameters | low |
+| retry_re_resolves_params_from_error | Retry from error resets to loading and re-resolves parameter metadata | medium |
+| list_reports_returns_catalog_for_picker | GET /v1/reports returns the report catalog (cache-first) for the M14 picker | medium |
+| resolve_report_parameter_populates_office_dropdown | GET /v1/runreports/FullParameterList populates Office options and caches them for offline hydration | high |
+| run_report_response_maps_to_columnar_result_dto | The run response maps to ReportRunResultDto (columnHeaders + data rows) matching demo data | high |
+| cache_first_swr_serves_cached_result_offline | A previously-run report with the same parameters renders from cache while offline | high |
+| permission_gate_blocks_run_without_read_report | Without READ_REPORT, Run is hidden/disabled and the run endpoint is never called | medium |
+| acceptance_parameterised_runner_end_to_end | Pick a report, fill parameters, Run, view the sortable result table with export — gated on READ_REPORT | high |

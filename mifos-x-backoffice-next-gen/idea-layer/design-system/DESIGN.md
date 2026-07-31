@@ -13,10 +13,10 @@ description: "A permission-gated, offline-first Fineract back-office. One binary
 
 # ─── Colors (M3 role tokens — Stitch treats these as hard constraints) ───────
 colors:
-  primary:                 "#006CB5"
+  primary:                 "#0091EA"
   on-primary:              "#FFFFFF"
   primary-container:       "#CBE6FF"
-  on-primary-container:    "#001D33"
+  on-primary-container:    "#001E30"
   secondary:               "#00796B"
   on-secondary:            "#FFFFFF"
   secondary-container:     "#B8F2E6"
@@ -88,8 +88,8 @@ typography:
 
 # ─── Rounded (corner radii) ──────────────────────────────────────────────────
 rounded:
-  sm: 4px
-  md: 8px
+  sm: 8px
+  md: 12px
   lg: 16px
   xl: 28px
 

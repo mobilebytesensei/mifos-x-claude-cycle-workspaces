@@ -1,6 +1,6 @@
 <!-- source: screens/capability-map-detail/api.yaml -->
-<!-- source_hash: api=d29930ac13e9 -->
-<!-- generated: 2026-07-26T04:07:02Z -->
+<!-- source_hash: api=d14d3384d0b7 -->
+<!-- generated: 2026-07-31T03:19:28Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 
@@ -14,7 +14,7 @@
 
 | Function | Method | Table | Auth | Params | Response | Cache |
 |----------|--------|-------|------|--------|----------|-------|
-| get_permissions_catalog | GET | cached_permissions | Yes | (none) | PermissionDto[]: grouping, code, entityName, actionName | CACHE_FIRST_SWR |
+| get_permissions_catalog | GET `/v1/permissions` | permission_catalog_cache | Yes | (none) | PermissionDto[]: grouping, code, entityName, actionName | CACHE_FIRST_SWR |
 
 ## Error Handling
 

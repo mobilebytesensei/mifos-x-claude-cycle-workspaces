@@ -1,7 +1,7 @@
 feature: m11-tellers-cash
-status: designed
-approve_hash: sha256:24fd7763c2d12167c96331430f5c35d89e6f2700f92db0be45fa484788b46cfb
-approved_at: '2026-07-21T19:05:00Z'
+status: approved
+approve_hash: sha256:d478c2dc61a3e6a8d812900a5e4169bbefd6ccff0b846646f9ec190e3cf1472d
+approved_at: '2026-07-31T09:30:00Z'
 approved_by: /idea approve
 approve_predicate_version: 1.0.0
 approve_contract_version: 2.0.0
@@ -142,6 +142,41 @@ libraries:
       - android
       - ios
       - desktop
+  - capability: create_teller
+    library: ktorfit
+    version: 2.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: create_teller
+    library: androidx.room
+    version: 3.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: assign_cashier
+    library: androidx.room
+    version: 3.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: settle_cash_from_cashier
+    library: androidx.room
+    version: 3.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: view_teller_transactions
+    library: ktorfit
+    version: 2.x
+    targets:
+      - android
+      - ios
+      - desktop
 vm_actions:
   - name: LoadTellers
     signature: private fun loadTellers()
@@ -165,13 +200,19 @@ vm_actions:
       CashierReadFailed: uiState=Error; offer Retry
   - name: ChangeCashierDateRange
     signature: 'private fun onChangeCashierDateRange(range: DateRange)'
+    handles:
+      - change_cashier_date_range
     state_mutations:
       - dateRange=range
       - uiState=Content(reprojected)
     side_effects: []
-    error_handling: {}
+    error_handling:
+      InvalidDateRange: reject when fromDate > toDate before re-projecting; keep prior range; surface inline validation message
+      CashierReadFailed: if the new range misses the cache and a refetch fails, uiState=Error over last-known rows; offer Retry
   - name: AllocateCash
     signature: 'private fun allocateCash(cashierId: String, amount: Money)'
+    handles:
+      - allocate_cash_to_cashier
     state_mutations:
       - uiState=Submitting | QueuedOffline
       - vaultCashBalance-=amount (optimistic, pending-sync)
@@ -183,6 +224,8 @@ vm_actions:
       CashCommandRejected: uiState=Error; route to needs-attention-inbox with server_error
   - name: SettleCash
     signature: 'private fun settleCash(cashierId: String, amount: Money)'
+    handles:
+      - settle_cash_from_cashier
     state_mutations:
       - uiState=Submitting | QueuedOffline
       - vaultCashBalance+=amount (optimistic, pending-sync)
@@ -201,12 +244,26 @@ vm_actions:
       CashCommandRejected: uiState=Error; route to needs-attention-inbox
   - name: CreateTeller
     signature: 'private fun createTeller(payload: CreateTellerPayload)'
+    handles:
+      - create_teller_form
     state_mutations:
       - uiState=Submitting | QueuedOffline
     side_effects:
       - RoomSubmitOutbox.enqueue(CreateTellerPayload, IdempotencyKey.generate())
     error_handling:
       TellerCommandRejected: uiState=Error; route to needs-attention-inbox
+      TemplateFetchFailed: uiState=Error on the create form; keep entered values; offer Retry
+  - name: EditTeller
+    signature: 'private fun editTeller(tellerId: String, payload: UpdateTellerPayload)'
+    handles:
+      - edit_teller_form
+    state_mutations:
+      - uiState=Submitting | QueuedOffline
+    side_effects:
+      - RoomSubmitOutbox.enqueue(UpdateTellerPayload, IdempotencyKey.generate())
+    error_handling:
+      TellerCommandRejected: uiState=Error; route to needs-attention-inbox with the server error
+      TemplateFetchFailed: uiState=Error on the edit form; keep pre-filled + edited values; offer Retry
   - name: ViewTellerTransactions
     signature: 'private fun viewTellerTransactions(tellerId: String)'
     state_mutations:
@@ -217,18 +274,25 @@ vm_actions:
       TellerTxnReadFailed: uiState=Error; offer Retry
   - name: RetryLoad
     signature: private fun retryLoad()
+    handles:
+      - retry_load
     state_mutations:
       - uiState=Loading
       - uiState=Content | Error
     side_effects:
       - TellersRepository.tellersStream.refreshFresh()
-    error_handling: {}
+    error_handling:
+      TellerReadFailed: refresh failed again; uiState=Error over last-known cache; keep the Retry affordance visible
+      Offline: uiState=NoNetwork; re-serve cached tellers + cash position; show offline banner
   - name: OpenNeedsAttention
     signature: private fun onOpenNeedsAttention()
+    handles:
+      - open_needs_attention
     state_mutations: []
     side_effects:
       - sendEvent(NavigateToNeedsAttention)
-    error_handling: {}
+    error_handling:
+      NavigationUnavailable: needs-attention-inbox route not registered; no-op guard, log to CrashReporter; stay on the current screen
 error_cases:
   - teller_read_failed
   - cashier_read_failed
@@ -250,6 +314,16 @@ scaffolded_by: /idea-plan-add
 enriched_at: '2026-07-17T11:30:00Z'
 enriched_by: /idea-feature-enrich
 status_history:
+  - from: designed
+    to: approved
+    at: '2026-07-31T09:30:00Z'
+    by: /idea approve
+    contract_version: 2.0.0
+    reason: >-
+      Autonomous /idea-agent re-approval — original human approval stands (APPROVE_LOG
+      2026-07-18); the 2026-07-31 HD-render + coherence pass reverted status to designed without
+      content rejection (same class as 2026-07-21). Fresh approve_hash re-stamped after
+      within-scope enrichment; verified idempotent (RULE-GAP-IDEA-FIRST-001).
   - from: designed
     to: approved
     at: '2026-07-21T19:05:00Z'

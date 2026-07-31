@@ -1,5 +1,5 @@
 feature: loan-application-wizard
-status: designed
+status: approved
 cluster: portfolio
 module: m04-loan-portfolio
 priority: must_have
@@ -34,21 +34,204 @@ summary: >-
   Field metadata (allowed products, min/max principal, charge options) comes entirely from the Fineract template so a
   back-office product change appears next sync with no release. On success the wizard lands on the newly created loan's
   detail (loan-detail).
+metadata:
+  category: back-office-domain
+  implementation_ready: true
+  impl_ready_at: '2026-07-31T00:00:00Z'
+  impl_ready_schema: v2
+contracts:
+  - capability: loan_template_read
+    platform_spec: >-
+      GET /v1/loans/template?clientId&productId&templateType (individual|jlg) read cache-first through a Store5
+      SourceOfTruth over Room (loan_template_cache) — the ENTIRE wizard field set, allowed-product list,
+      min/max principal + term bounds, interest defaults, and charge/collateral option lists hydrate from the
+      Fineract LoanTemplateDto and persist to loan_template_cache so an application can be drafted fully offline
+      under CACHE_FIRST_SWR; the form is built by dynamic-template-forms (no hardcoded fields — a back-office
+      product change appears next sync with no release). Zero products returned renders the ineligible-guidance
+      empty state.
+    permission: CREATE_LOAN
+    error_cases:
+      - template_load_failed
+      - client_ineligible
+  - capability: schedule_preview
+    platform_spec: >-
+      POST /v1/loans?command=calculateLoanSchedule — a LIVE, DEBOUNCED preview of the amortised repayment schedule
+      computed from the captured principal/term/rate/disbursementDate + template defaults; returns LoanScheduleDto
+      (per-installment principal/interest/fees + totals). NO loan is created and NOTHING is persisted or enqueued
+      (idempotency:none) — a transient compute so the officer reviews installments before committing; requires
+      connectivity, so a failed/offline calc degrades the preview step to a retry strip while the captured draft
+      terms remain editable.
+    permission: CREATE_LOAN
+    error_cases:
+      - schedule_calc_failed
+      - validation_failed
+  - capability: loan_application_submit
+    platform_spec: >-
+      POST /v1/loans — the completed application (dynamic-template-forms JsonObject payload + a client-generated
+      externalId assigned before the server id) is written to the draft_outbox Room table with a DURABLE
+      idempotency key (action=CREATE_LOAN, entity=LOAN) generated at submit and reused on retry so it replays
+      EXACTLY ONCE across connectivity flap / crash / reinstall (zero double-post); the offline-sync-engine
+      replays it via POST /v1/batches. Maker-checker aware (a queued application lands as PENDING_APPROVAL rather
+      than posting immediately); a rejected replay routes to needs-attention-inbox, never silently dropped. On
+      success the new loanId is returned and the wizard navigates to loan-detail.
+    permission: CREATE_LOAN
+    error_cases:
+      - submit_failed
+      - application_offline_queued
+      - application_rejected
+libraries:
+  - capability: loan_template_read
+    library: openMF Fineract Client KMP SDK
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: loan_template_read
+    library: org.mobilenativefoundation.store.store5
+    version: 5.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: loan_template_read
+    library: androidx.room
+    version: 3.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: loan_template_read
+    library: cmp-network-monitor
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: schedule_preview
+    library: kotlinx-serialization
+    version: 1.7.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: loan_application_submit
+    library: androidx.room
+    version: 3.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: loan_application_submit
+    library: kotlinx-serialization
+    version: 1.7.x
+    targets:
+      - android
+      - ios
+      - desktop
 vm_actions:
-  - OnLoadTemplate
-  - OnFieldChange
-  - OnNextStep
-  - OnPrevStep
-  - OnPreviewSchedule
-  - OnSubmit
-  - OnRetry
+  - name: OnLoadTemplate
+    signature: 'private fun onLoadTemplate(clientId: String, productId: String?)'
+    state_mutations:
+      - uiState=Loading
+      - template=<resolved LoanTemplate>
+      - uiState=Content(template, form) | Empty | Error
+    side_effects:
+      - LoanTemplateStore.stream(clientId, productId, CACHE_FIRST_SWR)
+      - PermissionEvaluator.evaluate(CREATE_LOAN)
+    error_handling:
+      NoEligibleProduct: uiState=Empty; show ineligible-guidance panel
+      NetworkError: uiState=Content from cache if present else Error; offer Retry
+  - name: OnFieldChange
+    signature: 'private fun onFieldChange(fieldCode: String, value: FieldValue)'
+    state_mutations:
+      - form=<updated captured value>
+      - canProceed=<template validation result (min/max principal, allowed term, required charges)>
+    side_effects: []
+    error_handling:
+      ValidationFailed: mark the offending field; keep Next disabled until the step validates
+  - name: OnNextStep
+    signature: private fun onNextStep()
+    state_mutations:
+      - step=<Product → Charges → SchedulePreview → Review>
+    side_effects: []
+    error_handling:
+      ValidationFailed: block advance; surface per-field template validation errors
+  - name: OnPrevStep
+    signature: private fun onPrevStep()
+    state_mutations:
+      - step=<retreat one wizard step>
+    side_effects: []
+    error_handling:
+      AtFirstStep: >-
+        no-op guard — the Back affordance is disabled on step 1 (Product) so there is nothing to retreat to;
+        captured field state is preserved when stepping back, so retreating and re-advancing never loses input
+  - name: OnPreviewSchedule
+    signature: 'private fun onPreviewSchedule(input: LoanScheduleInput)'
+    state_mutations:
+      - schedulePreview=<amortised List<RepaymentPeriod> + totals>
+      - uiState=Content
+    side_effects:
+      - LoanScheduleRepository.calculatePreview(input) POST /v1/loans?command=calculateLoanSchedule (debounced, no loan created)
+    error_handling:
+      ScheduleCalcFailed: keep last preview; degrade the preview step to a retry strip; draft terms stay editable
+      NetworkError: preview unavailable offline; retry on reconnect (transient — nothing enqueued)
+  - name: OnSubmit
+    handles: submit_application
+    signature: 'private fun onSubmit(payload: LoanApplicationPayload)'
+    state_mutations:
+      - uiState=Content (application submitting)
+      - form=<drained to draft_outbox>
+    side_effects:
+      - DraftDao.enqueue(CREATE_LOAN, entity=LOAN, externalId=<client-generated>, payload, DURABLE idempotencyKey)
+      - sendEvent(NavigateToLoanDetail(loanId)) on successful replay
+    error_handling:
+      SubmitFailed: route entry to needs-attention-inbox; keep the draft
+      Offline: stays queued; replays exactly-once via POST /v1/batches on connectivity regain
+      MakerChecker: queued application lands as PENDING_APPROVAL rather than posting immediately
+  - name: OnRetry
+    signature: private fun onRetry()
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content | Error
+    side_effects:
+      - LoanTemplateStore.stream(clientId, productId).refreshFresh() (or re-attempt the failed schedule-calc / submit)
+    error_handling:
+      NetworkError: uiState=Error; keep last inputs; offer Retry again
 error_cases:
   - template_load_failed
+  - client_ineligible
   - validation_failed
   - schedule_calc_failed
   - submit_failed
+  - application_offline_queued
+  - application_rejected
+test_fixtures:
+  source: screens/loan-application-wizard/tests.yaml
+  scenario_count: 7
+  priority_distribution:
+    high: 3
+    medium: 3
+    low: 1
+enriched_at: '2026-07-31T00:00:00Z'
+enriched_by: /idea-feature-enrich
 scaffolded_by: /idea-plan-add
+approved_by: /idea approve
+approve_predicate_version: 1.0.0
+approve_contract_version: 2.0.0
+approve_hash: sha256:2cdde7bcc4750762e43562f0415500617dee24dab1f7599cbf57d1c6ea78b67b
+approved_at: '2026-07-31T07:34:06Z'
 status_history:
+  - from: designed
+    to: approved
+    at: '2026-07-31T07:34:06Z'
+    by: /idea approve
+    contract_version: 2.0.0
+    reason: >-
+      Autonomous /idea-agent --auto re-approval — DRILL-DOWN feature promoted designed→approved as the
+      pipeline's own gate. impl-ready-clean (impl-ready-validator IR-1..IR-4: 0 violations) and docs.yaml
+      internally consistent. Fresh approve_hash stamped over the 7 canonical sibling YAMLs (approve-hash.md
+      §Computation; RULE-GAP-IDEA-FIRST-001).
   - from: draft
     to: designed
     at: '2026-07-26T05:45:00.636Z'

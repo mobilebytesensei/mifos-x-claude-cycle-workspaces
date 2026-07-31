@@ -1,5 +1,5 @@
 feature: report-runner
-status: draft
+status: approved
 cluster: reports
 module: m14-reports-search-audit
 priority: should_have
@@ -21,25 +21,172 @@ acceptance_refs:
   - >-
     A parameterised report runner: pick a report, fill its parameter form (office, date range, currency, loan
     officer) resolved from the report's parameter metadata, run GET /v1/runreports/{reportName}, and view the
-    result as a sortable table with export; gated on the report-run permission.
+    result as a sortable table with a client-side CSV export; gated on the report-run permission.
 plan_ref: idea-plan.yaml#features[report-runner]
 summary: >-
   The parameterised report runner drilled into from the M01 dashboard "portfolio at risk" tile (pre-scoped to
   the PAR report) and the M14 reports list. It loads the report's parameter metadata (GET /v1/runreports/
   FullParameterList or the report's declared parameters), renders a parameter form (office, from/to date,
-  currency, loan officer, fund — each resolved from its own lookup report), then runs
+  currency, loan officer — each resolved from its own lookup report), then runs
   GET /v1/runreports/{reportName}?R_paramName=... and renders the returned columnar data as a sortable,
-  horizontally-scrollable table with a headline summary and CSV/PDF export. Results read cache-first so a
-  recently-run report opens offline. Read-only; gated on the report's run permission (e.g. READ_Portfolio at Risk).
+  horizontally-scrollable table with a headline summary and a client-side CSV export. Results read cache-first
+  so a recently-run report opens offline. Read-only; gated on the report's run permission (e.g. READ_Portfolio at Risk).
+metadata:
+  category: native-capability
+  implementation_ready: true
+  impl_ready_at: "2026-07-31T00:00:00Z"
+  impl_ready_schema: "v2"
+contracts:
+  - capability: report_export
+    platform_spec: >-
+      Client-side export — the in-memory ReportResult (columnHeaders + data rows, reflecting the applied sort
+      and parameter set) is rendered to a CSV string, written to a temp file, and handed to the platform share
+      sheet via core/platform.ShareSheet (expect/actual: Android ACTION_SEND FileProvider, iOS
+      UIActivityViewController, desktop file-save dialog). No server endpoint, no network.
+    permission: none
+    error_cases:
+      - export_failed
+libraries:
+  - capability: report_export
+    library: kotlinx-io
+    version: 0.5.x
+    targets:
+      - android
+      - ios
+      - desktop
 vm_actions:
-  - OnLoadParameters
-  - OnParamChange
-  - OnRunReport
-  - OnSortColumn
-  - OnExport
-  - OnRetry
+  - name: LoadReports
+    signature: "private fun loadReports()"
+    state_mutations:
+      - uiState=Loading
+      - reportCatalog=<catalog grouped by category>
+      - uiState=Content
+    side_effects:
+      - ReportStore.stream(ReportCatalogKey) # GET /v1/reports cache-first (report_catalog_cache)
+    error_handling:
+      NetworkError: uiState=Error(report_catalog_load_failed); serve last-cached catalog if present
+      EmptyCatalog: uiState=Content; show pre-scoped report only, disable the switcher
+  - name: SelectReport
+    signature: "private fun onSelectReport(reportName: String)"
+    state_mutations:
+      - reportName=<selected>
+      - parameters=[]
+      - result=null
+      - uiState=Loading
+    side_effects:
+      - triggerResolveParameterOptions(reportName)
+    error_handling:
+      UnknownReport: retain previous reportName; surface a non-blocking snackbar
+      ReportNotRunnable: keep switcher open; disable Run until a runnable report is picked
+  - name: ResolveParameterOptions
+    signature: "private fun resolveParameterOptions(reportName: String)"
+    state_mutations:
+      - uiState=Loading
+      - parameters=<resolved with lookup options>
+      - uiState=Content
+    side_effects:
+      - ReportStore.stream(FullParameterListKey(reportName)) # GET /v1/runreports/FullParameterList (report_parameter_cache)
+    error_handling:
+      NetworkError: uiState=Error(parameters_load_failed); hydrate dropdowns from report_parameter_cache if cached
+      MalformedParameterMetadata: uiState=Error(parameters_load_failed); offer Retry
+  - name: SelectParameter
+    handles: param_change
+    signature: "private fun onParamChange(parameterName: String, value: String)"
+    state_mutations:
+      - paramValues[parameterName]=value
+      - parameters=<dependent lookups re-scoped, e.g. loanOfficer by office>
+    side_effects:
+      - maybeResolveDependentLookups(parameterName, value)
+    error_handling:
+      DependentLookupFailed: keep prior options for the dependent dropdown; inline warning, no screen error
+      InvalidValue: reject the value; retain last valid paramValues entry
+  - name: SelectDateRange
+    signature: "private fun onSelectDateRange(startDate: String, endDate: String)"
+    state_mutations:
+      - paramValues.R_startDate=startDate
+      - paramValues.R_endDate=endDate
+    side_effects: []
+    error_handling:
+      InvalidRange: reject when endDate < startDate; retain last valid range; inline validation message
+  - name: RunReport
+    signature: "private fun onRunReport()"
+    state_mutations:
+      - uiState=Running
+      - result=<columnHeaders + rows>
+      - uiState=Results | Empty
+    side_effects:
+      - ReportStore.stream(RunReportKey(reportName, paramHash)) # GET /v1/runreports/{reportName} cache-first (report_result_cache)
+    error_handling:
+      NetworkError: uiState=Error(report_run_failed); serve cached result for the same paramHash if present
+      RequiredParamMissing: stay in Content; highlight the missing parameter, do not fire the request
+      ZeroRows: uiState=Empty; show adjust-parameters guidance
+  - name: SortColumn
+    signature: "private fun onSortColumn(columnName: String)"
+    state_mutations:
+      - sortColumn=columnName
+      - result=<rows re-ordered client-side, no refetch>
+    side_effects: []
+    error_handling:
+      UnsortableColumn: ignore the tap; retain current sortColumn
+      NoResultLoaded: no-op when result is null
+  - name: ExportResults
+    handles: export_report
+    signature: "private fun onExportResults()"
+    state_mutations:
+      - uiState=Results
+    side_effects:
+      - renderResultToCsv(result, sortColumn, paramValues)
+      - ShareSheet.share(csvFile)
+    error_handling:
+      CsvRenderFailed: uiState=Results; surface export_failed snackbar, result stays intact
+      ShareSheetUnavailable: uiState=Results; fall back to save-to-file, notify once
+      NoResultLoaded: disable Export when result is null
+  - name: RetryLoad
+    handles: retry
+    signature: "private fun onRetry()"
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content | Error
+    side_effects:
+      - resolveParameterOptions(reportName) # re-resolve params, or re-run per last failure
+    error_handling:
+      StillFailing: uiState=Error; keep the last error_code, allow another Retry
+      NoNetwork: uiState=Error(parameters_load_failed); hydrate from cache if available
+  - name: GoBack
+    signature: "private fun onGoBack()"
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateBackToReportsList)
+    error_handling:
+      NoBackStackEntry: fall back to the M14 reports list root destination
 error_cases:
+  - report_catalog_load_failed
   - parameters_load_failed
   - report_run_failed
   - export_failed
+test_fixtures:
+  source: screens/report-runner/tests.yaml
+  scenario_count: 17
+  priority_distribution:
+    high: 7
+    medium: 7
+    low: 3
+enriched_at: "2026-07-31T00:00:00Z"
+enriched_by: /idea-feature-enrich
 scaffolded_by: /idea-plan-add
+approved_by: /idea approve
+approve_predicate_version: 1.0.0
+approve_contract_version: 2.0.0
+approve_hash: sha256:b9b057e479ef0def70afc91ad60aa6dc461937e50c7e148708e81da8b5eb022b
+approved_at: '2026-07-31T07:34:06Z'
+status_history:
+  - from: designed
+    to: approved
+    at: '2026-07-31T07:34:06Z'
+    by: /idea approve
+    contract_version: 2.0.0
+    reason: >-
+      Autonomous /idea-agent --auto re-approval — DRILL-DOWN feature promoted designed→approved as the
+      pipeline's own gate. impl-ready-clean (impl-ready-validator IR-1..IR-4: 0 violations) and docs.yaml
+      internally consistent. Fresh approve_hash stamped over the 7 canonical sibling YAMLs (approve-hash.md
+      §Computation; RULE-GAP-IDEA-FIRST-001).
