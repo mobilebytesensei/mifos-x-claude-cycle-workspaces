@@ -15,7 +15,7 @@
 | Repo (origin = fork) | [therajanmaurya/mifos-x-group-banking](https://github.com/therajanmaurya/mifos-x-group-banking) — push target |
 | Repo (upstream) | [openMF/mifos-x-group-banking](https://github.com/openMF/mifos-x-group-banking) — PR target |
 | Repo (template) | [openMF/kmp-project-template](https://github.com/openMF/kmp-project-template) — template upstream |
-| Backend | Mifos Fineract (sandbox.mifos.community) + 36 generated MCP tools |
+| Backend | Mifos Fineract — **`https://mifos-bank-2.mifos.community` (tenant `mifos-bank-2`, creds `mifos`/`password`)** via companion server (mcp-mifosx) + 36 generated MCP tools (sandbox `default` = fallback) |
 | Created | 2026-05-02 |
 | Promoted | 2026-05-05 (via `/idea-plan` [P]) |
 

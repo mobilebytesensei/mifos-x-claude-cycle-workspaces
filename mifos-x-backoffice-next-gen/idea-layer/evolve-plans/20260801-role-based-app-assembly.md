@@ -5,9 +5,9 @@
 | **Project** | `mifos-x/mifos-x-backoffice-next-gen` |
 | **Date** | 2026-08-01 |
 | **Command** | `/idea-evolve-plan` (CP-A..CP-G whole-hierarchy completability sweep) |
-| **Auditors** | 3 parallel (Fineract permission model · field-officer app journey audit · CP-A..CP-G idea-layer role-completability) |
+| **Auditors** | 4 (Fineract permission model · field-officer app journey audit · CP-A..CP-G idea-layer role-completability · **deep field-officer source audit** — §4.5) |
 | **Completability verdict** | **COMPLETABLE — additive work, 0 structural rearchitecture.** 6 blocking assembly/feature gaps + 8 explicit absences. The permission engine + 32 enriched screens already realize "same binary, every role"; the gaps are concentrated **nav-shell assembly wiring**, one **net-new network-config feature**, and **two role journeys**. |
-| **Total gaps** | 17 findings (6 blocking · 11 additive/quality) across CP-A..CP-G |
+| **Total gaps** | 17 CP-A..CP-G findings (6 blocking) **+ 6 field-ops feature gaps** from the field-officer source audit (§4.5) |
 
 ## Feedback (verbatim)
 
@@ -118,7 +118,7 @@ The **same binary**. `POST /authentication` → `{roles, permissions[], officeId
 
 ### Common entry (all roles)
 1. **Splash** → checks persisted session (FineractSessionStore token + UserDataRepository.isAuthenticated).
-2. **Sign-in only** (`fineract-auth-session`) — username + password + tenant. **Demo defaults pre-seeded** from core/network (dev/demo builds): `mifos` / `password` / tenant `default` @ demo.mifos.community. A **"Network settings"** affordance on the login screen opens the network-config feature (D2) to point at any instance.
+2. **Sign-in only** (`fineract-auth-session`) — username + password + tenant. **Demo defaults pre-seeded** from core/network (dev/demo builds): `mifos` / `password` · **primary** `mifos-bank-2.mifos.community` (tenant **`mifos-bank-2`**, 15 real roles incl. OFICIAL DE CAMPO / CAJERO / SUPERVISOR), **fallback** `sandbox.mifos.community` (tenant `default`) — full connection info in `research/FINERACT_INSTANCES.md`. A **"Network settings"** affordance on the login screen opens the network-config feature (D2) to point at any instance.
 3. **Passcode / biometric** lock (adopt field-officer pattern) with 15s background-timeout re-auth.
 4. `POST /authentication` → capability bootstrap: `PermissionSet.fromRaw(permissions)` → `PermissionStateHolder`; `officeId`/`staffId` set the data scope.
 5. **NavShell assembler** reads the resolved module roster → renders bottom-bar (phone) / rail+drawer (desktop) with ONLY the permitted roots. **Dashboard assembler** renders the role-appropriate home.
@@ -170,6 +170,71 @@ The **same binary**. `POST /authentication` → `{roles, permissions[], officeId
 
 ---
 
+## §4.5 · Field-Officer App Source Audit + Feature Gap Map
+
+Deep read-only source audit of **openMF/mifos-x-field-officer-app@dev** (KMP/Compose, `com.mifos.feature.*`): 21 feature modules, 9 `core/*` modules, `cmp-navigation`. It is a **field-ops** app (the center→group→client→account hierarchy + offline), a *subset* of Fineract — our target is the full back-office, so it *adds* accounting/products/org/users-roles/tellers/scheduler/communications that the field app lacks (those are not gaps). The audit's job here: find field-ops capabilities our back-office model **skipped**. Every "already-modeled?" verdict below was **verified by grep against our idea-layer**, correcting the audit's own caveat (it hadn't read our specs).
+
+### Feature inventory (source)
+`auth · passcode(+biometric) · search · search-record · center(+SyncCentersDialog) · groups(+SyncGroupDialog) · client(~40 screens: profile/address/identifiers/documents/signature/pinpoint/survey/staff/charges/collateral/accounts/apply/closure/transfer + SyncClientsDialog) · loan(~30: apply/approve/disburse/reject/repay/schedule/txns/charge/chargeoff/reschedule/guarantor/assign-officer/transfer) · savings(+TransactionReceipt) · recurringDeposit · collectionSheet(generate + individual + payment-details) · checker-inbox-task · activate · note · document · data-table · report · offline(OfflineDashboard outbox + per-entity SyncPayloads) · path-tracking(GPS) · settings(UpdateServerConfig + SyncSurveys) · about`
+
+### Flow (source)
+`Splash → Login (tenant/baseURL) → set/enter Passcode(+Biometric; 15s bg re-lock) → AuthenticatedNavbar → bottom tabs [Search·Clients·Centers·Groups] + drawer [Checker Inbox · Collection Sheet · Run Reports · Path Tracker · Offline Sync · Settings · About] → drill Center→Group→Client 360 → Loan/Savings/Share/FD/RD accounts → account actions → {per-entity SyncDialog = pre-download a branch offline; OfflineDashboard = outbox of queued mutations}`.
+
+### Gap map (grep-verified against our idea-layer)
+| Field-officer capability | Verdict | Evidence in our idea-layer |
+|---|---|---|
+| offline mutation **outbox** / payload queue | ✅ COVERED | `outbox` in 332 files (`offline-sync-engine`, `needs-attention-inbox`) |
+| loan **reschedule · guarantor · write-off/foreclosure** | ✅ COVERED | reschedule 28 · guarantor 15 · writeoff/foreclosure 17 (`m04`) |
+| client **transfer (proposeTransfer) · closure** | ✅ COVERED | proposeTransfer 8 (`m02`/`client-detail-360`) |
+| **share accounts · recurring deposit** | ✅ COVERED | share-account 20 (`m05`) |
+| **transaction receipt** (PDF) | ✅ COVERED | transaction-receipt 5 (`m05`) |
+| **individual collection sheet** | ✅ COVERED | individual-collection 3 (`m06`/`collection-sheet`) |
+| **passcode + biometric lock** | 🟨 REFERENCED | biometric 21 · passcode 2 — modeled in decisions/m17, **not a dedicated feature/screen set** (low-priority to promote) |
+| **client signature capture** | 🔴 MISSING | 0 (the 19 `signature` hits are `signature:` business_logic fields — false positives) |
+| **client survey** (list→question→submit + pre-download) | 🔴 MISSING | 0 |
+| **client pinpoint** (GPS geo-tag client location) | 🔴 MISSING | 0 |
+| **path-tracking** (GPS field-visit route trail) | 🔴 MISSING | 0 (GPS/geotag/path-track all 0) |
+| **search-record** (offline / recent-search history) | 🔴 MISSING | 0 |
+| **per-entity branch-download sync dialog** (pre-download a center/group/client hierarchy for offline) | 🔴 MISSING | 0 (general outbox is covered; the *download-a-branch* dialog is not) |
+
+### Features to include (the 6 genuine gaps — all belong to the loan/collections-field-officer persona surface, permission-gated)
+These are exactly the field-officer role's daily field-work capabilities the user described ("loan officer capable of handling clients… center… group… member"). Add them gated to the `loan-officer-maker` / `collections-field-officer` personas (hidden for admin/super-user unless permitted):
+
+| # | Add | Where it fits |
+|---|---|---|
+| FO-1 | **`path-tracking`** — GPS field-visit route trail (record/view officer location during a visit day) | new feature (needs `core/platform` location capability); drawer root for field-officer persona |
+| FO-2 | **`client-survey`** — survey list → question → submit, + offline survey pre-download | section of `m02-clients` / `client-detail-360`; `/surveys` |
+| FO-3 | **client signature capture** — sign-pad/image on client profile | section of `client-detail-360`; `/clients/{id}/images` |
+| FO-4 | **client pinpoint** — GPS geo-tag a client's location | section of `client-detail-360` (needs `core/platform` location) |
+| FO-5 | **`search-record`** — offline / recently-searched history (distinct from live `m14` search) | extends `m14-reports-search-audit` |
+| FO-6 | **branch-download sync dialog** — per center/group/client, pre-download a hierarchy branch for offline field use (distinct from the mutation outbox we already model) | extends `offline-sync-engine`; per-entity affordance on m03/m02 lists |
+
+*(Not added: `about`/diagnostics — minor, folds into m17; passcode/biometric screens — already referenced, low value to promote.)*
+
+---
+
+## §4.6 · Account-Action Depth Map (client → account → action)
+
+Deep source audit of the field-officer app's `feature/{client,loan,savings,recurringDeposit,...}` + `core/network/services/*` — the complete drill path and the exact Fineract command each action fires. **Key differentiator:** the reference app **renders ~45 loan actions but wires only 6** (≈38 are dead `{}` stubs), and its **Share / Fixed-Deposit / Recurring-Deposit detail & approve routes are no-ops** — only **Savings** is fully wired. Our back-office **completes the account-action surface** (every action real, permission-gated, maker-checker-aware where Fineract allows).
+
+**Drill path:** `client roster → client 360 (profile hub) → General & Accounts → account list grouped by type → account detail → status-aware action`.
+
+**Per-account-type action surface (each row = action · Fineract command · MC-capable · offline-queued):**
+
+| Loan (`m04`) | Savings (`m05`) | Share / FD / RD (`m05`) |
+|---|---|---|
+| approve `?command=approve` (MC) · disburse `disburse`/`disburseToSavings` (MC) · reject `reject` (MC) · undo-approval/undo-disbursal · **repayment** `transactions?command=repayment` (offline) · prepay · waive-interest `waiveinterest` · write-off `writeoff` (MC) · charge-off `transactions?command=charge-off` (MC) · foreclosure (MC) · reschedule `/rescheduleloans` (MC) · assign/unassign officer · guarantors `/guarantors` · add-charge · account-transfer `/accounttransfers` · close | approve `?command=approve` (MC) · reject · undo-approval · activate `activate` (MC) · **deposit** `transactions?command=deposit` (offline) · **withdrawal** `withdrawal` (offline) · hold/block `holdAmount` · release-hold · post-interest `postInterest` · add-charge · waive-charge · close · **receipt** (PDF) | **Share:** create-wizard · approve · activate · redeem · close · **FD:** create-wizard · approve · activate · premature-close · maturity · **RD:** create-wizard · approve · activate · deposit · premature-close *(reference: create-wizards live; detail/approve dead — we wire them)* |
+
+**Transaction sub-flows:** loan repayment (date · payment-type · amount · additional · fees · total); savings deposit/withdrawal (date · amount · payment-type); transaction receipt (PDF). Loan schedule = installment table (#/date/principal/interest/due/paid/outstanding, export PDF); loan transactions = posted ledger with reversible rows.
+
+**Apply-new-application:** client 360 (active only) → product chooser → per-type create wizard (Loan: Details·Terms·Schedule·Charges·Preview · Savings: Details·Terms·Charges·Preview · FD/RD: +Interest·Settings · Share: Details·Terms·Charges·Preview) → submitted pending-approval.
+
+**Offline truth:** only 5 payload types queue (client-create, group, center, loan-repayment, savings-transaction) — applications/approvals are online-only. Maker-checker surfaces via the separate Checker-Inbox (`m15`), not inline.
+
+**Depth-flow screens to deliver (flesh out `m02`/`m04`/`m05`, mostly PARTIAL not net-new):** ① client roster (search/filter/paged) ② client 360 (profile hub + lifecycle actions) ③ accounts grouped by type ④ loan detail + **complete** action set + Summary/Schedule/Transactions/Charges tabs ⑤ loan repayment form ⑥ schedule + ledger tables ⑦ savings detail + full actions ⑧ savings deposit/withdrawal form + receipt ⑨ approval/activate forms ⑩ apply-new chooser + 5 wizards ⑪ Checker-Inbox ⑫ offline-sync dashboard. **Visualized in the mockup gallery (§ Account depth).**
+
+---
+
 ## §5 · Enrich prompt (bottom-up the hierarchy — ready to run)
 
 ```
@@ -177,11 +242,15 @@ The **same binary**. `POST /authentication` → `{roles, permissions[], officeId
 
 (1) REQUIREMENTS/FEATURES/ROADMAP: add FR + foundation feature 'nav-shell-assembler' (role-adaptive NavShell that data-binds bottom-bar/rail/drawer roots to permission-capability-engine's resolved module roster — replace app-shell.yaml drawer.items:[] and the hardcoded 4 field-officer bottom-nav placeholders with a permission-driven roster; adaptive: drawer/rail desktop, bottom-bar phone). Add FR + foundation feature 'network-config' (P0). Add FR for per-role dashboard assembly + first-run role walkthrough.
 
-(2) FEATURE-DATA: add network-config data-flow — editable base URL + tenant (Fineract-Platform-TenantId) + username + password, persisted to core/network + core/datastore, with demo defaults (mifos/password/tenant default @ demo.mifos.community) SEEDED in core/network so the app is usable out-of-box; save swaps base-URL + tenant header (DynamicBaseUrlPlugin) and forces re-auth. Seed the same demo defaults into the sign-in form initial state (dev/demo builds).
+(2) FEATURE-DATA: add network-config data-flow — editable base URL + tenant (Fineract-Platform-TenantId) + username + password, persisted to core/network + core/datastore, with demo defaults SEEDED in core/network (mifos/password; PRIMARY base mifos-bank-2.mifos.community tenant `mifos-bank-2`, FALLBACK sandbox.mifos.community tenant `default` — call primary first, see research/FINERACT_INSTANCES.md) so the app is usable out-of-box; save swaps base-URL + tenant header (DynamicBaseUrlPlugin) and forces re-auth. Seed the same demo defaults into the sign-in form initial state (dev/demo builds).
 
 (3) FLOWS/JOURNEYS: author 3 role journeys — 'loan-officer-day' (login→My-Field-Day dashboard→Centers(my office)→Center→Group→members(associate/disassociate)→generateCollectionSheet→bulk repayment+deposit→saveCollectionSheet; parallel: My Caseload→Client→apply loan/savings→pending-approval), 'super-user-admin' (login→Platform-Admin dashboard→Users(create/assign roles)→Roles&Permissions(grant codes/toggle maker-checker via PUT /permissions)→Organization→Config→Approvals checker-on-all), and 'network-config-change' (loan-area tile OR Settings→edit network→validate→save→re-auth). Wire orphan m03 center→group→member drill into nav; give all 13 orphan module screens inbound edges through the nav-shell assembler.
 
 (4) SCREEN BEHAVIOR + DASHBOARD ASSEMBLY: build network-config screen (base-URL/tenant/username/password, demo pre-fill, Reset-to-demo, validators) with dual entry points (loan-area 'Network settings' tile + Settings). Make m01-dashboard assemble per role — loan-officer 'My Field Day' action feed (collections due today, overdue caseload loans, to-activate, pending applications, sync count), admin 'Operations' (approvals queue, portfolio KPIs, teller position), super-user 'Platform Admin' (platform health, all-office KPIs, user/role activity, config toggles). Loan-officer approve/disburse controls render DISABLED-with-reason; every maker-checker write shows a bottom-sheet confirmation (NOT a bare toast).
+
+(5) FIELD-OFFICER FIELD-WORK FEATURES (from the openMF/mifos-x-field-officer-app source audit, §4.5 — gate ALL to the loan-officer-maker / collections-field-officer personas, HIDDEN for other roles unless permitted): add feature 'path-tracking' (GPS field-visit route trail via core/platform location) as a field-officer drawer root; add to client-detail-360 — 'client-survey' (survey list→question→submit + offline survey pre-download, /surveys), client signature capture (sign-pad/image, /clients/{id}/images), client pinpoint (GPS geo-tag client location via core/platform); extend m14-reports-search-audit with 'search-record' (offline/recent-search history, distinct from live search); extend offline-sync-engine with a per-entity branch-download sync dialog (pre-download a center/group/client hierarchy branch for offline field use, distinct from the mutation outbox already modeled). These are the field-officer role's daily field-work capabilities.
+
+(6) ACCOUNT-ACTION DEPTH (§4.6 — flesh out m02/m04/m05, the full client→account→action drill): client roster (search/filter/paged) → client-360 profile hub with client lifecycle actions (activate/close/proposeTransfer/assignStaff/updateDefaultAccount/addCharge/applyNewApplication) → accounts grouped by type → per-account-type detail with the COMPLETE status-aware action set (do NOT ship the reference app's ~38 dead loan-action stubs or its no-op Share/FD/RD detail routes). Loan detail: Summary/Schedule/Transactions/Charges tabs + approve/disburse/reject/repayment/reschedule/charge-off/write-off/foreclose/waive-interest/assign-officer/guarantors/account-transfer/close — each wired to its real Fineract command with a real action_contract, maker-checker-aware, repayment offline-queued. Savings detail: deposit/withdrawal/hold/release/post-interest/add-charge/close + transaction receipt (PDF). Share/FD/RD: create-wizard + approve/activate/redeem/premature-close detail (wire the routes the reference leaves dead). Transaction forms (loan repayment; savings deposit/withdrawal) + approval/activate forms + apply-new chooser with 5 per-type create wizards. Every account action is permission-gated (disabled-with-reason when the role lacks it) and confirms in a bottom sheet.
 
 Wire real action_contracts, reconcile flow.yaml with ui.yaml. Regenerate every touched screen through the design-conformance path (opus kmp-screen-gen, MOCKUP-FIRST, real bottom-sheet confirmations) so implementation matches the professional high-quality colorful Material Design mockups — mockups are high-fidelity full-color Material 3, not structural stubs. Verify on-device: DC-KMP static + design-conformance-device-verify per state (render mockup ↔ device, Maestro-drive every confirmation on_click md5-matched post am force-stop, confirm real data-fetch for loan-application + savings-application deep flows)."
 ```
@@ -190,4 +259,4 @@ Wire real action_contracts, reconcile flow.yaml with ui.yaml. Regenerate every t
 
 ## §6 · Execution note
 
-Verdict is **COMPLETABLE** and the feedback adds **net-new capability** (nav-shell-assembler + network-config + role journeys + per-role dashboards) → the evolve chain fires. The evolve drive's implement phase IS the pending 32-screen design-conformance remediation, routed through the fixed opus/MOCKUP-FIRST/DC-KMP/device-verify path — so this plan and that remediation converge into one autonomous drive. Reference material for the drive: Fineract API (permission model + endpoints in §0), field-officer app adopt/improve lessons (§0), professional Material-3 full-color mockup standard (§4 pattern 5).
+Verdict is **COMPLETABLE** and the feedback adds **net-new capability** (nav-shell-assembler + network-config + role journeys + per-role dashboards + the 6 field-officer field-work features FO-1..FO-6 from §4.5) → the evolve chain fires. The evolve drive's implement phase IS the pending 32-screen design-conformance remediation, routed through the fixed opus/MOCKUP-FIRST/DC-KMP/device-verify path — so this plan and that remediation converge into one autonomous drive. Reference material for the drive: Fineract API (permission model + endpoints in §0), field-officer app adopt/improve lessons (§0), professional Material-3 full-color mockup standard (§4 pattern 5).

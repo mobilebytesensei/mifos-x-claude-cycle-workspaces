@@ -80,8 +80,11 @@ The whole "missing API" is a bounded build on the trivial Go tool-def pattern (~
 
 **Compute (share-out, rotation) stays client-side** in the offline-first app; the companion API only executes the resulting Fineract money moves.
 
+### Active backend instance (SoT: `idea-plan.yaml#fineract_instance`)
+The app connects to **`https://mifos-bank-2.mifos.community`** (tenant **`mifos-bank-2`**, dev creds `mifos`/`password`) via the companion server — set `MIFOSX_BASE_URL`/`MIFOSX_TENANT_ID` there. Sandbox (`default`) is the fallback. (User directive 2026-08-01.)
+
 ### Deployment decisions (made when the backend is built — not blockers now)
-1. A **self-service-enabled Fineract** instance (the community sandbox does not have `/self/*` on; optionally harden signup with the openMF `selfservice-plugin`).
+1. A **self-service-enabled Fineract** instance (the community sandbox does not have `/self/*` on; `mifos-bank-2` is the chosen instance — optionally harden signup with the openMF `selfservice-plugin`).
 2. A **tenant/office strategy** for global "anyone in the world" onboarding into Fineract's office-scoped model (single global office, or office-per-region).
 
 ---
