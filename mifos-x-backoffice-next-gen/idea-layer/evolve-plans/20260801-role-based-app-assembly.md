@@ -7,7 +7,7 @@
 | **Command** | `/idea-evolve-plan` (CP-A..CP-G whole-hierarchy completability sweep) |
 | **Auditors** | 4 (Fineract permission model · field-officer app journey audit · CP-A..CP-G idea-layer role-completability · **deep field-officer source audit** — §4.5) |
 | **Completability verdict** | **COMPLETABLE — additive work, 0 structural rearchitecture.** 6 blocking assembly/feature gaps + 8 explicit absences. The permission engine + 32 enriched screens already realize "same binary, every role"; the gaps are concentrated **nav-shell assembly wiring**, one **net-new network-config feature**, and **two role journeys**. |
-| **Total gaps** | 17 CP-A..CP-G findings (6 blocking) **+ 6 field-ops feature gaps** from the field-officer source audit (§4.5) |
+| **Total gaps** | 17 CP-A..CP-G findings (6 blocking) **+ 6 field-ops feature gaps** (§4.5) **+ 2 core-contract gaps** — 3-tier permission gating UX (§4.7) & role-based deployment plan (§4.8) |
 
 ## Feedback (verbatim)
 
@@ -235,6 +235,43 @@ Deep source audit of the field-officer app's `feature/{client,loan,savings,recur
 
 ---
 
+## §4.7 · Permission-Driven Assembly & Gating Behavior (the core product contract)
+
+The entire app assembles from ONE input: the login permission set. `POST /authentication` → `{roles[], permissions[], officeId, staffId}`. The **effective permission set = the union of every assigned role's codes** (Role A ∪ Role B ∪ Role C); the `ALL_FUNCTIONS` umbrella short-circuits to "everything enabled" (Super user → access to every API → full app). **Nothing branches on role *name* — only on permission codes** (Fineract has no role/user type; §4.6).
+
+**Three-tier gating — the precise behavior:**
+
+| Tier | Rule | UX |
+|---|---|---|
+| **1 · Nav root** (bottom-nav item / drawer item) | show iff the user holds ≥1 code in that module's permission family (any `*_LOAN`, `*_CLIENT`, …) | **HIDDEN** when zero family access (fail-closed). Bottom nav + drawer assemble from the permitted roster (`nav-shell-assembler`) |
+| **2 · Feature reachable** | a feature opens if the user holds ≥1 code in its family | visible + navigable |
+| **3 · Action within a feature** | each control (Create/Update/Approve/Disburse/Delete/…) enabled iff the user holds its exact code | **GRAYED-OUT** when lacked (NOT hidden) + on-click **information dialog**: *"You don't have permission. Please contact your manager if you need access."* |
+
+**Worked example (yours):** a user with Loan → `CREATE_LOAN` ✓ + `UPDATE_LOAN` ✓ but not `APPROVE_LOAN`/`DISBURSE_LOAN`/`DELETE_LOAN` → the **Loan feature is visible** (has family access), **New/Edit enabled**, **Approve/Disburse/Delete grayed out** — tapping any shows the "contact your manager" dialog. That's the real `OFICIAL DE CAMPO` grant (maker only, §4.6).
+
+- **Bottom navigation** = the phone-adaptive subset of the permitted module roots; **Navigation drawer** = the full permitted roster — both data-bound by `nav-shell-assembler` (no hardcoding).
+- **Multi-role** = union the codes; `ALL_FUNCTIONS` ⇒ every control enabled.
+- **403 drift**: the server is the real gate — a 403 despite a client grant refreshes the permission set, re-resolves, prunes the UI, notifies once.
+- **Hide vs gray-out**: modules with ZERO family access stay hidden at the nav root; the gray-out + "contact your manager" dialog is ONLY for actions *inside* a feature the user can partially use — so users discover a capability exists and how to request it, rather than silently missing it. Every interactive control therefore carries a permission-aware `action_contract` with a `required_permission` code and a `denied_behavior: gray-out-info-dialog`.
+
+## §4.8 · Role-Based Deployment Plan (build order — LOAN OFFICER is #1)
+
+Delivery is sequenced by **user-role type**, not only by capability. Each phase makes ONE role's app fully usable end-to-end — its dashboard + nav roster + features + 3-tier action-gating — mapped to the **real `mifos-bank-2` grant-sets** (§4.6). We build for every role type; loan officer ships first.
+
+| Phase | Role type (real role) | Ships (features gated on the role's codes) | Exit criterion |
+|---|---|---|---|
+| **R0 · Foundation** (all roles) | — | auth · permission-capability-engine · **nav-shell-assembler** · **network-config** · offline outbox · dynamic-forms · passcode/biometric | login assembles nav + dashboard + 3-tier gating from the permission set |
+| **R1 · LOAN / FIELD OFFICER** ⭐ **TOP PRIORITY** | `OFICIAL DE CAMPO` (149, maker) | My Field Day dashboard · client roster→360 · field-work (signature/survey/pinpoint/path-tracking) · centers→groups→members · collection sheet · loan & savings **application** (maker) · branch-download offline. Gates: `CREATE_CLIENT/LOAN/SAVINGSACCOUNT/GUARANTOR/COLLATERAL`; **approve/disburse grayed-out + dialog** | a loan officer runs a full field day **offline, maker-only** |
+| **R2 · TELLER / CASHIER** | `CAJERO` (75) | money-movement home · savings **deposit/withdrawal** · loan **repayment** · receipts | teller transacts, no origination |
+| **R3 · CHECKER / SUPERVISOR** | `REVISOR DE PRESTAMOS` (459) / `SUPERVISOR` (99) | maker-checker **inbox** · approve/reject · client lifecycle (activate/reject/undo) | checker approves maker submissions (`APPROVE_LOAN` + `_CHECKER`) |
+| **R4 · TREASURER** | `TESORERO` (89) | loan **disbursal** + disbursal-undo | approved loans disbursed |
+| **R5 · BRANCH OFFICER + COMPLIANCE** | `EJECUTIVO` (195) / `Oficial KYC` (43) / `OFICIAL PLD` (40) / `OFICIAL DE CONTROL` (105) | datatable CRUD · group/center create · foreclosure/charge-off · KYC/AML client lifecycle + audit READ | branch ops + compliance |
+| **R6 · ADMIN / SUPER USER** | `Super user` (`ALL_FUNCTIONS`) | users/roles/permissions (m10) · organization (m09) · products/charges (m08) · accounting (m07) · scheduler (m13) · communications (m16) · config (m12) | full platform-admin surface |
+
+The capability phases P0–P6 in `idea-plan.yaml#deployment_plan` still hold underneath — R0..R6 **re-sequence delivery around who can use it first**. Materializes into `deployment_plan` via `/idea-deploy-plan` rebalance during the drive.
+
+---
+
 ## §5 · Enrich prompt (bottom-up the hierarchy — ready to run)
 
 ```
@@ -250,7 +287,11 @@ Deep source audit of the field-officer app's `feature/{client,loan,savings,recur
 
 (5) FIELD-OFFICER FIELD-WORK FEATURES (from the openMF/mifos-x-field-officer-app source audit, §4.5 — gate ALL to the loan-officer-maker / collections-field-officer personas, HIDDEN for other roles unless permitted): add feature 'path-tracking' (GPS field-visit route trail via core/platform location) as a field-officer drawer root; add to client-detail-360 — 'client-survey' (survey list→question→submit + offline survey pre-download, /surveys), client signature capture (sign-pad/image, /clients/{id}/images), client pinpoint (GPS geo-tag client location via core/platform); extend m14-reports-search-audit with 'search-record' (offline/recent-search history, distinct from live search); extend offline-sync-engine with a per-entity branch-download sync dialog (pre-download a center/group/client hierarchy branch for offline field use, distinct from the mutation outbox already modeled). These are the field-officer role's daily field-work capabilities.
 
-(6) ACCOUNT-ACTION DEPTH (§4.6 — flesh out m02/m04/m05, the full client→account→action drill): client roster (search/filter/paged) → client-360 profile hub with client lifecycle actions (activate/close/proposeTransfer/assignStaff/updateDefaultAccount/addCharge/applyNewApplication) → accounts grouped by type → per-account-type detail with the COMPLETE status-aware action set (do NOT ship the reference app's ~38 dead loan-action stubs or its no-op Share/FD/RD detail routes). Loan detail: Summary/Schedule/Transactions/Charges tabs + approve/disburse/reject/repayment/reschedule/charge-off/write-off/foreclose/waive-interest/assign-officer/guarantors/account-transfer/close — each wired to its real Fineract command with a real action_contract, maker-checker-aware, repayment offline-queued. Savings detail: deposit/withdrawal/hold/release/post-interest/add-charge/close + transaction receipt (PDF). Share/FD/RD: create-wizard + approve/activate/redeem/premature-close detail (wire the routes the reference leaves dead). Transaction forms (loan repayment; savings deposit/withdrawal) + approval/activate forms + apply-new chooser with 5 per-type create wizards. Every account action is permission-gated (disabled-with-reason when the role lacks it) and confirms in a bottom sheet.
+(6) ACCOUNT-ACTION DEPTH (§4.6 — flesh out m02/m04/m05, the full client→account→action drill): client roster (search/filter/paged) → client-360 profile hub with client lifecycle actions (activate/close/proposeTransfer/assignStaff/updateDefaultAccount/addCharge/applyNewApplication) → accounts grouped by type → per-account-type detail with the COMPLETE status-aware action set (do NOT ship the reference app's ~38 dead loan-action stubs or its no-op Share/FD/RD detail routes). Loan detail: Summary/Schedule/Transactions/Charges tabs + approve/disburse/reject/repayment/reschedule/charge-off/write-off/foreclose/waive-interest/assign-officer/guarantors/account-transfer/close — each wired to its real Fineract command with a real action_contract, maker-checker-aware, repayment offline-queued. Savings detail: deposit/withdrawal/hold/release/post-interest/add-charge/close + transaction receipt (PDF). Share/FD/RD: create-wizard + approve/activate/redeem/premature-close detail (wire the routes the reference leaves dead). Transaction forms (loan repayment; savings deposit/withdrawal) + approval/activate forms + apply-new chooser with 5 per-type create wizards. Every account action carries a required_permission code and renders GRAYED-OUT with a 'You don't have permission — contact your manager' info dialog when the role lacks it (per §4.7); enabled actions confirm in a bottom sheet.
+
+(7) PERMISSION-DRIVEN ASSEMBLY & 3-TIER GATING (§4.7 — the core contract): assemble the ENTIRE app from the login permission set (union of the user's roles' codes; ALL_FUNCTIONS = everything → full app). Bottom-nav + navigation-drawer roots data-bound to the permitted module roster — hide a root ONLY when the user has ZERO codes in that module family (fail-closed). Give EVERY interactive control a permission-aware action_contract carrying required_permission + denied_behavior: gray-out-info-dialog — a control the user lacks renders GRAYED-OUT (not hidden) and on-click shows an information dialog 'You don't have permission. Please contact your manager if you need access.' Worked example: CREATE_LOAN + UPDATE_LOAN present but APPROVE_LOAN/DISBURSE_LOAN absent → Loan feature visible, New/Edit enabled, Approve/Disburse grayed-out + dialog. A 403 from the server refreshes the permission set, re-resolves, prunes, notifies once.
+
+(8) ROLE-BASED DEPLOYMENT (§4.8 — rebalance deployment_plan per user-role type, LOAN OFFICER first): sequence delivery R0 Foundation → R1 LOAN/FIELD OFFICER (OFICIAL DE CAMPO, maker, TOP PRIORITY — a full field day offline) → R2 TELLER (CAJERO — deposit/withdraw/repayment) → R3 CHECKER/SUPERVISOR (REVISOR/SUPERVISOR — approvals + maker-checker inbox) → R4 TREASURER (TESORERO — disbursal) → R5 BRANCH OFFICER + COMPLIANCE (EJECUTIVO/KYC/PLD/CONTROL) → R6 ADMIN/SUPER USER (users/roles/config/accounting/products/org). Each phase makes one role's app fully usable end-to-end, gated on that role's real mifos-bank-2 permission codes. Materialize via /idea-deploy-plan rebalance.
 
 Wire real action_contracts, reconcile flow.yaml with ui.yaml. Regenerate every touched screen through the design-conformance path (opus kmp-screen-gen, MOCKUP-FIRST, real bottom-sheet confirmations) so implementation matches the professional high-quality colorful Material Design mockups — mockups are high-fidelity full-color Material 3, not structural stubs. Verify on-device: DC-KMP static + design-conformance-device-verify per state (render mockup ↔ device, Maestro-drive every confirmation on_click md5-matched post am force-stop, confirm real data-fetch for loan-application + savings-application deep flows)."
 ```
@@ -259,4 +300,30 @@ Wire real action_contracts, reconcile flow.yaml with ui.yaml. Regenerate every t
 
 ## §6 · Execution note
 
-Verdict is **COMPLETABLE** and the feedback adds **net-new capability** (nav-shell-assembler + network-config + role journeys + per-role dashboards + the 6 field-officer field-work features FO-1..FO-6 from §4.5) → the evolve chain fires. The evolve drive's implement phase IS the pending 32-screen design-conformance remediation, routed through the fixed opus/MOCKUP-FIRST/DC-KMP/device-verify path — so this plan and that remediation converge into one autonomous drive. Reference material for the drive: Fineract API (permission model + endpoints in §0), field-officer app adopt/improve lessons (§0), professional Material-3 full-color mockup standard (§4 pattern 5).
+Verdict is **COMPLETABLE** and the feedback adds **net-new capability** (nav-shell-assembler + network-config + role journeys + per-role dashboards + the 6 field-officer field-work features FO-1..FO-6 from §4.5 + the 3-tier permission-gating contract §4.7 + the role-based deployment plan §4.8, loan-officer-first) → the evolve chain fires. The evolve drive's implement phase IS the pending 32-screen design-conformance remediation, routed through the fixed opus/MOCKUP-FIRST/DC-KMP/device-verify path — so this plan and that remediation converge into one autonomous drive. Reference material for the drive: Fineract API (permission model + endpoints in §0), field-officer app adopt/improve lessons (§0), professional Material-3 full-color mockup standard (§4 pattern 5).
+
+---
+
+## Capability Status (dashboard-tracked · `/idea-evolve-plan` no-arg reads/writes this)
+
+| # | id | capability | type | phase | status |
+|---|---|---|---|---|---|
+| 1 | nav-shell-assembler | role-adaptive nav shell (keystone — un-orphans 13 modules) | feature | R0 | ○ not-run |
+| 2 | network-config | editable server/tenant/credentials + demo seed | feature | R0 | ○ not-run |
+| 3 | permission-3tier-gating | FR-2 §4.7 — hide root / gray-out+"contact manager" dialog per code | contract | R0 | ○ not-run |
+| 4 | role-deployment | §4.8 R0..R6 sequence (loan officer first) | roadmap | R0 | ○ not-run |
+| 5 | orphan-nav-wiring | 13 module screens → inbound nav edges | wiring | R0 | ○ not-run |
+| 6 | network-config-change-journey | settings/loan-area → edit → save → re-auth | journey | R0 | ○ not-run |
+| 7 | m01-field-day-dashboard | loan-officer "My Field Day" assembly | screen | R1 | ○ not-run |
+| 8 | loan-officer-day-journey | login → field day → centers → group → members → collection sheet → apply | journey | R1 | ○ not-run |
+| 9 | FO-1-path-tracking | GPS field-visit route trail | feature | R1 | ○ not-run |
+| 10 | FO-2-client-survey | survey list → question → submit + offline pre-download | feature | R1 | ○ not-run |
+| 11 | FO-3-signature-capture | client signature (sign-pad/image) | feature | R1 | ○ not-run |
+| 12 | FO-4-client-pinpoint | GPS geo-tag client location | feature | R1 | ○ not-run |
+| 13 | FO-5-search-record | offline / recent-search history | feature | R1 | ○ not-run |
+| 14 | FO-6-branch-download | per-entity offline hierarchy pre-download | feature | R1 | ○ not-run |
+| 15 | account-action-fidelity | complete loan/savings action set + per-action gray-out gating (§4.6) | enrichment | R1 | ○ not-run |
+| 16 | m01-admin-dashboards | admin "Operations" + super-user "Platform Admin" assemblies | screen | R6 | ○ not-run |
+| 17 | super-user-admin-journey | login → admin dashboard → users/roles → config → approvals | journey | R6 | ○ not-run |
+
+Legend: `○ not-run` · `◔ queued` · `◑ materializing` · `● done`. **Overall: draft (0/17 done).**
