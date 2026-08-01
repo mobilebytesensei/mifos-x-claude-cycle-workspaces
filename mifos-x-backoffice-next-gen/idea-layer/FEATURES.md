@@ -4,8 +4,8 @@
 
 # Feature Registry — mifos-x-backoffice-next-gen
 
-> **Total**: 21 | **Designed**: 0 | **Implemented**: 0
-> **Last Updated**: 2026-07-17
+> **Total**: 30 | **Designed**: 0 | **Implemented**: 0
+> **Last Updated**: 2026-08-01 (evolve: role-based-app-assembly — +6 features: nav-shell-assembler, network-config, passcode-lock, biometric-setup, path-tracking, search-record)
 > Managed by `/idea`. Read by `/design`, `/implement`, `/gap-planning-project`.
 > Derived from `idea-layer/idea-plan.yaml` §features (4 foundation + 17 back-office modules). Every module is permission-gated + offline-first.
 
@@ -36,6 +36,15 @@
 | M15 | Approvals (Maker-Checker) | m15-approvals-makerchecker | should_have | any *_CHECKER ∨ CHECKER_SUPER_USER; per-entry {ACTION}_{ENTITY}_CHECKER | checker-inbox | /v1/makercheckers (+approve/reject, DELETE, searchtemplate) | P4 | ❌ | ❌ | planned |
 | M16 | Communications | m16-communications | could_have | *_SMSCAMPAIGN, email campaign codes, *_REPORTMAILINGJOB, template | — | /v1/smscampaigns, /v1/email/campaign, /v1/reportmailingjobs, /v1/templates | P5 | ❌ | ❌ | planned |
 | M17 | Sync & Settings | m17-sync-settings | must_have | (settings) | sync-console | /v1/instance-mode, DynamicBaseUrlPlugin | P0/P2 | ❌ | ❌ | planned |
+| F22 | Role-adaptive Nav Shell | nav-shell-assembler | must_have | assembler — renders the permitted module roster | nav-shell-assembler | (permission-capability-engine roster) | P0/R0 | ❌ | ❌ | scaffold |
+| F23 | Network Config — product onboarding (powered by Mifos Initiative) | network-config | must_have | (foundation — pre-auth) | network-config | /v1/authentication, DynamicBaseUrlPlugin | P0/R0 | ❌ | ❌ | scaffold |
+| F24 | App Lock — passcode | passcode-lock | must_have | (post-auth lock) | passcode-lock | (local) | P0/R0 | ❌ | ❌ | scaffold |
+| F25 | Biometric Enrollment | biometric-setup | should_have | (post-auth lock) | biometric-setup | (local, encrypted) | P0/R0 | ❌ | ❌ | scaffold |
+| F26 | GPS Field-Visit Route | path-tracking | should_have | loan-officer / collections personas | path-tracking | (core/platform location) | P2/R1 | ❌ | ❌ | scaffold |
+| F27 | Offline / Recent Search History | search-record | should_have | field-officer personas | search-record | (local cache) | P1/R1 | ❌ | ❌ | scaffold |
+| F28 | Fineract Auth Session — login + persisted session + authenticated client | fineract-auth-session | must_have | (foundation — pre-auth) | fineract-auth-session | /v1/authentication | P0 | ❌ | ❌ | scaffold |
+| F29 | Permission Set Detail (resolved codes · umbrellas · fingerprint) | foundation | should_have | (read-only) | permission-set-detail | /v1/permissions | P1 | ❌ | ❌ | scaffold |
+| F30 | Capability Map Detail (version · checksum · requirement tree) | foundation | should_have | (read-only) | capability-map-detail | /v1/permissions | P1 | ❌ | ❌ | scaffold |
 
 ---
 

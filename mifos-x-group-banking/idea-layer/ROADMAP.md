@@ -2,6 +2,7 @@
 
 > Source of truth: `idea-plan.yaml` (§features, §screens, §release_plan) | Feature detail: `FEATURES.md` | Design context: `DESIGN_CONTEXT.md`
 > **One unified identity — self-signup.** Anyone downloads → self-registers → creates or joins a group. There is no "admin vs end-user" split. Capabilities are auto-resolved **per group** after a single login, based on the role the user holds in that specific group (organizer vs member). (Global self-signup pivot, 2026-07-17.)
+> **Production launch evolve (2026-08-01):** added `demo-explore` (FR-027) to v1.0.0; added a Play-Store internal-testing track before closed alpha; server-ready requirements (server demo-seed FR-028, idea→server auto-migrate FR-029) + first-class accept-invitation (FR-030) + user-facing notifications (FR-031). See `evolve-plans/20260801-production-signup-server-migration.md`.
 
 ---
 
@@ -29,6 +30,7 @@
 | 15 | offline-sync | must | all | ✓ | | | designed |
 | 16 | notifications | must | all | ✓ | | | designed |
 | 17 | end-user-dashboard | must | member | ✓ | | | designed |
+| 17+ | demo-explore | must | all | ✓ | | | designed (evolve 2026-08-01) |
 | 18 | fines-tracking | should | organizer | ✓ | | | designed |
 | 19 | multi-language | should | all | ✓ | | | designed |
 | 20 | loan-guarantees | should | organizer | | ✓ | | designed |
@@ -167,15 +169,22 @@ Features must be implemented in dependency order. Tier-0 features unblock all ot
     - Screens: personal-dashboard, personal-savings, personal-loans, loan-request
     - Depends on: unified-auth (member-role resolution)
 
+20. **demo-explore** — Guest offline-seeded demo session for exploring the app without registering (evolve 2026-08-01)
+    - Screens: login-signup (Demo Explore button + confirm dialog), personal-dashboard, group-dashboard
+    - Data: LOCAL offline-seeded demo data — works with NO live server (server demo-seed FR-028 backs the live variant, externally gated)
+    - Depends on: none for the offline path (self-contained); dashboards for exploration
+
 ---
 
-## v1.0.0 — Core Group Banking (16 core features)
+## v1.0.0 — Core Group Banking (17 core features)
 
 **Scope (§release_plan.milestones "1.0.0")**: unified-auth, self-signup-organizer, group-type-config,
 pluggable-distribution, member-invitations, group-management, member-onboarding, meeting-lifecycle,
 savings-collection, group-linked-savings, corpus-tracking, loan-management, loan-ceilings, share-out,
-offline-sync, notifications
+offline-sync, notifications, demo-explore
 _(+ should/could riders shipping in 1.0.0: fines-tracking, multi-language, end-user-dashboard)_
+
+**Rollout tracks (§release_plan.rollout_strategy)**: Play-Store **internal-testing** (first on-device distribution, ≤20 trusted testers) → **closed_alpha** (2 partner-NGO groups, KE) → **beta** (20 groups KE+UG) → **GA** (open Play Store + App Store). The internal-testing track was added 2026-08-01 for "first testing" before the NGO closed alpha.
 
 **Screen count**: 33 (single unified navigation graph)
 **Platforms**: Android + iOS + Desktop (KMP)

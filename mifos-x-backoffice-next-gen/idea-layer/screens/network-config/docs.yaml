@@ -1,0 +1,145 @@
+feature: network-config
+status: enriched
+scaffolded_at: '2026-08-01T00:00:00Z'
+scaffolded_by: /idea-plan-add
+schema_version: v2
+cluster: foundation
+module: foundation
+priority: must_have
+is_primary_flow: false
+has_ui: true
+has_api: true
+has_server: false
+capabilities:
+  - has_ui
+  - has_api
+  - has_flow
+  - has_local_preferences
+  - has_system_integration
+  - requires_auth
+requires_features:
+  - fineract-auth-session
+  - permission-capability-engine
+provides_to:
+  - fineract-auth-session
+  - m04-loan-portfolio
+  - m17-sync-settings
+permissions_gate: >-
+  No server permission gate — network configuration is a product onboarding capability
+  available to every user (pre-auth on the sign-in screen, or post-auth from loan area / settings).
+  Saving requires triggering a re-auth, which enforces the permission gate implicitly.
+contracts:
+  apis:
+    - id: validate_connection
+      method: GET
+      path: "/v1/serverinfo"
+      note: "Validation ping — verifies the entered base-URL + tenant responds before saving. Uses the Fineract-Platform-TenantId header with the entered tenant value."
+    - id: fineract_auth
+      method: POST
+      path: "/v1/authentication"
+      note: "Re-authentication after saving a new config — verifies the entered credentials against the newly configured server. On success the app proceeds to capability bootstrap."
+  tables:
+    - name: network_config
+      backend: multiplatform_settings_encrypted
+      keys:
+        - base_url
+        - tenant
+        - username
+        - password_hash
+      note: "Active server configuration persisted to the encrypted multiplatform-settings store. The password is stored as a bcrypt hash (never plaintext). The DynamicBaseUrlPlugin reads base_url + tenant on every Ktor call."
+    - name: app_settings
+      backend: multiplatform_settings
+      keys:
+        - active_tenant_display
+        - last_known_server_env
+      note: "Plain settings for UI display (tenant label, server environment tag). Non-sensitive."
+  dtos:
+    - name: ServerConfig
+      role: model
+      note: "protocol + host + apiPath + port + tenant — validated by ServerConfigValidatorUseCase (field-officer app pattern). Adopts openMF/mifos-x-field-officer-app's ServerConfig + ValidateServerTenantUseCase."
+    - name: AuthenticationResponse
+      role: response
+      note: "POST /authentication — used post-config-save to confirm credentials are valid on the new server."
+    - name: NetworkConfigState
+      role: model
+      note: "Current active config (base_url, tenant, username, env_label) shown in the editor and the diagnostics panel."
+libraries:
+  core_modules:
+    - core-base/network
+    - core/datastore
+    - core/auth
+  external:
+    - "io.ktor.client + DynamicBaseUrlPlugin (dynamic base-URL swap)"
+    - "com.russhwolf.settings.Settings (encrypted variant)"
+    - "org.jetbrains.compose.ui.CameraCapture (QR scan)"
+    - "ServerConfigValidatorUseCase (field-officer app pattern)"
+vm_actions:
+  - action: OnTabSelect
+    maps_to_on_click: select_connect_mode
+    handler: "Switch between 'Use Mifos demo' and 'Your organization' tabs without clearing entered fields."
+  - action: OnDemoConnect
+    maps_to_on_click: apply_demo_config
+    handler: >-
+      Fill base_url = 'https://mifos-bank-2.mifos.community/fineract-provider/api/v1',
+      tenant = 'mifos-bank-2', username = 'mifos', password = 'password'; skip validate;
+      save to encrypted store; swap DynamicBaseUrlPlugin; trigger re-auth via fineract-auth-session.
+  - action: OnBaseUrlChange
+    maps_to_on_click: update_base_url
+    handler: "Validate URL format inline (ServerConfigValidatorUseCase); update state.baseUrl."
+  - action: OnTenantChange
+    maps_to_on_click: update_tenant
+    handler: "Validate non-empty; update state.tenant (used as Fineract-Platform-TenantId header)."
+  - action: OnUsernameChange
+    maps_to_on_click: update_username
+    handler: "Non-empty check; update state.username."
+  - action: OnPasswordChange
+    maps_to_on_click: update_password
+    handler: "Non-empty check; update state.password (never echoed in logs)."
+  - action: OnScanQRClick
+    maps_to_on_click: start_qr_scan
+    handler: "Open camera QR scanner; on successful decode, parse ServerConfig fields from the QR payload and auto-fill the form."
+  - action: OnValidateClick
+    maps_to_on_click: validate_connection
+    handler: "Run ServerConfigValidatorUseCase + GET /v1/serverinfo with the entered config; show validating state; on success, enable the Save button."
+  - action: OnSaveClick
+    maps_to_on_click: save_config
+    handler: >-
+      Encrypt and persist the validated ServerConfig to the encrypted multiplatform-settings store;
+      swap DynamicBaseUrlPlugin base_url + Fineract-Platform-TenantId header; trigger a forced
+      re-authentication against the new server via POST /v1/authentication with the entered credentials;
+      on re-auth success, route to the capability bootstrap.
+  - action: OnResetToDemoClick
+    maps_to_on_click: reset_to_demo
+    handler: "Confirm dialog → apply the Mifos demo config (mifos-bank-2 PRIMARY defaults) and trigger re-auth, replacing any org-specific saved config."
+error_cases:
+  - code: url_invalid
+    ux: "inline field error 'Please enter a valid https:// URL' on the base URL field; Save disabled."
+  - code: tenant_empty
+    ux: "inline field error 'Tenant identifier is required' on the tenant field."
+  - code: validation_failed_unreachable
+    ux: "error state: 'Could not reach {host} — check the URL and your connection.' with the server error detail and a Retry."
+  - code: validation_failed_tenant_unknown
+    ux: "error state: 'Tenant not found on this server — verify the Fineract-Platform-TenantId.' with a hint to check with the org admin."
+  - code: save_reauth_failed
+    ux: "error state: 'Config saved but sign-in to the new server failed — {server error}. Please try signing in manually.' Config is persisted; re-auth can be retried."
+  - code: qr_decode_failed
+    ux: "snackbar 'QR code not recognized — please scan a valid Mifos config QR or enter the details manually.' Camera returns to live view."
+test_fixtures:
+  - open from sign-in Scan button → scan a valid Mifos QR → fields auto-filled → validate → save → re-auth succeeds → home
+  - open from sign-in Configure button → enter custom org URL + tenant + creds → validate → save → re-auth → org's back-office loaded
+  - tap 'Use Mifos community demo' → fields filled with mifos-bank-2 defaults → save → re-auth → Super user demo back-office
+  - enter invalid URL (no https scheme) → inline error blocks Save
+  - enter valid URL but wrong tenant → validation_failed_tenant_unknown error shown
+  - tap Reset to demo while on org config → confirm dialog → demo config applied → re-auth
+acceptance_refs:
+  - plan: idea-plan.yaml#features (to be added)
+  - evolve: evolve-plans/20260801-role-based-app-assembly.md §CP-B B1, §3 network-config section, §4.8 R0
+summary: >-
+  "Powered by Mifos Initiative" product onboarding connection editor. Three entry points: the sign-in
+  screen Scan/Configure buttons, a 'Network settings' tile in M04 Loan Portfolio, and a 'Network configuration'
+  row in M17 Settings. The screen offers two connect paths — 'Use Mifos community demo' (one-tap fills the
+  PRIMARY mifos-bank-2 defaults so the app is usable out-of-box) or 'Your organization' (enter a custom
+  Fineract base-URL / tenant / username / password). QR scan auto-populates the fields (organizations can
+  distribute onboarding QRs). Save validates, persists to the encrypted store, swaps the DynamicBaseUrlPlugin
+  base-URL + Fineract-Platform-TenantId header, and forces a re-authentication against the new server.
+plan_ref: idea-plan.yaml#features[network-config]

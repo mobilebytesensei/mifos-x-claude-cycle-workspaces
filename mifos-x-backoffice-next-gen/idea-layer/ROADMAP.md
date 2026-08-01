@@ -26,6 +26,11 @@
 | offline-sync-engine (F02, infra) | ❌ | ❌ | ❌ |
 | dynamic-template-forms (F03) | ❌ | ❌ | ❌ |
 | M17 Sync & Settings (tenant/server switch) | ❌ | ❌ | ❌ |
+| nav-shell-assembler (F22 — role-adaptive nav shell) | ❌ | ❌ | ❌ |
+| network-config (F23 — product onboarding, powered by Mifos Initiative) | ❌ | ❌ | ❌ |
+| passcode-lock (F24) + biometric-setup (F25) | ❌ | ❌ | ❌ |
+
+> **Role-based delivery (evolve 20260801 §4.8):** R0 Foundation (above) → R1 Loan/Field officer (top priority) → R2 Teller → R3 Checker/Supervisor → R4 Treasurer → R5 Branch+Compliance → R6 Admin/Super-user. `deployment_plan.role_priority` in idea-plan.yaml.
 
 ### Release Checklist
 - [ ] Fineract OpenAPI client wired (openMF SDK preferred; contract-test CI vs live spec)

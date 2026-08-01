@@ -1,0 +1,60 @@
+feature: passcode-lock
+entries:
+  # ── read passcode state on mount (determines setup vs lock mode) ──
+  - trigger: on_mount
+    source: local.secure_prefs
+    target_state: locked
+    loading_state: locked
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: config_read_failed
+    persistence_contract:
+      store: encrypted_prefs
+      keys: [passcode_hash, passcode_enabled, failed_attempts, locked_until, background_lock_timeout_secs]
+      note: "Encrypted multiplatform-settings read on every cold start + foreground resume. Determines: setup (passcode_enabled=false), lock (passcode_enabled=true), locked_out (locked_until > now)."
+
+  # ── write on successful PIN setup ──
+  - trigger: on_event
+    action: pin_confirmed
+    source: local.pin_entry
+    target_state: locked
+    loading_state: confirm
+    error_state: error
+    on_error:
+      nav_target: null
+      error_code: pin_mismatch
+    persistence_contract:
+      store: encrypted_prefs
+      keys: [passcode_hash, passcode_enabled]
+      note: "On PIN match: bcrypt-hash the PIN and write passcode_hash + passcode_enabled=true. The plaintext PIN is discarded immediately after hashing."
+
+  # ── write on successful unlock (reset failed_attempts) ──
+  - trigger: on_event
+    action: pin_matched
+    source: local.secure_prefs
+    target_state: locked
+    loading_state: locked
+    error_state: locked
+    on_error:
+      nav_target: null
+      error_code: wrong_pin
+    persistence_contract:
+      store: encrypted_prefs
+      keys: [failed_attempts]
+      note: "Reset failed_attempts to 0 after a successful unlock."
+
+  # ── write on failed attempt (increment + lockout) ──
+  - trigger: on_event
+    action: pin_failed
+    source: local.secure_prefs
+    target_state: error
+    loading_state: locked
+    error_state: locked_out
+    on_error:
+      nav_target: null
+      error_code: locked_out
+    persistence_contract:
+      store: encrypted_prefs
+      keys: [failed_attempts, locked_until]
+      note: "Increment failed_attempts; if >= 5, set locked_until = now + exponential_backoff (30s → 2min → 10min). On max consecutive lockouts, clear session and route to login."

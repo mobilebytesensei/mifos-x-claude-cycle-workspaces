@@ -1,0 +1,139 @@
+schema_version: v4.0
+screen_id: search-record
+feature: search-record
+name: "Search Record (offline / recent-search history)"
+status: enriched
+archetype: list_screen
+cluster: field-operations
+module: m14-reports-search-audit
+initial_state: loading
+
+business_logic:
+  kind: crud
+  processing_kind: on_demand
+  description: "Reads the local Room search_history table (ring buffer, max 50 rows) as a Flow. All reads are offline — no Fineract API calls. Rows are inserted by the live search screens (client-list, m14, loan-detail) when the user selects a result."
+  library_refs: []
+  external_library_refs:
+    - "androidx.room"
+  required_modules:
+    - core/datastore
+
+states:
+  loading:
+    description: "Reading search_history from Room — shimmer placeholder row list."
+    is_default: true
+  content:
+    description: "Search history list rendered — rows sorted by searched_at DESC. Each row shows: entity type chip (Client / Loan / Group / Center), entity display name, last searched relative time, a delete icon. Tapping a row navigates to the entity detail."
+  empty:
+    description: "No search history — 'No recent searches. Clients, loans, groups, and centers you search for will appear here.' illustration + text."
+  error:
+    description: "Room read failed — error banner + Retry."
+
+state_model:
+  fields:
+    - name: searchHistory
+      type: List<SearchHistoryRow>
+      notes: "Ordered by searched_at DESC (most recent first). Max 50 rows enforced by a Room ring-buffer trigger (oldest pruned on insert). Each row: entity_type (client/loan/group/center), entity_id, entity_display_name, query_text, searched_at. Collected as a Flow; updates live when other screens insert rows."
+    - name: pendingDeleteId
+      type: String?
+      notes: "The composite key (entity_id + entity_type) of a row within the 3-second undo-delete window. Non-null during the snackbar countdown — re-INSERT if the user taps Undo; committed (row stays deleted) when the timer expires."
+    - name: historyEnabled
+      type: Boolean
+      notes: "Whether search history recording is enabled (search_history_enabled preference, defaults true). When false, shows an 'off' variant of the empty state with a link to re-enable in settings."
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  fab_visible: false
+  snackbar_visible: true
+
+components:
+  - id: header
+    type: header
+    label: "{strings.search_record_title}"
+    testTag: "search-record_header"
+
+  - id: history_list
+    type: content_area
+    label: "{strings.search_record_history}"
+    testTag: "search-record_content"
+    visible_states: [content]
+    empty_label: "{strings.search_record_empty}"
+
+  - id: history_row
+    type: list_item
+    label: "{strings.search_record_row}"
+    testTag: "search-record_item"
+    visible_states: [content]
+    description: "One search-history entry: entity type chip (colored — teal for Client, blue for Loan, orange for Group, green for Center), entity display name, relative timestamp ('2h ago', 'Yesterday'). A trailing swipe-to-delete or trash icon."
+    accessibility_label: "Open search result for {entityDisplayName}"
+    on_click:
+      action: open_search_result
+      action_contract:
+        effect: navigate
+        description: "Navigate to the entity's detail screen: client → client-detail-360; loan → loan-detail; group/center → m03-groups-centers."
+        required_permission: READ_CLIENT
+        denied_behavior: gray-out-info-dialog
+
+  - id: delete_row_icon
+    type: icon_button
+    label: "{strings.search_record_delete_row}"
+    testTag: "search-record_delete_item"
+    icon: "delete_outline"
+    visible_states: [content]
+    accessibility_label: "Delete this search history entry"
+    on_click:
+      action: delete_history_row
+      action_contract:
+        effect: delete
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        writes_to:
+          - table: search_history
+        description: "Delete the specific search-history row from Room immediately (no confirm dialog for individual rows — undo snackbar offered for 3s; sets pendingDeleteId for the undo window)."
+
+  - id: clear_all_button
+    type: button
+    label: "{strings.search_record_clear_all}"
+    testTag: "search-record_clear_all"
+    variant: text
+    visible_states: [content]
+    accessibility_label: "Clear all search history"
+    on_click:
+      action: clear_all_history
+      action_contract:
+        effect: delete
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        writes_to:
+          - table: search_history
+        description: "Confirm dialog ('Clear all recent searches?') → delete all rows from search_history in Room → transitions to empty state."
+
+  - id: re_run_search_chip
+    type: chip
+    label: "{strings.search_record_re_run}"
+    testTag: "search-record_re_run"
+    visible_states: [content]
+    description: "Secondary tap area on each row — tapping the search query text re-runs the search in m14's live search (navigates with pre-filled query)."
+    accessibility_label: "Re-run this search in the search screen"
+    on_click:
+      action: re_run_search
+      target: m14-reports-search-audit
+      action_contract:
+        effect: navigate
+        required_permission: READ_CLIENT
+        denied_behavior: gray-out-info-dialog
+        description: "Navigate to m14-reports-search-audit with the history row's query_text pre-populated in the search field — triggers a fresh live search."
+
+  - id: empty_illustration
+    type: image
+    label: "{strings.search_record_empty_illustration}"
+    testTag: "search-record_empty_illustration"
+    visible_states: [empty]
+
+  - id: empty_text
+    type: text
+    label: "{strings.search_record_empty_text}"
+    testTag: "search-record_empty_text"
+    visible_states: [empty]
+    description: "Friendly empty state: 'No recent searches yet. Clients, loans, groups, and centers you search for will appear here for quick offline access.'"
