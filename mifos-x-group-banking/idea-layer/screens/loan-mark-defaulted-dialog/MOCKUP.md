@@ -41,7 +41,7 @@ View in Stitch: `projects/2628966868931366090/screens/82e538c1f29f418b8791477120
 ## Interactions
 
 - **Cancel** — `OnDismiss`; effect `none` — pure UI dismissal, no persistence.
-- **Mark Defaulted** — `OnConfirm` → `write_off_loan`; effect `call_api`; guarded by `cmp-network-monitor`.
+- **Mark Defaulted** — `OnConfirm` → `mark_loan_defaulted`; effect `call_api`; guarded by `cmp-network-monitor`.
   On success: emits `LoanMarkedDefaulted(loanId)` and refreshes loan cache. On failure: sets `submitError`.
 
 ## Idle-state demo binding

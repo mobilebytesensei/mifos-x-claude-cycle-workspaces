@@ -40,7 +40,7 @@ CommonPurse uses Material Design 3 with a VSLA-inspired brand palette designed f
 Route: `/auth` — mounted at the app root, reached from `app_launch:unauthenticated_start` and `any_screen:session_expired`.
 
 **States** (mapped 1:1 to `ui.yaml#states`):
-- `content` (initial_state, mode-adaptive) — form visible; Login mode renders email/password + biometric affordance + Forgot Password link + Sign In CTA; Signup mode renders name/email/password + Create Account CTA
+- `content` (initial_state, mode-adaptive) — form visible; Login mode renders email/password + biometric affordance + Forgot Password link + Sign In CTA; Signup mode renders name/email/password + Create Account CTA. **In BOTH modes**, below the primary CTA the content state now renders the first-class secondary auth entries: an `alt_actions_divider` ("New here?"), the **`accept_invitation_button`** (outlined, mail icon — pre-auth invite-code path) and the **`demo_explore_button`** (text, play-circle icon). When `showDemoDialog == true`, the **`demo_confirm_dialog`** overlays the form.
 - `loading` (`isSubmitting == true`) — form fields disabled at 40% opacity; the mode's CTA (Sign In or Create Account) shows a centered spinner in place of its label; tab toggle disabled; biometric icon-button hidden
 - `error` (`error != null`) — `error_banner` visible above the form; form re-enabled and prefilled for retry; validation errors additionally surface as inline field helpers for `WeakPassword` / field-level errors
 - `zero_groups` (post-success, `groupMemberships.isEmpty()`) — auth chrome swapped for onboarding: illustration + "You're all set!" + primary "Create Your First Group" and outlined "Join with Invite Code" CTAs; no mode toggle or form fields visible in this state
@@ -61,6 +61,10 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 | biometric_unlock_button | IconButton | Visible when `isBiometricAvailable == true && mode == AuthMode.Login`. Icon `fingerprint` 48dp, icon_tint primary (#2E7D32), alignment center, top_padding 12dp, wrapped in a 64dp circular tap surface with primaryContainer (#C8E6C9) hover fill. Accessibility label "Sign in with biometrics". | Tap → OnBiometricUnlock → platform biometric prompt via core/biometric → on hardware success calls GET `/companion/auth/me` via core/network → refreshes profile + groupMemberships → routes on membership count (non-empty → personal-dashboard, empty → ZeroGroups). Offline biometric surfaces `error_biometric_failed`. |
 | divider_or | LabeledDivider | Visible when `isBiometricAvailable == true && mode == AuthMode.Login`. Horizontal 1dp line border_subtle (#EEEEEE) with centered "or" chip — labelSmall (12sp) onSurfaceVariant (#616161) on background surface pill. margin_horizontal 24dp, top_padding 16dp. Sits between login_button and biometric_unlock_button. | Non-interactive |
 | error_banner | Banner | Visible when `error != null`. Icon `error_outline` 20dp onErrorContainer, message `{{error.localizedMessage}}` bodyMedium onErrorContainer, background errorContainer (danger-tinted #FFDAD6), corner_radius 8dp, padding 12dp, margin_horizontal 24dp, top_padding 16dp. live_region assertive so it's announced immediately. Trailing "Retry" TextButton labelLarge onErrorContainer bold — only rendered when `error.retry == true` (InvalidCredentials, Network, Server, BiometricFailed). | "Retry" tap → re-fires the last submit action (OnLoginTap / OnSignupTap / OnBiometricUnlock) based on `state.mode` + `isBiometricAvailable` |
+| alt_actions_divider | LabeledDivider | **Content state, both modes.** Horizontal 1dp line border_subtle (#EEEEEE) with a centered "New here?" chip — labelSmall (12sp) onSurfaceVariant (#616161) on background surface pill. margin_horizontal 24dp, top_padding 24dp. Separates the primary auth CTA from the first-class secondary entries below. | Non-interactive |
+| accept_invitation_button | OutlinedButton | **Content state, both modes** (F2/B4/G2 — peer of Sign In / Sign Up, not zero-groups-only). Leading icon `mail` 20dp primary, label "Accept an Invitation", full_width (minus 24dp margin), min_height 56dp, corner_radius full (9999dp), border 1dp primary (#2E7D32), text_color primary, background surface (#FFFFFF), top_padding 16dp. Accessibility label "Accept a group invitation using an invite code". | Tap → OnAcceptInvitationTap → NavController navigates to `join-with-code` **pre-auth** (carries no pre-filled code); join-with-code routes back carrying `pendingInviteCode` so on_login/on_signup on_success resumes the join (satisfies TC-LS-010). Pure navigation — the membership write happens on that screen's confirm-join. |
+| demo_explore_button | TextButton | **Content state, both modes** (F1/B1/G1). Leading icon `play_circle_outline` 20dp primary, label "Demo Explore" labelLarge (14sp) text_color primary (#2E7D32), full_width, min_height 56dp, top_padding 12dp. Accessibility label "Explore the app as a demo user without an account". | Tap → OnDemoExplore → sets `state.showDemoDialog = true` (pure transform_state — no seeding, no navigation yet); the `demo_confirm_dialog` overlays. |
+| demo_confirm_dialog | AlertDialog | Overlays the form when `showDemoDialog == true`. Icon `play_circle_outline` primary, title "Explore as a demo user" (titleLarge onSurface), body "This is a demo user logging in to explore the application." (bodyMedium onSurfaceVariant), secondary note "No real account is created and nothing is saved to a server. You can sign up or accept an invitation any time." (bodySmall onSurfaceVariant, top_padding 8dp). Two actions: **Cancel** (text, onSurfaceVariant) and **Continue** (filled primary). Scrim (#000000 @ 32%) behind. Accessibility label "Demo Explore confirmation dialog". | **Cancel** → OnDemoCancel → `showDemoDialog = false`, returns to the form (pure transform_state, nothing seeded). **Continue** → OnDemoConfirm → sets `isSeedingDemo = true`, DemoSessionManager hydrates the bundled PROJECT_DEMO_DATA fixture (Mwangaza Women's Group VSLA — members, savings, meetings, corpus, active loan, live invite code) into the local SQLDelight demo cache under a synthetic demo session token (core/session) — **NO network, NO companion API, NO Fineract write** — then emits `NavigateToOrganizerDashboard` (demo user Amina, treasurer/organizer of demo-group-001). Any write inside demo mode is a local-only no-op. |
 | zero_groups_illustration | Image | Zero-groups state only. Asset `ic_empty_groups` 120dp × 120dp, alignment center, top_padding 48dp. Accessibility label "Empty groups illustration". | Non-interactive |
 | zero_groups_title | Text | Zero-groups state only. "You're all set!" headlineSmall (24sp) onSurface (#212121), alignment center, top_padding 16dp. | Non-interactive |
 | zero_groups_body | Text | Zero-groups state only. "You don't belong to any savings group yet. Create your first group or join one with an invite code." bodyMedium onSurfaceVariant (#616161), alignment center, horizontal_padding 24dp, top_padding 8dp. | Non-interactive |
@@ -89,6 +93,12 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 [divider_or — "─── or ───"]
 [12dp gap]
 [biometric_unlock_button — fingerprint 48dp centered, primary tint]
+[24dp gap]
+[alt_actions_divider — "─── New here? ───"]
+[16dp gap]
+[accept_invitation_button — ✉ "Accept an Invitation" full-width outlined primary pill]
+[12dp gap]
+[demo_explore_button — ▶ "Demo Explore" full-width text primary]
 [bottom safe area]
 ```
 
@@ -109,7 +119,34 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 [password_field — placeholder "Minimum 8 characters"]
 [24dp gap]
 [signup_button — "Create Account" full-width filled primary pill]
+[24dp gap]
+[alt_actions_divider — "─── New here? ───"]
+[16dp gap]
+[accept_invitation_button — ✉ "Accept an Invitation" full-width outlined primary pill]
+[12dp gap]
+[demo_explore_button — ▶ "Demo Explore" full-width text primary]
 [bottom safe area]
+```
+
+**Layout structure (Demo Explore confirm dialog — overlays either mode when `showDemoDialog == true`)**:
+
+```
+[scrim #000000 @ 32%]
+┌─────────────────────────────────────────┐
+│ ▶ (play_circle_outline, primary)         │
+│ Explore as a demo user        (titleLarge)│
+│                                           │
+│ This is a demo user logging in to explore │
+│ the application.              (bodyMedium) │
+│                                           │
+│ No real account is created and nothing is │
+│ saved to a server. You can sign up or     │
+│ accept an invitation any time. (bodySmall)│
+│                                           │
+│                    [ Cancel ]  [ Continue ]│
+└─────────────────────────────────────────┘
+Cancel → dismiss (showDemoDialog=false)
+Continue → seed PROJECT_DEMO_DATA locally → NavigateToOrganizerDashboard
 ```
 
 **Layout structure (ZeroGroups)**:
@@ -183,6 +220,18 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 2. Tap `create_group_button` → OnCreateGroupTap → NavController navigates to `group-type-picker` carrying session identity via the SessionStore.
 3. Tap `join_with_code_button` → OnJoinWithCodeTap → NavController navigates to `join-with-code`. The membership write happens on the submit action in that screen, not here.
 
+**Accept an Invitation (pre-auth, `accept_invitation_button`)**:
+1. In the `content` state (either mode), the user taps `accept_invitation_button` (the first-class "Accept an Invitation" entry below the divider).
+2. OnAcceptInvitationTap dispatched → NavController navigates to `join-with-code` **before** authenticating, carrying no pre-filled code (the invitee types their organizer-issued 6-char code there).
+3. join-with-code routes back to `login-signup` with `pendingInviteCode` set; on the next successful Sign In / Create Account, `on_success` resumes the join (routes to join-with-code) instead of the default landing (satisfies TC-LS-010). The membership write happens on join-with-code's confirm — this action is pure navigation.
+
+**Demo Explore (`demo_explore_button` → `demo_confirm_dialog`)**:
+1. In the `content` state (either mode), the user taps `demo_explore_button` ("Demo Explore").
+2. OnDemoExplore dispatched → `state.showDemoDialog = true` (pure transform_state — nothing is seeded or navigated yet). The `demo_confirm_dialog` fades in over a 32% scrim.
+3. The dialog reads: title "Explore as a demo user", body "This is a demo user logging in to explore the application.", note "No real account is created and nothing is saved to a server…". Two actions:
+   - **Cancel** → OnDemoCancel → `showDemoDialog = false`; the user returns to the auth form. Nothing seeded or persisted.
+   - **Continue** → OnDemoConfirm → `isSeedingDemo = true`; DemoSessionManager hydrates the bundled PROJECT_DEMO_DATA fixture (Mwangaza Women's Group VSLA — members, savings, meetings, corpus, one active loan, one live invite code) into the local SQLDelight demo cache under a synthetic demo session token in core/session. **No network call, no companion API, no Fineract write.** The demo user resolves to Amina (treasurer/organizer of demo-group-001); the dialog closes and `NavigateToOrganizerDashboard` is emitted so the session lands on the same organizer-dashboard a real organizer sees (demo-explore-flow exit). Any write inside the demo session is a local-only no-op.
+
 **Session-expired re-entry**:
 1. When any in-app screen dispatches a request that returns 401, the app pops the back stack to `/auth` and remounts LoginSignupScreen with `mode = AuthMode.Login`, `state.emailPhone` prefilled from the last-known session, and a one-shot snackbar "Your session has expired. Please sign in again."
 2. If `isBiometricAvailable == true`, PromptBiometric fires automatically to enable a one-tap resume.
@@ -212,9 +261,9 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 - `error_banner`: live_region assertive; announced immediately on error. Message text is the resolved localizedMessage; Retry button announced as "Retry, button" following the message.
 - ZeroGroups state: `zero_groups_illustration` accessibility_label "Empty groups illustration"; title announced as heading; body announced as bodyMedium; CTAs announced sequentially.
 
-**Focus order (Content — Login mode, biometric available)**: auth_title → mode_toggle_tabs (Sign In) → mode_toggle_tabs (Sign Up) → email_phone_field → password_field → forgot_password_link → login_button → biometric_unlock_button. `divider_or` skipped by TalkBack (`hideFromAccessibility = true`).
+**Focus order (Content — Login mode, biometric available)**: auth_title → mode_toggle_tabs (Sign In) → mode_toggle_tabs (Sign Up) → email_phone_field → password_field → forgot_password_link → login_button → biometric_unlock_button → accept_invitation_button → demo_explore_button. `divider_or` + `alt_actions_divider` skipped by TalkBack (`hideFromAccessibility = true`). When `demo_confirm_dialog` is open it traps focus: dialog title → body → note → Cancel → Continue, and returns focus to `demo_explore_button` on dismiss.
 
-**Focus order (Content — Signup mode)**: auth_title → mode_toggle_tabs (Sign In) → mode_toggle_tabs (Sign Up) → signup_name_field → email_phone_field → password_field → signup_button.
+**Focus order (Content — Signup mode)**: auth_title → mode_toggle_tabs (Sign In) → mode_toggle_tabs (Sign Up) → signup_name_field → email_phone_field → password_field → signup_button → accept_invitation_button → demo_explore_button.
 
 **Focus order (Error state)**: error_banner (announced first, then focusable) → Retry (if visible) → back to the field/CTA sequence for the current mode.
 
@@ -273,5 +322,6 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 - **personal-dashboard** — Success destination when `groupMemberships.size == 1` (single-group happy path).
 - **group-list** — Success destination when `groupMemberships.size > 1`.
 - **group-type-picker** — ZeroGroups → OnCreateGroupTap destination.
-- **join-with-code** — ZeroGroups → OnJoinWithCodeTap destination.
+- **join-with-code** — ZeroGroups → OnJoinWithCodeTap destination, AND the pre-auth `accept_invitation_button` (OnAcceptInvitationTap) destination — the latter routes back carrying `pendingInviteCode` to resume the join after auth.
+- **organizer-dashboard** — Demo Explore landing: `demo_confirm_dialog` → Continue (OnDemoConfirm) seeds the offline demo fixture and emits `NavigateToOrganizerDashboard`, so the guest demo session lands on the organizer dashboard.
 - **member-onboarding** — Downstream of ZeroGroups → group-type-picker → group-create; this is where the first-group organizer completes the onboarding sequence.
