@@ -1,0 +1,124 @@
+id: loan-officer-day
+version: 1.0.0
+name: Loan Officer Field Day — Route, Collections and Loan Application
+description: >-
+  A loan/field officer (OFICIAL DE CAMPO — maker-only, office+caseload scoped) starts their
+  working day from the 'My Field Day' action feed, starts GPS path-tracking for the field round,
+  navigates via the permission-assembled field-officer shell to their office's centers, works
+  the center → group → members drill to generate the day's collection sheet and capture bulk
+  repayments and mandatory savings deposits, then uses the offline search record to locate a
+  client and submit a loan application as a maker (parks for back-office approval). Approve and
+  disburse controls are GRAYED-OUT with a 'contact your manager' dialog throughout — this officer
+  is maker-only.
+
+persona:
+  archetype: returning power user
+  jtbd: run today's field round — collect, record repayments for every group meeting, and submit any new applications — all offline where needed
+  context: in the field on a group-meeting round; frequently offline; device in hand between center visits; time-pressured against a meeting schedule
+  knowledge_level: expert
+  emotional_state: focused and methodical — working a defined route against a meeting schedule
+
+goal: >-
+  Go from the 'My Field Day' dashboard feed through a GPS-tracked field round to a completed
+  collection sheet (bulk repayments captured) and at least one submitted loan application, all
+  offline-capable with pending payloads queued for sync.
+
+success_metric:
+  name: field_day_completion
+  kind: task_completion
+  target: ">=85% of collection-sheet rows captured and batch saved; >=1 loan application submitted as maker before end of shift"
+  measurement: "funnel: path_tracking_started -> collection_sheet_generated -> rows_captured -> sheet_saved -> loan_application_submitted"
+
+screen_sequence:
+  - screen_id: m01-dashboard
+    feature_id: m01-dashboard
+    state: content
+    user_intent: review today's actionable feed — collections due at my centers, overdue caseload loans, clients to activate, pending applications I submitted, sync-pending count
+    success_signal: the 'My Field Day' tile set renders scoped to the officer's staffId and office; collection-due count is today's real figure
+  - screen_id: nav-shell-assembler
+    feature_id: nav-shell-assembler
+    state: assembled
+    user_intent: navigate via the field-officer-only drawer root to the Path Tracker (visible only because this user holds READ_COLLECTIONSHEET or CREATE_CLIENT; admin/config roots are HIDDEN)
+    success_signal: the drawer renders the field-officer roster (My Caseload / Centers / Collection Sheet / Path Tracker / Sync / Settings) with no admin items
+  - screen_id: path-tracking
+    feature_id: path-tracking
+    state: recording
+    user_intent: start the GPS route trail to log the field visit; the session is persisted to Room so it survives app background
+    success_signal: LocationProvider started; session status = recording in Room; live position is tracked
+  - screen_id: m03-groups-centers
+    feature_id: m03-groups-centers
+    state: content
+    user_intent: enter the Centers module and see the office-scoped center list for today's meetings
+    success_signal: the permission-scoped center list renders (READ_CENTER held); a center with today's meeting is visible
+  - screen_id: m03-groups-centers
+    feature_id: m03-groups-centers
+    state: content
+    user_intent: drill Center → Group → members list; associate or disassociate clients as needed before generating the sheet
+    success_signal: the group's member list renders; associate/disassociate client actions are available and maker-checker-aware
+  - screen_id: collection-sheet
+    feature_id: collection-sheet
+    state: content
+    user_intent: generate the meeting-date collection sheet scoped to my staffId; capture amounts and attendance for every due row; save the batch to the offline outbox
+    success_signal: the sheet generates (or loads from Room cache offline); all due rows captured; Save enqueues the batch payload; sync-pending count increments
+  - screen_id: search-record
+    feature_id: search-record
+    state: content
+    user_intent: look up a recently-searched client from the offline search-history list to open their profile and start a loan application
+    success_signal: the Room search_history Flow renders >=1 row; tapping a client history entry navigates to client-detail-360
+  - screen_id: m04-loan-portfolio
+    feature_id: m04-loan-portfolio
+    state: content
+    user_intent: submit a loan application for the located client as a maker — the loan parks in 'pending approval' state; Approve and Disburse remain GRAYED-OUT with a 'You don't have permission — contact your manager' dialog
+    success_signal: the application is submitted (or enqueued for sync if offline); the loan appears in the portfolio with status 'Pending Approval'; approve/disburse controls render disabled-with-reason
+
+expected_outcome: >-
+  The officer's GPS route trail is recorded in Room; the day's collection sheet is captured and
+  saved (batch enqueued for sync); at least one loan application is submitted as a maker and
+  visible in the portfolio as 'Pending Approval'. All writes that hit maker-checker-enabled
+  actions show a 'sent for approval' bottom-sheet confirmation — never a bare toast.
+
+flows:
+  - feature_id: nav-shell-assembler
+    flow_id: loan-officer-day
+    role: primary
+  - feature_id: path-tracking
+    flow_id: loan-officer-day
+    role: primary
+  - feature_id: search-record
+    flow_id: loan-officer-day
+    role: primary
+  - feature_id: m01-dashboard
+    flow_id: loan-officer-day
+    role: background
+  - feature_id: m03-groups-centers
+    flow_id: loan-officer-day
+    role: background
+  - feature_id: collection-sheet
+    flow_id: loan-officer-day
+    role: background
+  - feature_id: m04-loan-portfolio
+    flow_id: loan-officer-day
+    role: background
+
+capabilities_used: ["has_ui", "has_flow", "has_api", "is_offline_capable"]
+tier: maximum
+preconditions:
+  - "an authenticated session as a field officer (OFICIAL DE CAMPO or equivalent — holds CREATE_CLIENT, CREATE_LOAN, READ_COLLECTIONSHEET; NOT APPROVE_LOAN/DISBURSE_LOAN)"
+  - "location permission granted (or rationale shown and accepted before path-tracking starts)"
+  - "meetings with dues are scheduled for today's date at the officer's centers"
+failure_modes:
+  - cause: "location permission denied — GPS tracking cannot start"
+    recovery_screen: path-tracking
+    notes: "permission_required state shown; user directed to OS settings; tracking blocked until granted"
+  - cause: "no centers with today's meeting dues (all paid or no meetings scheduled)"
+    recovery_screen: collection-sheet
+    notes: "empty state on collection-sheet; officer confirms route is clear and navigates back"
+  - cause: "collection-sheet generate or Save fails hard with no offline cache"
+    recovery_screen: collection-sheet
+    notes: "error state with Retry; offline saves queue and re-attempt on next sync"
+  - cause: "search-record list is empty (no prior searches)"
+    recovery_screen: search-record
+    notes: "empty state; officer navigates directly to m02-clients to locate the client"
+  - cause: "loan application POST fails while offline"
+    recovery_screen: m04-loan-portfolio
+    notes: "application enqueued as a pending payload in the offline outbox; sync drains when connectivity returns"

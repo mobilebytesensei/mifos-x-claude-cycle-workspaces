@@ -1,0 +1,654 @@
+schema_version: "1.0"
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/calculators — the B3/B5/B6 loan-math toolkit (reverse-engineered).
+#
+# ONE feature module (feature/calculators) shipping FOUR sibling calculator
+# screens under a single nav graph (CalculatorsGraphRoute, startDestination =
+# AffordabilityCalculatorRoute). There is NO hub/landing screen — each screen is
+# an independent leaf reachable via its own navigateTo* entry point. All four are
+# declared in screens[] below.
+#
+#   affordability-calculator → AffordabilityCalculatorScreen  (B3, pure-local, START)
+#   amortization             → AmortizationScreen             (B5, pure-local + optional local read pre-fill)
+#   comparison               → LoanComparisonScreen           (B6, pure-local, 3-scenario side-by-side)
+#   wizard                   → LoanCalcWizardScreen           (B6, 5-step DraftSubmit state machine → saves a Loan)
+#
+# NOT the same as the standalone feature/emi-calculator (feat-emi-calculator) —
+# that is a separate single-screen module already reverse-engineered. These four
+# share the SAME core/domain/demo/calc math (computeEmi / amortizationSchedule /
+# maxAffordableLoan) but live in their own feature module.
+#
+# GROUNDED: only screens / fields / actions / test-tags that exist in source are
+# represented. No invented states, no invented backend.
+# ─────────────────────────────────────────────────────────────────────────────
+screen_id: affordability-calculator     # primary entry / graph start destination
+feature: feat-calculators
+archetype: pure-ui
+platforms: [android, ios, desktop, web]
+# Feature-level state envelope. Every screen renders content unconditionally
+# (input card + derived result); there is no loading/empty/error — the only
+# async touch is the wizard's local draft outbox + amortization's optional local
+# loan pre-fill, neither of which introduces a failable UI state.
+states: [content]
+# Every calculator renders its input card + derived result on first frame with no
+# async load, so the graph's start screen (affordability) opens directly in content.
+initial_state: content
+
+# ─────────────────────────────────────────────────
+# Feature business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-3)
+# ─────────────────────────────────────────────────
+business_logic:
+  kind: calculator
+  processing_kind: on_demand
+  library_refs: []
+  external_library_refs: []
+  description: >-
+    Four pure-local loan calculators over one shared math core
+    (core/domain/demo/calc). Every screen holds transient input state in a
+    ViewModel and derives its result reactively via map + stateIn(WhileSubscribed):
+    (1) Affordability inverts the EMI formula — from monthlyIncome × DTI-ceiling −
+    obligations it derives maxEmi, then principalForEmi(maxEmi, rate, tenure) →
+    maxPrincipal + a human rationale. (2) Amortization derives both a level-EMI
+    summary (computeEmi) and the full month-by-month reducing-balance schedule
+    (amortizationSchedule: interestPaid = balance × r, principalPaid = emi −
+    interest); it optionally pre-fills its inputs by reading a saved Loan from
+    LoanRepository (local Room) when launched with a loanId, but the user's edits
+    never mutate the saved loan. (3) Comparison holds exactly 3 LoanScenarios,
+    computes an EmiResult per scenario, and flags the cheapest by totalPayment.
+    (4) The Wizard is a 5-step state machine (Principal → Tenure → Rate → Review →
+    Name&Save) whose per-step snapshot is persisted to a local DraftSubmit outbox
+    (resume-anywhere) and whose final step converts the scenario to a Loan and
+    upserts it via LoanRepository.
+  processing_location: on_device
+  library_note: >-
+    computeEmi / amortizationSchedule / AmortizationRow live in
+    core/domain/demo/calc/EmiCalculator.kt; maxAffordableLoan / AffordabilityResult
+    in core/domain/demo/calc/AffordabilityCalculator.kt; EmiResult in
+    core/model/demo/emi; LoanCalcScenario in core/model/demo/banking. All pure
+    Kotlin (kotlin.math.pow only).
+
+# ─────────────────────────────────────────────────
+# Local data touch (NOT a network backend — see api.yaml, which is empty).
+# Only the amortization (read) and wizard (write + draft) screens touch it.
+# ─────────────────────────────────────────────────
+data_source:
+  kind: local_room
+  repository: LoanRepository            # core/data/demo/banking/ (shared with feat-loans)
+  table: banking_loans                  # amortization reads; wizard upserts
+  draft_outbox: framework_submit_drafts # wizard persists per-step snapshots (SubmitOutbox<LoanCalcScenario>)
+  dto: Loan                             # core/model/demo/banking/Loan.kt
+  remote: none                          # NO Ktor, NO Supabase, NO FRED — nothing network
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SCREENS
+# ═════════════════════════════════════════════════════════════════════════════
+screens:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 1) AffordabilityCalculatorScreen — B3 "how much can I borrow?" (START)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: affordability-calculator
+    composable: AffordabilityCalculatorScreen
+    archetype: pure-ui
+    states: [content]
+    initial_state: content
+    state_model:
+      viewmodel: AffordabilityCalculatorViewModel
+      base: "BaseViewModel<AffordabilityState, Nothing, AffordabilityAction>"
+      event_type: Nothing
+      state:
+        name: AffordabilityState
+        fields:
+          - { name: monthlyIncome, type: Double, default: 5000.0 }
+          - { name: monthlyObligations, type: Double, default: 500.0 }
+          - { name: dtiRatio, type: Double, default: 0.4, note: "Debt-to-income ceiling 0..1; edited as an integer percent (× / ÷ 100 at the field boundary)." }
+          - { name: ratePercent, type: Double, default: 7.0 }
+          - { name: tenureMonths, type: Int, default: 240 }
+      derived:
+        - name: affordability
+          type: "StateFlow<AffordabilityResult>"
+          note: >-
+            map { maxAffordableLoan(income, obligations, dti, rate, tenure) } +
+            stateIn(WhileSubscribed(5000), initial = maxAffordableLoan(0,0,0.4,0,0)).
+            AffordabilityResult{ maxEmi, maxPrincipal, rationale }.
+      actions:
+        name: AffordabilityAction
+        variants:
+          - { action: UpdateIncome, payload: "value: Double", effect: "copy(monthlyIncome = value)" }
+          - { action: UpdateObligations, payload: "value: Double", effect: "copy(monthlyObligations = value)" }
+          - { action: UpdateDti, payload: "value: Double", effect: "copy(dtiRatio = value)  # field sends percent/100" }
+          - { action: UpdateRate, payload: "value: Double", effect: "copy(ratePercent = value)" }
+          - { action: UpdateTenure, payload: "value: Int", effect: "copy(tenureMonths = value)" }
+    shell:
+      bottom_nav: { enabled: false }
+      top_app_bar:
+        enabled: true
+        title: "Affordability"                 # screens_calc_affordability_title
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"                 # screens_calc_affordability_back_cd
+            on_click:
+              action: "navigate_back"
+              action_contract:
+                effect: navigate
+                description: "popBackStackSafely() to the caller that launched the calculators graph."
+    state_components:
+      content:
+        - type: stack
+          direction: column
+          scroll: vertical
+          padding: "{spacing.lg}"
+          gap: "{spacing.md}"
+          children:
+            - type: card
+              variant: app_card
+              children:
+                - type: text_field
+                  id: income_field
+                  variant: outlined
+                  label: "Monthly Income"      # screens_calc_affordability_income_label
+                  keyboard_type: number
+                  binds_to: "state.monthlyIncome"
+                  value_source: "state.monthlyIncome.toLong().toString()"
+                  on_change:
+                    action: "update_income"
+                    action_contract:
+                      effect: local_compute
+                      writes_to: [{ state_field: "AffordabilityState.monthlyIncome" }]
+                      description: "toDoubleOrNull() → UpdateIncome(value); re-derives affordability."
+                - type: text_field
+                  id: obligations_field
+                  variant: outlined
+                  label: "Existing Monthly Debt"  # screens_calc_affordability_obligations_label
+                  keyboard_type: number
+                  binds_to: "state.monthlyObligations"
+                  value_source: "state.monthlyObligations.toLong().toString()"
+                  on_change:
+                    action: "update_obligations"
+                    action_contract:
+                      effect: local_compute
+                      writes_to: [{ state_field: "AffordabilityState.monthlyObligations" }]
+                      description: "toDoubleOrNull() → UpdateObligations(value)."
+                - type: text_field
+                  id: dti_field
+                  variant: outlined
+                  label: "DTI Ceiling (%)"     # screens_calc_affordability_dti_label
+                  keyboard_type: number
+                  binds_to: "state.dtiRatio"
+                  value_source: "(state.dtiRatio * 100).toInt().toString()"
+                  on_change:
+                    action: "update_dti"
+                    action_contract:
+                      effect: local_compute
+                      writes_to: [{ state_field: "AffordabilityState.dtiRatio" }]
+                      description: "toIntOrNull() → UpdateDti(v / 100.0); percent field, clamped 0..1 in maxAffordableLoan."
+                - type: text_field
+                  id: rate_field
+                  variant: outlined
+                  label: "Annual Rate (%)"     # screens_calc_affordability_rate_label
+                  keyboard_type: decimal
+                  binds_to: "state.ratePercent"
+                  on_change:
+                    action: "update_rate"
+                    action_contract:
+                      effect: local_compute
+                      writes_to: [{ state_field: "AffordabilityState.ratePercent" }]
+                      description: "toDoubleOrNull() → UpdateRate(value)."
+                - type: text_field
+                  id: tenure_field
+                  variant: outlined
+                  label: "Tenure (months)"     # screens_calc_affordability_tenure_label
+                  keyboard_type: number
+                  binds_to: "state.tenureMonths"
+                  on_change:
+                    action: "update_tenure"
+                    action_contract:
+                      effect: local_compute
+                      writes_to: [{ state_field: "AffordabilityState.tenureMonths" }]
+                      description: "toIntOrNull() → UpdateTenure(value)."
+            - type: card
+              variant: hero_card
+              id: affordability_result_card
+              aria_label: "Affordability result"
+              children:
+                - type: amount_display
+                  amount_source: "affordability.maxPrincipal (formatGrouped 2dp)"
+                  label: "Max loan principal"   # screens_calc_affordability_max_principal_label
+                  supporting:
+                    - type: row
+                      justify: space_between
+                      children:
+                        - { type: text, variant: body_medium, content: "Max EMI" }  # screens_calc_affordability_max_emi_label
+                        - { type: text, variant: body_medium, content_source: "affordability.maxEmi (formatGrouped 2dp)" }
+                    - { type: text, variant: body_small, content_source: "affordability.rationale", note: "Verbatim human-readable arithmetic explanation from maxAffordableLoan." }
+    test_tags:
+      - { id: "calc_affordability_screen", note: "Root scaffold — always rendered (TestTags.Affordability.SCREEN)." }
+    route:
+      type: AffordabilityCalculatorRoute
+      serializable: true
+      params: []
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 2) AmortizationScreen — B5 full payment schedule (pure-local + optional read)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: amortization
+    composable: AmortizationScreen
+    archetype: pure-ui
+    states: [content]
+    initial_state: content
+    state_model:
+      viewmodel: AmortizationViewModel
+      base: "BaseViewModel<AmortizationState, Nothing, AmortizationAction>"
+      event_type: Nothing
+      constructor:
+        - { name: repository, type: LoanRepository, note: "Injected; used ONLY when loanId != null." }
+        - { name: loanId, type: "String?", default: "null", note: "Koin parametersOf; when non-null, init reads LoanRepository.observeById(loanId) to pre-fill inputs (what-if; never mutates the saved loan)." }
+      state:
+        name: AmortizationState
+        fields:
+          - { name: principal, type: Double, default: 100000.0 }
+          - { name: ratePercent, type: Double, default: 8.5 }
+          - { name: tenureMonths, type: Int, default: 60 }
+          - { name: sourceLoanId, type: "String?", default: "null", note: "Set from the pre-filled loan; drives the 'Amortization · {name}' title." }
+          - { name: sourceLoanName, type: "String?", default: "null" }
+      derived:
+        - name: schedule
+          type: "StateFlow<List<AmortizationRow>>"
+          note: "map { amortizationSchedule(principal, ratePercent, tenureMonths) } + stateIn(WhileSubscribed, emptyList). Row{ installmentNumber, principalPaid, interestPaid, balanceRemaining } from core/domain/demo/calc."
+        - name: summary
+          type: "StateFlow<EmiResult>"
+          note: "map { computeEmi(principal, ratePercent, tenureMonths) } + stateIn(WhileSubscribed, EmiResult(0,0,0))."
+      actions:
+        name: AmortizationAction
+        variants:
+          - { action: UpdatePrincipal, payload: "value: Double", effect: "copy(principal = value)" }
+          - { action: UpdateRate, payload: "value: Double", effect: "copy(ratePercent = value)" }
+          - { action: UpdateTenure, payload: "value: Int", effect: "copy(tenureMonths = value)" }
+      init_behavior:
+        - trigger: "loanId != null"
+          effect: read
+          reads_from: [{ table: banking_loans, dto: Loan }]
+          description: "repository.observeById(loanId).onEach { loan -> updateState { copy(principal, ratePercent=annualRatePercent, tenureMonths, sourceLoanId, sourceLoanName) } }.launchIn(scope)."
+    shell:
+      bottom_nav: { enabled: false }
+      top_app_bar:
+        enabled: true
+        title: "Amortization"                 # screens_calc_amortization_title (or _title_with_source when sourceLoanName != null)
+        title_variants:
+          - { when: "state.sourceLoanName != null", key: "screens_calc_amortization_title_with_source", note: "Formats 'Amortization · {loanName}'." }
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"                 # screens_calc_amortization_back_cd
+            on_click:
+              action: "navigate_back"
+              action_contract: { effect: navigate, description: "popBackStackSafely()." }
+    state_components:
+      content:
+        - type: stack
+          direction: column
+          padding: "{spacing.lg} horizontal"
+          gap: "{spacing.md}"
+          children:
+            - type: card
+              variant: app_card
+              children:
+                - type: text_field
+                  id: principal_field
+                  variant: outlined
+                  label: "Principal"           # screens_calc_amortization_principal_label
+                  keyboard_type: number
+                  binds_to: "state.principal"
+                  value_source: "state.principal.toLong().toString()"
+                  on_change:
+                    action: "update_principal"
+                    action_contract:
+                      effect: local_compute
+                      writes_to: [{ state_field: "AmortizationState.principal" }]
+                      description: "toDoubleOrNull() → UpdatePrincipal; re-derives schedule + summary."
+                - type: text_field
+                  id: rate_field
+                  variant: outlined
+                  label: "Annual Rate (%)"     # screens_calc_amortization_rate_label
+                  keyboard_type: decimal
+                  binds_to: "state.ratePercent"
+                  on_change:
+                    action: "update_rate"
+                    action_contract:
+                      effect: local_compute
+                      writes_to: [{ state_field: "AmortizationState.ratePercent" }]
+                      description: "toDoubleOrNull() → UpdateRate."
+                - type: text_field
+                  id: tenure_field
+                  variant: outlined
+                  label: "Tenure (months)"     # screens_calc_amortization_tenure_label
+                  keyboard_type: number
+                  binds_to: "state.tenureMonths"
+                  on_change:
+                    action: "update_tenure"
+                    action_contract:
+                      effect: local_compute
+                      writes_to: [{ state_field: "AmortizationState.tenureMonths" }]
+                      description: "toIntOrNull() → UpdateTenure."
+            - type: card
+              variant: hero_card
+              id: amortization_summary_card
+              aria_label: "EMI summary"
+              children:
+                - type: amount_display
+                  amount_source: "summary.emi (formatGrouped 2dp)"
+                  label: "Monthly EMI"          # screens_calc_amortization_emi_label
+                  supporting:
+                    - { type: text, variant: body_medium, content_source: "screens_calc_amortization_interest_total_supporting(summary.totalInterest, summary.totalPayment)", note: "'Interest {i} · Total {t}'." }
+            - type: list
+              id: amortization_table
+              layout: lazy_column
+              header:
+                - type: row
+                  justify: space_between
+                  children:
+                    - { type: text, variant: label_medium, content: "#" }          # screens_calc_amortization_header_month
+                    - { type: text, variant: label_medium, content: "Principal" }  # screens_calc_amortization_header_principal
+                    - { type: text, variant: label_medium, content: "Interest" }   # screens_calc_amortization_header_interest
+                    - { type: text, variant: label_medium, content: "Balance" }    # screens_calc_amortization_header_balance
+              item:
+                bind: "schedule"
+                key: "row.installmentNumber"
+                children:
+                  - type: row
+                    justify: space_between
+                    children:
+                      - { type: text, content_source: "row.installmentNumber" }
+                      - { type: text, content_source: "row.principalPaid (formatGrouped 2dp)" }
+                      - { type: text, content_source: "row.interestPaid (formatGrouped 2dp)" }
+                      - { type: text, content_source: "row.balanceRemaining.coerceAtLeast(0).formatGrouped(2)" }
+                  - { type: divider }
+    test_tags:
+      - { id: "calc_amortization_screen", note: "Root scaffold (TestTags.Amortization.SCREEN)." }
+    route:
+      type: AmortizationRoute
+      serializable: true
+      params:
+        - { name: loanId, type: "String?", default: "null", note: "When set, pre-fills inputs from the saved loan (local what-if; never mutates it). Reached via this graph's own navigateToAmortization — NOT from loan-detail's 'Schedule', which targets feat-amortization's amortization-schedule." }
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 3) LoanComparisonScreen — B6 side-by-side 3-scenario comparison (pure-local)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: comparison
+    composable: LoanComparisonScreen
+    archetype: pure-ui
+    states: [content]
+    initial_state: content
+    state_model:
+      viewmodel: LoanComparisonViewModel
+      base: "BaseViewModel<LoanComparisonState, Nothing, LoanComparisonAction>"
+      event_type: Nothing
+      state:
+        name: LoanComparisonState
+        fields:
+          - name: scenarios
+            type: "List<LoanScenario>"
+            default: "List(3) { LoanScenario(principal=100000, ratePercent=6.5+it, tenureMonths=60+it*60) }"
+            note: "Exactly SCENARIO_COUNT=3, staggered so the out-of-box comparison is meaningful. LoanScenario{ principal=100000, ratePercent=7.5, tenureMonths=60 } defaults, overridden by the staggered initializer."
+      derived:
+        - name: analysis
+          type: "StateFlow<LoanComparisonAnalysis>"
+          note: >-
+            map { results = scenarios.map { computeEmi(it) }; cheapestIndex =
+            results.withIndex().filter{ totalPayment>0 }.minByOrNull{ totalPayment }?.index ?: -1 }
+            + stateIn(WhileSubscribed, initial = 3× EmiResult(0,0,0), cheapestIndex=-1).
+            LoanComparisonAnalysis{ results: List<EmiResult>, cheapestIndex: Int }.
+      actions:
+        name: LoanComparisonAction
+        variants:
+          - { action: UpdateScenario, payload: "index: Int, scenario: LoanScenario", effect: "copy(scenarios = scenarios.mapIndexed { i, cur -> if (i==index) scenario else cur })" }
+    shell:
+      bottom_nav: { enabled: false }
+      top_app_bar:
+        enabled: true
+        title: "Compare Loans"                 # screens_calc_compare_title
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"                 # screens_calc_compare_back_cd
+            on_click:
+              action: "navigate_back"
+              action_contract: { effect: navigate, description: "popBackStackSafely()." }
+    state_components:
+      content:
+        - type: stack
+          direction: column
+          scroll: vertical
+          padding: "{spacing.lg}"
+          gap: "{spacing.md}"
+          children:
+            - type: card
+              variant: hero_card
+              id: comparison_hero
+              aria_label: "Cheapest scenario"
+              children:
+                - type: amount_display
+                  amount_source: "analysis.results[cheapestIndex].emi as '{emi}/mo' (formatGrouped 2dp) or '—'"  # screens_calc_compare_best_emi_value
+                  label: "Best EMI · Scenario {cheapestIndex+1}"   # screens_calc_compare_best_emi_label
+                  supporting:
+                    - { type: text, variant: body_medium, visible_when: "savings > 0", content_source: "screens_calc_compare_savings_text(mostExpensive.totalPayment - cheapest.totalPayment)", note: "Delta vs the most expensive scenario." }
+                    - { type: text, variant: body_small, content: "Edit any scenario below to see the comparison update live." }  # screens_calc_compare_helper_text
+            - type: repeater
+              id: scenario_cards
+              bind: "state.scenarios (indexed)"
+              item:
+                type: card
+                variant: app_card
+                accent_when: "idx == analysis.cheapestIndex"
+                children:
+                  - type: row
+                    id: scenario_header
+                    children:
+                      - { type: text, variant: title_medium, content: "Scenario {idx+1}" }   # screens_calc_compare_scenario_label
+                      - type: chip
+                        id: best_badge
+                        variant: status_chip
+                        intent: success
+                        label: "Best"           # screens_calc_compare_best_badge
+                        visible_when: "idx == analysis.cheapestIndex && results.size > 1"
+                  - type: text_field
+                    id: scenario_principal_field
+                    variant: outlined
+                    label: "Principal"          # screens_calc_compare_principal_label
+                    keyboard_type: number
+                    single_line: true
+                    binds_to: "scenario.principal"
+                    value_source: "scenario.principal.toLong().toString()"
+                    on_change:
+                      action: "update_scenario_principal"
+                      action_contract:
+                        effect: local_compute
+                        writes_to: [{ state_field: "LoanComparisonState.scenarios[idx].principal" }]
+                        description: "toDoubleOrNull() → UpdateScenario(idx, scenario.copy(principal=v)); re-derives analysis."
+                  - type: row
+                    children:
+                      - type: text_field
+                        id: scenario_rate_field
+                        variant: outlined
+                        label: "Rate (%)"       # screens_calc_compare_rate_label
+                        keyboard_type: decimal
+                        single_line: true
+                        binds_to: "scenario.ratePercent"
+                        on_change:
+                          action: "update_scenario_rate"
+                          action_contract:
+                            effect: local_compute
+                            writes_to: [{ state_field: "LoanComparisonState.scenarios[idx].ratePercent" }]
+                            description: "toDoubleOrNull() → UpdateScenario(idx, scenario.copy(ratePercent=v))."
+                      - type: text_field
+                        id: scenario_tenure_field
+                        variant: outlined
+                        label: "Tenure (months)"  # screens_calc_compare_tenure_label
+                        keyboard_type: number
+                        single_line: true
+                        binds_to: "scenario.tenureMonths"
+                        on_change:
+                          action: "update_scenario_tenure"
+                          action_contract:
+                            effect: local_compute
+                            writes_to: [{ state_field: "LoanComparisonState.scenarios[idx].tenureMonths" }]
+                            description: "toIntOrNull() → UpdateScenario(idx, scenario.copy(tenureMonths=v))."
+                  - type: row
+                    id: scenario_result_strip
+                    justify: space_between
+                    highlight_when: "idx == analysis.cheapestIndex"
+                    visible_when: "analysis.results[idx] != null"
+                    children:
+                      - { type: metric, label: "EMI", value_source: "result.emi (formatGrouped 2dp)" }        # screens_calc_compare_result_emi
+                      - { type: metric, label: "Interest", value_source: "result.totalInterest (formatGrouped 2dp)" }  # screens_calc_compare_result_interest
+                      - { type: metric, label: "Total", value_source: "result.totalPayment (formatGrouped 2dp)" }      # screens_calc_compare_result_total
+    test_tags:
+      - { id: "calc_comparison_screen", note: "Root scaffold (TestTags.Comparison.SCREEN)." }
+    route:
+      type: LoanComparisonRoute
+      serializable: true
+      params: []
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 4) LoanCalcWizardScreen — B6 5-step DraftSubmit wizard state machine
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: wizard
+    composable: LoanCalcWizardScreen
+    archetype: input           # multi-step form; DraftSubmit → local upsert
+    states: [content]          # content + a resume AlertDialog overlay (below)
+    initial_state: content     # step 1 (Principal) renders immediately; resume dialog is an overlay
+    state_model:
+      viewmodel: LoanCalcWizardViewModel
+      base: "BaseDraftMutationViewModel<LoanCalcScenario, Loan>"
+      event_type: Nothing      # navigation/back is via onBackClick lambda, not a VM Event
+      constructor:
+        - { name: outbox, type: "SubmitOutbox<LoanCalcScenario>", note: "Qualified OutboxQualifiers.LoanCalcScenario; persists per-step snapshots to framework_submit_drafts." }
+        - { name: repository, type: LoanRepository }
+        - { name: scenarioIdArg, type: "String?", note: "Koin parametersOf; the uniqueKey for this wizard's draft row (or 'new')." }
+      base_config: { formKey: "loan_calc_wizard", uniqueKey: "scenarioId | 'new'", autoSaveDraft: false }
+      state:
+        name: LoanCalcScenario     # core/model/demo/banking — the serializable wizard payload IS the form state
+        fields:
+          - { name: scenarioId, type: String, note: "Stable id; random 16-char for new, reused on resume." }
+          - { name: name, type: String, default: "\"\"", note: "Filled at step 5; required for save." }
+          - { name: principal, type: Double, default: 0.0, note: "Step 1." }
+          - { name: ratePercent, type: Double, default: 0.0, note: "Step 3." }
+          - { name: tenureMonths, type: Int, default: 0, note: "Step 2." }
+          - { name: currentStep, type: Int, default: 1, note: "1..5 state-machine cursor (LAST_STEP=5)." }
+      derived:
+        - name: preview
+          type: "StateFlow<EmiResult>"
+          note: "map { computeEmi(principal, ratePercent, tenureMonths) } + stateIn(WhileSubscribed, EmiResult(0,0,0)); meaningful from step 4 (Review)."
+        - name: resumeCandidate
+          type: "StateFlow<LoanCalcScenario?>"
+          note: "On init, outbox.getPendingByUniqueKey(formKey, uniqueKey)?.payload → surfaces the Continue/Discard AlertDialog."
+      handlers:
+        - { name: onUpdatePrincipal, effect: transform_state, description: "_formState.update{ copy(principal=v) }." }
+        - { name: onUpdateRate, effect: transform_state, description: "copy(ratePercent=v)." }
+        - { name: onUpdateTenure, effect: transform_state, description: "copy(tenureMonths=v)." }
+        - { name: onUpdateName, effect: transform_state, description: "copy(name=v)." }
+        - { name: goNext, effect: persist_db, writes_to: [{ table: framework_submit_drafts }], description: "currentStep = (step+1).coerceAtMost(5); then persistSnapshot() → outbox.saveByUniqueKey (resume-anywhere)." }
+        - { name: goBack, effect: persist_db, writes_to: [{ table: framework_submit_drafts }], description: "currentStep = (step-1).coerceAtLeast(1); then persistSnapshot()." }
+        - { name: resumeDraft, effect: transform_state, description: "_formState = resumeCandidate snapshot; clear candidate." }
+        - { name: discardSavedDraft, effect: delete, writes_to: [{ table: framework_submit_drafts, op: delete }], description: "outbox.deleteByUniqueKey(formKey, uniqueKey); clear candidate." }
+        - name: completeAndSave
+          effect: persist_db
+          writes_to: [{ table: banking_loans, dto: Loan, op: upsert }]
+          description: >-
+            Guard isReadyForSubmit() (principal>0 && rate>=0 && tenure>0 && name non-blank);
+            super.onSubmit(snapshot) → performSubmit: build Loan (id=scenarioId, kind=PERSONAL,
+            monthlyPayment=computeEmi(...).emi) → repository.upsert(loan) → outbox.deleteByUniqueKey
+            (clear draft) → reset _formState to a fresh scenario.
+    # ── 5-step state machine (the multi-step wizard core) ──
+    flow_logic:
+      kind: linear_wizard
+      total_steps: 5
+      cursor_field: currentStep
+      progress_indicator: "LinearProgressIndicator(progress = currentStep / 5f)"
+      steps:
+        - { step: 1, id: principal, renders: StepPrincipal, field: principal, prompt: "How much do you want to borrow?" }  # screens_calc_wizard_step_principal_question
+        - { step: 2, id: tenure, renders: StepTenure, field: tenureMonths, prompt: "Over how many months?" }              # screens_calc_wizard_step_tenure_question
+        - { step: 3, id: rate, renders: StepRate, field: ratePercent, prompt: "At what annual rate?" }                    # screens_calc_wizard_step_rate_question
+        - { step: 4, id: review, renders: StepReview, prompt: "Review", note: "Read-only HeroCard(preview.emi + total payable) + AppCard rows: principal / tenure / rate / total interest — no inputs." }
+        - { step: 5, id: name_and_save, renders: StepNameAndSave, field: name, prompt: "Name this scenario so you can find it again in your loans.", note: "OutlinedTextField isError when blank; Save button disabled until valid." }
+      transitions:
+        - { from: "1..4", on: next_button_tap, to: "step+1", guard: none, effect: "goNext() (persists snapshot)" }
+        - { from: "2..5", on: back_button_tap, to: "step-1", guard: none, effect: "goBack() (persists snapshot)" }
+        - { from: 5, on: save_button_tap, to: terminal, guard: "canSave (name non-blank && principal>0 && rate>=0 && tenure>0)", effect: "completeAndSave() → upsert Loan → reset to fresh scenario" }
+      resume_prompt:
+        trigger: "resumeCandidate != null on launch"
+        dialog: AlertDialog
+        title: "Resume unfinished wizard?"       # screens_calc_wizard_resume_title
+        message: "You have an in-progress loan-calc wizard at step {currentStep}."  # screens_calc_wizard_resume_message
+        confirm: { label: "Continue", action: resumeDraft }   # screens_calc_wizard_resume_continue
+        dismiss: { label: "Discard", action: discardSavedDraft }  # screens_calc_wizard_resume_discard
+        note: "onDismissRequest also routes to discardSavedDraft."
+    shell:
+      bottom_nav: { enabled: false }
+      top_app_bar:
+        enabled: true
+        title: "New Loan · Step {currentStep}/5"   # screens_calc_wizard_title (currentStep, LAST_STEP)
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"                  # screens_calc_wizard_back_cd
+            on_click:
+              action: "navigate_back"
+              action_contract: { effect: navigate, description: "onBackClick → popBackStackSafely() (exits the wizard entirely; distinct from the in-wizard Back button which is goBack())." }
+    state_components:
+      content:
+        - type: progress
+          id: wizard_progress
+          variant: linear
+          value_source: "currentStep / 5f"
+        - type: step_body
+          id: wizard_step_body
+          note: "when(currentStep){ 1->StepPrincipal 2->StepTenure 3->StepRate 4->StepReview else->StepNameAndSave }. Each single-input step = a prompt Text + one OutlinedTextField; step 4 = HeroCard(preview) + review AppCard; step 5 = name field."
+        - type: row
+          id: wizard_buttons
+          justify: space_between
+          children:
+            - { type: button, id: back_button, variant: outlined, label: "Back", enabled_when: "currentStep > 1", on_click: { action: goBack, action_contract: { effect: transform_state, description: "goBack() — step-1 + persistSnapshot." } } }  # screens_calc_wizard_button_back
+            - { type: button, id: next_button, variant: filled, label: "Next", visible_when: "currentStep < 5", on_click: { action: goNext, action_contract: { effect: transform_state, description: "goNext() — step+1 + persistSnapshot." } } }  # screens_calc_wizard_button_next
+            - { type: button, id: save_button, variant: filled, label: "Save as Loan", visible_when: "currentStep == 5", enabled_when: "canSave", on_click: { action: completeAndSave, action_contract: { effect: persist_db, external_library_refs: [room], writes_to: [{ table: banking_loans, dto: Loan, op: upsert }], description: "completeAndSave() → repository.upsert(loan) into banking_loans." } } }  # screens_calc_wizard_button_save
+    overlays:
+      - { id: resume_dialog, type: alert_dialog, visible_when: "resumeCandidate != null", note: "Continue → resumeDraft; Discard (or dismiss) → discardSavedDraft." }
+    test_tags:
+      - { id: "calc_wizard_screen", note: "Root scaffold — always rendered regardless of step (TestTags.Wizard.SCREEN)." }
+    route:
+      type: LoanCalcWizardRoute
+      serializable: true
+      params:
+        - { name: scenarioId, type: "String?", default: "null", note: "Resume a specific in-progress wizard draft; null starts a fresh 'new'-keyed run." }
+
+# ─────────────────────────────────────────────────
+# Source provenance (reverse-engineered, read-only)
+# ─────────────────────────────────────────────────
+source_refs:
+  feature_root: "feature/calculators/src/commonMain/kotlin/kpt/feature/calculators/"
+  screens:
+    affordability-calculator:
+      screen: "affordability/AffordabilityCalculatorScreen.kt"
+      viewmodel: "affordability/AffordabilityCalculatorViewModel.kt"
+    amortization:
+      screen: "amortization/AmortizationScreen.kt"
+      viewmodel: "amortization/AmortizationViewModel.kt"
+    comparison:
+      screen: "comparison/LoanComparisonScreen.kt"
+      viewmodel: "comparison/LoanComparisonViewModel.kt"
+    wizard:
+      screen: "wizard/LoanCalcWizardScreen.kt"
+      viewmodel: "wizard/LoanCalcWizardViewModel.kt"
+  navigation: "navigation/CalculatorsNavigation.kt (CalculatorsGraphRoute, start=AffordabilityCalculatorRoute)"
+  di: "di/CalculatorsModule.kt"
+  test_tags: "TestTags.kt (Affordability/Amortization/Comparison/Wizard .SCREEN)"
+  domain:
+    - "core/domain/demo/calc/EmiCalculator.kt (computeEmi, amortizationSchedule, AmortizationRow)"
+    - "core/domain/demo/calc/AffordabilityCalculator.kt (maxAffordableLoan, AffordabilityResult)"
+  model:
+    - "core/model/demo/emi/EmiResult.kt"
+    - "core/model/demo/banking/LoanCalcScenario.kt (wizard payload)"
+    - "core/model/demo/banking/Loan.kt (wizard save target / amortization pre-fill source)"
+  data: "core/data/demo/banking/LoanRepository (observeById read + upsert write) — local Room, shared with feat-loans"
+  design_system: ["core-base/designsystem AppCard + HeroCard", "core/designsystem AmountDisplay + StatusChip", "core/common formatGrouped", "core-base/ui BaseViewModel + BaseDraftMutationViewModel + composableWithPushTransitions"]

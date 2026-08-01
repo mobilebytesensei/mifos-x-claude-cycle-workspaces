@@ -1,0 +1,412 @@
+schema_version: "1.0"
+screen_id: macro
+feature: feat-country-macro
+archetype: screen-content
+platforms: [android, ios, desktop, web]
+# B8 Country Macro Snapshot — canonical MEMORY_ONLY + multi-source combine +
+# country-picker showcase. Reverse-engineered (read-only) from feature/macro +
+# core/{network,data,store,model}/demo/economic (World Bank half of the shared
+# economic package; FRED half is B7 feat-rates).
+# THREE screens ship in this feature:
+#   - macro                  (CountryMacroScreen)          — the 3-indicator dashboard (PRIMARY, this file)
+#   - countryPicker          (CountryPickerScreen)         — pure-local search/select over SupportedCountries (see related_screens)
+#   - macroIndicatorDetail   (MacroIndicatorDetailScreen)  — single-indicator 25-year history (see related_screens)
+# The dashboard renders THREE INDEPENDENT indicator cards (GDP / Inflation / Unemployment),
+# each its own ScreenState<MacroIndicator> (Loading / Content / Empty / Error / NoNetwork).
+# One failed World Bank indicator never blanks the whole screen — each card has its own retry.
+#
+# ARCHETYPE NOTE — MEMORY_ONLY, NOT NETWORK_WITH_CACHE (contrast feat-rates/B7):
+#   MacroIndicatorStore = StoreFactory.createMemoryStore(fetcher) — a Store5 read
+#   cache with NO SourceOfTruth. There is NO Room DAO, NO on-device table, NO
+#   database persistence for macro data. The cache is in-memory only and is lost
+#   on process death → a cold start re-fetches from the World Bank. This is
+#   deliberate: World Bank macro data is public, cheap, and published annually, so
+#   the ≤ weekly real-fetch cadence (per the store's 7-day-TTL comment) means
+#   re-fetching on cold start costs almost nothing. B7/feat-rates persists to Room
+#   because FRED series are daily + expensive; B8/macro does not.
+# Per-card ScreenState — every indicator card starts Loading (MacroUiState field
+# defaults ScreenState.Loading on gdp/inflation/unemployment). initial_state made
+# explicit here (was implied). Full component trees live in state_components below.
+states:
+  initial_state: loading
+  loading:
+    components: [country_macro_screen, gdp_loading_card, inflation_loading_card, unemployment_loading_card]
+    description: "Every card starts here — IndicatorCard renders its LoadingBody (three accented app cards)."
+  content:
+    components: [country_macro_screen, stale_chip, gdp_card, inflation_card, unemployment_card]
+    description: "Three resolved IndicatorCards (displayName + headlineValue + latest-year + Sparkline); optional STALE chip when overallBand ∈ {Stale, VeryStale}."
+  empty:
+    components: [app_card, indicator_empty]
+    description: "Per-card ScreenState.Empty — World Bank returned zero observations for the (country, indicator) pair."
+  error:
+    components: [app_card, indicator_error]
+    description: "Per-card ScreenState.Error / NoNetwork with Retry — variants generic_error / offline / captive_portal / auth_required. No key-missing path (World Bank is open)."
+
+# ─────────────────────────────────────────────────
+# Feature business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-3)
+# ─────────────────────────────────────────────────
+business_logic:
+  kind: aggregation
+  processing_kind: on_demand   # in-memory Store5 cache, refetch-on-cold-start; no periodic background persistence
+  processing_location: on_device
+  library_refs: [cmp-network-monitor]
+  external_library_refs: [ktorfit, ktor, store5]   # NO room — MEMORY_ONLY store has no SourceOfTruth
+  description: >-
+    Compose THREE INDEPENDENT World-Bank-backed reactive streams into one
+    dashboard state. The ViewModel opens one per-indicator stream per entry in
+    CountryMacroViewModel.TRACKED_INDICATORS — GDP (NY.GDP.MKTP.CD), Inflation/CPI
+    (FP.CPI.TOTL.ZG), Unemployment (SL.UEM.TOTL.ZS) — via
+    MacroIndicatorsRepository.macroIndicatorStream(key, scope), each backed by the
+    MacroIndicatorStore (Store5 MEMORY_ONLY archetype — createMemoryStore, no DAO).
+    Each stream emits ScreenState transitions independently so one card can show
+    Content while another is still Loading or surfacing an Error. On first
+    subscription (or a cold start after process death) the in-memory Store has no
+    cache, so the Ktorfit WorldBankApi fetches the (country, indicator, 25-year)
+    window and the card transitions Loading → Content/Empty/Error. Each card shows
+    the most-recent non-null observation as a compact headline (GDP as $NN.NNT
+    currency, Inflation/Unemployment as NN.N%) + latest-year subtitle + a 10-year
+    Sparkline; missing years render "—" not 0. A per-cell freshnessSignal.band
+    folds to MacroUiState.overallBand (worst-of-3) which drives a single STALE chip
+    in the app bar. RefreshAll fans out refresh() to all three streams; per-card
+    retry() refreshes only its own stream. Changing the country
+    (MacroAction.ChangeCountry) CANCELS all three subscriptions and re-creates them
+    keyed on the new country so stale-country emissions cannot bleed into the
+    post-switch UI. World Bank Open Data is fully open — NO API key, so there is no
+    key-missing error path (the offline/no-data paths are the only failure modes).
+  library_note: >-
+    Store5 read-only IN-MEMORY cache (StoreFactory.createMemoryStore) — Fetcher =
+    Ktorfit WorldBankApi wrapped in NetworkMonitor.executeWithRetry(maxAttempts=1);
+    NO SourceOfTruth (no Room). ScreenDataStream (core-base/store) owns the
+    ScreenState + FreshnessSignal projection via asScreenStream. cacheKey =
+    economic:macro:{countryCode}:{indicator.name}:{years}y (years default 25). The
+    dashboard uses the static-key stream overload + re-subscribes on country change;
+    the dynamic-key (keyFlow) overload is reserved for the detail VM's use-cases.
+
+# ─────────────────────────────────────────────────
+# State model — mirrors CountryMacroViewModel.kt (per-cell ScreenState, no master reduce)
+# ─────────────────────────────────────────────────
+state_model:
+  viewmodel: CountryMacroViewModel
+  base: "BaseViewModel<MacroUiState, Nothing, MacroAction>"
+  event_type: Nothing   # no one-shot events — navigation is via onBackClick / onPickCountry / onOpenIndicator callbacks
+  constructor_params:
+    - { name: initialCountryCode, type: String, note: "ISO 3166-1 alpha-2; 'US' from CountryMacroRoute default; overridden by picker." }
+    - { name: repository, type: MacroIndicatorsRepository }
+  state:
+    name: MacroUiState
+    fields:
+      - { name: countryCode,  type: String, note: "current dashboard country; re-keyed on ChangeCountry." }
+      - { name: gdp,          type: "ScreenState<MacroIndicator>", default: "ScreenState.Loading", note: "GDP (NY.GDP.MKTP.CD) card." }
+      - { name: inflation,    type: "ScreenState<MacroIndicator>", default: "ScreenState.Loading", note: "Inflation/CPI (FP.CPI.TOTL.ZG) card." }
+      - { name: unemployment, type: "ScreenState<MacroIndicator>", default: "ScreenState.Loading", note: "Unemployment (SL.UEM.TOTL.ZS) card." }
+  derived:
+    - name: overallBand
+      type: "FreshnessBand"
+      note: >-
+        Worst-of-3 across only the Content cells' freshnessSignal.band
+        (VeryStale > Stale > Initial > Fresh). Cells not in Content don't
+        contribute; empty → Fresh. Drives the TopAppBar STALE chip.
+  actions:
+    name: MacroAction
+    variants:
+      - { action: RefreshAll,        payload: none,          effect: "fan-out refresh() to all three streams (re-fetch from World Bank)" }
+      - { action: RetryGdp,          payload: none,          effect: "streams[GDP].retry()" }
+      - { action: RetryInflation,    payload: none,          effect: "streams[INFLATION_CPI].retry()" }
+      - { action: RetryUnemployment, payload: none,          effect: "streams[UNEMPLOYMENT].retry()" }
+      - { action: ChangeCountry,     payload: "code: String", effect: "if code != current: update countryCode + cancel & re-subscribe all 3 streams keyed on new country" }
+
+# ─────────────────────────────────────────────────
+# Shell — plain TopAppBar with back + country chip + refresh-all; no bottom nav (pushed destination)
+# ─────────────────────────────────────────────────
+shell:
+  bottom_nav:
+    enabled: false
+  top_app_bar:
+    enabled: true
+    title: "Country Macro"                 # screens_macro_country_title
+    leading:
+      - type: icon_button
+        icon: arrow_back
+        aria_label: "Back"                 # screens_macro_back_cd
+        on_click:
+          action: "navigate_back"
+          action_contract:
+            effect: navigate
+            description: "Pop the back stack (popBackStackSafely) to return to the caller (home dashboard / utilities hub)."
+    trailing:
+      - type: status_chip
+        id: country_chip
+        binds_to: "SupportedCountries.findByCode(uiState.countryCode)?.name ?: uiState.countryCode"
+        intent: info
+        aria_label: "Change country"
+        note: >-
+          Flag emoji intentionally dropped — regional-indicator code points
+          (U+1F1E6..U+1F1FF) aren't in the Outfit font and render as tofu on wasmJs.
+          The chip shows the country NAME; its clickable/accent-tint affordance
+          signals 'tap to change'.
+        on_click:
+          action: "navigate"
+          target: "countryPicker"
+          action_contract:
+            effect: navigate
+            description: "Open CountryPickerScreen (navigate CountryPickerRoute) to switch the dashboard's country."
+      - type: icon_button
+        icon: refresh
+        aria_label: "Refresh all"          # screens_macro_refresh_all_cd
+        on_click:
+          action: "refresh"
+          action_contract:
+            effect: call_api
+            external_library_refs: [ktorfit, store5]
+            reads_from:
+              - { source: "World Bank v2/country/{c}/indicator/{i}", indicators: [GDP, INFLATION_CPI, UNEMPLOYMENT], dto: MacroIndicator }
+            description: "MacroAction.RefreshAll — fan out refresh() to all three Store5 streams, re-fetching each World Bank indicator for the current country over the 25-year window."
+
+# ─────────────────────────────────────────────────
+# State components. Each of the three indicator cards is an independent
+# ScreenState slot rendered by IndependentCardLayout + MacroIndicatorCardChrome
+# (feature-owned; the layout owns the per-card Loading/Empty/Error/NoNetwork/
+# Content dispatch inline). loading/empty/error below describe the PER-CARD slot
+# rendering; content describes the resolved dashboard.
+# ─────────────────────────────────────────────────
+state_components:
+
+  # ── LOADING — every card starts here; IndependentCardLayout renders MacroLoadingBody ──
+  loading:
+    - type: stack
+      direction: column
+      scroll: vertical
+      padding: "{spacing.sm}"
+      gap: "{spacing.sm}"
+      test_tag: "country_macro_screen"
+      children:
+        - { type: card, variant: app_card, accent: "secondary (emerald)", child: { type: text, content_source: "Loading… (screens_macro_card_loading) under 'GDP' title" } }
+        - { type: card, variant: app_card, accent: "tertiary (amber)",   child: { type: text, content_source: "Loading… under 'Inflation (CPI)' title" } }
+        - { type: card, variant: app_card, accent: "error (rose)",       child: { type: text, content_source: "Loading… under 'Unemployment' title" } }
+
+  # ── EMPTY — ScreenState.Empty: World Bank resolved with zero observations for the pair ──
+  empty:
+    - type: card
+      variant: app_card
+      children:
+        - type: empty_slot
+          id: indicator_empty
+          message: "No data published for this indicator."   # screens_macro_card_empty
+          retry_action: "retry"
+          description: >-
+            Rendered by MacroInlineMessage when the World Bank returns no
+            observations for the (country, indicator) pair — common for sparse
+            economies / unreported series. Per-card only; siblings unaffected. A
+            Retry TextButton re-fetches just this card.
+
+  # ── ERROR / NoNetwork — per card, with retry. No key-missing variant (World Bank is open). ──
+  error:
+    - type: card
+      variant: app_card
+      children:
+        - type: error_slot
+          id: indicator_error
+          aria_label: "Couldn't load this indicator — tap Retry"
+          retry_action: "retry"
+          variants:
+            - id: generic_error
+              trigger: "ScreenState.Error — fetcher/parse failure"
+              message: "Couldn't load this indicator."         # screens_macro_card_generic_error (falls back to error.message)
+              note: "MacroInlineMessage shows throwable.message ?: generic string, plus a Retry button."
+            - id: offline
+              trigger: "ScreenState.NoNetwork (isCaptivePortal=false) — device offline"
+              message: "Offline — connect to fetch this indicator."   # screens_macro_card_offline
+              note: >-
+                MEMORY_ONLY has no Room fallback, so offline with a cold cache
+                surfaces NoNetwork (not stale content). If the in-memory cache is
+                still warm the card keeps showing its last Content with a STALE band.
+            - id: captive_portal
+              trigger: "ScreenState.NoNetwork (isCaptivePortal=true)"
+              message: "Behind a captive portal — sign in to continue."   # screens_macro_card_captive_portal
+            - id: auth_required
+              trigger: "ScreenState.Unauthenticated (framework path; World Bank never returns 401 in practice)"
+              message: "Authentication required."               # screens_macro_card_auth_required
+          on_retry:
+            action: "retry"
+            action_contract:
+              effect: call_api
+              external_library_refs: [ktorfit, store5]
+              reads_from:
+                - { source: "World Bank v2/country/{c}/indicator/{i}", indicator: "<this card's IndicatorKind>", dto: MacroIndicator }
+              description: "MacroAction.Retry{Gdp|Inflation|Unemployment} — refresh only this card's Store5 stream, re-fetching its World Bank indicator."
+
+  # ── CONTENT — three resolved IndicatorCards inside a vertical scroll ──
+  content:
+    - type: stack
+      direction: column
+      scroll: vertical
+      padding: "{spacing.sm}"
+      gap: "{spacing.sm}"
+      test_tag: "country_macro_screen"
+      children:
+
+        - type: status_chip
+          id: stale_chip
+          intent: warning
+          visible_when: "uiState.overallBand in {Stale, VeryStale}"
+          content_source: "STALE — showing cached data"        # screens_macro_stale_chip
+
+        - type: dashboard_progress_bar
+          id: dashboard_progress
+          binds_to: "macroStates.toDashboardProgressState() — 'X of Y loaded'"
+
+        - type: card
+          variant: app_card
+          id: gdp_card
+          component: "IndependentCardLayout + MacroIndicatorCardChrome"
+          accent: "secondary (emerald — growth)"
+          aria_label: "GDP — tap for 25-year detail"
+          on_click:
+            action: "navigate"
+            target: "macroIndicatorDetail"
+            params: { countryCode: "<current>", indicatorKindName: "GDP" }
+            action_contract:
+              effect: navigate
+              description: "Navigate to MacroIndicatorDetailScreen for (country, GDP) via IndicatorDetailRoute."
+          children:
+            - { type: text, variant: title_medium, content_source: "IndicatorKind.GDP.displayName() = 'GDP'" }
+            - { type: text, variant: headline_small, content_source: "indicator.headlineValue() — compact currency, e.g. $27.36T" }
+            - { type: text, variant: label_small, content_source: "Latest: {latestYear()} (screens_macro_card_latest_year)" }
+            - { type: sparkline, component: Sparkline, binds_to: "indicator.observations[].value", note: "trend hint; renders '—' if <2 non-null values." }
+
+        - type: card
+          variant: app_card
+          id: inflation_card
+          component: "IndependentCardLayout + MacroIndicatorCardChrome"
+          accent: "tertiary (amber — warning)"
+          aria_label: "Inflation (CPI) — tap for 25-year detail"
+          on_click:
+            action: "navigate"
+            target: "macroIndicatorDetail"
+            params: { countryCode: "<current>", indicatorKindName: "INFLATION_CPI" }
+            action_contract:
+              effect: navigate
+              description: "Navigate to MacroIndicatorDetailScreen for (country, INFLATION_CPI)."
+          children:
+            - { type: text, variant: title_medium, content_source: "IndicatorKind.INFLATION_CPI.displayName() = 'Inflation (CPI)'" }
+            - { type: text, variant: headline_small, content_source: "indicator.headlineValue() — percentage, e.g. 3.4%" }
+            - { type: text, variant: label_small, content_source: "Latest: {latestYear()}" }
+            - { type: sparkline, component: Sparkline, binds_to: "indicator.observations[].value" }
+
+        - type: card
+          variant: app_card
+          id: unemployment_card
+          component: "IndependentCardLayout + MacroIndicatorCardChrome"
+          accent: "error (rose — concern)"
+          aria_label: "Unemployment — tap for 25-year detail"
+          on_click:
+            action: "navigate"
+            target: "macroIndicatorDetail"
+            params: { countryCode: "<current>", indicatorKindName: "UNEMPLOYMENT" }
+            action_contract:
+              effect: navigate
+              description: "Navigate to MacroIndicatorDetailScreen for (country, UNEMPLOYMENT)."
+          children:
+            - { type: text, variant: title_medium, content_source: "IndicatorKind.UNEMPLOYMENT.displayName() = 'Unemployment'" }
+            - { type: text, variant: headline_small, content_source: "indicator.headlineValue() — percentage, e.g. 3.7%" }
+            - { type: text, variant: label_small, content_source: "Latest: {latestYear()}" }
+            - { type: sparkline, component: Sparkline, binds_to: "indicator.observations[].value" }
+
+# ─────────────────────────────────────────────────
+# Related screens — country picker (pure-local) + per-indicator detail.
+# ─────────────────────────────────────────────────
+related_screens:
+  - screen_id: countryPicker
+    viewmodel: CountryPickerViewModel
+    base: "BaseViewModel<CountryPickerState, Nothing, CountryPickerAction>"
+    archetype: pure-ui                # NO Store, NO network, NO ScreenState — static bundled list
+    route: "CountryPickerRoute (data object)"
+    states: [content]                 # nothing can fail; always renders the filtered list
+    initial_state: content            # pure-local static list — no async, no Loading/Error; renders Content immediately
+    description: >-
+      Pure-local picker over SupportedCountries (a curated G20-plus list of
+      ISO-3166-1-alpha-2 countries, bundled at compile time). Search filters via
+      SupportedCountries.search(query) which matches an ISO-code prefix OR a
+      localised-name substring, both case-insensitive; empty query restores the
+      full list. Each row is a theme-tinted ISO-code badge (flag emoji dropped —
+      tofu on wasmJs) + country name + code. Selecting a row reports the chosen
+      Country.code back via onCountryPicked; navigation then re-launches
+      CountryMacroRoute(code) with popUpTo(inclusive) so a fresh dashboard VM binds
+      to the new country.
+    state_model:
+      state: { name: CountryPickerState, fields: [ { name: searchQuery, type: String }, { name: results, type: "List<Country>" } ] }
+      actions: { name: CountryPickerAction, variants: [ { action: Search, payload: "query: String", effect: "results = SupportedCountries.search(query)" } ] }
+    components:
+      - { type: text_field, component: OutlinedTextField, placeholder: "Search country or ISO code (screens_macro_picker_search_placeholder)", binds_to: "state.searchQuery" }
+      - { type: list, component: LazyColumn, binds_to: "state.results → CountryRow(code badge + name + code)" }
+    on_select:
+      action: "navigate"
+      target: "macro"
+      params: { countryCode: "<picked code>" }
+      action_contract:
+        effect: navigate
+        description: "onCountryPicked(code) → navigate CountryMacroRoute(code) popUpTo(CountryMacroRoute()){inclusive} — dashboard rebuilds on the new country."
+
+  - screen_id: macroIndicatorDetail
+    viewmodel: MacroIndicatorDetailViewModel
+    base: "BaseViewModel<Unit, Nothing, MacroDetailAction>"
+    archetype: screen-content
+    route: "IndicatorDetailRoute(countryCode: String, indicatorKindName: String)"
+    states: [loading, content, empty, error]
+    initial_state: loading   # single-indicator stream stateIn(WhileSubscribed(5s), ScreenState.Loading)
+    description: >-
+      Full-history view for a single (country, indicator) pair. Subscribes one
+      MacroIndicatorStore stream via macroIndicatorStream(key) — same MEMORY_ONLY
+      Store5 path as the dashboard, single key. screenState is a StateFlow<
+      ScreenState<MacroIndicator>> stateIn(WhileSubscribed(5s), Loading). Rendered
+      through the framework ScreenContent (Loading/Empty/Error/NoNetwork slots
+      framework-owned). Content = a HeroCard (AmountDisplay of headlineValue +
+      "Source: World Bank Open Data") + an AppCard-wrapped full-range Sparkline +
+      a "Year-by-year" reverse-chronological table of every (year, value)
+      observation (value formatDecimal(2) or "—" for null). When the freshness band
+      is Stale/VeryStale an OfflineDataBanner ("No network · Updated {ago}") shows
+      above the content. indicatorKind is passed as the enum name() over the type-
+      safe route and re-hydrated via IndicatorKind.valueOf on bind.
+    components:
+      - { type: hero_card, component: HeroCard, contains: [AmountDisplay, "source label: Source: World Bank Open Data"] }
+      - { type: chart, component: Sparkline, binds_to: "indicator.observations[].value (full 25-year range)" }
+      - { type: list, component: LazyColumn, binds_to: "indicator.observations.asReversed() → (year, value) rows" }
+      - { type: banner, component: OfflineDataBanner, visible_when: "freshnessSignal.band in {Stale, VeryStale}" }
+    on_refresh:
+      action: "refresh"
+      action_contract:
+        effect: call_api
+        external_library_refs: [ktorfit, store5]
+        reads_from:
+          - { source: "World Bank v2/country/{c}/indicator/{i}", indicator: "<route indicatorKind>", dto: MacroIndicator }
+        description: "MacroDetailAction.Refresh/Retry — refresh the single-indicator Store5 stream, re-fetching from World Bank."
+
+# ─────────────────────────────────────────────────
+# Test tags present in source (feature/macro/.../TestTags.kt) — APPEND-ONLY
+# ─────────────────────────────────────────────────
+test_tags:
+  - { id: "country_macro_screen",           screen: macro,                object: "TestTags.CountryMacro.SCREEN",         note: "Root Scaffold of the dashboard; always in the tree irrespective of ScreenState." }
+  - { id: "country_picker_screen",          screen: countryPicker,        object: "TestTags.CountryPicker.SCREEN",        note: "Root Scaffold of the picker; always rendered." }
+  - { id: "macro_indicator_detail_screen",  screen: macroIndicatorDetail, object: "TestTags.MacroIndicatorDetail.SCREEN", note: "Root Scaffold of the detail screen; always rendered." }
+
+# ─────────────────────────────────────────────────
+# Source provenance (reverse-engineered, read-only)
+# ─────────────────────────────────────────────────
+source_refs:
+  dashboard_screen: "feature/macro/src/commonMain/kotlin/kpt/feature/macro/ui/CountryMacroScreen.kt"
+  dashboard_viewmodel: "feature/macro/src/commonMain/kotlin/kpt/feature/macro/ui/CountryMacroViewModel.kt"
+  picker_screen: "feature/macro/src/commonMain/kotlin/kpt/feature/macro/ui/CountryPickerScreen.kt"
+  picker_viewmodel: "feature/macro/src/commonMain/kotlin/kpt/feature/macro/ui/CountryPickerViewModel.kt"
+  detail_screen: "feature/macro/src/commonMain/kotlin/kpt/feature/macro/ui/MacroIndicatorDetailScreen.kt"
+  detail_viewmodel: "feature/macro/src/commonMain/kotlin/kpt/feature/macro/ui/MacroIndicatorDetailViewModel.kt"
+  components: "feature/macro/src/commonMain/kotlin/kpt/feature/macro/ui/components/{IndicatorCard.kt,Sparkline.kt,IndicatorFormatting.kt}"
+  navigation: "feature/macro/src/commonMain/kotlin/kpt/feature/macro/navigation/MacroNavigation.kt"
+  di: "feature/macro/src/commonMain/kotlin/kpt/feature/macro/di/MacroModule.kt"
+  test_tags: "feature/macro/src/commonMain/kotlin/kpt/feature/macro/ui/TestTags.kt"
+  strings: "feature/macro/src/commonMain/composeResources/values/strings.xml"
+  repository: "core/data/src/commonMain/kotlin/kpt/core/data/demo/economic/{MacroIndicatorsRepository.kt,impl/MacroIndicatorsRepositoryImpl.kt}"
+  countries: "core/data/src/commonMain/kotlin/kpt/core/data/demo/economic/SupportedCountries.kt"
+  store: "core/store/src/commonMain/kotlin/kpt/core/store/demo/economic/impl/{MacroIndicatorStore.kt,MacroIndicatorKey.kt}"
+  network: "core/network/src/commonMain/kotlin/kpt/core/network/demo/economic/{api/WorldBankApi.kt,config/WorldBankApiConfig.kt,dto/WorldBankResponseDto.kt}"
+  model: "core/model/src/commonMain/kotlin/kpt/core/model/demo/economic/{MacroIndicator.kt,Country.kt}"
+  design_system: ["core-base/designsystem AppCard + HeroCard", "core-base/ui ScreenContent + IndependentCardLayout + DashboardProgressBar", "core/designsystem AmountDisplay + StatusChip", "feature-local Sparkline + IndicatorCard", "core/common formatDecimal + formatTimeAgo"]

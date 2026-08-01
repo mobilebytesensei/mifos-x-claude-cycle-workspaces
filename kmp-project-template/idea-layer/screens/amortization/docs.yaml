@@ -1,0 +1,81 @@
+schema_version: '1.0'
+screen_id: amortization-schedule
+feature_id: feat-amortization
+archetype: screen-content
+flow: flow-loans-browse
+title: Payment Schedule (B5 Amortization)
+purpose: >-
+  Show the full month-by-month payment breakdown for any tracked loan. A purely offline
+  READ-ONLY projection (Room + Store5, no backend): reads one loan by id from LoanRepository
+  and derives a complete reducing-balance amortization table on-device (computeSchedule) —
+  principal, interest, and remaining balance per month, plus a Summary total row. Reached
+  from the loan-detail 'Schedule' button; a terminal leaf with no user actions beyond Back.
+status: reverse-engineered
+source_of_truth: source            # imported FROM shipped source, not FROM idea-layer
+quality_score: 90
+last_modified: '2026-08-01'
+
+# ── B5 showcase note (why this feature exists in the Money Toolkit template) ──
+showcase:
+  toolkit_id: B5
+  name: "Amortization Schedule"
+  patterns_demonstrated:
+    - "Read-side projection of LoanRepository (per template CLAUDE.md feature showcase)"
+    - "OFFLINE_LOCAL_ONLY projection via ScreenDataStream — observeById(loanId).map { }.stateIn(WhileSubscribed)"
+    - "Koin parametersOf(loanId) — a per-navigation-entry ViewModel scoped by route param"
+    - "Deliberate NON-use of PagingScreenStream — finite (<=360), microsecond, non-network rows rendered lazily by LazyColumn"
+    - "BaseViewModel<Unit, Nothing, Nothing> — a projection with no MVI State / Event / Action"
+    - "Pure local calculator (computeSchedule) fused with a reactive store read"
+  store_archetype: OFFLINE_LOCAL_ONLY
+  note: >-
+    Amortization reuses feature/loans' LoansStore + LoanRepository (it owns no table of its
+    own). The schedule is recomputed from the single loan snapshot on every emission — never
+    persisted, never cached. This is the canonical 'read-side projection of another feature's
+    store + local derivation' archetype in the toolkit.
+
+components:
+  - top_app_bar
+  - lazy_column
+  - table_header_row
+  - table_data_row
+  - horizontal_divider
+  - summary_card
+  - screen_content
+
+screens_summary:
+  - { id: amortization-schedule, composable: AmortizationScheduleScreen, viewmodel: AmortizationScheduleViewModel, states: "loading, content, empty" }
+
+user_stories:
+  - "As a user, I want to see the full payment schedule for a loan so I understand how each month splits into principal and interest."
+  - "As a user, I want to see my remaining balance decline month by month so I know when the loan is paid off."
+  - "As a user, I want a summary of total payments, total principal, and total interest so I grasp the true cost of the loan."
+  - "As a user, when a loan is already paid off I want the screen to say there is nothing to amortize rather than show an empty table."
+
+metrics:
+  - "amortization_schedule_opened (from loan-detail Schedule tap)"
+  - "avg_months_remaining_viewed"
+  - "schedule_scroll_depth"
+
+data_model:
+  read_entity: Loan
+  read_table: banking_loans
+  computed_entity: AmortizationRow
+  computed_persisted: false
+  read_fields:
+    - { name: principalRemaining, type: Double, note: "starting balance for the schedule" }
+    - { name: annualRatePercent, type: Double, note: "APR — divided by 1200 for the monthly rate" }
+    - { name: monthlyPayment, type: Double, note: "EMI — the constant per-row payment" }
+    - { name: monthsRemaining, type: Int, note: "row count; <=0 → Empty" }
+  computed_fields:
+    - { name: month, type: Int, note: "1-indexed payment number" }
+    - { name: payment, type: Double, note: "== monthlyPayment" }
+    - { name: principal, type: Double, note: "min(payment − interest, balance)" }
+    - { name: interest, type: Double, note: "balance × (annualRatePercent/1200); 0 when rate==0" }
+    - { name: balance, type: Double, note: "max(0, balance − principal) AFTER this row" }
+
+notes:
+  - "READ-ONLY: no writes, no navigation forward, no clickable rows — only the Back arrow is interactive."
+  - "No error state is ever emitted (onRetry is a no-op) — a local read + in-memory math does not fail."
+  - "Empty triggers on TWO conditions: loan == null (unknown/deleted id) OR loan.monthsRemaining <= 0 (fully paid)."
+  - "AmortizationRow.payment is carried per row but only surfaced as a Summary total — the per-row table shows month/principal/interest/balance."
+  - "There is a pre-existing @Ignore'd unit test (computeSchedule_principalGrowsEachMonth) flagged in source as an unresolved fixture-vs-math question — carried over, not fixed by this import."

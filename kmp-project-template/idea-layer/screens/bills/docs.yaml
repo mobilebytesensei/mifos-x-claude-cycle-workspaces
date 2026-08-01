@@ -1,0 +1,139 @@
+schema_version: '1.0'
+screen_id: bills-list
+feature_id: feat-bills
+archetype: screen-content
+flow: flow-bills-browse
+title: Bill Reminders (B4 Bill Reminders)
+purpose: >-
+  Track recurring (and one-time) bills locally — name, amount, due-day, recurrence, category,
+  and a per-bill reminder lead-time. A purely offline feature (Room + Store5, no backend): browse
+  the bill dashboard with an "upcoming this month" summary tile, add / edit bills through an
+  offline-resilient DraftSubmitHandler form, mark a bill paid from the list, and schedule an
+  in-app / OS notification (best-effort, per-platform) that fires reminderDaysBefore days before
+  each bill's next due-date.
+status: reverse-engineered
+source_of_truth: source            # imported FROM shipped source, not FROM idea-layer
+quality_score: 92
+last_modified: '2026-08-01'
+
+# ── B4 showcase note (why this feature exists in the Money Toolkit template) ──
+showcase:
+  toolkit_id: B4
+  name: "Bill Reminders"
+  patterns_demonstrated:
+    - "DraftSubmitHandler (offline-resilient form) — per template CLAUDE.md feature showcase"
+    - "SECOND multi-formKey BaseDraftMutationViewModel (EditBillReminderViewModel) — concurrent offline drafts, one per bill (formKey='bill', uniqueKey=billId)"
+    - "OFFLINE_LOCAL_ONLY Store5 store (BillRemindersStore, key=Unit → List<BillReminderEntity>)"
+    - "combine() of 3 reactive repository Flows (all + upcoming + total) → one ScreenState.Content"
+    - "Platform notification scheduling via expect/actual BillReminderScheduler behind a feature-local mockable BillNotificationGateway seam"
+    - "Feature-local pure recurrence math (BillReminderRecurrence: next due-date + month-end clamp + 09:00 trigger)"
+  store_archetype: OFFLINE_LOCAL_ONLY
+  note: >-
+    The distinguishing B4 pattern over B1 (loans) is the platform notification side-effect: the
+    submit is TWO operations — a local Room upsert plus a best-effort OS notification schedule.
+    The scheduler is an expect/actual (WorkManager on Android, UNUserNotificationCenter on iOS,
+    no-op stubs on Desktop/JS/WasmJS), wrapped in a small feature-local interface so the
+    ViewModel depends on something mockable in tests.
+
+components:
+  - top_app_bar
+  - extended_fab
+  - hero_card
+  - amount_display
+  - lazy_column
+  - app_card
+  - urgency_dot
+  - status_chip
+  - money_text
+  - text_button
+  - outlined_text_field
+  - radio_button
+  - filter_chip
+  - switch
+  - button
+  - circular_progress_indicator
+
+screens_summary:
+  - { id: bills-list,   composable: BillRemindersListScreen,     viewmodel: BillRemindersListViewModel, states: "loading, content, empty, error" }
+  - { id: bill-addedit, composable: AddOrEditBillReminderScreen, viewmodel: EditBillReminderViewModel,  states: "loading (edit-mode hydrate), content, submitting, submitted, failed" }
+
+user_stories:
+  - "As a user, I want to see all my bills with amount and how soon they're due so I never miss a payment."
+  - "As a user, I want a reminder notification a few days before each bill is due."
+  - "As a user, I want to add a bill with its recurrence (monthly / quarterly / annually / one-time) and category."
+  - "As a user, I want to mark a bill paid from the list."
+  - "As a user, I want to edit a bill's details (including enabling/disabling its reminder) from the add/edit form."
+  - "As a user, I want my edits to survive being offline — nothing lost even if I edit several bills without a connection."
+
+metrics:
+  - "bills_added / bills_edited / bills_marked_paid"
+  - "reminders_scheduled / reminders_cancelled"
+  - "avg_active_bills_per_user"
+  - "add_edit_form_completion_rate"
+  - "offline_draft_recovery_rate (drafts committed on reconnect)"
+  - "notification_schedule_success_rate (OS-permission-gated)"
+
+data_model:
+  entity: BillReminder
+  table: banking_bill_reminders
+  fields:
+    - { name: id, type: String, note: "client UUID, primary key" }
+    - { name: name, type: String }
+    - { name: amount, type: Double }
+    - { name: dueDay, type: Int, note: "day-of-month 1..31; month-end clamp applied at scheduling time" }
+    - { name: recurrence, type: "Recurrence (MONTHLY|QUARTERLY|ANNUALLY|ONCE)" }
+    - { name: category, type: "BillCategory (UTILITIES|HOUSING|TRANSPORT|FOOD|SUBSCRIPTIONS|OTHER)" }
+    - { name: enabled, type: Boolean, default: "true", note: "disabled bills persist but fire no notification" }
+    - { name: reminderDaysBefore, type: Int, default: "1", note: "0..30 lead time before dueDay" }
+    - { name: createdAtMs, type: Long }
+    - { name: updatedAtMs, type: Long }
+
+platform_dependencies:
+  capability: notification_scheduling
+  contract: BillReminderScheduler        # core/platform/notification/bill/ (expect/actual)
+  seam: BillNotificationGateway          # feature/bills/notification/ (mockable interface + Impl)
+  payload: BillReminderSchedule          # {billId, title, body, triggerAtMs}
+  di: "BillsModule includes(notificationModule); single<BillNotificationGateway> { BillNotificationGatewayImpl(get()) }"
+  actuals:
+    android: "WorkManager OneTimeWorkRequest (REPLACE) → BillReminderWorker; survives process death"
+    ios: "UNUserNotificationCenter calendar trigger; needs runtime permission"
+    desktop: "no-op stub (in-app banner only)"
+    js: "no-op stub (Service Worker deferred)"
+    wasmJs: "no-op stub"
+
+# ── Known gaps between the ViewModel API surface and the shipped UI (verified against HEAD) ──
+known_gaps:
+  - id: F-009
+    title: "Delete + ToggleEnabled are ViewModel APIs but NOT surfaced as row controls in the list UI"
+    severity: documented-gap
+    verified: "current source HEAD — feature/bills/ui/BillRemindersListScreen.kt (BillReminderRow) + TestTags.kt + strings.xml"
+    detail: >-
+      BillRemindersListViewModel exposes BillRemindersAction.Delete / .ToggleEnabled plus the
+      convenience emitters onDelete(id) / onToggleEnabled(id) — all fully implemented (delete →
+      repository.delete + scheduler.cancel; toggle → repository.upsert(copy(enabled=!enabled)) +
+      scheduler.cancel when disabling) and covered by @Test cases in BillRemindersListViewModelTest
+      (onDeleteRemovesBillAndCancelsNotification, onToggleEnabledFlipsRowAndCancelsWhenDisabling).
+      However the shipped BillReminderRow composable wires ONLY two interactions: the "Paid"
+      TextButton (→ onMarkPaid) and a whole-card Modifier.clickable (→ onEditBillClick / navigate to
+      the edit form). There is NO delete IconButton, NO reminders Switch, and NO swipe-to-delete in
+      the list row. TestTags.kt declares only bills_list_fab + bills_addedit_save_button — there are
+      no per-row test tags. So Delete + ToggleEnabled are reachable ONLY via the ViewModel in tests,
+      never from the list screen. (Enable/disable IS reachable indirectly through the add/edit form's
+      Enabled switch, which routes through EditBillReminderViewModel.performSubmit — not through
+      BillRemindersAction.ToggleEnabled.)
+    ui_impact: >-
+      ui.yaml intentionally lists ONLY the mark_paid_button and the row's navigate-to-edit on_click
+      as the bills-list row interactions. It does NOT declare a delete_button or reminder_enabled_toggle
+      component, because neither exists in source. api.yaml / tests.yaml / data-flow.yaml still DOCUMENT
+      the Delete + ToggleEnabled ViewModel operations (with a "not UI-surfaced" note) because they truly
+      exist and are tested at the ViewModel layer.
+    resolution_options:
+      - "Add a delete IconButton (destructive, confirm-gated) + a reminders Switch to BillReminderRow, wired to viewModel.onDelete / onToggleEnabled, plus matching TestTags + strings — then re-add the components to ui.yaml."
+      - "Or keep list minimal and leave enable/disable to the edit form; if so, consider whether the Delete VM action should be exercised from anywhere (currently test-only)."
+
+notes:
+  - "This is a tracker + reminder scheduler, not a live ledger — amounts and due-days are user-entered."
+  - "No auth, no backend, no remote sync. Forks can swap repository.upsert for a remote API with zero ViewModel changes."
+  - "Two screens only — a bill row short-tap opens the edit form directly; there is NO separate detail screen."
+  - "See known_gaps F-009: Delete / ToggleEnabled are tested ViewModel APIs but not surfaced as list row controls; only the Paid button + row-tap-to-edit are wired."
+  - "mark-paid is a bump (updatedAtMs) + cancel today — per-row lastPaidAtMs is a declared future extension; recurring bills derive next-due from dueDay, not stored state."

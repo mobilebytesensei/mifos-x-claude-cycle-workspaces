@@ -1,0 +1,172 @@
+# data-flow.yaml — feature/home Money Toolkit dashboard: the 4-way fan-in.
+# COMPOSITE archetype. One entry per upstream source fanned into HomeUiState.
+# Two entries are pure-local Room reads (loans, bills); two are Store5
+# NETWORK_WITH_CACHE streams (rates over FRED — a 2-series combineScreenStates —
+# and exchange over Frankfurter, PERIODIC 5-min). Reverse-engineered from
+# HomeViewModel.kt + core/{data,store,network,database,model}/demo/{banking,economic,currency}.
+sibling: data-flow
+schema_version: "2.2.0"
+feature_id: feat-home
+
+# The fan-in shape (grounded in HomeViewModel init{} + combineScreenStates):
+#
+#   LoanRepository.observeAll() ───────────────▶ loans        (local Flow → Empty/Content)
+#   BillReminderRepository.observeUpcoming(7) ─▶ bills        (local Flow → Empty/Content)
+#   fedFundsStream.state ─┐
+#                         ├─ combineScreenStates ─▶ rates     (RatesQuickView; Content iff BOTH Content)
+#   mortgageStream.state ─┘
+#   exchangeRateStream.state (PERIODIC 5-min) ─▶ exchangeRate (ExchangeRates; ambient auto-refresh)
+#
+#   HomeUiState { loans, bills, rates, exchangeRate }  — four independent ScreenState slots.
+#   Freshness: exchangeFreshness (exchange stream) + ratesFreshness (worst-of-2 fed|mortgage).
+
+combine:
+  kind: fan_in_slots            # four independent slots; rates slot is a nested combineScreenStates
+  helper: combineScreenStates   # framework helper, priority NoNetwork>Loading>Unauthenticated>Error>Empty>Content
+  slots: 4
+  network_backed: [rates, exchangeRate]
+  local_backed: [loans, bills]
+
+entries:
+
+  # ── SLOT 1: loans — pure-local reactive Room read ──
+  - screen_id: home
+    slot: loans
+    trigger: on_subscribe          # loanRepository.observeAll().launchIn(viewModelScope) at VM init
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: banking_loans
+        mutation: read
+        columns: [id, name, kind, principal, principalRemaining, annualRatePercent, tenureMonths, monthsRemaining, monthlyPayment, nextDueDate, totalPaid, createdAtMs, updatedAtMs]
+        order: "nextDueDate ASC, createdAtMs ASC"   # DAO order (soonest-due first)
+    dtos:
+      - { name: Loan, role: response, api_id: observe-all-loans }
+    derived:
+      - { name: count,            from: "loans.size" }
+      - { name: totalMonthlyEmi,  from: "sum(monthlyPayment)" }
+      - { name: totalOutstanding, from: "sum(principalRemaining)" }
+    produces_state: content        # empty list → ScreenState.Empty
+    projection: "empty → ScreenState.Empty; else ScreenState.Content(LoansSummary(count, totalMonthlyEmi, totalOutstanding, loans))"
+    cache:
+      strategy: source_of_truth_only   # Room IS the SoT — always FRESH, no TTL, no network
+      ttl_seconds: 0
+      key_template: "loans:all"
+    error_paths: []                # local read — no network error class
+    notes: "Same LoanRepository.observeAll() feed as feature/loans; the dashboard only needs the summary aggregates + the carousel list."
+
+  # ── SLOT 2: bills — pure-local reactive Room read, 7-day window ──
+  - screen_id: home
+    slot: bills
+    trigger: on_subscribe          # billReminderRepository.observeUpcoming(7).launchIn(viewModelScope)
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: banking_bill_reminders
+        mutation: read
+        columns: [id, name, amount, dueDay, recurrence, category, enabled, reminderDaysBefore, createdAtMs, updatedAtMs]
+        filter: { enabled: true, window: "dueDay within next UPCOMING_BILLS_WINDOW_DAYS (=7), wraps month boundary" }
+    dtos:
+      - { name: BillReminder, role: response, api_id: observe-upcoming-bills }
+    derived:
+      - { name: totalDue, from: "sum(amount) over the upcoming window" }
+    produces_state: content        # empty → ScreenState.Empty
+    projection: "empty → ScreenState.Empty; else ScreenState.Content(List<BillReminder>)  (card previews first 3)"
+    cache: { strategy: source_of_truth_only, ttl_seconds: 0, key_template: "bills:upcoming:7d" }
+    error_paths: []
+    notes: "BillReminderRepository.observeUpcoming(maxDays=7). Home renders the total + up to BILLS_PREVIEW_LIMIT (3) rows with UrgencyDot."
+
+  # ── SLOT 3a: rates / DFF — FRED Store5 NETWORK_WITH_CACHE (fed funds) ──
+  - screen_id: home
+    slot: rates
+    combine_member: fedFunds
+    trigger: on_subscribe          # fedFundsStream.state feeds combineScreenStates
+    auth_required: false           # public FRED data; FRED api_key ≠ user auth
+    series_id: DFF
+    series_name: "Federal Funds Rate"
+    key: "InterestRateSeriesKey(seriesId=DFF, name='Federal Funds Rate', unit='%', days=30)"
+    endpoints:
+      - { api_id: fred-series-observations, transport: rest, method: GET }
+    tables:
+      - { name: interest_rate_series, mutation: read_write, columns: [seriesId, date, value, updatedAt] }
+    dtos:
+      - { name: FredObservationsDto, role: response, api_id: fred-series-observations }
+      - { name: InterestRateSeries,  role: domain,   api_id: fred-series-observations }
+    produces_state: content
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 86400
+      key_template: "economic:rates:DFF:30d"    # NOTE: 30-day window (compact card), NOT the 365d full-screen window
+      shape: list
+    error_paths:
+      - { error_code: config.fred_key_missing, behavior: error_slot,    message: "FRED_API_KEY is not configured" }
+      - { error_code: network.offline,         behavior: fallback_cache, fallback_dto: InterestRateSeries }
+      - { error_code: empty.no_observations,   behavior: empty_slot }
+    notes: "One of two FRED series combined into the rates slot. Home uses days=30 for a small payload / fast first paint."
+
+  # ── SLOT 3b: rates / MORTGAGE30US — FRED Store5 NETWORK_WITH_CACHE (30Y mortgage) ──
+  - screen_id: home
+    slot: rates
+    combine_member: mortgage
+    trigger: on_subscribe          # mortgageStream.state feeds combineScreenStates
+    auth_required: false
+    series_id: MORTGAGE30US
+    series_name: "30-Year Mortgage"
+    key: "InterestRateSeriesKey(seriesId=MORTGAGE30US, name='30-Year Mortgage', unit='%', days=30)"
+    endpoints:
+      - { api_id: fred-series-observations, transport: rest, method: GET }
+    tables:
+      - { name: interest_rate_series, mutation: read_write, columns: [seriesId, date, value, updatedAt] }
+    dtos:
+      - { name: FredObservationsDto, role: response, api_id: fred-series-observations }
+      - { name: InterestRateSeries,  role: domain,   api_id: fred-series-observations }
+    produces_state: content
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 86400
+      key_template: "economic:rates:MORTGAGE30US:30d"
+      shape: list
+    error_paths:
+      - { error_code: config.fred_key_missing, behavior: error_slot,    message: "FRED_API_KEY is not configured" }
+      - { error_code: network.offline,         behavior: fallback_cache, fallback_dto: InterestRateSeries }
+      - { error_code: empty.no_observations,   behavior: empty_slot }
+    combine_note: >-
+      combineScreenStates(fedFunds, mortgage) → RatesQuickView(fedFundsPercent=fed.current,
+      mortgage30YPercent=mortgage.current). The rates slot is Content ONLY when BOTH source
+      streams reach Content; otherwise the worse source state (Loading/Error/Empty) wins.
+      ratesFreshness = worst-of-2 FreshnessBand (Initial<Fresh<Stale<VeryStale).
+
+  # ── SLOT 4: exchangeRate — Frankfurter Store5 NETWORK_WITH_CACHE, PERIODIC(5-min) ──
+  - screen_id: home
+    slot: exchangeRate
+    trigger: on_subscribe          # exchangeRateStream.state.launchIn(viewModelScope)
+    auth_required: false
+    base_currency: USD
+    fetch_policy: "PERIODIC(intervalMillis = EXCHANGE_RATE_REFRESH_INTERVAL_MS = 300_000)"
+    endpoints:
+      - { api_id: frankfurter-latest, transport: rest, method: GET }
+    tables:
+      - { name: exchange_rates, mutation: read_write, columns: [base, date, rates] }
+    dtos:
+      - { name: ExchangeRatesDto, role: response, api_id: frankfurter-latest }
+      - { name: ExchangeRates,    role: domain,   api_id: frankfurter-latest }
+    produces_state: content
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 86400           # 24h Store5 TTL; the PERIODIC ticker forces a background refresh every 5 min on top
+      key_template: "currency:exchange:USD"
+      shape: object                # ExchangeRates { base, date, rates: Map<String,Double> } — card shows EUR/GBP/INR
+    periodic_note: >-
+      FetchPolicy.PERIODIC(300_000 ms) — the ambient auto-refresh archetype. The
+      ScreenDataStream ticker fires a background refresh every 5 minutes through the
+      same debounce + lastContent-preservation pipeline as a user-tap refresh, so no
+      Loading flicker and the tile stays fresh without a manual pull.
+    error_paths:
+      - { error_code: network.offline, behavior: fallback_cache, fallback_dto: ExchangeRates }
+    notes: "exchangeFreshness (StateFlow<FreshnessSignal>) drives the card's FreshnessIndicator; WhileSubscribed(STATE_TIMEOUT_MS=5_000)."
+
+# Actions that re-run the network fetches (no navigation).
+refresh_actions:
+  - { action: RefreshAll,        effect: "exchangeRateStream.refresh() + fedFundsStream.refresh() + mortgageStream.refresh()", note: "loans/bills local — nothing to refresh" }
+  - { action: RetryRates,        effect: "fedFundsStream.retry() + mortgageStream.retry()" }
+  - { action: RetryExchangeRate, effect: "exchangeRateStream.retry()" }

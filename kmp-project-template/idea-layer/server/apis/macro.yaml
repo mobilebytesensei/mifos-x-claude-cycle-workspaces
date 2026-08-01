@@ -1,0 +1,84 @@
+schema_version: "1.0"
+feature: macro
+screen_id: macro
+spec_source: screens/macro/api.yaml + screens/macro/data-flow.yaml
+
+# External API spec — mirrors screens/macro/api.yaml faithfully.
+# NOT an owned backend (PROJECT_CONFIG server.backends: []). Catalogs the PUBLIC
+# World Bank Open Data integration consumed through a Store5 MEMORY_ONLY cache.
+
+external_source:
+  name: "World Bank Open Data"
+  full_name: "World Bank Open Data — World Development Indicators API v2"
+  base_url: "https://api.worldbank.org/"
+  transport: rest
+  client: ktorfit                        # WorldBankApi
+  auth:
+    type: none
+    required: false
+    note: >-
+      Fully open — NO authentication, NO api key. There is NO key-missing failure
+      mode (contrast FRED). Only baseUrl (WorldBankApiConfig) is configurable.
+  rate_limit: "Generous public quota; MEMORY_ONLY cache + 7-day TTL → ≤ ~1 call/week per (country, indicator)."
+  wire_quirk: >-
+    Every response is a TWO-element JSON array [metadata, observations[]] — parsed by
+    a custom WorldBankResponseSerializer. On 404/rate-limit/missing-data the API returns
+    a single-element object {"message":[...]}; the serializer maps a non-array root to
+    an empty domain object → repository surfaces "no data" (Empty slot).
+  docs: "https://datatopics.worldbank.org/world-development-indicators/"
+
+endpoints:
+  - operation: worldbank-country-indicator
+    method: GET
+    path: "v2/country/{countryCode}/indicator/{indicator}"
+    source: worldbank
+    request:
+      path_params:
+        countryCode: "ISO 3166-1 alpha-2 (e.g. US); alpha-3 (USA) also accepted; toolkit standardises on alpha-2"
+        indicator: "World Bank indicator code — from IndicatorKind.worldBankCode"
+      query:
+        format: "json (forced — World Bank defaults to XML)"
+        per_page: 50
+        date: "{startYear}:{endYear} (today.year-key.years .. today.year, years default 25)"
+    indicator_codes:
+      - { kind: GDP,            code: "NY.GDP.MKTP.CD", label: "GDP (current US$)",                     surfaced_on_dashboard: true }
+      - { kind: INFLATION_CPI,  code: "FP.CPI.TOTL.ZG", label: "Inflation, consumer prices (annual %)", surfaced_on_dashboard: true }
+      - { kind: UNEMPLOYMENT,   code: "SL.UEM.TOTL.ZS", label: "Unemployment, total (% labor force)",   surfaced_on_dashboard: true }
+      - { kind: GDP_PER_CAPITA, code: "NY.GDP.PCAP.CD", label: "GDP per capita (current US$)",          surfaced_on_dashboard: false }
+      - { kind: GINI,           code: "SI.POV.GINI",    label: "GINI index (income inequality)",        surfaced_on_dashboard: false }
+    response:
+      dto: WorldBankResponseDto
+      shape: array_2_element                # [metadata, observations[]]
+      body:
+        metadata: "WorldBankMetadataDto { page, pages, per_page, total, sourceid, lastupdated } — only `total` used"
+        observations: "List<WorldBankObservationDto> { indicator{id,value}, country{id,value}, countryiso3code, date, value: Double?, unit, obs_status, decimal }"
+        note: >-
+          `value` is nullable (explicit JSON null for unreported triples). `date` is a
+          4-digit year string (annual). toDomain → IndicatorObservation(year, value),
+          drops year<=0, sorts ascending, threads countryName from first observation →
+          MacroIndicator { countryCode, countryName, indicator, observations[], source }.
+    consumed_by:
+      - { screen: macro, indicators: [GDP, INFLATION_CPI, UNEMPLOYMENT], fan_out: 3 }
+      - { screen: macroIndicatorDetail, indicators: ["<route indicatorKind>"], fan_out: 1 }
+    cache:
+      strategy: memory_only                 # Store5 MEMORY_ONLY archetype — createMemoryStore(fetcher)
+      persistence: in_memory                # NO Room, NO SourceOfTruth, NO on-device table
+      ttl: "7d"
+      store: MacroIndicatorStore
+      room_table: null
+      key_template: "economic:macro:{countryCode}:{indicator}:{years}y"
+      retry: "NetworkMonitor.executeWithRetry(RetryPolicy{ maxAttempts = 1 })"
+    demo_source: macro_indicators
+    notes: >-
+      SAME endpoint + MemoryStore backs the dashboard cards and the detail screen;
+      only the number of (country, indicator) pairs differs. FRED (rates/B7) is a
+      sibling economic feature sharing core/*/economic packages but a DIFFERENT API
+      (needs a key, persists to Room).
+
+  - operation: supported-countries-static
+    method: none
+    source: bundled
+    note: >-
+      Country picker reads SupportedCountries.list (curated G20-plus ISO-3166-1-alpha-2
+      list hardcoded in core/data/.../SupportedCountries.kt) — NO World Bank call.
+      Dynamic country loading is explicitly out of scope.

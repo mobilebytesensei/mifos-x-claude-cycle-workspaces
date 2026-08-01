@@ -1,0 +1,216 @@
+schema_version: "1.0"
+feature_id: feat-calculators
+screen_id: affordability-calculator
+generated_at: "2026-07-25T00:00:00Z"
+generated_by: "/idea-import (reverse-engineered)"
+# Derived from feature/calculators/src/commonTest/** — 4 ViewModel test classes +
+# 4 Compose Screen UI tests + 1 serializer regression test. Pure-local calculators;
+# no api_integration section (no backend to mock). The wizard's tests use
+# FakeSubmitOutbox + FakeLoanRepository.
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 1) AffordabilityCalculatorScreen  (AffordabilityCalculatorViewModelTest + ScreenUiTest)
+# ═══════════════════════════════════════════════════════════════════════════
+affordability:
+  state_coverage:
+    - state: content
+      name: "screen renders the always-present scaffold"
+      source_test: "AffordabilityCalculatorScreenUiTest.screenIsDisplayed"
+      assertions:
+        - "root scaffold (test tag calc_affordability_screen) is displayed"
+  interactions:
+    - component: "five input fields"
+      trigger: "dispatch UpdateIncome/Obligations/Dti/Rate/Tenure"
+      name: "state updates propagate through actions"
+      source_test: "AffordabilityCalculatorViewModelTest.stateUpdatesPropagateThroughActions"
+      assertions:
+        - "each Update* action copies only its slice (income=20000, obligations=2000, dti=0.5, rate=6.5, tenure=360)"
+  computation:
+    - name: "affordability flow reacts to input changes"
+      source_test: "AffordabilityCalculatorViewModelTest.affordabilityFlowReactsToInputChanges"
+      setup: "income=10000, obligations=0, dti=0.4, rate=6.0, tenure=360"
+      assertions:
+        - "maxEmi == 40% × 10000 − 0 == 4000 (±0.01)"
+        - "maxPrincipal = principalForEmi(maxEmi, rate, tenure) (inverse EMI formula)"
+    - name: "zero-headroom rationale"
+      setup: "obligations ≥ income × dti"
+      assertions:
+        - "maxEmi coerced to 0.0; rationale states 'no headroom for a new EMI'"
+      note: "Grounded in maxAffordableLoan branch; implied by formula."
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2) AmortizationScreen  (AmortizationViewModelTest + ScreenUiTest)
+# ═══════════════════════════════════════════════════════════════════════════
+amortization:
+  state_coverage:
+    - state: content
+      name: "screen renders the always-present scaffold"
+      source_test: "AmortizationScreenUiTest.screenIsDisplayed"
+      assertions:
+        - "root scaffold (test tag calc_amortization_screen) is displayed"
+  computation:
+    - name: "inline mode populates schedule from user inputs"
+      source_test: "AmortizationViewModelTest.inlineModePopulatesScheduleFromUserInputs"
+      setup: "loanId = null; user edits principal/rate/tenure"
+      assertions:
+        - "schedule (List<AmortizationRow>) is non-empty and sized == tenureMonths"
+        - "each row: interestPaid = balance × monthlyRate; principalPaid = emi − interest; balance decrements"
+    - name: "summary reflects current inputs"
+      source_test: "AmortizationViewModelTest.summaryReflectsCurrentInputs"
+      assertions:
+        - "summary == computeEmi(principal, rate, tenure); emi/totalPayment/totalInterest consistent"
+  interactions:
+    - component: "loan-backed pre-fill"
+      trigger: "construct with loanId != null"
+      name: "loan-backed mode pre-fills inputs from repository"
+      source_test: "AmortizationViewModelTest.loanBackedModePrefillsInputsFromRepository"
+      expected: "read: LoanRepository.observeById(loanId)"
+      assertions:
+        - "state.principal/ratePercent/tenureMonths/sourceLoanId/sourceLoanName copied from the saved Loan"
+        - "editing inputs does NOT mutate the saved loan (what-if only)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 3) LoanComparisonScreen  (LoanComparisonViewModelTest + ScreenUiTest)
+# ═══════════════════════════════════════════════════════════════════════════
+comparison:
+  state_coverage:
+    - state: content
+      name: "screen renders the always-present scaffold"
+      source_test: "LoanComparisonScreenUiTest.screenIsDisplayed"
+      assertions:
+        - "root scaffold (test tag calc_comparison_screen) is displayed"
+  interactions:
+    - component: "default state"
+      name: "default state has three staggered scenarios"
+      source_test: "LoanComparisonViewModelTest.defaultStateHasThreeStaggeredScenarios"
+      assertions:
+        - "state.scenarios.size == 3"
+    - component: "a scenario card"
+      trigger: "UpdateScenario(index=1, replacement)"
+      name: "update scenario replaces only that index"
+      source_test: "LoanComparisonViewModelTest.updateScenarioReplacesOnlyThatIndex"
+      assertions:
+        - "scenarios[1] == replacement; scenarios[0] and [2] unchanged"
+  computation:
+    - name: "analysis identifies cheapest by total payable"
+      source_test: "LoanComparisonViewModelTest.analysisIdentifiesCheapestByTotalPayable"
+      setup: "scenario0 = (100k, 5%, 60m); scenario1 = (100k, 9%, 120m); scenario2 = (100k, 12%, 240m)"
+      assertions:
+        - "cheapestIndex == 0 (lowest rate × shortest tenure)"
+        - "zero-result scenarios (incomplete inputs) are excluded from the cheapest search"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4) LoanCalcWizardScreen  (LoanCalcWizardViewModelTest + ScreenUiTest)
+#    Uses FakeSubmitOutbox + FakeLoanRepository. The 5-step state machine.
+# ═══════════════════════════════════════════════════════════════════════════
+wizard:
+  state_coverage:
+    - state: content
+      name: "screen renders the always-present scaffold at step 1"
+      source_test: "LoanCalcWizardScreenUiTest.screenIsDisplayed"
+      assertions:
+        - "root scaffold (test tag calc_wizard_screen) is displayed"
+        - "LinearProgressIndicator reflects currentStep / 5"
+  state_machine:
+    - name: "goNext persists a snapshot on each step"
+      source_test: "LoanCalcWizardViewModelTest.goNextPersistsSnapshotOnEachStep"
+      assertions:
+        - "each goNext() writes the snapshot to the outbox keyed on (formKey, uniqueKey)"
+    - name: "goBack clamps at step one"
+      source_test: "LoanCalcWizardViewModelTest.goBackClampsAtStepOne"
+      assertions: ["currentStep never drops below 1"]
+    - name: "goNext clamps at last step"
+      source_test: "LoanCalcWizardViewModelTest.goNextClampsAtLastStep"
+      assertions: ["currentStep never exceeds LAST_STEP (5)"]
+    - name: "advance, close, recreate → resumes at same step"
+      source_test: "LoanCalcWizardViewModelTest.advanceThreeStepsCloseAndRecreateResumesAtSameStep"
+      assertions:
+        - "a fresh VM with the same scenarioId surfaces resumeCandidate with the persisted currentStep"
+        - "resumeDraft() restores the full snapshot into formState"
+    - name: "discard removes the persisted snapshot"
+      source_test: "LoanCalcWizardViewModelTest.discardSavedDraftRemovesPersistedSnapshot"
+      assertions: ["outbox.deleteByUniqueKey clears the draft; resumeCandidate → null"]
+  submit:
+    - name: "completeAndSave persists a Loan via repository"
+      source_test: "LoanCalcWizardViewModelTest.completeAndSavePersistsLoanViaRepository"
+      expected: "write: LoanRepository.upsert(Loan) into banking_loans"
+      assertions:
+        - "a Loan is upserted with kind=PERSONAL and monthlyPayment=computeEmi(...).emi"
+    - name: "saved Loan id matches the scenario id"
+      source_test: "LoanCalcWizardViewModelTest.completeAndSavePersistsLoanIdMatchesScenarioId"
+      assertions: ["loan.id == scenario.scenarioId"]
+    - name: "monthly EMI is computed from the inputs"
+      source_test: "LoanCalcWizardViewModelTest.completeAndSaveComputesMonthlyEmiFromInputs"
+      assertions: ["loan.monthlyPayment == computeEmi(principal, rate, tenure).emi"]
+    - name: "save clears the outbox draft and resets the form"
+      source_test: "LoanCalcWizardViewModelTest.completeAndSaveClearsTheOutboxDraftAndResetsForm"
+      assertions:
+        - "after save: draft deleted; formState reset to a fresh scenario (guards the 'Save does nothing on re-entry' regression)"
+    - name: "save is guarded by validation (no-op on incomplete input)"
+      source_test:
+        - "LoanCalcWizardViewModelTest.completeAndSaveValidatesFieldsAndNoOpsOnIncompleteInput"
+        - "LoanCalcWizardViewModelTest.completeAndSaveNoOpsWhenNameIsBlank"
+        - "LoanCalcWizardViewModelTest.completeAndSaveNoOpsWhenPrincipalIsZero"
+        - "LoanCalcWizardViewModelTest.completeAndSaveNoOpsWhenTenureIsZero"
+      assertions:
+        - "isReadyForSubmit() requires principal>0 && rate>=0 && tenure>0 && name non-blank"
+        - "when invalid: no upsert, Save button visually disabled (not a silent no-op)"
+  serialization:
+    # LoanCalcScenarioSerializerTest — regression guard for the DI ClassCastException
+    # class (SubmitOutbox<*> generic-dispatch wiring the wrong serializer; see
+    # di/CalculatorsModule.kt note + OutboxQualifiers.LoanCalcScenario).
+    - name: "scenario round-trips through its own serializer"
+      source_test: "LoanCalcScenarioSerializerTest.loanCalcScenario_roundtripsThroughItsOwnSerializer"
+      assertions: ["encode→decode with LoanCalcScenario.serializer() reproduces the value"]
+    - name: "serializer emits the scenarioId field"
+      source_test: "LoanCalcScenarioSerializerTest.loanCalcScenario_serializerEmitsScenarioIdField"
+      assertions: ["the encoded JSON carries the scenarioId key"]
+    - name: "payload decodes into the correct type"
+      source_test: "LoanCalcScenarioSerializerTest.loanCalcScenario_decodesIntoCorrectType"
+      assertions: ["decoded object is a LoanCalcScenario"]
+    - name: "wrong serializer for the payload fails loudly"
+      source_test: "LoanCalcScenarioSerializerTest.usingWrongSerializerForLoanCalcScenario_fails"
+      assertions: ["decoding with a mismatched serializer throws (guards the wrong-outbox-binding regression)"]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Shared domain math (core/domain/demo/calc) — locked by domain-layer tests
+# ═══════════════════════════════════════════════════════════════════════════
+shared_domain:
+  - name: "EmiCalculatorTest / AffordabilityCalculatorTest"
+    location: "core/domain/src/commonTest/kotlin/kpt/core/domain/demo/calc/"
+    covers:
+      - "computeEmi reducing-balance formula + zero-rate straight-line fallback + zero-guard"
+      - "amortizationSchedule row split (interest/principal) + empty on non-positive inputs"
+      - "maxAffordableLoan DTI clamp, zero-income/tenure guard, principalForEmi inverse"
+
+acceptance_criteria:
+  - ref: "AC-CALC-01"
+    name: "Instant local math"
+    given: "the user edits any input on any of the four calculators"
+    when: "the value parses"
+    then: "the derived result (maxPrincipal / EMI / schedule / analysis / preview) recomputes on-device with no network call"
+  - ref: "AC-CALC-02"
+    name: "Affordability inversion"
+    given: "income, obligations, DTI, rate, tenure"
+    when: "the affordability screen renders"
+    then: "maxEmi = income×DTI − obligations (≥0) and maxPrincipal is the loan that produces it, with a human rationale"
+  - ref: "AC-CALC-03"
+    name: "Comparison picks the cheapest"
+    given: "three loan scenarios"
+    when: "any scenario changes"
+    then: "the scenario with the lowest total payable is flagged Best (incomplete scenarios excluded)"
+  - ref: "AC-CALC-04"
+    name: "Amortization pre-fill is non-destructive"
+    given: "the schedule is opened from a saved loan (loanId)"
+    when: "the user tweaks the what-if inputs"
+    then: "the schedule recomputes but the saved loan is never mutated"
+  - ref: "AC-CALC-05"
+    name: "Wizard resume-anywhere"
+    given: "a wizard left mid-flow"
+    when: "the user reopens it"
+    then: "a Continue/Discard prompt restores the exact step and inputs from the persisted draft"
+  - ref: "AC-CALC-06"
+    name: "Wizard save produces a real Loan"
+    given: "a completed 5-step wizard with a non-blank name"
+    when: "the user taps Save as Loan"
+    then: "a Loan is upserted into banking_loans (visible in feat-loans), the draft is cleared, and the form resets"

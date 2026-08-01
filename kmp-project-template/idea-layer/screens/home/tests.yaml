@@ -1,0 +1,168 @@
+schema_version: "1.0"
+feature_id: feat-home
+screen_id: home
+generated_by: "/idea-import (reverse-engineered from feature/home commonTest)"
+
+# Derived 1:1 from the shipped tests:
+#   feature/home/commonTest:
+#     HomeViewModelTest           — the fan-in contract (4 slots, aggregates, actions)
+#     HomeDashboardViewModelTest  — PERIODIC(300_000) archetype + nav-scoped VM regression
+#     HomeDashboardUiTest         — the 4-repo dashboard body renders (DASHBOARD_SCROLL)
+#     HomeScreenUiTest            — the bottom-nav shell renders (SCREEN)
+
+state_coverage:
+  - screen: home
+    state: loading
+    name: "initial state has all four slots in Loading"
+    setup: "fresh HomeViewModel(fakes) before any source emits"
+    source_test: "HomeViewModelTest.initialStateHasAllFourSlotsInLoading"
+    assertions:
+      - "state.loans == ScreenState.Loading"
+      - "state.bills == ScreenState.Loading"
+      - "state.rates == ScreenState.Loading"
+      - "state.exchangeRate == ScreenState.Loading"
+  - screen: home
+    state: empty
+    slot: loans
+    name: "empty loan repository projects the loans slot to Empty"
+    setup: "FakeLoanRepository() with no rows"
+    source_test: "HomeViewModelTest.emptyLoansProjectToEmpty"
+    assertions:
+      - "state.loans == ScreenState.Empty (after leaving Loading)"
+  - screen: home
+    state: content
+    slot: loans
+    name: "non-empty loans project to Content with aggregates"
+    setup: "2 loans (monthlyPayment 250 + 1200; principalRemaining 5000 + 240000)"
+    source_test: "HomeViewModelTest.nonEmptyLoansProjectToContentWithAggregates"
+    assertions:
+      - "state.loans is ScreenState.Content<LoansSummary>"
+      - "summary.count == 2"
+      - "summary.totalMonthlyEmi == 1450.0"
+      - "summary.totalOutstanding == 245000.0"
+  - screen: home
+    state: empty
+    slot: bills
+    name: "empty upcoming bills project the bills slot to Empty"
+    setup: "FakeBillReminderRepository() emits an empty upcoming list"
+    source_test: "HomeViewModelTest.emptyUpcomingBillsProjectToEmpty"
+    assertions:
+      - "state.bills == ScreenState.Empty"
+  - screen: home
+    state: content
+    slot: bills
+    name: "upcoming bills are observed with the 7-day window"
+    setup: "bills.setUpcoming(window=7, [b1, b2])"
+    source_test: "HomeViewModelTest.upcomingBillsAreObservedWithSevenDayWindow"
+    assertions:
+      - "state.bills is Content with ids [b1, b2]"
+      - "repository requested maxDays == HomeViewModel.UPCOMING_BILLS_WINDOW_DAYS (7)"
+  - screen: home
+    state: loading
+    slot: rates
+    name: "rates widget stays Loading until BOTH FRED streams reach Content"
+    setup: "fed + mortgage streams start Loading; fed → Content(5.33) first"
+    source_test: "HomeViewModelTest.ratesWidgetIsLoadingUntilBothFredStreamsReachContent"
+    assertions:
+      - "after only fed is Content, state.rates == ScreenState.Loading"
+      - "after mortgage is also Content, state.rates is Content(RatesQuickView)"
+      - "rates.fedFundsPercent == 5.33 && rates.mortgage30YPercent == 7.12"
+  - screen: home
+    state: content
+    slot: rates
+    name: "home opens exactly the two canonical FRED series with 30-day keys"
+    setup: "HomeViewModel built; inspect opened InterestRateSeriesKeys"
+    source_test: "HomeViewModelTest.homeOpensTheTwoCanonicalFredSeries + ratesQuickKeysRequestThirtyDayWindowForCompactCards"
+    assertions:
+      - "opened series ids == {DFF, MORTGAGE30US}"
+      - "FedFundsKey.days == 30 && Mortgage30YKey.days == 30 (compact card window, not 365)"
+  - screen: home
+    state: content
+    name: "the four slots evolve independently (fan-in isolation)"
+    setup: "loans has 1 row; rate streams stuck Loading; currency defaults Loading; bills empty"
+    source_test: "HomeViewModelTest.rowsEvolveIndependently"
+    assertions:
+      - "state.loans is Content while state.rates == Loading and state.exchangeRate == Loading and state.bills == Empty"
+
+interactions:
+  - screen: home
+    component: "Rates card freshness indicator"
+    trigger: tap
+    name: "RetryRates refreshes both FRED streams but not currency"
+    expected: "action: HomeAction.RetryRates → fedFundsStream.retry() + mortgageStream.retry()"
+    source_test: "HomeViewModelTest.retryRatesRefreshesBothFredStreamsButNotCurrency"
+    assertions:
+      - "refreshCount(DFF) == 1 && refreshCount(MORTGAGE30US) == 1"
+      - "currency.refreshCount == 0"
+  - screen: home
+    component: "Exchange card freshness indicator"
+    trigger: tap
+    name: "RetryExchangeRate refreshes only currency"
+    expected: "action: HomeAction.RetryExchangeRate → exchangeRateStream.retry()"
+    source_test: "HomeViewModelTest.retryExchangeRateRefreshesOnlyCurrency"
+    assertions:
+      - "currency.refreshCount == 1"
+      - "refreshCount(DFF) == 0 && refreshCount(MORTGAGE30US) == 0"
+  - screen: home
+    component: "Pull-to-refresh / RefreshAll"
+    trigger: refresh
+    name: "RefreshAll fans out to every network-backed stream"
+    expected: "action: HomeAction.RefreshAll → exchange + fed + mortgage refresh()"
+    source_test: "HomeViewModelTest.refreshAllFansOutToEveryNetworkBackedStream"
+    assertions:
+      - "refreshCount(DFF) == 1 && refreshCount(MORTGAGE30US) == 1 && currency.refreshCount == 1"
+
+archetype_showcase_tests:
+  - name: "PERIODIC(300_000L) — exchange-rate tile opens with the 5-minute cadence"
+    source_test: "HomeViewModelTest.exchangeRateTileUsesPeriodicFetchPolicyWith5MinuteInterval + HomeDashboardViewModelTest.periodic_policy_is_configured"
+    assertions:
+      - "currency.lastFetchPolicy is FetchPolicy.PERIODIC"
+      - "policy.intervalMillis == HomeViewModel.EXCHANGE_RATE_REFRESH_INTERVAL_MS (300_000)"
+  - name: "nav-scoped VM regression — combined state re-emits cache-first after a subscriber dip"
+    source_test: "HomeDashboardViewModelTest.`combined state re-emits cache-first after subscriber dip (nav-scoped VM regression)`"
+    setup: "HomeScreen uses retainedKoinViewModel(); advance past the WhileSubscribed(5_000) stopTimeout then re-collect"
+    assertions:
+      - "HomeUiState is identical across the subscriber-count dip (retained VM not cleared; freshness stops/restarts did not corrupt aggregate state)"
+
+ui_render_tests:
+  - screen: home
+    component: "HomeDashboard scroll container"
+    name: "the 4-repository dashboard body renders its scroll column"
+    setup: "real HomeViewModel wired with Empty loan/bill repos + Loading economic repo + Fake currency repo, no Koin, wrapped in KptTheme"
+    source_test: "HomeDashboardUiTest.dashboardScrollIsDisplayed"
+    assertions:
+      - "onNodeWithTag(TestTags.Home.DASHBOARD_SCROLL).assertIsDisplayed()"
+  - screen: home
+    component: "HomeScreen bottom-nav shell"
+    name: "the framework-owned Scaffold shell renders regardless of dashboard state"
+    setup: "HomeScreen(onSettingsClick + 11 nav callbacks, dashboardViewModel=vm) in KptTheme"
+    source_test: "HomeScreenUiTest.screenScaffoldIsDisplayed"
+    assertions:
+      - "onNodeWithTag(TestTags.Home.SCREEN).assertIsDisplayed()"
+
+acceptance_criteria:
+  - ref: "AC-HOME-01"
+    name: "At-a-glance financial snapshot"
+    given: "a user landing on Home"
+    when: "the dashboard loads"
+    then: "the hero shows total outstanding + active-loan count + monthly EMI from local loans, and a carousel lists each active loan — no network needed for this slot"
+  - ref: "AC-HOME-02"
+    name: "This-week bills + live rates"
+    given: "the user has upcoming bills and a configured FRED key"
+    when: "the dashboard resolves"
+    then: "the Upcoming Bills card shows the next-7-days total + rows, and Today's Rates shows Federal Funds + 30Y Mortgage — each card loading/erroring independently"
+  - ref: "AC-HOME-03"
+    name: "Ambient USD exchange"
+    given: "the exchange-rate tile is on screen"
+    when: "5 minutes elapse"
+    then: "the USD Exchange card auto-refreshes via FetchPolicy.PERIODIC without a manual pull, showing EUR/GBP/INR"
+  - ref: "AC-HOME-04"
+    name: "Independent per-card resilience + retry"
+    given: "one network source fails (e.g. FRED unreachable or key missing)"
+    when: "the dashboard renders"
+    then: "only that card shows its Error slot (others keep Loading/Content); tapping its freshness indicator retries just that source (RetryRates / RetryExchangeRate)"
+  - ref: "AC-HOME-05"
+    name: "Hub navigation"
+    given: "the user taps any tile or card action"
+    when: "the tap resolves"
+    then: "the app navigates to the corresponding feature (loans, bills, rates, currency-rates, emi-calculator, affordability, amortization, loan-comparison, loan-calc-wizard, rate-history, country-macro) or Settings"

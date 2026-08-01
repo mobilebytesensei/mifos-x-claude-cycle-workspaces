@@ -1,0 +1,327 @@
+schema_version: "1.0"
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/bills — B4 Bill Reminders (reverse-engineered from current source HEAD).
+# Recurring bill tracker with in-app + OS notification scheduling, tracked
+# LOCALLY only. No backend, no network — Room + Store5 (OFFLINE_LOCAL_ONLY),
+# plus a platform notification-scheduling side-effect (expect/actual scheduler).
+#
+# One feature, TWO screens (declared in screens[]):
+#   bills-list    → BillRemindersListScreen   (list dashboard, read side)
+#   bill-addedit  → AddOrEditBillReminderScreen (input form, write side, DraftSubmitHandler)
+#
+# GROUNDED: only screens / actions / components that exist in source are represented.
+# There is NO bill-detail screen — a row short-tap opens the edit form directly.
+#
+# F-009 (verified against BillRemindersListScreen.kt / TestTags.kt / strings.xml at HEAD):
+# the shipped list row (BillReminderRow) wires ONLY the "Paid" button (onMarkPaid) and a
+# whole-card clickable that navigates to the edit form (onEditBillClick). It has NO delete
+# button and NO reminders switch. BillRemindersAction.Delete / .ToggleEnabled are fully-tested
+# ViewModel APIs but are NOT surfaced as row controls, so this ui.yaml deliberately does NOT
+# declare a delete_button or reminder_enabled_toggle component. (Enable/disable is reachable
+# only indirectly via the add/edit form's Enabled switch.) See docs.yaml known_gaps F-009.
+# ─────────────────────────────────────────────────────────────────────────────
+screen_id: bills-list             # primary entry screen of the feature
+feature: feat-bills
+archetype: screen-content
+platforms: [android, ios, desktop, web]
+states: [loading, content, empty, error]
+# Data-backed: the dashboard combines three repository Flows, so it opens in
+# loading until the first combine() emission (then content / empty).
+initial_state: loading
+
+business_logic:
+  kind: crud
+  processing_kind: reactive_local
+  library_refs: [store5, room]
+  external_library_refs: [store5]
+  description: >-
+    Recurring bill-reminder tracker with purely local persistence — NO backend, NO network.
+    The list dashboard reads reactively by combining three repository Flows —
+    observeAll() + observeUpcoming(7) + observeTotalUpcomingAmount(30) — into one
+    BillRemindersUiState surfaced as a single ScreenState.Content (Empty when zero bills).
+    Reads flow from a Room-backed Store5 OFFLINE_LOCAL_ONLY store (BillRemindersStore,
+    key=Unit → List<BillReminderEntity>) via BillReminderRepository. Writes reachable from the
+    shipped UI are: create/edit (add-edit form) and mark-paid (list Paid button) via
+    repository.upsert on the banking_bill_reminders Room table. (Delete + per-row toggle-enabled
+    exist as ViewModel actions but are not wired into the list UI — F-009.) The add/edit form wraps
+    its local upsert in the framework DraftSubmitHandler (BaseDraftMutationViewModel, formKey="bill",
+    uniqueKey=billId|"new") so the Saving…/Saved ✓/Saved-offline UX applies even though the "submit"
+    is a local commit. On submit the ViewModel ALSO computes the next due-date (recurrence math:
+    MONTHLY/QUARTERLY/ANNUALLY/ONCE + month-end clamp) and hands a BillReminderSchedule to the
+    platform BillReminderScheduler (via BillNotificationGateway) so the OS fires an in-app / system
+    notification reminderDaysBefore days before the bill is due — best-effort: if the OS rejects it
+    (permission), the bill still persists and the in-app upcoming-bills tile is the fallback reminder.
+
+# The Room table backing every read/write in this feature.
+data_source:
+  kind: local_room
+  store: BillRemindersStore                 # core/store/demo/banking/impl/BillRemindersStore.kt
+  store_archetype: OFFLINE_LOCAL_ONLY
+  repository: BillReminderRepository        # core/data/demo/banking/BillReminderRepository.kt
+  table: banking_bill_reminders             # core/database/demo/banking/entity/BillReminderEntity.kt
+  dto: BillReminder                         # core/model/demo/banking/BillReminder.kt
+  remote: none
+
+# Platform capability this feature consumes beyond Room (the B4 distinguishing pattern).
+platform_capabilities:
+  - capability: notification_scheduling
+    contract: BillReminderScheduler         # core/platform/notification/bill/BillReminderScheduler.kt (expect/actual)
+    seam: BillNotificationGateway           # feature/bills/notification/BillNotificationGateway.kt (mockable interface)
+    payload: BillReminderSchedule           # {billId, title, body, triggerAtMs}
+    actuals:
+      android: "WorkManager OneTimeWorkRequest → BillReminderWorker (survives process death)"
+      ios: "UNUserNotificationCenter calendar trigger (needs permission)"
+      desktop: "best-effort no-op stub (in-app banner only)"
+      web: "no-op stub (Service Worker deferred)"
+    note: "schedule() is best-effort — permission-denied / past-instant → silent no-op; bill still persists."
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SCREENS
+# ═════════════════════════════════════════════════════════════════════════════
+screens:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 1) BillRemindersListScreen — the bill dashboard (list, read side)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: bills-list
+    composable: BillRemindersListScreen
+    viewmodel: BillRemindersListViewModel
+    route: BillRemindersListRoute
+    archetype: screen-content
+    states: [loading, content, empty, error]
+    initial_state: loading
+    business_logic:
+      kind: list
+      processing_kind: reactive_local
+      library_refs: [store5, room]
+      description: >-
+        combine(observeAll(), observeUpcoming(7), observeTotalUpcomingAmount(30)) →
+        BillRemindersUiState projected to ScreenState. Zero bills → Empty; any bills → Content.
+        A summary HeroCard shows the total amount due in the next 30 days plus an "N bill(s) due
+        in next 7 days" supporting line. Each bill renders as an AppCard row: leading UrgencyDot,
+        name, amount (MoneyText, negative tone), a due-relative StatusChip (Overdue/Today/
+        Tomorrow/Due in Nd) whose intent is colour-coded by days-until-due, a category StatusChip,
+        a "Paid" TextButton, and a "Reminders disabled" caption when enabled=false. The whole row
+        card is clickable → edit form. Rows are sorted by dueDay ASC then createdAtMs ASC (DAO order).
+    shell:
+      top_app_bar:
+        enabled: true
+        title: "Bill Reminders"        # screens_bills_list_title
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"          # screens_bills_list_back_cd
+            on_click:
+              action: "navigate_back"
+              action_contract:
+                effect: navigate
+                description: "popBackStackSafely() to the previous destination (Home dashboard)."
+      fab:
+        type: extended_fab
+        label: "New bill"               # screens_bills_list_new_fab_text
+        icon: add
+        test_tag: bills_list_fab        # TestTags.BillsList.FAB
+        on_click:
+          action: "navigate"
+          target: "bill-addedit"
+          params: { billId: null }
+          action_contract:
+            effect: navigate
+            description: "onAddBillClick → navigate to AddOrEditBillReminderRoute(billId=null) to add a brand-new bill reminder."
+    components:
+      - id: summary_hero
+        type: hero_card
+        description: "Upcoming tile: total amount due in next 30 days (AmountDisplay) + '{upcomingCount} bill(s) due in next 7 days' supporting line."
+        binds:
+          - { field: totalUpcomingAmount, from: observeTotalUpcomingAmount }
+          - { field: upcoming.size, label: "bill(s) due in next 7 days" }   # screens_bills_list_summary_due_single|plural
+      - id: bill_row
+        type: list_item
+        variant: bill_reminder_row_card          # AppCard with Modifier.clickable — NO per-row testTag in source
+        repeat_for: all
+        description: >-
+          Per-bill AppCard: Row 1 = UrgencyDot + name + amount (MoneyText, Negative tone);
+          Row 2 = due-relative StatusChip (colour-coded by dueDay-today via MaterialTheme.finance
+          accent) + category StatusChip + Paid TextButton; a 'Reminders disabled' labelSmall caption
+          when !bill.enabled. The whole card is clickable (navigates to edit).
+        on_click:
+          action: "navigate"
+          target: "bill-addedit"
+          params: { billId: "{bill.id}" }
+          action_contract:
+            effect: navigate
+            description: "Short-tap the row card → onEditBillClick(bill.id) → navigate to AddOrEditBillReminderRoute(billId) — the edit form hydrates from repository.getById(billId). There is no separate detail screen."
+      - id: mark_paid_button
+        type: text_button                        # untagged TextButton inside the row
+        label: "Paid"                   # screens_bills_list_paid_button
+        icon: check_circle
+        aria_label: "Mark paid"         # screens_bills_list_mark_paid_cd
+        on_click:
+          action: "mark_paid"
+          params: { id: "{bill.id}" }
+          action_contract:
+            effect: persist_db
+            external_library_refs: [room]
+            writes_to:
+              - { table: banking_bill_reminders, dto: BillReminder, op: upsert }
+            platform_effect:
+              capability: notification_scheduling
+              op: cancel
+            description: >-
+              viewModel.onMarkPaid(id) → BillRemindersAction.MarkPaid → repository.getById(id) →
+              repository.upsert(existing.copy(updatedAtMs=now)) (bumps the row so it sorts to
+              'recently touched'), then scheduler.cancel(id) to drop the pending notification —
+              the next edit / app-launch re-registers a fresh reminder.
+    # NOTE (F-009): NO delete_button and NO reminder_enabled_toggle are declared here — neither
+    # exists in BillRemindersListScreen.kt. BillRemindersAction.Delete / .ToggleEnabled are
+    # ViewModel-only APIs (tested, not UI-wired). Do not add these components unless the row
+    # composable, TestTags, and strings are also added in source.
+    state_model:
+      viewmodel_base: "BaseViewModel<Unit, Nothing, BillRemindersAction>"
+      screen_state: "StateFlow<ScreenState<BillRemindersUiState>>"
+      initial: ScreenState.Loading
+      states:
+        loading:
+          when: "combine() has not yet emitted (stateIn seed = ScreenState.Loading)"
+          render: "ScreenContent Loading (framework default skeleton/spinner)"
+        content:
+          when: "observeAll() emits a non-empty list"
+          render: "summary HeroCard + LazyColumn of BillReminderRow, dueDay-ascending"
+          data: BillRemindersUiState
+        empty:
+          when: "observeAll() emits an empty list"
+          render: "framework ScreenState.Empty default (no bills yet)"
+        error:
+          when: "ScreenContent error slot — the VM never actually emits ScreenState.Error (pure local combine); onRetry = {} no-op"
+          render: "framework ScreenContent error surface (unreachable in practice for this local source)"
+      ui_state:
+        name: BillRemindersUiState
+        fields:
+          - { name: all, type: "List<BillReminder>" }
+          - { name: upcoming, type: "List<BillReminder>", note: "due within next 7 days (UPCOMING_WINDOW_DAYS)" }
+          - { name: totalUpcomingAmount, type: Double, note: "sum(amount) due within next 30 days (TOTAL_WINDOW_DAYS)" }
+      actions:
+        - { name: "BillRemindersAction.MarkPaid", params: { billId: String }, effect: "repository.upsert(copy(updatedAtMs=now)) + scheduler.cancel(billId)", surfaced_in_ui: true, ui_trigger: "row Paid TextButton (onMarkPaid)" }
+        - { name: "BillRemindersAction.Delete", params: { billId: String }, effect: "repository.delete(billId) + scheduler.cancel(billId)", surfaced_in_ui: false, note: "F-009 — fully implemented + unit-tested (onDelete), but NO trigger in BillRemindersListScreen. ViewModel API only, not a row control." }
+        - { name: "BillRemindersAction.ToggleEnabled", params: { billId: String }, effect: "repository.upsert(copy(enabled=!enabled, updatedAtMs=now)) + scheduler.cancel when disabling", surfaced_in_ui: false, note: "F-009 — fully implemented + unit-tested (onToggleEnabled), but NO trigger in BillRemindersListScreen. Enable/disable is reachable only via the add/edit form's Enabled switch (a different path through EditBillReminderViewModel)." }
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 2) AddOrEditBillReminderScreen — create/edit form (input, write side, DraftSubmitHandler)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: bill-addedit
+    composable: AddOrEditBillReminderScreen
+    viewmodel: EditBillReminderViewModel
+    route: AddOrEditBillReminderRoute
+    route_args: { billId: "String?" }   # null → add; non-null → edit
+    archetype: input
+    states: [loading, content, submitting, submitted, failed]   # loading = edit-mode hydration gate
+    initial_state: content              # add-mode: Content immediately; edit-mode: Loading until getById hydrates
+    business_logic:
+      kind: crud
+      processing_kind: draft_mutation
+      library_refs: [store5, room]
+      external_library_refs: [store5]
+      description: >-
+        The SECOND multi-formKey BaseDraftMutationViewModel showcase (after EditLoanViewModel).
+        billId==null → add (uniqueKey="new", Content immediately); billId!=null → edit (Loading
+        while init getById(billId) hydrates _formState, then Content(snapshot)). formKey="bill"
+        groups every bill draft; uniqueKey partitions per-bill so N concurrent offline edits coexist
+        as N independent PENDING drafts in the shared SubmitOutbox (OutboxQualifiers.BillReminder).
+        onSubmit() validates (name non-blank AND amount > 0), snapshots the form to a BillReminder
+        payload (id = billId ?: randomId()), then super.onSubmit(payload) → performSubmit.
+        performSubmit does TWO things: (1) repository.upsert(payload) — local Room commit; (2) if
+        enabled, computes nextDueDate + reminderTriggerMs and calls
+        scheduler.schedule(BillReminderSchedule); if disabled, scheduler.cancel(payload.id).
+        autoSaveDraft=true — a categorized-Network submit failure silently auto-saves the draft
+        (Saved-offline UX). The form has four sections: Basic info (name/amount/dueDay), Recurrence
+        (radio: Monthly/Quarterly/Annually/One-time), Category (filter chips: Utilities/Housing/
+        Transport/Food/Subscriptions/Other), Reminder settings (remindDaysBefore field + Enabled switch).
+    shell:
+      top_app_bar:
+        enabled: true
+        title_add: "New bill reminder"   # screens_bills_add_title
+        title_edit: "Edit bill reminder" # screens_bills_edit_title
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"          # screens_bills_addedit_back_cd
+            on_click:
+              action: "navigate_back"
+              action_contract: { effect: navigate, description: "popBackStackSafely()." }
+    components:
+      # ── Basic info section (AppCard) ──
+      - { id: name_field, type: text_field, label: "Name (e.g. Electricity)", binds: [{ field: name }], on_change: onNameChange, disabled_when: isSubmitting }   # screens_bills_addedit_name_label
+      - { id: amount_field, type: decimal_field, label: "Amount", binds: [{ field: amount }], on_change: onAmountChange, disabled_when: isSubmitting, note: "empty when 0.0; parsed via toDoubleOrNull() ?: 0.0" }   # screens_bills_addedit_amount_label
+      - { id: due_day_field, type: number_field, label: "Due day of month (1-31)", binds: [{ field: dueDay }], on_change: onDueDayChange, disabled_when: isSubmitting, note: "coerced to 1..31" }   # screens_bills_addedit_due_day_label
+      # ── Recurrence section (radio group) ──
+      - id: recurrence_radios
+        type: radio_group
+        title: "Recurrence"              # screens_bills_addedit_recurrence_title
+        options: [Monthly, Quarterly, Annually, One-time]   # Recurrence.{MONTHLY,QUARTERLY,ANNUALLY,ONCE}
+        binds: [{ field: recurrence }]
+        on_change: onRecurrenceChange
+        disabled_when: isSubmitting
+      # ── Category section (filter chips, FlowRow) ──
+      - id: category_chips
+        type: filter_chip_group
+        title: "Category"               # screens_bills_addedit_category_title
+        options: [Utilities, Housing, Transport, Food, Subscriptions, Other]  # BillCategory enum
+        binds: [{ field: category }]
+        on_change: onCategoryChange
+        disabled_when: isSubmitting
+      # ── Reminder settings section (AppCard) ──
+      - { id: remind_days_before_field, type: number_field, label: "Remind days before", binds: [{ field: reminderDaysBefore }], on_change: onReminderDaysBeforeChange, disabled_when: isSubmitting, note: "coerced to 0..30" }   # screens_bills_addedit_remind_days_before_label
+      - id: enabled_switch
+        type: switch
+        label: "Enabled"               # screens_bills_addedit_enabled_label
+        binds: [{ field: enabled }]
+        on_change: onEnabledChange
+        disabled_when: isSubmitting
+        description: "When off, the bill persists silently — performSubmit calls scheduler.cancel instead of schedule. This is the ONLY UI-surfaced enable/disable path (F-009: the list has no per-row toggle)."
+      # ── Submit + status ──
+      - id: submit_button
+        type: button
+        label: "Save"                   # screens_bills_addedit_save_button
+        test_tag: bills_addedit_save_button   # TestTags.AddOrEditBill.SAVE_BUTTON
+        enabled_when: "submit !is Submitting && name.isNotBlank() && amount > 0.0"
+        on_click:
+          action: "submit"
+          action_contract:
+            effect: persist_db
+            external_library_refs: [room]
+            writes_to:
+              - { table: banking_bill_reminders, dto: BillReminder, op: upsert }
+            platform_effect:
+              capability: notification_scheduling
+              op: "schedule (when enabled) | cancel (when disabled)"
+            description: "viewModel.onSubmit() validates and builds a BillReminder (id = billId ?: randomId()), then performSubmit → repository.upsert into banking_bill_reminders; when enabled it also schedules a reminder notification. On Submitted the status line shows Saved with an Add-another button."
+      - id: submit_status_line
+        type: status_text
+        description: >-
+          MutationScreenContent submitStatus slot — SubmitStatusLine: Idle (nothing) /
+          Saving… (screens_bills_addedit_status_saving) / Saved ✓ (screens_bills_addedit_status_saved)
+          + 'Add another' (screens_bills_addedit_status_add_another) / 'Saved offline — will sync when
+          online.' (screens_bills_addedit_status_offline, when Failed.draftSaved) / 'Save failed: {msg}'
+          (screens_bills_addedit_status_failed) with Retry (screens_bills_addedit_retry_button) +
+          Dismiss (screens_bills_addedit_dismiss_button) buttons.
+        states: [Idle, Submitting, Submitted, Failed]
+      - { id: retry_button, type: button, label: "Retry", visible_when: "submit is Failed", on_click: onRetry, action_contract: { effect: persist_db, external_library_refs: [room], description: "Re-attempt the failed bill save — performSubmit → repository.upsert into banking_bill_reminders and reschedule the reminder notification." } }   # screens_bills_addedit_retry_button
+      - { id: dismiss_button, type: button, label: "Dismiss / Add another", visible_when: "submit is Failed || submit is Submitted", on_click: onDismissResult, action_contract: { effect: transform_state, description: "reset submit + clear form back to defaults (initialFormState)" } }
+    state_model:
+      viewmodel_base: "BaseDraftMutationViewModel<BillReminder, BillReminder>(formKey=\"bill\", uniqueKey=billId ?: \"new\", autoSaveDraft=true)"
+      billId_injection: "Koin parametersOf(billId); koinViewModel { parametersOf(billId) }"
+      read_gate: "MutationScreenContent over ui.screen (ScreenState) — Loading while an existing bill hydrates (edit mode), then Content(snapshot); the content slot renders _formState, not the read payload"
+      form_state:
+        name: BillReminderFormState
+        fields:
+          - { name: name, type: String, default: "" }
+          - { name: amount, type: Double, default: 0.0 }
+          - { name: dueDay, type: Int, default: 1 }
+          - { name: recurrence, type: Recurrence, default: MONTHLY }
+          - { name: category, type: BillCategory, default: UTILITIES }
+          - { name: enabled, type: Boolean, default: true }
+          - { name: reminderDaysBefore, type: Int, default: 1 }
+        derived:
+          - { name: canSubmit, expr: "name.isNotBlank() && amount > 0.0 && submit !is Submitting" }
+      submit_state: "SubmitState { Idle | Submitting | Submitted(result) | Failed(error, draftSaved) }"
+      submit_target: "repository.upsert(payload) + scheduler.schedule/cancel  # local Room commit + best-effort OS notification, no network"

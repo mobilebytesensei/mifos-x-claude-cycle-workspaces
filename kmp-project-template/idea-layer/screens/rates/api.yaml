@@ -1,0 +1,66 @@
+schema_version: "1.0"
+screen_id: rates
+# ─────────────────────────────────────────────────
+# B7 Interest Rate Tracker — external FRED API.
+# Reverse-engineered from core/network/demo/economic/api/FredApi.kt (Ktorfit).
+# ONE physical endpoint (fred/series/observations) is called once per series id;
+# the list screen fans it out to four ids, the detail screen calls it for one.
+# NOT Supabase — this is a public REST API consumed through a Store5 cache.
+# ─────────────────────────────────────────────────
+external_source:
+  name: FRED
+  full_name: "Federal Reserve Economic Data (St. Louis Fed)"
+  base_url: "https://api.stlouisfed.org/"     # FredApi.BASE_URL / FredApiConfig.DEFAULT_BASE_URL (overridable)
+  transport: rest
+  client: ktorfit                              # de.jensklingenberg.ktorfit
+  auth:
+    type: api_key
+    param: api_key                             # query param, required — FRED returns HTTP 400 without it
+    secret_alias: mifos_x_fred_api_key         # framework vault alias (Path B); Path A = FRED_API_KEY in local.properties
+    source: "FredApiConfig(apiKey: String?) — Koin singleton"
+    unconfigured_behavior: >-
+      When apiKey is null/blank the Store5 Fetcher throws IllegalStateException
+      ("FRED_API_KEY is not configured …") rather than firing api_key=null;
+      the row surfaces ScreenState.Error with that message (see ui.yaml error.fred_key_missing).
+  rate_limit: "120 calls/min (free tier). Store5 24h TTL keeps daily usage far under the ceiling."
+  docs: "https://fred.stlouisfed.org/docs/api/fred/series_observations.html"
+
+api:
+  - operation: fred-series-observations
+    method: GET
+    path: "fred/series/observations"
+    source: fred
+    request:
+      query:
+        series_id: "<FRED series id>"          # DFF | DPRIME | MORTGAGE30US | DGS10 (case-sensitive)
+        api_key: "FredApiConfig.apiKey"        # required
+        file_type: "json"                      # forced — FRED defaults to XML which kotlinx.serialization can't parse
+        observation_start: "today - key.days (YYYY-MM-DD, days default 365)"
+        observation_end: "today (YYYY-MM-DD, UTC)"
+    response:
+      dto: FredObservationsDto
+      shape: object
+      body:
+        observations: "List<FredObservationDto> { date: String, value: String }"
+        note: >-
+          value arrives as a String; FRED encodes missing data as the literal
+          "." (FredObservationDto.NO_DATA_MARKER). FredObservationsDto.toDomain
+          strips "." + unparseable rows, maps to InterestRateSeries{seriesId,
+          name, unit, current=last.value, observations=[RateObservation(date,value)]}.
+          name + unit are threaded from the request key (FRED's response omits them).
+    consumed_by:
+      - { screen: rates, series_ids: [DFF, DPRIME, MORTGAGE30US, DGS10], fan_out: 4 }
+      - { screen: rateDetail, series_ids: ["<route seriesId>"], fan_out: 1 }
+    cache:
+      strategy: stale_while_revalidate         # Store5 NETWORK_WITH_CACHE archetype
+      ttl: "24h"
+      source_of_truth: "InterestRateSeriesDao (Room table interest_rate_series, primaryKeys [seriesId, date])"
+      key_template: "economic:rates:{seriesId}:{days}d"
+      store: InterestRateSeriesStore           # StoreFactory.createStore(fetcher=FredApi, sourceOfTruth=Dao)
+      retry: "NetworkMonitor.executeWithRetry(RetryPolicy{ maxAttempts = 1 })"
+    demo_source: interest_rate_series          # see demo-data.yaml
+    notes: >-
+      The SAME endpoint + Store backs both the list rows and the detail screen;
+      the only difference is how many series ids are requested. World Bank
+      (feat-country-macro / B8) is a sibling economic feature that shares the
+      core/*/economic packages but is a DIFFERENT API and out of scope here.

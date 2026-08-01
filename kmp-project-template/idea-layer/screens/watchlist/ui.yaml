@@ -1,0 +1,259 @@
+schema_version: "1.0"
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/watchlist — Personal Crypto Watchlist (reverse-engineered from source).
+# The user's PRIVATE, device-local list of crypto coins they want to track.
+# The watch-list itself is persisted LOCALLY ONLY (Room `personal_watchlist`,
+# coinId + addedAtMs) — NO Store5, NO remote sync — via a raw DAO wrapped in the
+# core-base/database invalidation bridge (daoFlow{} / notifyingWrite{}). Live coin
+# VALUES (name, symbol, price, 24h change) are NOT stored here; they are resolved
+# on-demand from feature/crypto's CryptoRepository, a Store5 NETWORK_WITH_CACHE
+# store over the CoinGecko API. So this feature is an OFFLINE-membership +
+# NETWORK-value BLEND.
+#
+# BACKEND SHIPPED, UI PENDING. At HEAD the data layer is fully wired
+# (WatchlistRepository + WatchlistDao + WatchlistEntity, DI-registered, AppDatabase
+# v5→v6 migration adds `personal_watchlist`). The UI surface it was built for is
+# documented verbatim in the source KDoc but not yet in-tree:
+#   • AddToWatchlistViewModel drives add/remove through the framework SubmitHandler
+#     (the "input simple" / canonical simple-mutation pattern).
+#   • contains(coinId) is a reactive Flow<Boolean> that renders the star
+#     filled (tracked) vs outline (not tracked).
+# This sibling set models that documented intent faithfully — nothing invented
+# beyond the coinId/addedAtMs surface and the two ViewModels named in KDoc.
+#
+# Two screen concerns (declared in screens[]):
+#   watchlist         → WatchlistScreen        (list, read side + inline remove)
+#   add-to-watchlist  → the star toggle        (input simple, write side, SubmitHandler)
+#                       (AddToWatchlistViewModel — an EMBEDDED surface on crypto rows,
+#                        not a standalone navigable destination)
+#
+# GROUNDED: only the coinId/addedAtMs persisted surface, the add/remove/contains
+# repository API, and the CryptoRepository value-resolution that source documents.
+# ─────────────────────────────────────────────────────────────────────────────
+screen_id: watchlist              # primary entry screen of the feature
+feature: feat-watchlist
+archetype: list
+platforms: [android, ios, desktop, web]
+states: [loading, content, empty, error]
+initial_state: loading          # /idea sync STEP 3 — WatchlistScreen opens in Loading until watchlist() first emits (mirrors state_model.initial: ScreenState.Loading)
+
+business_logic:
+  kind: crud
+  processing_kind: reactive_local
+  library_refs: [room, store5]
+  external_library_refs: [store5]
+  description: >-
+    A user's personal watchlist of crypto coins. The watch-list MEMBERSHIP is purely
+    local: WatchlistRepository.watchlist() streams List<WatchlistItem>(coinId, addedAtMs)
+    reactively straight from the Room `personal_watchlist` DAO (newest-added first,
+    ORDER BY addedAtMs DESC), and contains(coinId) streams a reactive Boolean membership
+    check. Both direct-DAO reads are wrapped in core-base/database daoFlow{} and every
+    write in notifyingWrite{} so wasmJs long-lived collectors re-emit after add/remove
+    (absorbs the Room 3 alpha05 async InvalidationTracker fan-out gap; a no-op on
+    Android/Desktop/iOS). Writes are idempotent add(coinId) / remove(coinId) — re-adds
+    touch addedAtMs to now, removes no-op if absent — driven from AddToWatchlistViewModel
+    through the framework SubmitHandler<R> (SubmitState Idle/Submitting/Submitted/Failed;
+    the simple, single-formKey mutation pattern, NOT the multi-draft DraftSubmitHandler).
+    The watch-list stores ONLY coin identifiers; full coin metadata + live price is
+    resolved on-demand by cross-referencing CryptoRepository.coinMarketsStream /
+    coinDetailStream (feature/crypto's Store5 NETWORK_WITH_CACHE store over CoinGecko).
+
+# Two data sources this feature blends.
+data_source:
+  # (1) The persisted watch-list membership — LOCAL ONLY, raw Room DAO (no Store5).
+  primary:
+    kind: local_room
+    store: none                        # NOT a Store5 store — direct DAO + invalidation bridge
+    store_archetype: OFFLINE_LOCAL_ONLY
+    repository: WatchlistRepository     # core/data/demo/watchlist/WatchlistRepository.kt
+    impl: WatchlistRepositoryImpl       # core/data/demo/watchlist/impl/WatchlistRepositoryImpl.kt
+    dao: WatchlistDao                   # core/database/demo/watchlist/dao/WatchlistDao.kt
+    table: personal_watchlist           # core/database/demo/watchlist/entity/WatchlistEntity.kt
+    dto: WatchlistItem                  # {coinId: String, addedAtMs: Long}
+    remote: none
+    invalidation: "core-base/database daoFlow{} + notifyingWrite{} (wasmJs Room3-alpha05 fan-out bridge)"
+  # (2) Live coin values — resolved on-demand from the crypto feature's network store.
+  value_resolution:
+    kind: network_store
+    store: CoinMarketsStore / CoinDetailStore   # feature/crypto (Store5)
+    store_archetype: NETWORK_WITH_CACHE
+    repository: CryptoRepository        # core/data/demo/crypto/CryptoRepository.kt
+    dtos: [CoinMarket, CoinDetail]      # core/model/demo/crypto/
+    remote: "CoinGecko (coin-markets list / coin detail)"
+    note: >-
+      Watchlist does NOT own or cache coin metadata. It joins its local coinIds against
+      the crypto Store5 read streams so tracked rows render live symbol/name/price/24h-change.
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SCREENS
+# ═════════════════════════════════════════════════════════════════════════════
+screens:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 1) WatchlistScreen — the tracked-coins list (read side + inline remove)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: watchlist
+    composable: WatchlistScreen
+    viewmodel: WatchlistViewModel
+    route: WatchlistRoute
+    archetype: list
+    states: [loading, content, empty, error]
+    status: pending                     # backend shipped; UI documented in KDoc, not yet in-tree
+    business_logic:
+      kind: list
+      processing_kind: reactive_local
+      library_refs: [room, store5]
+      description: >-
+        Streams WatchlistRepository.watchlist() (local coinIds, newest-first) and joins each
+        coinId against CryptoRepository.coinMarketsStream to project a WatchlistUiState of
+        rows carrying { coinId, symbol, name, currentPrice, priceChangePercent24h }. Empty
+        watch-list → Empty state (with a CTA pointing at the coin markets list to add coins).
+        Any tracked coins → Content. The value-resolution stream can be Loading/Error/NoNetwork
+        independently of the (always-FRESH) local membership; a coin still resolving shows its
+        row with a value skeleton. Each row carries a filled star that removes the coin
+        (repository.remove) and short-tap navigates to the crypto coin-detail screen.
+    shell:
+      top_app_bar:
+        enabled: true
+        title: "Watchlist"              # screens_watchlist_title
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"          # screens_watchlist_back_cd
+            on_click:
+              action: "navigate_back"
+              action_contract:
+                effect: navigate
+                description: "popBackStackSafely() to the previous destination (e.g. Home / Coin Markets)."
+      test_tag: watchlist_scaffold
+    components:
+      - id: coin_row
+        type: list_item
+        variant: watchlist_coin_row
+        test_tag: "watchlist_row_{item.coinId}"
+        repeat_for: items
+        description: >-
+          Per-coin card: symbol (uppercase) + name on the left; live currentPrice +
+          signed 24h-change % on the right (green ≥0 / red <0, mirroring CoinMarketRow);
+          a filled star trailing icon to un-track.
+        binds:
+          - { field: coinId }
+          - { field: symbol, from: "CryptoRepository.coinMarketsStream" }
+          - { field: name, from: "CryptoRepository.coinMarketsStream" }
+          - { field: currentPrice, from: "CryptoRepository.coinMarketsStream" }
+          - { field: priceChangePercent24h, from: "CryptoRepository.coinMarketsStream" }
+        on_click:
+          action: "navigate"
+          target: "coin-detail"          # cross-feature: feature/crypto CoinDetail (arrives with its own sub-plan)
+          params: { coinId: "{item.coinId}" }
+          action_contract:
+            effect: navigate
+            description: "Short-tap a row → navigate to the crypto coin-detail destination (CoinDetailRoute(coinId), re-using CryptoRepository.coinDetailStream). Cross-feature nav."
+      - id: remove_star
+        type: icon_button
+        icon: star_filled
+        test_tag: "watchlist_remove_{item.coinId}"
+        aria_label: "Remove from watchlist"   # screens_watchlist_remove_cd
+        repeat_for: items
+        on_click:
+          action: "remove_from_watchlist"
+          params: { coinId: "{item.coinId}" }
+          action_contract:
+            effect: delete
+            external_library_refs: [room]
+            writes_to:
+              - { table: personal_watchlist, dto: WatchlistItem, op: delete }
+            description: "viewModel.onRemove(coinId) → SubmitHandler.submit { repository.remove(coinId) } → WatchlistDao.delete(coinId) wrapped in notifyingWrite; the reactive watchlist() stream re-emits without the row."
+    state_model:
+      viewmodel_base: "BaseViewModel<Unit, Nothing, WatchlistAction>"
+      screen_state: "StateFlow<ScreenState<WatchlistUiState>>"
+      initial: ScreenState.Loading
+      states:
+        loading:
+          when: "watchlist() has not yet emitted"
+          render: "ScreenContent Loading (framework default skeleton/spinner)"
+        content:
+          when: "watchlist() emits a non-empty list"
+          render: "LazyColumn of watchlist_coin_row (value-resolved), newest-added first"
+          data: WatchlistUiState
+        empty:
+          when: "watchlist() emits an empty list"
+          render: "ScreenState.Empty — 'No coins tracked yet' + CTA to open Coin Markets"
+        error:
+          when: "value-resolution (coinMarketsStream) errors while membership is non-empty"
+          render: "framework ScreenContent error surface with Retry (refreshes the crypto stream)"
+      ui_state:
+        name: WatchlistUiState
+        fields:
+          - { name: items, type: "List<WatchlistRow>", note: "coinId+addedAtMs joined with live CoinMarket value" }
+      row_model:
+        name: WatchlistRow
+        fields:
+          - { name: coinId, type: String }
+          - { name: addedAtMs, type: Long }
+          - { name: symbol, type: String, note: "from CoinMarket; blank until value resolves" }
+          - { name: name, type: String, note: "from CoinMarket" }
+          - { name: currentPrice, type: Double, note: "from CoinMarket" }
+          - { name: priceChangePercent24h, type: Double, note: "from CoinMarket" }
+      actions:
+        - { name: "WatchlistAction.Remove", params: { coinId: String }, effect: "SubmitHandler.submit { repository.remove(coinId) }" }
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 2) add-to-watchlist — the star toggle (input simple, write side, SubmitHandler)
+  #    EMBEDDED surface: rendered on feature/crypto CoinMarkets rows + Coin Detail,
+  #    not a standalone navigable destination. Backed by AddToWatchlistViewModel.
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: add-to-watchlist
+    composable: AddToWatchlistStar        # embedded composable (star toggle), no own Scaffold
+    viewmodel: AddToWatchlistViewModel
+    route: none                           # not navigable — hosted inside crypto coin surfaces
+    is_embedded: true
+    archetype: input
+    states: [content, submitting, submitted, failed]
+    status: pending                       # documented in WatchlistRepository KDoc; UI not yet in-tree
+    business_logic:
+      kind: crud
+      processing_kind: simple_mutation
+      library_refs: [room, store5]
+      external_library_refs: [store5]
+      description: >-
+        The canonical "input simple" SubmitHandler showcase. Given a coinId, it observes
+        repository.contains(coinId) (reactive Flow<Boolean>) to render the star filled
+        (tracked) vs outline (not tracked). Tapping toggles membership: not-tracked →
+        SubmitHandler.submit { repository.add(coinId) }; tracked →
+        SubmitHandler.submit { repository.remove(coinId) }. add() is idempotent (re-add
+        bumps addedAtMs to now, REPLACE on conflict); remove() no-ops if absent. SubmitState
+        surfaces Idle/Submitting/Submitted/Failed — but because the submit is a local Room
+        commit it effectively never fails on-device (the Failed arm is the framework showcase).
+    shell:
+      top_app_bar: { enabled: false }     # embedded — hosted by the crypto screen's Scaffold
+      test_tag: add_to_watchlist_star
+    components:
+      - id: star_toggle
+        type: icon_button
+        icon_when_tracked: star_filled
+        icon_when_untracked: star_outline
+        test_tag: "watchlist_star_{coinId}"
+        aria_label_tracked: "Remove from watchlist"     # screens_watchlist_star_remove_cd
+        aria_label_untracked: "Add to watchlist"        # screens_watchlist_star_add_cd
+        binds:
+          - { field: isTracked, from: "repository.contains(coinId)" }
+        on_click:
+          action: "toggle_watchlist"
+          params: { coinId: "{coinId}" }
+          action_contract:
+            effect: persist_db
+            external_library_refs: [room]
+            writes_to:
+              - { table: personal_watchlist, dto: WatchlistItem, op: upsert_or_delete }
+            description: "viewModel.onToggle(coinId): if tracked, repository.remove(coinId) → WatchlistDao.delete; else repository.add(coinId) → WatchlistDao.insert REPLACE (addedAtMs=now). Both wrapped in notifyingWrite; contains() re-emits and the star flips."
+    state_model:
+      viewmodel_base: "BaseViewModel<Unit, Nothing, AddToWatchlistAction>  (SubmitHandler<Unit> seam)"
+      coinId_injection: "Koin parametersOf(coinId); koinViewModel(key = coinId)"
+      streams:
+        - { name: isTracked, type: "StateFlow<Boolean>", note: "repository.contains(coinId) — drives filled/outline" }
+        - { name: submit, type: "StateFlow<SubmitState<Unit>>", note: "SubmitHandler.state — Idle/Submitting/Submitted/Failed" }
+      submit_state: "SubmitState { Idle | Submitting | Submitted | Failed }"
+      submit_target: "repository.add(coinId) | repository.remove(coinId)  # local Room commit — no network"
+      actions:
+        - { name: "AddToWatchlistAction.Toggle", params: { coinId: String }, effect: "add or remove via SubmitHandler based on current isTracked" }

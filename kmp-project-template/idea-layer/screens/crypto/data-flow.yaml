@@ -1,0 +1,103 @@
+# data-flow.yaml — Crypto (CoinGecko) per-screen data flows.
+# One entry per Store5 stream: the paged coin-markets list (SHIPS) and the
+# single-key coin detail (data-wired, UI-pending). Source of truth for the
+# CoinGecko endpoint, Room cache table, DTO/domain model, cache policy and
+# per-screen error paths. Reverse-engineered from feature/crypto +
+# core/{network,store,data,database}/demo/crypto.
+sibling: data-flow
+schema_version: "2.2.0"
+feature_id: feat-crypto
+
+# Store5 NETWORK_WITH_CACHE pipeline (shared by both entries below):
+#   Ktorfit CoinGeckoApi.getMarkets/getCoinDetail ── Fetcher ──▶ Dto.toDomain
+#        │                                                          │
+#   NetworkMonitor.executeWithRetry(maxAttempts=1)                  ▼
+#        │                                               CoinMarket / CoinDetail (domain)
+#        ▼                                                          │
+#   StoreFactory.createStore ── SourceOfTruth ──▶ Room DAO (coin_markets / coin_detail)
+#        │   markets reader: getPage(limit, offset=page*pageSize).map{ toDomain }.ifEmpty{null}
+#        │   markets writer: deleteByPage(page) + upsertAll(toEntity(page)) + validator.markFresh()
+#        ▼
+#   CryptoRepository.coinMarketsStream → PagingScreenStream<CoinMarket>   (paged)
+#   CryptoRepository.coinDetailStream  → ScreenDataStream<CoinDetail>     (single key)
+#        │  (asPagingScreenStream / asScreenStream: Loading→Content/Empty/Error/NoNetwork + Freshness)
+#        ▼
+#   CoinMarketsViewModel.pagingStream  ── rendered by PagingScreenContent
+
+store_pattern: NETWORK_WITH_CACHE
+pagination:
+  kind: offset_page                  # page-keyed Store5 (PageKey), NOT a cursor/token
+  page_size: 20
+  cache_key: "crypto:coinMarkets"
+  restores_scroll: true              # deep-scroll position + prior pages survive process-death (AC-17)
+
+entries:
+  - screen_id: coinMarkets
+    ships: true
+    trigger: on_subscribe            # pagingStream opened at VM init (repository.coinMarketsStream)
+    auth_required: false             # public CoinGecko API — no api key, no user auth
+    endpoints:
+      - api_id: coingecko-coins-markets
+        transport: rest
+        method: GET
+    tables:
+      - name: coin_markets
+        mutation: read_write         # read via SourceOfTruth reader (getPage); write via Store writer on fetch success
+        columns: [id, symbol, name, imageUrl, currentPrice, marketCap, marketCapRank, priceChangePercent24h, high24h, low24h, page, fetchedAt]
+        primary_key: id
+        order_by: "marketCapRank ASC"
+    dtos:
+      - { name: "List<CoinMarketDto>", role: response, api_id: coingecko-coins-markets }
+      - { name: CoinMarket,            role: domain,   api_id: coingecko-coins-markets }
+    produces_state: content
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 120               # AppStoreRegistry.Ttl.COIN_MARKETS = 2.minutes
+      key_template: "crypto:coinMarkets"   # per-page PageKey(page, pageSize=20)
+      shape: paged_list
+    append_behavior:
+      trigger: "scroll near tail → PagingScreenStream requests page N+1"
+      end_signal: "a page returns < pageSize (20) rows → footer shows 'You're all caught up'"
+      loading_signal: "footer shows 'Loading more…' while page N+1 is in flight"
+    refresh_behavior:
+      trigger: "CoinMarketsViewModel.retry() (pull-to-refresh / initial retry)"
+      effect: "pagingStream.refresh() — reset cursor to page 0, re-fetch from CoinGecko, rewrite Room pages"
+    error_paths:
+      - { error_code: network.offline,   behavior: fallback_cache, fallback_dto: CoinMarket, note: "cached pages render as stale Content; footer/freshness reflect staleness" }
+      - { error_code: network.rate_limit, behavior: error_slot,     note: "HTTP 429 on cold cache → framework Error slot + retry; warm cache renders stale pages" }
+      - { error_code: empty.no_coins,     behavior: empty_slot,     note: "page 0 empty AND no cache → framework Empty slot ('No coins to show yet.')" }
+    notes: >-
+      The shipped list. Top cryptocurrencies by descending market cap; each row
+      shows symbol + name + USD price + 24h change (primary/error accent by sign).
+
+  - screen_id: coinDetail
+    ships: false                     # data-wired at HEAD; CoinDetailScreen UI NOT shipped
+    status: planned
+    trigger: on_subscribe            # coinDetailStream(coinId) would open at VM init
+    auth_required: false
+    endpoints:
+      - api_id: coingecko-coin-detail
+        transport: rest
+        method: GET
+    tables:
+      - name: coin_detail
+        mutation: read_write
+        columns: [id, name, symbol, imageUrl, currentPrice, marketCap, marketCapRank, priceChangePercent24h, high24h, low24h, circulatingSupply, maxSupply, description, fetchedAt]
+        primary_key: id
+    dtos:
+      - { name: CoinDetailDto, role: response, api_id: coingecko-coin-detail }
+      - { name: CoinDetail,    role: domain,   api_id: coingecko-coin-detail }
+    produces_state: content
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 300               # AppStoreRegistry.Ttl.COIN_DETAIL = 5.minutes
+      key_template: "crypto:coinDetail:{coinId}"
+      shape: object
+    error_paths:
+      - { error_code: network.offline,   behavior: fallback_cache, fallback_dto: CoinDetail }
+      - { error_code: network.rate_limit, behavior: error_slot }
+      - { error_code: empty.not_found,    behavior: empty_slot, note: "unknown/delisted coin id → detail resolves empty" }
+    notes: >-
+      Single-key ScreenDataStream<CoinDetail>. Fully wired in core/{network,store,
+      data,database,model} at HEAD; only the Compose Screen/ViewModel/Route +
+      onCoinClick nav wiring remain (CryptoNavigation currently no-ops onCoinClick).

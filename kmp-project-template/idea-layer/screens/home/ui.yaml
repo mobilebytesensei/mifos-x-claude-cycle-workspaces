@@ -1,0 +1,459 @@
+schema_version: "1.0"
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/home — Money Toolkit home dashboard (reverse-engineered, read-only).
+# The app's main landing surface + one of the two bottom-nav tabs.
+#
+# COMPOSITE / AGGREGATION archetype: HomeViewModel fans FOUR independent reactive
+# sources into one HomeUiState (four ScreenState slots), each rendered by its own
+# card so one slot can be Loading while another shows Content/Error:
+#   1. loans        — LoanRepository.observeAll()            (local Room, banking_loans)
+#   2. bills        — BillReminderRepository.observeUpcoming (local Room, 7-day window)
+#   3. rates        — combineScreenStates(fedFunds, mortgage) over 2 FRED Store5 streams
+#   4. exchangeRate — CurrencyRepository.exchangeRatesStream (Frankfurter, PERIODIC 5-min)
+#
+# Two Kotlin composables ship: HomeScreen (framework-owned Scaffold shell, survives
+# `customizer --clean`) wrapping HomeDashboard (the demo Money-Toolkit body under
+# kpt.feature.home.demo). The dashboard is a SINGLE scrolling Column — there are no
+# sub-routes; every tile is an OUTBOUND cross-feature navigation callback threaded
+# from the app nav graph (12 callbacks: onSettingsClick + 11 demo nav callbacks).
+#
+# GROUNDED: only tiles / cards / actions / nav callbacks that exist in source are
+# represented. Cross-feature nav targets (loans, bills, rates, currency-rates, …) are
+# noted as outbound routes — those features are NOT authored here.
+# ─────────────────────────────────────────────────────────────────────────────
+screen_id: home
+feature: feat-home
+archetype: dashboard
+platforms: [android, ios, desktop, web]
+states: [loading, content, empty, error]
+initial_state: loading            # all four HomeUiState slots begin ScreenState.Loading
+
+# ─────────────────────────────────────────────────
+# Feature business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-3)
+# ─────────────────────────────────────────────────
+business_logic:
+  kind: composite
+  processing_kind: reactive_fan_in         # 4-way combine of local + network sources
+  processing_location: on_device
+  library_refs: [cmp-network-monitor]
+  external_library_refs: [store5, room, ktorfit]
+  description: >-
+    The Money Toolkit landing dashboard. HomeViewModel (BaseViewModel<HomeUiState,
+    Nothing, HomeAction>) composes FOUR independent reactive sources into a single
+    HomeUiState whose four slots each carry their own ScreenState<T>, so each card
+    renders Loading / Empty / Error / Content on its own timeline:
+      • loans slot        — LoanRepository.observeAll() (pure-local Room Flow) projected
+                            to ScreenState.Empty (no loans) / ScreenState.Content(LoansSummary)
+                            with aggregates count + sum(monthlyPayment) + sum(principalRemaining).
+      • bills slot        — BillReminderRepository.observeUpcoming(maxDays=7) (pure-local Flow)
+                            projected to Empty / Content(List<BillReminder>).
+      • rates slot        — combineScreenStates(fedFundsStream, mortgageStream) merges the two
+                            NETWORK_WITH_CACHE FRED Store5 streams (DFF + MORTGAGE30US, 30-day
+                            keys) into one RatesQuickView(fedFundsPercent, mortgage30YPercent);
+                            Content appears only when BOTH source streams reach Content
+                            (canonical priority NoNetwork>Loading>Unauthenticated>Error>Empty>Content).
+      • exchangeRate slot — CurrencyRepository.exchangeRatesStream(baseCurrency="USD",
+                            FetchPolicy.PERIODIC(300_000 ms)) — the ambient auto-refreshing
+                            Frankfurter FX tile (EUR/GBP/INR shown).
+    Two per-card FreshnessSignal StateFlows drive info indicators: exchangeFreshness (from
+    the exchange stream) and ratesFreshness (worst-of-2 FreshnessBand across fedFunds +
+    mortgage). Loans + Bills are local — no freshness surface. Actions fan out network
+    refreshes: RefreshAll → exchange+fed+mortgage refresh(); RetryRates → fed+mortgage retry();
+    RetryExchangeRate → exchange retry(). Loans/Bills are reactive Room Flows — nothing to refresh.
+  library_note: >-
+    Hybrid store composition — NOT a single store. Two local reactive Flows (LoanRepository,
+    BillReminderRepository over Room) + two Store5 NETWORK_WITH_CACHE ScreenDataStreams
+    (InterestRateSeriesStore for the FRED rate slot, exchangeRatesStore for the Frankfurter
+    slot). The rate slot uses the framework combineScreenStates() helper; the four top-level
+    slots are independent fields on HomeUiState (no master reduce).
+
+# The four upstream sources fanned into HomeUiState (grounded in HomeViewModel.kt).
+data_sources:
+  - id: loans
+    kind: local_room
+    repository: LoanRepository            # core/data/demo/banking
+    table: banking_loans
+    dto: Loan                             # core/model/demo/banking/Loan.kt
+    stream: "observeAll() : Flow<List<Loan>>"
+    remote: none
+    projection: "empty list → ScreenState.Empty; else ScreenState.Content(LoansSummary)"
+  - id: bills
+    kind: local_room
+    repository: BillReminderRepository    # core/data/demo/banking
+    table: banking_bill_reminders
+    dto: BillReminder                     # core/model/demo/banking/BillReminder.kt
+    stream: "observeUpcoming(maxDays = 7) : Flow<List<BillReminder>>"
+    remote: none
+    projection: "empty → ScreenState.Empty; else ScreenState.Content(List<BillReminder>)"
+  - id: rates
+    kind: network_cache
+    store: InterestRateSeriesStore        # core/store/demo/economic (Store5 NETWORK_WITH_CACHE)
+    store_archetype: NETWORK_WITH_CACHE
+    repository: EconomicRatesRepository    # core/data/demo/economic
+    table: interest_rate_series           # Room source-of-truth cache
+    dto: InterestRateSeries               # core/model/demo/economic
+    remote: "FRED fred/series/observations (Ktorfit FredApi)"
+    keys: [{ seriesId: DFF, days: 30 }, { seriesId: MORTGAGE30US, days: 30 }]
+    combine: "combineScreenStates(fedFunds, mortgage) → RatesQuickView"
+  - id: exchangeRate
+    kind: network_cache
+    store: exchangeRatesStore             # core/store/demo/currency (Store5 NETWORK_WITH_CACHE)
+    store_archetype: NETWORK_WITH_CACHE
+    repository: CurrencyRepository        # core/data/demo/currency
+    table: exchange_rates
+    dto: ExchangeRates                    # core/model/demo/currency (base, date, rates: Map<String,Double>)
+    remote: "Frankfurter API (Ktorfit FrankfurterApi)"
+    fetch_policy: "PERIODIC(intervalMillis = 300_000)  # 5-minute ambient auto-refresh"
+    base_currency: USD
+
+# ─────────────────────────────────────────────────
+# State model — mirrors HomeViewModel.kt / HomeUiState (four independent slots)
+# ─────────────────────────────────────────────────
+state_model:
+  viewmodel: HomeViewModel
+  viewmodel_base: "BaseViewModel<HomeUiState, Nothing, HomeAction>"
+  event_type: Nothing        # no one-shot events — navigation is via on_click callbacks
+  screen_state: "StateFlow<HomeUiState>"
+  initial: "HomeUiState()  # all four slots ScreenState.Loading"
+  state:
+    name: HomeUiState
+    fields:
+      - { name: loans,        type: "ScreenState<LoansSummary>",       default: "ScreenState.Loading", note: "local Room → LoansSummary(count, totalMonthlyEmi, totalOutstanding, loans)." }
+      - { name: bills,        type: "ScreenState<List<BillReminder>>", default: "ScreenState.Loading", note: "local Room upcoming-7-days." }
+      - { name: rates,        type: "ScreenState<RatesQuickView>",     default: "ScreenState.Loading", note: "combineScreenStates(DFF + MORTGAGE30US)." }
+      - { name: exchangeRate, type: "ScreenState<ExchangeRates>",      default: "ScreenState.Loading", note: "Frankfurter PERIODIC(5-min)." }
+  projections:
+    - name: LoansSummary
+      fields: [count: Int, totalMonthlyEmi: Double, totalOutstanding: Double, "loans: List<Loan>"]
+      note: "Compact loan-portfolio aggregate for the hero + carousel."
+    - name: RatesQuickView
+      fields: [fedFundsPercent: Double, mortgage30YPercent: Double]
+      note: "Two headline FRED rates for the Rates card."
+  derived:
+    - { name: exchangeFreshness, type: "StateFlow<FreshnessSignal>", note: "exchangeRateStream.freshness; WhileSubscribed(5_000). Drives the Exchange card FreshnessIndicator." }
+    - { name: ratesFreshness,    type: "StateFlow<FreshnessSignal>", note: "worst-of-2 FreshnessBand across fedFunds + mortgage. Drives the Rates card FreshnessIndicator." }
+  actions:
+    name: HomeAction
+    variants:
+      - { action: RefreshAll,        payload: none, effect: "exchangeRateStream.refresh() + fedFundsStream.refresh() + mortgageStream.refresh() (loans/bills local — nothing to refresh)" }
+      - { action: RetryExchangeRate, payload: none, effect: "exchangeRateStream.retry()" }
+      - { action: RetryRates,        payload: none, effect: "fedFundsStream.retry() + mortgageStream.retry()" }
+  constants:
+    - { name: UPCOMING_BILLS_WINDOW_DAYS, value: 7, note: "observeUpcoming lookahead window." }
+    - { name: EXCHANGE_RATE_REFRESH_INTERVAL_MS, value: 300000, note: "PERIODIC exchange-rate cadence (5 min)." }
+    - { name: STATE_TIMEOUT_MS, value: 5000, note: "WhileSubscribed stopTimeout for the per-card freshness StateFlows." }
+
+# ─────────────────────────────────────────────────
+# Shell — home is a bottom-nav tab (start destination) with the app-title top bar.
+#   Bottom nav has TWO tabs: Home + Profile. Grounded in
+#   cmp-navigation/authenticatednavbar/AuthenticatedNavbarNavigationScreen.kt.
+# ─────────────────────────────────────────────────
+shell:
+  bottom_nav:
+    enabled: true
+    start_destination: home
+    items:
+      - { icon: home,   label: "Home",    target: home,    active: true, tab: HomeTab }
+      - { icon: person, label: "Profile", target: profile, active: false, tab: ProfileTab }   # feature/profile — cross-feature tab
+  top_app_bar:
+    enabled: true
+    title: "Money Toolkit"              # screens_home_app_title
+    variant: center_aligned
+    trailing:
+      - type: icon_button
+        icon: settings
+        aria_label: "Settings"          # screens_home_settings_cd
+        on_click:
+          action: "navigate"
+          target: "settings"            # onSettingsClick — cross-feature (app settings), survives customizer --clean
+          action_contract:
+            effect: navigate
+            description: "HomeScreen onSettingsClick() → NavController to the app Settings screen (part of the framework shell, not a demo tile)."
+
+# ─────────────────────────────────────────────────
+# State components. content describes the resolved dashboard (single scrolling
+# Column, testTag home_dashboard_scroll). Per-card slots render Loading/Empty/Error
+# independently via core-base/ui ScreenContent.
+# ─────────────────────────────────────────────────
+state_components:
+
+  # ── LOADING — every slot starts Loading; the scroll Column + cards render immediately ──
+  loading:
+    - type: stack
+      direction: column
+      scroll: vertical
+      padding: "{spacing.lg}"
+      gap: "{spacing.md}"
+      test_tag: "home_dashboard_scroll"
+      children:
+        - { type: card, variant: hero_card, aria_label: "Loading loans snapshot" }
+        - { type: card, variant: app_card, aria_label: "Loading upcoming bills" }
+        - { type: card, variant: app_card, aria_label: "Loading today's rates" }
+        - { type: card, variant: app_card, aria_label: "Loading USD exchange" }
+
+  # ── EMPTY — no loans yet: hero renders the zero-state prompt. Per-slot empties
+  #    do not blank the dashboard; other cards/tools still render. ──
+  empty:
+    - type: hero_card
+      id: hero_empty
+      aria_label: "No active loans"
+      children:
+        - { type: amount_display, content: "$0.00", label: "Outstanding balance" }   # screens_home_money_zero / screens_home_outstanding_label
+        - { type: text, variant: body_medium, content: "No active loans — start by adding one." }   # screens_home_no_loans_message
+
+  # ── ERROR — per-card slot error (network-backed rates/exchange only). Loans/Bills
+  #    are local Room and effectively never surface an error slot. ──
+  error:
+    - type: card
+      variant: app_card
+      id: card_error
+      children:
+        - type: error_slot
+          aria_label: "Couldn't load — tap the freshness indicator to retry"
+          retry_action: "retry"
+          note: >-
+            Rendered by ScreenContent's framework Error/NoNetwork slot for the rates
+            or exchange card when the FRED / Frankfurter fetch fails with no cache.
+            With a warm Room cache the card shows stale Content instead. Per-card only.
+          on_retry:
+            action: "retry"
+            action_contract:
+              effect: call_api
+              external_library_refs: [ktorfit, store5]
+              reads_from:
+                - { source: "FRED fred/series/observations OR Frankfurter latest", dto: "InterestRateSeries | ExchangeRates" }
+              description: "HomeAction.RetryRates (re-fetch DFF + MORTGAGE30US) or HomeAction.RetryExchangeRate (re-fetch USD base) — refresh only the failed card's Store5 stream(s)."
+
+  # ── CONTENT — the resolved dashboard: hero + loans carousel + This-week cards + Tools grid ──
+  content:
+    - type: stack
+      direction: column
+      scroll: vertical
+      padding: "{spacing.lg}"
+      gap: "{spacing.md}"
+      test_tag: "home_dashboard_scroll"
+      children:
+
+        # ── Hero snapshot (loans slot) ──
+        - type: hero_card
+          id: hero_snapshot
+          binds_to: "state.loans (ScreenState<LoansSummary>)"
+          children:
+            - { type: amount_display, content_source: "summary.totalOutstanding formatGrouped(2)", label: "Total outstanding" }   # screens_home_total_outstanding_label
+            - { type: text, content_source: "summary.count → 'N active loan(s)'" }   # screens_home_active_loans_singular|plural
+            - { type: hero_stat, label: "Monthly EMI", value_source: "summary.totalMonthlyEmi formatGrouped(2)" }   # screens_home_monthly_emi_label
+            - { type: hero_stat, label: "Loans", value_source: "summary.count" }   # screens_home_loans_label
+
+        # ── Loans carousel — LazyRow of per-loan tiles (loans slot Content, non-empty) ──
+        - type: carousel
+          id: loans_carousel
+          component: LazyRow
+          repeat_for: "summary.loans"
+          visible_when: "state.loans is Content && loans.isNotEmpty()"
+          title_source: "'Your loans · N'"   # screens_home_loans_carousel_title
+          item:
+            type: card
+            variant: app_card
+            id: loan_carousel_tile
+            accent: "loanKindAccent(loan.kind) — MORTGAGE/BUSINESS=secondary, AUTO/STUDENT=tertiary, PERSONAL=primary, OTHER=null"
+            children:
+              - { type: text, content_source: "loan.name" }
+              - { type: money_text, content_source: "loan.principalRemaining formatGrouped(2)", tone: negative, label: "Remaining" }   # screens_home_remaining_label
+              - { type: linear_progress_indicator, binds_to: "1 - (principalRemaining / principal)" }
+              - { type: text, content_source: "'EMI $X · Y% paid'" }   # screens_home_loan_tile_footer
+          on_click:
+            action: "navigate"
+            target: "loans"               # onNavigateToLoans — cross-feature (feature/loans)
+            action_contract:
+              effect: navigate
+              description: "Tap any loan tile → onNavigateToLoans() → the full Personal Loans list (feature/loans, separate module)."
+
+        # ── Section: This week ──
+        - { type: section_header, title: "This week" }   # screens_home_section_this_week
+
+        # ── Bills quick card (bills slot) ──
+        - type: card
+          variant: app_card
+          id: bills_quick_card
+          title: "Upcoming Bills"          # screens_home_bills_card_title
+          icon: notifications_active
+          binds_to: "state.bills (ScreenState<List<BillReminder>>)"
+          empty_copy: "No bills due in the next 7 days."   # screens_home_bills_empty
+          children:
+            - { type: text, label: "Total due (next 7d)", value_source: "sum(bill.amount)" }   # screens_home_bills_total_label
+            - { type: list, note: "up to BILLS_PREVIEW_LIMIT=3 rows: UrgencyDot + bill.name + 'Day N' + amount", repeat_for: "bills.take(3)" }
+          see_all:
+            label: "See all"               # screens_home_see_all
+            on_click:
+              action: "navigate"
+              target: "bills"              # onNavigateToBills — cross-feature (feature/bills, B4 Bill Reminders)
+              action_contract:
+                effect: navigate
+                description: "'See all' → onNavigateToBills() → the full Bill Reminders screen (separate module)."
+
+        # ── Rates quick card (rates slot — 2-stream combineScreenStates) ──
+        - type: card
+          variant: app_card
+          id: rates_quick_card
+          title: "Today's Rates"           # screens_home_rates_card_title
+          icon: trending_up
+          binds_to: "state.rates (ScreenState<RatesQuickView>)"
+          trailing:
+            - { type: freshness_indicator, binds_to: "ratesFreshness", aria_label: "Rates freshness — tap to refresh" }
+          children:
+            - { type: rate_row, label: "Federal Funds", value_source: "rates.fedFundsPercent formatDecimal(2)", direction: flat }   # screens_home_rates_fed_funds_label / screens_home_rates_delta_flat
+            - { type: rate_row, label: "30Y Mortgage", value_source: "rates.mortgage30YPercent formatDecimal(2)", direction: up }    # screens_home_rates_mortgage_30y_label / screens_home_rates_delta_mortgage
+          on_retry:
+            action: "retry"
+            action_contract:
+              effect: call_api
+              external_library_refs: [ktorfit, store5]
+              reads_from:
+                - { source: "FRED fred/series/observations", series_ids: [DFF, MORTGAGE30US], dto: InterestRateSeries }
+              description: "FreshnessIndicator tap → HomeAction.RetryRates → fedFundsStream.retry() + mortgageStream.retry(); re-fetch both FRED series over the 30-day window."
+          see_all:
+            label: "See all"
+            on_click:
+              action: "navigate"
+              target: "rates"              # onNavigateToRates — cross-feature (feature/rates, B7)
+              action_contract:
+                effect: navigate
+                description: "'See all' → onNavigateToRates() → the full Interest Rate Tracker (feature/rates, separate module)."
+
+        # ── Exchange rate card (exchangeRate slot — Frankfurter PERIODIC) ──
+        - type: card
+          variant: app_card
+          id: exchange_rate_card
+          title: "USD Exchange"            # screens_home_exchange_card_title
+          icon: currency_exchange
+          binds_to: "state.exchangeRate (ScreenState<ExchangeRates>)"
+          trailing:
+            - { type: freshness_indicator, binds_to: "exchangeFreshness", aria_label: "Exchange freshness — tap to refresh" }
+          children:
+            - { type: rate_pair_row, note: "for code in [EUR, GBP, INR]: 'USD → code' (arrow Icon) + rates[code] formatGrouped(4)" }   # screens_home_usd_label
+          on_retry:
+            action: "retry"
+            action_contract:
+              effect: call_api
+              external_library_refs: [ktorfit, store5]
+              reads_from:
+                - { source: "Frankfurter latest?base=USD", dto: ExchangeRates }
+              description: "FreshnessIndicator tap → HomeAction.RetryExchangeRate → exchangeRateStream.retry(); re-fetch USD-base rates from Frankfurter."
+          see_all:
+            label: "See all"
+            on_click:
+              action: "navigate"
+              target: "currency-rates"     # onNavigateToExchangeRates — cross-feature (feature/currency)
+              action_contract:
+                effect: navigate
+                description: "'See all' → onNavigateToExchangeRates() → the full Currency Rates screen (separate module)."
+
+        # ── Section: Tools ──
+        - { type: section_header, title: "Tools", supporting: "Calculators, comparisons, macro indicators" }   # screens_home_section_tools(_subtitle)
+
+        # ── Tools grid — 8 FeatureRow tiles, each an OUTBOUND cross-feature nav ──
+        - type: feature_row
+          id: tool_emi
+          title: "EMI Calculator"          # screens_home_tool_emi_title
+          subtitle: "Monthly payment for any loan"   # screens_home_tool_emi_subtitle
+          icon: calculate
+          on_click:
+            action: "navigate"
+            target: "emi-calculator"       # onNavigateToEmi
+            action_contract: { effect: navigate, description: "onNavigateToEmi() → feature/emi-calculator (pure-UI calculator)." }
+
+        - type: feature_row
+          id: tool_affordability
+          title: "Affordability"           # screens_home_tool_affordability_title
+          subtitle: "How much can I borrow safely?"  # screens_home_tool_affordability_subtitle
+          icon: savings
+          on_click:
+            action: "navigate"
+            target: "affordability"        # onNavigateToAffordability
+            action_contract: { effect: navigate, description: "onNavigateToAffordability() → feature/affordability calculator (separate module)." }
+
+        - type: feature_row
+          id: tool_amortization
+          title: "Amortization"            # screens_home_tool_amortization_title
+          subtitle: "Full payment schedule"          # screens_home_tool_amortization_subtitle
+          icon: trending_up
+          on_click:
+            action: "navigate"
+            target: "amortization"         # onNavigateToAmortization
+            action_contract: { effect: navigate, description: "onNavigateToAmortization() → feature/amortization schedule (B5, separate module)." }
+
+        - type: feature_row
+          id: tool_compare
+          title: "Compare Loans"           # screens_home_tool_compare_title
+          subtitle: "Side-by-side total cost"        # screens_home_tool_compare_subtitle
+          icon: compare
+          on_click:
+            action: "navigate"
+            target: "loan-comparison"      # onNavigateToLoanComparison
+            action_contract: { effect: navigate, description: "onNavigateToLoanComparison() → feature/loan-comparison (separate module)." }
+
+        - type: feature_row
+          id: tool_wizard
+          title: "Loan Wizard"             # screens_home_tool_wizard_title
+          subtitle: "Step-by-step planner"           # screens_home_tool_wizard_subtitle
+          icon: tune
+          on_click:
+            action: "navigate"
+            target: "loan-calc-wizard"     # onNavigateToLoanCalcWizard
+            action_contract: { effect: navigate, description: "onNavigateToLoanCalcWizard() → feature/loan-calc-wizard (separate module)." }
+
+        - type: feature_row
+          id: tool_currency
+          title: "Currency Rates"          # screens_home_tool_currency_title
+          subtitle: "Live exchange rates"            # screens_home_tool_currency_subtitle
+          icon: currency_exchange
+          on_click:
+            action: "navigate"
+            target: "currency-rates"       # onNavigateToExchangeRates (same target as the Exchange card 'See all')
+            action_contract: { effect: navigate, description: "onNavigateToExchangeRates() → feature/currency (separate module)." }
+
+        - type: feature_row
+          id: tool_history
+          title: "Rate History"            # screens_home_tool_history_title
+          subtitle: "Historical FX charts"          # screens_home_tool_history_subtitle
+          icon: receipt_long
+          on_click:
+            action: "navigate"
+            target: "rate-history"         # onNavigateToRateHistory
+            action_contract: { effect: navigate, description: "onNavigateToRateHistory() → feature/rate-history FX charts (separate module)." }
+
+        - type: feature_row
+          id: tool_macro
+          title: "Country Macro"           # screens_home_tool_macro_title
+          subtitle: "GDP, CPI, unemployment"        # screens_home_tool_macro_subtitle
+          icon: public
+          on_click:
+            action: "navigate"
+            target: "country-macro"        # onNavigateToMacro
+            action_contract: { effect: navigate, description: "onNavigateToMacro() → feature/country-macro (B8 World Bank indicators, separate module)." }
+
+# ─────────────────────────────────────────────────
+# Test tags present in source (feature/home/.../ui/TestTags.kt) — APPEND-ONLY
+# ─────────────────────────────────────────────────
+test_tags:
+  - { id: "home.screen",             const: "TestTags.Home.SCREEN",           screen: home, note: "Root Scaffold surface of HomeScreen — always rendered regardless of dashboard state. Shell UI-test target." }
+  - { id: "home_dashboard_scroll",   const: "TestTags.Home.DASHBOARD_SCROLL", screen: home, note: "The vertically-scrollable dashboard Column inside HomeDashboard. Referenced by maestro/screen-state/tab-switch.yaml." }
+
+# ─────────────────────────────────────────────────
+# Source provenance (reverse-engineered, read-only)
+# ─────────────────────────────────────────────────
+source_refs:
+  shell_screen: "feature/home/src/commonMain/kotlin/kpt/feature/home/HomeScreen.kt"
+  dashboard_composable: "feature/home/src/commonMain/kotlin/kpt/feature/home/demo/HomeDashboard.kt"
+  viewmodel: "feature/home/src/commonMain/kotlin/kpt/feature/home/demo/ui/HomeViewModel.kt"
+  destination: "feature/home/src/commonMain/kotlin/kpt/feature/home/HomeDestination.kt"
+  di: "feature/home/src/commonMain/kotlin/kpt/feature/home/di/HomeModule.kt"
+  test_tags: "feature/home/src/commonMain/kotlin/kpt/feature/home/ui/TestTags.kt"
+  strings: "feature/home/src/commonMain/composeResources/values/strings.xml"
+  app_navigation: "cmp-navigation/src/commonMain/kotlin/cmp/navigation/authenticatednavbar/AuthenticatedNavbarNavigationScreen.kt"
+  loan_repository: "core/data/src/commonMain/kotlin/kpt/core/data/demo/banking/LoanRepository.kt"
+  bill_repository: "core/data/src/commonMain/kotlin/kpt/core/data/demo/banking/BillReminderRepository.kt"
+  economic_repository: "core/data/src/commonMain/kotlin/kpt/core/data/demo/economic/EconomicRatesRepository.kt"
+  currency_repository: "core/data/src/commonMain/kotlin/kpt/core/data/demo/currency/CurrencyRepository.kt"
+  models: ["core/model/demo/banking/{Loan,BillReminder}.kt", "core/model/demo/economic/InterestRateSeries.kt", "core/model/demo/currency/ExchangeRates.kt"]
+  design_system: ["core-base/designsystem AppCard + HeroCard", "core-base/ui ScreenContent + FreshnessIndicator", "core/designsystem AmountDisplay + MoneyText + RateBadge + SectionHeader + UrgencyDot", "core/common formatGrouped + formatDecimal"]

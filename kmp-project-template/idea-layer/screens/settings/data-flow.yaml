@@ -1,0 +1,116 @@
+# data-flow.yaml — per-screen local preference flows for feature/settings.
+# PREFERENCES (NOT Store5, NOT Room, NOT network). Every entry is a read/write of the
+# serialized UserData blob via multiplatform-settings (com.russhwolf.settings).
+# Source: SettingsViewmodel → UserDataRepository → UserPreferencesRepositoryImpl.
+sibling: data-flow
+schema_version: "2.2.0"
+feature_id: feat-settings
+
+store:
+  name: UserPreferences
+  archetype: PREFERENCES                # local key-value; NOT a Store5 archetype
+  library: "com.russhwolf.settings (multiplatform-settings)"
+  key: "user_data_key (plain) | secure_data_key (secure)"   # USER_DATA_KEY / SECURE_DATA_KEY in UserPreferencesRepositoryImpl
+  value: "UserData (@Serializable blob)"
+  source_of_truth: "on-device Settings backend (SharedPreferences / NSUserDefaults / java.util.prefs / localStorage per platform)"
+  remote_fetcher: none
+  repository: UserDataRepository        # core/data/user/ (impl → core/datastore UserPreferencesRepositoryImpl)
+  reactive_surface: "UserDataRepository.userData: StateFlow<UserData> (MutableStateFlow updated on every write)"
+  note: >-
+    UserPreferencesRepositoryImpl splits storage into a plain store (UI prefs, key
+    user_data_key) and a secure store (auth fields, key secure_data_key), holds a single
+    combined _userData MutableStateFlow (loadCombinedUserData). The settings feature writes
+    ONLY the four plain UI-preference fields below. Each setter runs on the io dispatcher:
+    updated = _userData.value.copy(...) → plainSettings.putUserPreference(updated) +
+    secureSettings.putSecurePreference(updated) via encodeValue → _userData.value = updated
+    (StateFlow re-emits). No TTL, no cache eviction, no network error class.
+
+entries:
+  # ── settings-load: reactive read of current preferences (feeds both dialogs) ──
+  - screen_id: settings                 # consumed by SettingsDialog + LanguageDialog via SettingsViewmodel
+    trigger: on_subscribe               # SharingStarted.WhileSubscribed(5_000) on settingsUiState
+    auth_required: false
+    endpoints: none
+    preferences:
+      - key: user_data_key
+        op: read
+        fields: [themeBrand, darkThemeConfig, useDynamicColor, appLanguage]
+        projection: "UserEditableSettings(brand, useDynamicColor, darkThemeConfig, language)"
+    produces_state: content             # SettingsUiState.Success; SettingsUiState.Loading until first emit
+    error_paths: []                     # local read — no network error class
+    notes: >-
+      settingsRepository.userData.map { UserEditableSettings(...) }.stateIn(...). Initial
+      value SettingsUiState.Loading is replaced on the first (synchronous, cached) emit.
+
+  # ── theme-brand write (Android-only chooser) ──
+  - screen_id: theme-dialog
+    trigger: on_select_theme_brand
+    auth_required: false
+    endpoints: none
+    preferences:
+      - key: user_data_key
+        op: write
+        field: themeBrand
+        type: ThemeBrand
+        values: [DEFAULT, ANDROID]
+        default: DEFAULT
+    produces_state: content             # optimistic — StateFlow re-emits Success with the new value
+    error_paths: []
+    notes: "viewModel.updateThemeBrand → analyticsHelper.logThemeBrandChanged + repository.setThemeBrand → UserData.copy(themeBrand=…) encoded into plain + secure stores."
+
+  # ── dynamic-color write (Android + DEFAULT brand + supportsDynamicTheming) ──
+  - screen_id: theme-dialog
+    trigger: on_select_dynamic_color
+    auth_required: false
+    endpoints: none
+    preferences:
+      - key: user_data_key
+        op: write
+        field: useDynamicColor
+        type: Boolean
+        default: false
+    produces_state: content
+    error_paths: []
+    notes: "viewModel.updateDynamicColorPreference → logDynamicColorPreferences + repository.setDynamicColorPreference."
+
+  # ── dark-mode write (all platforms) ──
+  - screen_id: theme-dialog
+    trigger: on_select_dark_mode
+    auth_required: false
+    endpoints: none
+    preferences:
+      - key: user_data_key
+        op: write
+        field: darkThemeConfig
+        type: DarkThemeConfig
+        values: [FOLLOW_SYSTEM, LIGHT, DARK]
+        default: FOLLOW_SYSTEM
+    produces_state: content
+    error_paths: []
+    notes: "viewModel.updateDarkThemeConfig → logThemeChanged + repository.setDarkThemeConfig. Drives app-wide dark/light selection via observeDarkThemeConfig."
+
+  # ── language write (all platforms) ──
+  - screen_id: language-dialog
+    trigger: on_select_language
+    auth_required: false
+    endpoints: none
+    preferences:
+      - key: user_data_key
+        op: write
+        field: appLanguage
+        type: LanguageConfig
+        values: "41 entries — DEFAULT (System Default) + 40 locales (localeName ∈ {af,be,bg,ca,cs,da,de,el,en,en-GB,es,et,fa,fi,fr,hi,hr,hu,in,it,iw,ja,ko,lv,ml,nb,nl,pl,pt-BR,pt-PT,ro,ru,sk,sv,th,tr,uk,vi,zh-CN,zh-TW})"
+        default: DEFAULT
+    produces_state: content
+    error_paths: []
+    notes: "viewModel.updateLanguage → logLanguageChanged + repository.setLanguage → UserData.copy(appLanguage=…). App relocalizes via observeLanguage."
+
+  # ── notification: NO data flow (static empty-state placeholder) ──
+  - screen_id: notification
+    trigger: none
+    auth_required: false
+    endpoints: none
+    preferences: []
+    produces_state: empty
+    error_paths: []
+    notes: "NotificationScreen renders a static HeroCard empty state — no repository, no preference, no data source wired yet."

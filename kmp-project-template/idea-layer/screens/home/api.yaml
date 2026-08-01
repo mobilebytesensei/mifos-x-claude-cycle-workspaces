@@ -1,0 +1,124 @@
+schema_version: "1.0"
+screen_id: home
+feature_id: feat-home
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/home is a COMPOSITE dashboard — it owns NO endpoints of its own. It
+# aggregates FOUR upstream sources, two local and two remote:
+#   • loans        — LOCAL Room read (banking_loans) via LoanRepository
+#   • bills        — LOCAL Room read (banking_bill_reminders) via BillReminderRepository
+#   • rates        — REMOTE FRED (fred/series/observations) via EconomicRatesRepository,
+#                    fanned to 2 series (DFF + MORTGAGE30US), Store5 NETWORK_WITH_CACHE
+#   • exchangeRate — REMOTE Frankfurter (latest?base=USD) via CurrencyRepository,
+#                    Store5 NETWORK_WITH_CACHE, FetchPolicy.PERIODIC(5-min)
+# The concrete table/transport wiring lives in data-flow.yaml; this file records the
+# operation surface so cross-layer tooling can resolve the on_click action_contracts.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── LOCAL operations (on-device Room reads, no network round-trip) ──
+source: composite
+local_operations:
+  - operation: observe-all-loans
+    method: local-read
+    source: room
+    kind: reactive
+    repository: LoanRepository
+    dao: "LoanDao.observeAll()"
+    request: { key: Unit, order: "nextDueDate ASC, createdAtMs ASC" }
+    response: { dto: Loan, shape: list }
+    consumed_by: { slot: loans }
+    demo_source: loans
+
+  - operation: observe-upcoming-bills
+    method: local-read
+    source: room
+    kind: reactive
+    repository: BillReminderRepository
+    dao: "BillReminderDao.observeUpcoming(maxDays)"
+    request: { key: "maxDays = 7", filter: "enabled = true, dueDay in next 7 days (wraps month)" }
+    response: { dto: BillReminder, shape: list }
+    consumed_by: { slot: bills }
+    demo_source: bill_reminders
+
+# ── REMOTE external sources (through Store5 NETWORK_WITH_CACHE) ──
+external_sources:
+  - name: FRED
+    full_name: "Federal Reserve Economic Data (St. Louis Fed)"
+    base_url: "https://api.stlouisfed.org/"
+    transport: rest
+    client: ktorfit                          # de.jensklingenberg.ktorfit — FredApi
+    auth:
+      type: api_key
+      param: api_key                         # query param, required
+      secret_alias: mifos_x_fred_api_key     # framework vault (Path B); Path A = FRED_API_KEY in local.properties
+      unconfigured_behavior: "Store5 Fetcher throws IllegalStateException → rates card renders Error slot 'FRED_API_KEY is not configured'."
+    rate_limit: "120 calls/min (free). Store5 24h TTL keeps usage far below."
+    docs: "https://fred.stlouisfed.org/docs/api/fred/series_observations.html"
+
+  - name: Frankfurter
+    full_name: "Frankfurter — free ECB-sourced foreign-exchange rates API"
+    base_url: "https://api.frankfurter.dev/"   # FrankfurterApiConfig (overridable)
+    transport: rest
+    client: ktorfit                          # FrankfurterApi
+    auth: { type: none, note: "Public API, no key required." }
+    docs: "https://frankfurter.dev/"
+
+api:
+  - operation: fred-series-observations
+    method: GET
+    path: "fred/series/observations"
+    source: fred
+    consumed_by:
+      - { slot: rates, series_ids: [DFF, MORTGAGE30US], fan_out: 2, window_days: 30 }
+    request:
+      query:
+        series_id: "<FRED series id>"        # DFF | MORTGAGE30US (case-sensitive)
+        api_key: "FredApiConfig.apiKey"      # required
+        file_type: "json"                    # forced — FRED defaults to XML
+        observation_start: "today - 30 (YYYY-MM-DD)"   # Home uses days=30 (compact card), not 365
+        observation_end: "today (YYYY-MM-DD, UTC)"
+    response:
+      dto: FredObservationsDto
+      shape: object
+      body:
+        observations: "List<FredObservationDto> { date: String, value: String }"
+        note: >-
+          value arrives as a String; FRED encodes missing data as literal "." (stripped by
+          FredObservationsDto.toDomain, which maps to InterestRateSeries{seriesId, name, unit,
+          current=last.value, observations=[RateObservation(date,value)]}). Home reads only
+          series.current for each of the two headline rows (RatesQuickView).
+    cache:
+      strategy: stale_while_revalidate       # Store5 NETWORK_WITH_CACHE
+      ttl: "24h"
+      store: InterestRateSeriesStore
+      source_of_truth: "InterestRateSeriesDao (Room interest_rate_series, primaryKeys [seriesId, date])"
+      key_template: "economic:rates:{seriesId}:30d"
+      retry: "NetworkMonitor.executeWithRetry(maxAttempts=1)"
+    demo_source: interest_rate_series
+    notes: "SAME endpoint/Store as feature/rates (B7); home requests only 2 of the 4 series and a 30-day window."
+
+  - operation: frankfurter-latest
+    method: GET
+    path: "latest"
+    source: frankfurter
+    consumed_by:
+      - { slot: exchangeRate, base: USD, symbols: [EUR, GBP, INR], fetch_policy: "PERIODIC(300_000 ms)" }
+    request:
+      query:
+        base: "USD"                          # baseCurrency arg
+    response:
+      dto: ExchangeRatesDto
+      shape: object
+      body:
+        base: "String (USD)"
+        date: "String (YYYY-MM-DD)"
+        rates: "Map<String, Double>  (home displays EUR, GBP, INR)"
+      domain: "ExchangeRates(base, date, rates)"
+    cache:
+      strategy: stale_while_revalidate       # Store5 NETWORK_WITH_CACHE
+      ttl: "24h"
+      store: exchangeRatesStore
+      source_of_truth: "ExchangeRatesDao (Room exchange_rates)"
+      key_template: "currency:exchange:USD"
+      fetch_policy: "PERIODIC(intervalMillis = 300_000)  # ambient 5-min background refresh"
+    demo_source: exchange_rates
+    notes: "SAME endpoint/Store as feature/currency (B6). Home opens it with PERIODIC so the tile self-refreshes."
