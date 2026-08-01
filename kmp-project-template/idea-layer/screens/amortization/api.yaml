@@ -1,0 +1,53 @@
+schema_version: "1.0"
+screen_id: amortization-schedule
+feature_id: feat-amortization
+
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/amortization is OFFLINE_LOCAL_ONLY and READ-ONLY — there are NO remote/RPC
+# endpoints and NO writes. It reuses ONE local read operation from feature/loans
+# (observe-loan-by-id against banking_loans) and adds ONE pure local computation
+# (compute-amortization-schedule) with no data-source at all. This file records the
+# operation surface so cross-layer tooling can resolve on_click / data-flow contracts.
+# ─────────────────────────────────────────────────────────────────────────────
+remote_endpoints: none
+source: local_room
+store: LoansStore                 # core/store/demo/banking/impl/LoansStore.kt (OFFLINE_LOCAL_ONLY, shared)
+repository: LoanRepository        # core/data/demo/banking/LoanRepository.kt
+table: banking_loans              # read only — amortization owns no table
+dto: Loan                         # core/model/demo/banking/Loan.kt (read input)
+computed_model: AmortizationRow   # core/model/demo/banking/AmortizationRow.kt (derived output)
+
+# Local operations (all on-device — no network round-trip).
+api:
+  # ── Read (reactive Flow from Room via Store5) — reused from feature/loans ──
+  - operation: observe-loan-by-id
+    method: local-read
+    source: room
+    kind: reactive
+    request: { key: loanId }
+    response: { dto: Loan, shape: single, nullable: true }
+    dao: "LoanRepository.observeById(id)"
+    demo_source: loans
+    used_by: [amortization-schedule]
+    note: "Same repository read feature/loans loan-detail uses; amortization subscribes to the single loan by its route loanId."
+
+  # ── Compute (pure local — NO data source, NO I/O) ──
+  - operation: compute-amortization-schedule
+    method: local-compute
+    source: none
+    kind: pure_function
+    request:
+      input: Loan
+      params: { principalRemaining: Double, annualRatePercent: Double, monthlyPayment: Double, monthsRemaining: Int }
+    response: { dto: AmortizationRow, shape: list }
+    impl: "feature/amortization/.../ui/AmortizationScheduleViewModel.kt#computeSchedule(loan)"
+    used_by: [amortization-schedule]
+    formula: >-
+      For each of monthsRemaining rows: interest = balance × (annualRatePercent/100/12)
+      (0 when rate == 0); principal = min(monthlyPayment − interest, balance) (last row
+      clamps to remaining balance); balance = max(0, balance − principal). Emits
+      AmortizationRow(month = index+1, payment = monthlyPayment, principal, interest, balance).
+    edge_cases:
+      - "annualRatePercent == 0 → every payment is 100% principal, balance reduces linearly."
+      - "monthsRemaining <= 0 → empty schedule → ScreenState.Empty (screen never calls compute)."
+      - "last row: principal clamps to the outstanding balance so the final balance lands at ~0 (no overshoot)."
