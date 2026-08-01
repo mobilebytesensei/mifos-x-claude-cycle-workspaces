@@ -1,52 +1,143 @@
-feature: nav-shell-assembler
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: nav-shell-assembler
+
+# No API calls. All reads from in-memory PermissionStateHolder (bootstrapped at login
+# by permission-capability-engine). NavRoster is a pure local derivation — read-only,
+# fully offline, re-assembles on every PermissionSet emission (403-drift, re-auth,
+# server switch). The last-known roster is shown as a shimmer placeholder while the
+# StateFlow collects on cold start.
+
 entries:
-  # ── primary: read resolved PermissionSet on mount + on refresh events ──
-  - trigger: on_mount
-    source: local.permission_state_holder
-    target_state: assembled
+  # ── 1. Resolve NavRoster on cold-start mount (resolving → assembled | empty | error) ──
+  - screen_id: nav-shell-assembler
+    trigger: on_mount
+    produces_state: assembled
     loading_state: resolving
     error_state: error
-    on_error:
-      nav_target: null
-      error_code: permission_state.unavailable
-    persistence_contract:
-      store: in_memory
-      keys: [permission_set, capability_map]
+    auth_required: true
+    endpoints: []
+    tables:
+      - name: permission_state
+        mutation: read
+        persistence_contract:
+          is_durable: false
+          storage_backend: in_memory
+        persistence_note: >-
+          PermissionStateHolder.permissionSetFlow — in-memory StateFlow populated at login by
+          permission-capability-engine (POST /authentication → permissions[]). Collected as a
+          Kotlin Flow; no Room read, no network call. Process-kill fallback: permission-capability-
+          engine reads the encrypted PermissionSet backup from multiplatform-settings and re-emits
+          before this assembler runs. ALL_FUNCTIONS short-circuits to all 17 roots visible.
+          An empty set (zero codes across all 17 module families) drives the empty state.
+      - name: app_settings
+        mutation: read
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: >-
+          active_tenant, locale, theme_mode — read on mount for the drawer header chip
+          (currentUser.displayName + officeName) and the powered-by footer. Written only
+          by m17-sync-settings; read-only here.
+    dtos:
+      - name: PermissionSet
+        role: derived
+        api_id: null
+        source: "local — PermissionStateHolder (permission-capability-engine)"
+      - name: NavRoster
+        role: derived
+        api_id: null
+        source: "computed by PermissionEvaluator.hasAnyFamily() evaluated across all 17 module roots"
+      - name: UserDisplayInfo
+        role: derived
+        api_id: null
+        source: "local — session store (currentUser.displayName + officeName)"
+    cache:
+      strategy: in_memory_only
+      key_template: "nav:roster:{userId}:{permissionSetHash}"
+      shape: flat
+      ttl_seconds: null
       note: >-
-        PermissionStateHolder is an in-memory StateFlow populated by permission-capability-engine
-        at login and refreshed on 403-drift. The assembler collects it as a Kotlin Flow — no Room
-        read, no network call. If the in-memory state was cleared (process killed) the encrypted
-        backup in multiplatform-settings is read as a fallback by permission-capability-engine
-        before this assembler runs.
+        NavRoster re-computed on every PermissionSet emission. lastAssemblyHash (SHA-256 of
+        the computed roster) prevents unnecessary recompositions when the permission set
+        unchanged (e.g. 403-retry that returns the same grant list).
+    privacy_constraint:
+      scope: user_synced
+      notes: >-
+        PermissionSet is user-specific (role membership, code list). Held in-memory only;
+        cleared on logout; never written to shared storage. Encrypted multiplatform-settings
+        backup is SQLCipher-protected and keyed per signed-in user.
+    error_paths:
+      - error_code: permission_state.unavailable
+        behavior: retry
+        message_key: nav_shell_assembly_failed
+      - error_code: permission_state.zero_codes
+        behavior: show_empty
+        message_key: nav_shell_no_modules
 
-  # ── re-assembly on permission refresh events ──
-  - trigger: on_event
-    action: permission_refreshed
-    source: local.permission_state_holder
-    target_state: assembled
+  # ── 2. Re-assemble on PermissionSet refresh (403-drift, re-auth, server switch) ──
+  - screen_id: nav-shell-assembler
+    trigger: on_event
+    event_name: permission_set_refreshed
+    produces_state: assembled
     loading_state: resolving
     error_state: error
-    on_error:
-      nav_target: null
-      error_code: permission_state.unavailable
-    persistence_contract:
-      store: in_memory
-      keys: [permission_set, capability_map]
-      note: >-
-        Observed via PermissionStateHolder.permissionSetFlow.collect{}. Every emission (403-drift
-        refresh, server-switch re-auth) triggers a full NavRoster re-build. The existing nav host
-        updates in-place without restarting the composition.
+    auth_required: true
+    endpoints: []
+    tables:
+      - name: permission_state
+        mutation: read
+        persistence_contract:
+          is_durable: false
+          storage_backend: in_memory
+        persistence_note: >-
+          Observed via PermissionStateHolder.permissionSetFlow.collect{}. Every 403-drift
+          refresh or server-switch re-auth emits a new PermissionSet here and triggers a
+          full NavRoster re-build (hasAnyFamily() × 17 roots). lastAssemblyHash compared
+          first — if SHA-256 of new roster equals last, skip recomposition. A server-switch
+          (network-config save) clears and re-emits with the new server's permission grant.
+    dtos:
+      - name: PermissionSet
+        role: derived
+        api_id: null
+        source: "local — PermissionStateHolder refresh event (403-drift / re-auth)"
+      - name: NavRoster
+        role: derived
+        api_id: null
+        source: "recomputed from refreshed PermissionSet × 17 module roots"
+    error_paths:
+      - error_code: permission_state.refresh_failed
+        behavior: retain_last_roster
+        message_key: nav_shell_stale_roster_warning
+      - error_code: auth.session_expired
+        behavior: navigate
+        nav_target: fineract-auth-session
+        message_key: nav_shell_session_expired
 
-  # ── device/session preferences for header/drawer footer display ──
-  - trigger: on_mount
-    source: local.app_settings
-    target_state: assembled
+  # ── 3. Retry assembly on error ────────────────────────────────────────────────
+  - screen_id: nav-shell-assembler
+    trigger: on_interact
+    produces_state: assembled
     loading_state: resolving
     error_state: error
-    on_error:
-      nav_target: null
-      error_code: settings_read_failed
-    persistence_contract:
-      store: multiplatform_settings
-      keys: [active_tenant, locale, theme_mode]
-      note: "Plain multiplatform-settings — read-only here; written by m17-sync-settings preferences."
+    auth_required: true
+    endpoints: []
+    tables:
+      - name: permission_state
+        mutation: read
+        persistence_contract:
+          is_durable: false
+          storage_backend: in_memory
+        persistence_note: >-
+          Re-read PermissionStateHolder (or encrypted backup if in-memory state was cleared).
+          Does not trigger a new login — uses the existing session. If the encrypted backup is
+          also unavailable, remains in the error state with a full logout option.
+    error_paths:
+      - error_code: permission_state.unavailable
+        behavior: retry_or_logout
+        message_key: nav_shell_assembly_failed
+
+# regenerated-provenance: data-flow enriched to v2.2.0 schema 2026-08-01 — all 4 ui.yaml
+# states covered (resolving/assembled/empty/error); 3 entries (mount + refresh + retry);
+# 2 local reads (permission_state in_memory, app_settings encrypted_prefs); 0 writes;
+# 0 API endpoints (nav-shell-assembler is a read-only local assembler per api.yaml).

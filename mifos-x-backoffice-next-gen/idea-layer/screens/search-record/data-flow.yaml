@@ -1,42 +1,112 @@
-feature: search-record
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: search-record
+
+# No Fineract API calls — entirely offline from Room. The search_history table is a
+# ring buffer (max 50 rows, oldest pruned on insert). Rows are WRITTEN by other screens
+# (client-list, m14-reports-search-audit, loan-detail) when users select search results.
+# search-record only READs and DELETEs rows. Live Flow — list updates automatically
+# when other screens insert rows while this screen is visible.
+
 entries:
-  - trigger: on_mount
-    source: local.search_history
-    target_state: content
+  # ── 1. Load search history on mount (loading → content | empty | error) ────────
+  - screen_id: search-record
+    trigger: on_mount
+    produces_state: content
     loading_state: loading
     error_state: error
-    on_error:
-      nav_target: null
-      error_code: history_read_failed
-    persistence_contract:
-      store: room
-      keys: [query_text, entity_type, entity_id, entity_display_name, searched_at]
-      note: "Flow<List<SearchHistoryRow>> from Room — max 50 rows (ring buffer). Updates live when other screens insert new rows. Read-only here; inserts happen in client-list/m14/loan-detail on result selection."
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: search_history
+        mutation: read
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Flow<List<SearchHistoryRow>> from Room ordered by searched_at DESC. Max 50 rows
+          enforced by a Room ring-buffer trigger (oldest row deleted on insert when count > 50).
+          Each row: entity_id (Long), entity_type (client|loan|group|center),
+          entity_display_name (String), query_text (String), searched_at (Long epoch ms).
+          Empty list → empty state. Flow is collected as State — list refreshes live when
+          client-list / m14 / loan-detail insert new rows during app use.
+      - name: app_settings
+        mutation: read
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: >-
+          search_history_enabled preference (default true). When false, renders the
+          'history off' variant of the empty state with a settings deep-link.
+    dtos:
+      - name: SearchHistoryRow
+        role: derived
+        api_id: null
+        source: "local Room — search_history Flow (ring buffer, max 50 rows)"
+    cache:
+      strategy: room_flow
+      key_template: "room:search_history:{userId}"
+      shape: list
+      ttl_seconds: null
+    error_paths:
+      - error_code: history_read_failed
+        behavior: show_error
+        message_key: search_record_read_failed
 
-  - trigger: on_click
-    action: delete_history_row
-    source: local.search_history
-    target_state: content
+  # ── 2. Delete single history row with undo snackbar (content → content) ─────────
+  - screen_id: search-record
+    trigger: on_interact
+    produces_state: content
     loading_state: content
     error_state: content
-    on_error:
-      nav_target: null
-      error_code: storage_write_failed
-    persistence_contract:
-      store: room
-      keys: [entity_id, entity_type]
-      note: "DELETE WHERE entity_id = {id} AND entity_type = {type}. Flow re-emits; list updates live. Undo snackbar offered for 3s (re-INSERT if cancelled)."
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: search_history
+        mutation: delete
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          DELETE FROM search_history WHERE entity_id = {id} AND entity_type = {type}.
+          The Room Flow re-emits immediately; the list updates live. An undo snackbar is
+          shown for 3 seconds. During the undo window, pendingDeleteId holds the composite
+          key. If the user taps Undo within 3s: re-INSERT the row with its original
+          searched_at. If the snackbar expires: the delete is committed (no further action).
+    error_paths:
+      - error_code: storage_delete_failed
+        behavior: show_snackbar
+        message_key: search_record_delete_failed
+      - error_code: storage_reinsert_failed
+        behavior: show_snackbar
+        message_key: search_record_undo_failed
 
-  - trigger: on_click
-    action: clear_all_history
-    source: local.search_history
-    target_state: empty
+  # ── 3. Clear all history (content → empty) ───────────────────────────────────
+  - screen_id: search-record
+    trigger: on_interact
+    produces_state: empty
     loading_state: content
     error_state: content
-    on_error:
-      nav_target: null
-      error_code: storage_write_failed
-    persistence_contract:
-      store: room
-      keys: []
-      note: "DELETE FROM search_history (all rows). After confirm dialog. Flow re-emits with empty list."
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: search_history
+        mutation: delete
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          DELETE FROM search_history (all rows) after user confirms the dialog
+          ('Clear all recent searches?'). The Room Flow re-emits with an empty list →
+          transitions to empty state. No undo offered for clear-all (bulk operation is
+          final after user confirm; not reversible via snackbar).
+    error_paths:
+      - error_code: storage_clear_failed
+        behavior: show_snackbar
+        message_key: search_record_clear_failed
+
+# regenerated-provenance: data-flow enriched to v2.2.0 schema 2026-08-01 — all 4 ui.yaml
+# states covered (loading/content/empty/error); 3 entries (on_mount + delete_row +
+# clear_all); 0 API endpoints (offline-only per api.yaml); reads: Room search_history
+# Flow + encrypted_prefs search_history_enabled (mount); writes: Room search_history
+# DELETE (delete_row + clear_all).

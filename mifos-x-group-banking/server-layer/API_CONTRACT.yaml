@@ -69,6 +69,15 @@ native_endpoints:
   - { name: get_code_values,           method: GET,    path: /codes/{codeId}/codevalues,           mcp_tool: mcp__mifos__get_code_values }
   - { name: list_all_datatables,       method: GET,    path: /datatables,                          mcp_tool: mcp__mifos__list_all_datatables }
   - { name: run_fineract_report,       method: GET,    path: /runreports/{reportName},             mcp_tool: mcp__mifos__run_fineract_report }
+  # ── Added 2026-08-01 (bridge-260801-003 calendar+list fixes) ──────────────────────────
+  # FIX S4/S11: meeting-calendar's SCHEDULED-meetings read. Previously the app's list-meetings
+  # was mapped to list_meetings (GET /datatables/dt_meeting_record) — the past-meeting SUMMARY
+  # datatable, NOT the forward schedule. Scheduled meetings come from the Fineract collection
+  # meeting calendar. dt_meeting_record stays the past-summary source (mcp_tool list_meetings).
+  - { name: get_center_meetings,       method: GET,    path: /centers/{centerId}?associations=collectionMeetingCalendar, mcp_tool: mcp__mifos__get_center_meetings }
+  # FIX S5: GET /loans list op — meeting-conduct get_active_loans + loan lists call GET /loans.
+  # Contract previously had only GET /loans/{loanId} + POST /loans.
+  - { name: list_loans,                method: GET,    path: /loans?groupId={groupId}&loanStatus={status}&limit={limit}&offset={offset}, mcp_tool: mcp__mifos__list_loans }
 
 # ─────────────────────────────────────────────────────────────────────
 # TIER 1 — New MCP wrappers added by this bridge run
@@ -195,6 +204,11 @@ tier2_datatables:
     multi_row: true
     feature_ref: meeting-lifecycle
     sandbox_test: PASS
+    usage_note: >
+      list_meetings reads PAST meeting SUMMARY rows (previous-meeting-review, meeting-summary).
+      It is NOT the forward schedule — meeting-calendar's scheduled-meetings read uses the
+      native get_center_meetings (collection meeting calendar) / COMP-CAL companion_get_meetings.
+      (S4/S11 mis-mapping corrected 2026-08-01.)
     wrapper_tools:
       - { name: list_meetings,         mcp_tool: mcp__mifos__list_meetings,         method: GET,  path: /datatables/dt_meeting_record/{centerId} }
       - { name: record_meeting,        mcp_tool: mcp__mifos__record_meeting,        method: POST, path: /datatables/dt_meeting_record/{centerId} }
@@ -703,6 +717,96 @@ companion_api:
       service: CompanionGroupService
       method: "suspend fun getGroupAccounts(groupId: String): GroupAccounts"
     sandbox_test: SKIPPED
+    production_only: true
+
+  # ── COMP-CAL-* (meeting calendar + collection-sheet) — added bridge-260801-003 ────────
+  # Resolves S4: the meeting-calendar scheduled-meetings read + the in-meeting collection
+  # sheet. Previously ABSENT in mcp (COMPANION_API_BUILD_DEPLOY §1a). Composes Fineract's
+  # calendar + collection-sheet endpoints behind the companion groupId→centerId resolution.
+
+  - name: companion_get_meetings
+    contract_ref: COMP-CAL-001
+    tier: 1
+    mcp_tool: mcp__mifos__companion_get_meetings
+    method: GET
+    path: /companion/groups/{groupId}/meetings
+    requires_auth: true
+    description: >
+      Cadence-resolved SCHEDULED meetings for a group (meeting-calendar). Reads the Fineract
+      collection meeting calendar and projects forward occurrences from the group meetingDay/
+      meetingTime + cadence. Distinct from dt_meeting_record (past summaries).
+    fineract_endpoints_composed:
+      - "GET /centers/{centerId}?associations=collectionMeetingCalendar"
+      - "GET /centers/{centerId}/calendars/{calendarId}"
+    params:
+      groupId: String
+      fromDate: "String?"
+    response:
+      meetings:
+        type: "List<ScheduledMeeting>"
+        item_fields:
+          meetingNumber: Int
+          scheduledDate: String
+          status: String        # UPCOMING | DUE | COMPLETED
+          calendarId: Long
+    kotlin_mapping:
+      service: MeetingCalendarService
+      method: "suspend fun getMeetings(groupId: String, fromDate: String?): List<ScheduledMeeting>"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_generate_collection_sheet
+    contract_ref: COMP-CAL-002
+    tier: 1
+    mcp_tool: mcp__mifos__companion_generate_collection_sheet
+    method: GET
+    path: /companion/groups/{groupId}/collection-sheet
+    requires_auth: true
+    description: >
+      Generate the collection sheet for a meeting date — per-member due savings + loan
+      repayments the organizer collects during meeting-conduct. Wraps Fineract
+      generateCollectionSheet.
+    fineract_endpoints_composed:
+      - "POST /centers/{centerId}?command=generateCollectionSheet"
+    body:
+      calendarId: Long
+      transactionDate: String
+    response:
+      dueDate: String
+      loanProducts: "List<Object>"
+      savingsProducts: "List<Object>"
+      clients: "List<CollectionSheetClient>"
+    kotlin_mapping:
+      service: MeetingCalendarService
+      method: "suspend fun generateCollectionSheet(groupId: String, calendarId: Long, date: String): CollectionSheet"
+    sandbox_test: PENDING_DEPLOYMENT
+    production_only: true
+
+  - name: companion_save_collection_sheet
+    contract_ref: COMP-CAL-003
+    tier: 1
+    mcp_tool: mcp__mifos__companion_save_collection_sheet
+    method: POST
+    path: /companion/groups/{groupId}/collection-sheet
+    requires_auth: true
+    description: >
+      Save a filled collection sheet — posts per-member savings deposits + loan repayments
+      in one Fineract call (saveCollectionSheet), replacing the per-member transaction loop
+      in meeting-conduct steps 2-4.
+    fineract_endpoints_composed:
+      - "POST /centers/{centerId}?command=saveCollectionSheet"
+    body:
+      calendarId: Long
+      transactionDate: String
+      bulkSavingsDueTransactions: "List<Object>"
+      bulkRepaymentTransactions: "List<Object>"
+    response:
+      resourceId: Long
+      changes: Object
+    kotlin_mapping:
+      service: MeetingCalendarService
+      method: "suspend fun saveCollectionSheet(groupId: String, sheet: CollectionSheetPayload): SaveResult"
+    sandbox_test: PENDING_DEPLOYMENT
     production_only: true
 
   # ── COMP-DT-* (ARCHITECTURE §companion_api COMP-DT contract) ──────────
@@ -1275,8 +1379,16 @@ companion_api:
 # ─────────────────────────────────────────────────────────────────────
 
 coverage:
-  total_endpoints: 96                # was 76; +20 companion tools
-  native_resolved: 54
+  total_endpoints: 101               # was 96; +2 native fixes (get_center_meetings, list_loans) + 3 COMP-CAL companion
+  native_resolved: 56                # +get_center_meetings +list_loans (bridge-260801-003)
+  companion_cal_tools: 3             # COMP-CAL-001..003 (get_meetings, generate/save collection-sheet)
+  runnable_migrations_emitted: true  # server-layer/migrations/ — 21 datatable register defs + demo seed (S2/S3/S10)
+  fixes_2026_08_01:
+    - "list_meetings mis-map corrected: scheduled reads → get_center_meetings/COMP-CAL; dt_meeting_record = past summaries only (S4/S11)"
+    - "get-previous-meeting: list_attendance → list_meetings (S11)"
+    - "advance_cycle: POST /centers/{id}/command?command=advanceCycle → PUT /datatables/dt_group_config/{id} (S11)"
+    - "loan disburse/approve/reject: /loans/{id}/transactions?command=... → /loans/{id}?command=... (S11)"
+    - "GET /loans list op added (list_loans) (S5)"
   tier1_added: 6                     # original Fineract wrappers (bridge-260504-001)
   tier2_datatables_created: 15       # original datatables (bridge-260504-001)
   companion_tools_added: 20          # bridge-260717-002

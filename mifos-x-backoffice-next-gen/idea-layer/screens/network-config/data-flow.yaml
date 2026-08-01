@@ -1,79 +1,212 @@
-feature: network-config
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: network-config
+
+# Two API calls: GET /v1/serverinfo (connectivity probe) and POST /v1/authentication
+# (re-auth after save). The encrypted multiplatform-settings store is the local
+# persistence SoT for the active NetworkConfig. QR decode and field editing are
+# in-memory only — not persisted until Save is confirmed.
+
 entries:
-  # ── load current config on mount ──
-  - trigger: on_mount
-    source: local.network_config
-    target_state: idle
+  # ── 1. Load current NetworkConfig on mount (idle) ─────────────────────────────
+  - screen_id: network-config
+    trigger: on_mount
+    produces_state: idle
     loading_state: idle
     error_state: error
-    on_error:
-      nav_target: null
-      error_code: config_read_failed
-    persistence_contract:
-      store: encrypted_prefs
-      keys: [base_url, tenant, username, password_hash]
-      note: "Active NetworkConfig persisted to the encrypted multiplatform-settings key store. Loaded read-only on mount to pre-fill the form with the current values."
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: network_config
+        mutation: read
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: >-
+          Active NetworkConfigState from the encrypted multiplatform-settings store:
+          base_url, tenant, username, password_hash, env_tag. Loaded read-only on mount
+          to pre-fill the form. The password field shows a placeholder (never decrypted
+          to plaintext in the UI). If no config exists (first install), the form shows
+          the PRIMARY demo defaults as hints.
+    dtos:
+      - name: NetworkConfigState
+        role: derived
+        api_id: null
+        source: "local encrypted_prefs — base_url, tenant, username, env_tag"
+    cache:
+      strategy: read_through
+      key_template: "prefs:network_config"
+      shape: flat
+      ttl_seconds: null
+    error_paths:
+      - error_code: config_read_failed
+        behavior: show_defaults
+        message_key: network_config_read_failed
 
-  # ── QR decode → auto-fill fields ──
-  - trigger: on_event
-    action: qr_decoded
-    source: local.qr_payload
-    target_state: editing
+  # ── 2. QR decode → auto-fill editing fields (scanning → editing) ──────────────
+  - screen_id: network-config
+    trigger: on_event
+    event_name: qr_code_decoded
+    produces_state: editing
     loading_state: scanning
     error_state: idle
-    on_error:
-      nav_target: null
-      error_code: qr_decode_failed
-    persistence_contract:
-      store: in_memory
-      keys: [base_url, tenant, username]
-      note: "QR payload decoded in-memory; not persisted until Save is confirmed."
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: qr_payload
+        mutation: read
+        persistence_contract:
+          is_durable: false
+          storage_backend: in_memory
+        persistence_note: >-
+          QR payload decoded in-memory by the platform camera scanner (CameraCapture /
+          MLKit barcode detection). Auto-fills base_url, tenant, username fields.
+          Password is intentionally excluded from QR payloads for security — user enters
+          manually after scanning. Not persisted to encrypted_prefs until Save is confirmed.
+    dtos:
+      - name: ServerConfigQRPayload
+        role: derived
+        api_id: null
+        source: "camera QR decode — base_url, tenant, username"
+    error_paths:
+      - error_code: qr_decode_failed
+        behavior: show_snackbar
+        message_key: network_config_qr_invalid
+      - error_code: camera_permission_denied
+        behavior: show_snackbar
+        message_key: network_config_camera_permission
 
-  # ── validate connection ──
-  - trigger: on_click
-    action: validate_connection
-    source: remote.server_info
-    target_state: editing
+  # ── 3. Validate connection — GET /v1/serverinfo probe (validating → editing | error) ──
+  - screen_id: network-config
+    trigger: on_interact
+    produces_state: editing
     loading_state: validating
     error_state: error
-    on_error:
-      nav_target: null
-      error_code: validation_failed_unreachable
-    persistence_contract:
-      store: in_memory
-      keys: [validation_result]
-      note: "Probe result (reachable / unreachable / wrong_tenant) held in-memory only; not persisted."
+    auth_required: false
+    endpoints:
+      - api_id: validate_server_info
+        transport: rest
+    tables:
+      - name: network_config
+        mutation: read
+        persistence_contract:
+          is_durable: false
+          storage_backend: in_memory
+        persistence_note: >-
+          In-memory entered fields (base_url, tenant) used as probe parameters. Sends
+          GET /v1/serverinfo with the entered Fineract-Platform-TenantId header.
+          Probe result (VERIFIED | UNREACHABLE | WRONG_TENANT) held in-memory as
+          validationResult — not persisted to encrypted_prefs until Save is confirmed.
+    dtos:
+      - name: ServerInfo
+        role: response
+        api_id: validate_server_info
+    cache:
+      strategy: no_cache
+      ttl_seconds: 0
+    error_paths:
+      - error_code: validation_failed_unreachable
+        behavior: show_error
+        message_key: network_config_unreachable
+      - error_code: validation_failed_wrong_tenant
+        behavior: show_error
+        message_key: network_config_wrong_tenant
 
-  # ── save config + re-auth ──
-  - trigger: on_click
-    action: save_config
-    source: remote.authentication
-    target_state: idle
+  # ── 4. Save config (org mode) — POST /v1/authentication re-auth (saving → idle | error) ──
+  - screen_id: network-config
+    trigger: on_interact
+    produces_state: idle
     loading_state: saving
     error_state: error
-    on_error:
-      nav_target: null
-      error_code: save_reauth_failed
-    persistence_contract:
-      store: encrypted_prefs
-      keys: [base_url, tenant, username, password_hash]
-      note: >-
-        On successful save, writes the validated NetworkConfig to the encrypted store and updates the
-        DynamicBaseUrlPlugin base_url + Fineract-Platform-TenantId header in-flight. The re-auth
-        result (AuthenticatedUserData → permissions[]) seeds the new PermissionSet in PermissionStateHolder.
-        If re-auth fails, the config is still persisted — the user can retry sign-in from fineract-auth-session.
+    auth_required: false
+    endpoints:
+      - api_id: reauthenticate
+        transport: rest
+    tables:
+      - name: network_config
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: >-
+          Encrypt and persist validated ServerConfig: base_url, tenant, username,
+          password_hash (bcrypt), env_tag. Swap DynamicBaseUrlPlugin base_url +
+          Fineract-Platform-TenantId header in-flight immediately. If re-auth fails after
+          this point the config is still persisted — user can retry from fineract-auth-session.
+      - name: app_settings
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: "Updates active_tenant and env_tag in app_settings for drawer header display."
+    dtos:
+      - name: AuthenticationRequest
+        role: request
+        api_id: reauthenticate
+      - name: AuthenticatedUserData
+        role: response
+        api_id: reauthenticate
+    side_effects:
+      - kind: in_memory_update
+        target: "DynamicBaseUrlPlugin — swap base_url + Fineract-Platform-TenantId header"
+      - kind: emit_event
+        target: "PermissionStateHolder — seed new PermissionSet from returned permissions[]"
+      - kind: navigate
+        target: "permission-capability-engine capability bootstrap on success"
+    error_paths:
+      - error_code: save_reauth_failed
+        behavior: show_error
+        message_key: network_config_reauth_failed
+        note: "Config is persisted; re-auth can be retried from fineract-auth-session."
+      - error_code: network.offline
+        behavior: show_error
+        message_key: network_config_offline
 
-  # ── apply demo config (one-tap path) ──
-  - trigger: on_click
-    action: apply_demo_config
-    source: remote.authentication
-    target_state: idle
+  # ── 5. Apply demo config (one-tap) — POST /v1/authentication re-auth (saving → idle | error) ──
+  - screen_id: network-config
+    trigger: on_interact
+    produces_state: idle
     loading_state: saving
     error_state: error
-    on_error:
-      nav_target: null
-      error_code: save_reauth_failed
-    persistence_contract:
-      store: encrypted_prefs
-      keys: [base_url, tenant, username, password_hash]
-      note: "Demo defaults: base_url=mifos-bank-2.mifos.community/fineract-provider/api/v1, tenant=mifos-bank-2, mifos/password. Written and re-auth triggered identically to the save_config flow."
+    auth_required: false
+    endpoints:
+      - api_id: reauthenticate
+        transport: rest
+    tables:
+      - name: network_config
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: >-
+          PRIMARY demo defaults written and persisted:
+            base_url = https://mifos-bank-2.mifos.community/fineract-provider/api/v1
+            tenant   = mifos-bank-2
+            username = mifos
+            password = password (bcrypt-hashed before storage)
+          Overwrites any previously saved org-specific config. Behavior identical to
+          save_config flow — DynamicBaseUrlPlugin swapped, re-auth triggered, PermissionSet
+          seeded from returned permissions[], navigate to capability bootstrap.
+      - name: app_settings
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: "Sets env_tag=demo, active_tenant=mifos-bank-2."
+    dtos:
+      - name: AuthenticationRequest
+        role: request
+        api_id: reauthenticate
+      - name: AuthenticatedUserData
+        role: response
+        api_id: reauthenticate
+    error_paths:
+      - error_code: save_reauth_failed
+        behavior: show_error
+        message_key: network_config_reauth_failed
+
+# regenerated-provenance: data-flow enriched to v2.2.0 schema 2026-08-01 — all 6 ui.yaml
+# states covered (idle/scanning/editing/validating/saving/error); 5 entries;
+# 2 API endpoints (validate_server_info GET, reauthenticate POST); reads: encrypted_prefs
+# (idle), in_memory QR payload (scanning), in_memory fields (validating); writes:
+# encrypted_prefs + app_settings (saving/apply-demo).

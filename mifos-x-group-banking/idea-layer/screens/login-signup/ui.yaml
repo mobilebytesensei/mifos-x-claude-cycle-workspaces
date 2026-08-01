@@ -9,7 +9,10 @@ entry_points:
     trigger: unauthenticated_start
   - source: any_screen
     trigger: session_expired
-nav_params: {}
+  - source: join-with-code
+    trigger: invite_requires_auth   # invitee entered a code while unauthenticated; resume after auth
+nav_params:
+  pendingInviteCode: { type: "String?", default: "null", description: "6-char invite code carried from join-with-code (pre-auth accept-invitation or cold-launched deep-link); when present, on_login/on_signup on_success routes to join-with-code to resume the join instead of the default landing (satisfies TC-LS-010)" }
 
 screens:
   - id: login-signup-screen
@@ -33,6 +36,8 @@ state_model:
         isBiometricAvailable: { type: Boolean, default: "false" }
         sessionToken: { type: "String?", default: "null" }
         groupMemberships: { type: "List<GroupMembership>", default: "emptyList()" }
+        showDemoDialog: { type: Boolean, default: "false" }   # Demo Explore confirm dialog visibility (F1/B1/G1)
+        isSeedingDemo: { type: Boolean, default: "false" }     # true while the offline demo fixture hydrates into the local cache
     screen_state:
       name: LoginSignupScreenState
       members: [Content, Loading, Error, ZeroGroups]
@@ -51,7 +56,8 @@ state_model:
         - { name: NavigateToPersonalDashboard }
         - { name: NavigateToGroupList }
         - { name: NavigateToGroupTypePicker }
-        - { name: NavigateToJoinWithCode }
+        - { name: NavigateToJoinWithCode, params: { inviteCode: "String?" } }   # nullable: pre-auth accept-invitation carries no code yet
+        - { name: NavigateToOrganizerDashboard }   # demo-explore landing — seeded demo user is the group organizer (demo-explore-flow exit)
         - { name: ShowSnackbar, params: { message: String } }
         - { name: PromptBiometric }
     actions:
@@ -68,11 +74,16 @@ state_model:
         - { name: OnCreateGroupTap, trigger: "Tap Create Group button in zero-group state" }
         - { name: OnJoinWithCodeTap, trigger: "Tap Join with Invite Code button in zero-group state" }
         - { name: OnForgotPassword, trigger: "Tap Forgot Password link" }
+        - { name: OnAcceptInvitationTap, trigger: "Tap first-class Accept an Invitation entry on the auth content state (pre-auth)" }
+        - { name: OnDemoExplore, trigger: "Tap Demo Explore button on the auth content state" }
+        - { name: OnDemoConfirm, trigger: "Tap Continue on the demo confirm dialog" }
+        - { name: OnDemoCancel, trigger: "Tap Cancel on the demo confirm dialog" }
     di:
       - AuthRepository
       - BiometricManager
       - SessionStore
       - NetworkMonitor
+      - DemoSessionManager   # hydrates PROJECT_DEMO_DATA into the local SQLDelight cache for the offline Demo Explore session
 
 business_logic:
   kind: processor
@@ -272,6 +283,85 @@ components:
     visible: "{{isBiometricAvailable && mode == AuthMode.Login}}"
     style: { top_padding: 16dp, text_color: onSurfaceVariant }
 
+  # --- First-class secondary auth entries (visible on the content state in BOTH login + signup modes) ---
+  - id: alt_actions_divider
+    type: divider-labeled
+    label: "{strings.divider_alt_actions}"
+    style: { top_padding: 24dp, text_color: onSurfaceVariant }
+
+  - id: accept_invitation_button
+    type: button
+    variant: outlined
+    label: "{strings.btn_accept_invitation}"
+    icon: mail
+    style: { border_color: primary, text_color: primary, min_touch_target: 56dp, full_width: true, top_padding: 16dp }
+    accessibility_label: "{strings.accept_invitation_button_a11y}"
+    on_click:
+      action: OnAcceptInvitationTap
+      target: join-with-code
+      action_contract:
+        effect: navigate
+        description: "First-class PRE-AUTH accept-invitation entry (F2/B4/G2). Navigates via NavController to join-with-code so a cold-launched invitee can enter their organizer-issued 6-char code BEFORE authenticating; join-with-code then routes back to login-signup carrying pendingInviteCode and on_login/on_signup on_success resumes the join (satisfies TC-LS-010). Carries no pre-filled code (the user types it on join-with-code); pure navigation, the membership write happens on that screen's confirm-join. This is a peer of Sign In and Sign Up, not a post-auth zero-groups-only path."
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-08-01T00:00:00Z"
+
+  - id: demo_explore_button
+    type: button
+    variant: text
+    label: "{strings.btn_demo_explore}"
+    icon: play_circle_outline
+    style: { text_color: primary, text_style: labelLarge, min_touch_target: 56dp, full_width: true, top_padding: 12dp }
+    accessibility_label: "{strings.demo_explore_button_a11y}"
+    on_click:
+      action: OnDemoExplore
+      target: login-signup
+      action_contract:
+        effect: transform_state
+        description: "Opens the Demo Explore confirm dialog by setting LoginSignupState.showDemoDialog = true (F1/B1/G1). A pure in-ViewModel state transition — no seeding or navigation happens here; the offline demo session is only started after the user confirms the dialog. Lets a prospective user try the app with zero commitment."
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-08-01T00:00:00Z"
+
+  - id: demo_confirm_dialog
+    type: dialog
+    visible_when: showDemoDialog
+    icon: play_circle_outline
+    title: "{strings.demo_dialog_title}"
+    accessibility_label: "{strings.demo_dialog_a11y}"
+    content:
+      - id: demo_dialog_body
+        type: text
+        value: "{strings.demo_dialog_body}"
+        style: { text_style: bodyMedium, color: onSurfaceVariant }
+      - id: demo_dialog_note
+        type: text
+        value: "{strings.demo_dialog_note}"
+        style: { text_style: bodySmall, color: onSurfaceVariant, top_padding: 8dp }
+    actions:
+      cancel:
+        label: "{strings.demo_dialog_cancel}"
+        accessibility_label: "{strings.demo_dialog_cancel_a11y}"
+        on_click:
+          action: OnDemoCancel
+          action_contract:
+            effect: transform_state
+            description: "Dismisses the Demo Explore confirm dialog by setting LoginSignupState.showDemoDialog = false and returns the user to the auth form; a pure ViewModel state transition, nothing is seeded or persisted."
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-08-01T00:00:00Z"
+      confirm:
+        label: "{strings.demo_dialog_confirm}"
+        accessibility_label: "{strings.demo_dialog_confirm_a11y}"
+        on_click:
+          action: OnDemoConfirm
+          target: organizer-dashboard
+          action_contract:
+            effect: persist_db
+            library_refs: ["core/session", "core/database"]
+            description: "Enters the offline guest DEMO session (F1/B1/G1). Sets isSeedingDemo=true, then via DemoSessionManager hydrates the bundled PROJECT_DEMO_DATA fixture (the Mwangaza Women's Group VSLA — members, savings, meetings, corpus, active loan, one live invite code) into the local SQLDelight cache under a synthetic demo session token in core/session — NO network call, NO companion API, NO Fineract write. Resolves the demo user (Amina, treasurer/organizer of demo-group-001) then closes the dialog and emits NavigateToOrganizerDashboard so the session lands on the same organizer-dashboard a real organizer sees (demo-explore-flow exit). Any write inside demo mode is a local-only no-op."
+            writes_to: [SessionStore.demoSession, "local SQLDelight demo cache (groups, members, savings_accounts, meeting_records, corpus, active_loans, invite_code)"]
+            reads_from: ["PROJECT_DEMO_DATA.yaml (bundled offline fixture)"]
+            action_contract_author: "claude-via-idea-enrich"
+            action_contract_authored_at: "2026-08-01T00:00:00Z"
+
   # --- Zero-groups state components ---
   - id: zero_groups_illustration
     type: image
@@ -322,10 +412,10 @@ components:
 states:
   initial_state: content
   content:
-    description: "Login or signup form visible depending on mode toggle"
+    description: "Login or signup form visible depending on mode toggle. Below the form, first-class Accept Invitation + Demo Explore entries are shown in both modes; the demo confirm dialog overlays when showDemoDialog is true."
     components:
-      login_mode: [auth_header_logo, auth_title, mode_toggle_tabs, email_phone_field, password_field, forgot_password_link, login_button, divider_or, biometric_unlock_button, error_banner]
-      signup_mode: [auth_header_logo, auth_title, mode_toggle_tabs, signup_name_field, email_phone_field, password_field, signup_button, error_banner]
+      login_mode: [auth_header_logo, auth_title, mode_toggle_tabs, email_phone_field, password_field, forgot_password_link, login_button, divider_or, biometric_unlock_button, error_banner, alt_actions_divider, accept_invitation_button, demo_explore_button, demo_confirm_dialog]
+      signup_mode: [auth_header_logo, auth_title, mode_toggle_tabs, signup_name_field, email_phone_field, password_field, signup_button, error_banner, alt_actions_divider, accept_invitation_button, demo_explore_button, demo_confirm_dialog]
     demo_data:
       mode: AuthMode.Login
       emailPhone: "grace.wanjiku@example.com"
@@ -372,6 +462,19 @@ i18n:
     btn_create_account: "Create Account"
     btn_biometric: "Sign in with biometrics"
     divider_or: "or"
+    divider_alt_actions: "New here?"
+    btn_accept_invitation: "Accept an Invitation"
+    btn_demo_explore: "Demo Explore"
+    accept_invitation_button_a11y: "Accept a group invitation using an invite code"
+    demo_explore_button_a11y: "Explore the app as a demo user without an account"
+    demo_dialog_title: "Explore as a demo user"
+    demo_dialog_body: "This is a demo user logging in to explore the application."
+    demo_dialog_note: "No real account is created and nothing is saved to a server. You can sign up or accept an invitation any time."
+    demo_dialog_cancel: "Cancel"
+    demo_dialog_confirm: "Continue"
+    demo_dialog_a11y: "Demo Explore confirmation dialog"
+    demo_dialog_cancel_a11y: "Cancel and return to the sign in form"
+    demo_dialog_confirm_a11y: "Continue into the demo session"
     zero_groups_title: "You're all set!"
     zero_groups_body: "You don't belong to any savings group yet. Create your first group or join one with an invite code."
     zero_groups_illustration_a11y: "Empty groups illustration"

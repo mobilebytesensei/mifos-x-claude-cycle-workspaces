@@ -1,11 +1,12 @@
 # Flows — CommonPurse
 
-> 13 flows · regenerated 2026-07-17 · source: idea-plan.yaml §flows (global self-signup pivot) + /idea sync
+> 14 flows · regenerated 2026-07-17 · +demo-explore & accept-invitation/pendingInviteCode/reschedule wiring 2026-08-01 · source: idea-plan.yaml §flows (global self-signup pivot) + /idea sync
 > Identity is UNIFIED — one login/signup for everyone; capabilities resolve per-group after login (no admin/end_user client_type).
 
 | Flow | Type | Tier | Screens |
 |------|------|------|---------|
-| unified-auth-flow | happy | v1.0 | login-signup → organizer-dashboard / personal-dashboard / group-list · zero-groups → group-type-picker / join-with-code |
+| unified-auth-flow | happy | v1.0 | login-signup (login / accept-invitation / sign-up) → organizer-dashboard / personal-dashboard / group-list · zero-groups → group-type-picker / join-with-code |
+| demo-explore-flow | happy | v1.0 | login-signup → (Demo Explore → confirm) → organizer-dashboard (seeded offline demo session) |
 | self-signup-organizer-flow | happy | v1.0 (primary) | login-signup → group-type-picker → group-create → organizer-dashboard → member-invite |
 | group-creation-flow | happy | v1.0 | group-list → group-type-picker → group-create → organizer-dashboard |
 | member-onboarding-flow | happy | v1.0 | member-list → member-add / (invite) member-invite → join-with-code → login-signup |

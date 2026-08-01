@@ -85,7 +85,7 @@ state_model:
       name: MeetingConductEvent
       members:
         - { name: NavigateToMeetingSummary, params: "meetingId: String, meetingNumber: Int, centerId: Int" }
-        - { name: NavigateToPreviousMeetingReview, params: "meetingId: String, centerId: Int" }
+        - { name: NavigateToPreviousMeetingReview, params: "meetingId: String, meetingNumber: Int, centerId: Int, launchedFrom: String" }
         - { name: NavigateBack }
         - { name: ShowStepError, params: "message: String" }
         - { name: ShowSubmitSuccess }
@@ -200,11 +200,11 @@ components:
         on_click:
           action: ViewFullPreviousMeeting
           target: previous-meeting-review
-          params: { meeting_id: "{{previousMeetingSummary.meetingNumber}}", center_id: "{{centerId}}" }
+          params: { meeting_id: "{{previousMeetingSummary.meetingId}}", meeting_number: "{{previousMeetingSummary.meetingNumber}}", center_id: "{{centerId}}", launched_from: "conduct" }
           action_contract:
             effect: navigate
-            description: "Navigates to previous-meeting-review passing meetingNumber and centerId so the organizer can inspect the full prior collection-sheet record."
-            action_contract_hash: "3fb1141671b09a4e1769d3963d87bb8fd1d59165aed75a91307ccc26df2edd0c"
+            description: "Navigates to previous-meeting-review passing the real prior meeting_id (String, previousMeetingSummary.meetingId — NOT the meeting number), meeting_number (Int), center_id (Int), and launched_from='conduct' so the review renders in conduct-context (shows the 'Start Meeting #N' CTA) rather than falling back to the calendar default. Read-only drill-down into the prior collection-sheet record; no data written."
+            action_contract_hash: "recompute-mc-viewfullprev-idfix-launchedfrom-20260801"
             action_contract_author: "claude-via-idea-enrich"
             action_contract_authored_at: "2026-07-17T00:00:00Z"
 
@@ -508,8 +508,9 @@ components:
           action_contract:
             effect: call_api
             external_library_refs: [fineract-rest, sqldelight]
-            description: "Runs the ordered submit sequence (record, attendance, savings, repayment, disbursal, corpus PATCH) against the Fineract collection-sheet backend via the companion API; on any 5xx or offline it enqueues the full payload to the SQLDelight sync_queue for later drain."
-            action_contract_hash: "fab7203c8560f30b56451cc23aa2ed585475f56e2d144f474c542edeb21766f0"
+            writes_to: "POST /datatables/dt_meeting_record/{centerId} (record-meeting) · POST /datatables/dt_meeting_attendance/{clientId} (record-attendance) · POST /savingsaccounts/{savingsId}/transactions · POST /loans/{loanId}/transactions (repayments + disbursals) · POST /datatables/dt_loan_vote · PUT /datatables/dt_group_corpus/{centerId} (closing corpus)"
+            description: "Runs the ordered submit sequence (record, attendance, savings, repayment, disbursal, corpus PUT) against the Fineract collection-sheet backend via the companion API, then emits NavigateToMeetingSummary; on any 5xx or offline it enqueues the full payload to the SQLDelight sync_queue for later Store5-backed drain."
+            action_contract_hash: "recompute-mc-submitmeeting-writesto-20260801"
             action_contract_author: "claude-via-idea-enrich"
             action_contract_authored_at: "2026-07-17T00:00:00Z"
       - id: offline_submit_note
@@ -548,8 +549,9 @@ components:
           action: "{{currentStep < 6 ? NextStep : SubmitMeeting}}"
           action_contract:
             effect: transform_state
-            description: "Validates the current step then advances currentStep and saves wizard progress to the local SQLDelight meeting_wizard_state as a ViewModel state transition; on the final step it delegates to the SubmitMeeting action."
-            action_contract_hash: "6ad4f408a510299fc34d77cefee087f5ce004fa66350449989983fd6af82bfd4"
+            delegates_to: SubmitMeeting   # on the final step (currentStep == 6) this button fires SubmitMeeting, whose own call_api contract governs the network write
+            description: "Conditional footer action. For steps 0-5 it validates the current step then advances currentStep and saves wizard progress to the local SQLDelight meeting_wizard_state — a pure transform_state ViewModel transition (no network). On the final step (currentStep == 6) the label switches to Submit and the button DELEGATES to the SubmitMeeting action; the collection-sheet POST sequence is not performed here but by SubmitMeeting's own call_api contract, so this contract stays a transform_state advance and defers the network effect to its delegate (consistent with the co-located submit_meeting_btn which invokes the same SubmitMeeting action)."
+            action_contract_hash: "recompute-mc-nextfooter-delegates-submitmeeting-20260801"
             action_contract_author: "claude-via-idea-enrich"
             action_contract_authored_at: "2026-07-17T00:00:00Z"
 
@@ -579,8 +581,9 @@ components:
       action_contract:
         effect: call_api
         external_library_refs: [fineract-rest, sqldelight]
+        writes_to: "same ordered collection-sheet sequence as submit_meeting_btn — record-meeting · record-attendance · savings/loan transactions · dt_loan_vote · dt_group_corpus PUT"
         description: "Retries the ordered submit sequence against the Fineract collection-sheet backend via the companion API from the error snackbar; falls back to enqueuing the payload to the SQLDelight sync_queue if the retry also fails."
-        action_contract_hash: "8104d90ab58b249c48cd491bdb04af4d24209c43d7868bb2df7453d7e30e6fd8"
+        action_contract_hash: "recompute-mc-submitmeeting-retry-writesto-20260801"
         action_contract_author: "claude-via-idea-enrich"
         action_contract_authored_at: "2026-07-17T00:00:00Z"
 
