@@ -1,0 +1,107 @@
+# core-base-shapes.yaml — invariant framework contract-shapes (GOAL D6).
+#
+# core-base/* is TEMPLATE-shared and upgrade-safe: it is NOT per-app data. This file
+# captures the invariant CONTRACT SHAPES every fork inherits unchanged from
+# core-base/store — the vocabulary the whole idea-layer's data-flow.yaml siblings speak
+# (cache.strategy ↔ FetchPolicy, produces_state ↔ ScreenState, write_pipeline ↔
+# SubmitOutbox, store.archetype ↔ Store). It deliberately contains ZERO per-app domain
+# family (those live in idea-layer/dtos/*.yaml). Hand-authored via Claude Write per
+# RULE-CI-001; source-traced from core-base/store/src/commonMain/kotlin/kpt/core/base/store/*.
+#
+# Asserted by .claude-runtime/scripts/framework-verify-corebase-shapes.sh
+# (G-COREBASE-SHAPES): the 4 shapes below MUST be present; NO per-app domain family may
+# appear. Never mutated as semantics — captured as reference contract only (GOAL out-of-scope).
+
+schema_version: "1.0"
+kind: core-base-contract-shapes
+module: core-base/store
+upgrade_safe: true          # framework-shared; forks push pressure to core/store, never here
+per_app_domain_families: 0  # invariant — this file is shapes only, not data (D6)
+
+shapes:
+
+  # ── 1. ScreenState — the unified per-surface UI state the read pipeline emits ──
+  - name: ScreenState
+    kind: sealed_interface
+    generic: "<out T>"
+    source: core-base/store/screen/ScreenState.kt
+    role: >-
+      The single UI-state vocabulary produced by ScreenDataStream. Every idea-layer
+      data-flow.yaml `produces_state:` value and every ui.yaml state maps onto one of
+      these variants. Replaces per-ViewModel isFromCache / isRefreshing / networkStatus.
+    variants:
+      - { id: Loading,        shape: object,     meaning: "initial load, no data yet" }
+      - { id: Empty,          shape: object,     meaning: "fetch succeeded, content empty" }
+      - { id: NoNetwork,      shape: "data(isCaptivePortal: Boolean=false)", meaning: "offline and no cache" }
+      - { id: Unauthenticated, shape: object,    meaning: "401/403 / token expiry → login redirect" }
+      - { id: Error,          shape: "data(error: Throwable, isNetworkError: Boolean=false)", meaning: "failure, no usable cache" }
+      - { id: Content,        shape: "data<T>(data: T, fetchedAt: Instant?, freshnessSignal: FreshnessSignal)", meaning: "data available + freshness metadata" }
+    combine_helper: combineScreenStates   # priority NoNetwork>Loading>Unauthenticated>Error>Empty>Content
+
+  # ── 2. Store — the read/write cache seam produced by StoreFactory ──
+  - name: Store
+    kind: factory_seam
+    source: core-base/store/infra/StoreFactory.kt
+    role: >-
+      The offline-first cache contract every feature's data-flow.yaml `store.archetype`
+      selects. StoreFactory wraps Store5's builder into a fixed set of construction seams;
+      each idea-layer archetype label is one of these factory calls.
+    factory_methods:
+      - { fn: createStore,             archetype: NETWORK_WITH_CACHE, note: "fetcher + SourceOfTruth (Room-backed), optional TTL validator" }
+      - { fn: createMemoryStore,       archetype: MEMORY_ONLY,        note: "fetcher only, in-memory, lost on process death" }
+      - { fn: createOfflineStore,      archetype: OFFLINE_LOCAL_ONLY, note: "SourceOfTruth only, empty fetcher — local reads never hit network" }
+      - { fn: createMutableStore,      archetype: MUTABLE,            note: "read + write-back Updater + Bookkeeper offline-sync + Converter" }
+      - { fn: createScreenWithMutation, archetype: SCREEN_WITH_MUTATION, note: "fused read (asScreenStream) + write (SubmitHandler) into one state flow" }
+    archetype_vocabulary:   # the closed set data-flow.yaml `store.archetype` / cache.strategy draws from
+      - OFFLINE_LOCAL_ONLY
+      - NETWORK_WITH_CACHE
+      - NETWORK_ONLY
+      - CACHE_ONLY
+      - MEMORY_ONLY
+      - LOAD_ONCE
+      - MUTABLE
+      - PERIODIC
+
+  # ── 3. SubmitOutbox — the durable write/outbox contract behind every mutation ──
+  - name: SubmitOutbox
+    kind: interface
+    generic: "<P>"
+    source: core-base/store/submit/SubmitOutbox.kt
+    role: >-
+      Durable outbox for form payloads that fail to reach the server; the shape behind
+      every idea-layer data-flow.yaml `write_pipeline:` block (DraftSubmitHandler wraps it).
+      A serializable payload P is persisted so a submission survives process death and
+      retries on reconnect (OfflineSubmitSyncer).
+    entry_shape: "SubmitOutboxEntry<out P>(id: Long, formKey: String, payload: P, status: SubmitOutboxStatus, createdAtMs: Long, uniqueKey: String?, errorMessage: String?, idempotencyKey: String?)"
+    status_enum:            # SubmitOutboxStatus — the write-pipeline lifecycle states
+      - { id: PENDING,   meaning: "saved locally, not yet sent" }
+      - { id: RETRYING,  meaning: "claimed by the syncer, in-flight retry" }
+      - { id: SUBMITTED, meaning: "delivered to the server, prunable" }
+      - { id: FAILED,    meaning: "retry failed, errorMessage holds reason" }
+    keys:
+      - { key: formKey,   meaning: "consumer-defined screen/form identifier" }
+      - { key: uniqueKey, meaning: "null=singleton draft; non-null=one of N concurrent drafts under one formKey" }
+
+  # ── 4. FetchPolicy — the per-request cache/network strategy ──
+  - name: FetchPolicy
+    kind: sealed_interface
+    source: core-base/store/screen/FetchPolicy.kt
+    role: >-
+      Controls whether a screen stream reads cache, network, or both — the source of the
+      per-entry `cache.strategy` in every idea-layer data-flow.yaml. Passed to asScreenStream /
+      asLoadOnceStream / PagingScreenStream.
+    variants:
+      - { id: NETWORK_WITH_CACHE, shape: object, maps_to_strategy: stale_while_revalidate, note: "default — cached immediately, background refresh" }
+      - { id: NETWORK_ONLY,       shape: object, maps_to_strategy: network_only,          note: "always fresh; no stale data (e.g. post-mutation confirmation)" }
+      - { id: CACHE_ONLY,         shape: object, maps_to_strategy: cache_only,            note: "never hits network; offline view / no error flicker" }
+      - { id: PERIODIC,           shape: "data(intervalMillis: Long, foregroundOnly: Boolean=true)", maps_to_strategy: periodic, note: "ambient cadence refresh (FX tickers, dashboard tiles)" }
+      - { id: CACHE_FIRST_SWR,    shape: object, maps_to_strategy: cache_first_swr,       note: "cached first, refresh only when FreshnessBand is Stale/VeryStale" }
+
+# The idea-layer speaks these 4 shapes throughout its data dimension:
+#   data-flow.yaml `store.archetype` / `cache.strategy`  → Store + FetchPolicy
+#   data-flow.yaml `produces_state`                       → ScreenState
+#   data-flow.yaml `write_pipeline`                       → SubmitOutbox
+# Per-app data shapes are the DTO registry (idea-layer/dtos/*.yaml), NEVER this file (D6).
+contract_boundary:
+  invariant_shapes_here: [ScreenState, Store, SubmitOutbox, FetchPolicy]
+  per_app_data_elsewhere: "idea-layer/dtos/*.yaml"
