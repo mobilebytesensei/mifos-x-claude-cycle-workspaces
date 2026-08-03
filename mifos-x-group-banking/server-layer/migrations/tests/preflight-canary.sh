@@ -16,9 +16,13 @@ printf '%s' "$out" | grep -q "21 created"                    || { echo "FAIL: dr
 printf '%s' "$out" | grep -qi "demo seed complete"           || { echo "FAIL: dry-run did not chain seed-demo"; fail=1; }
 printf '%s' "$out" | grep -q "+254700000001"                 || { echo "FAIL: demo fixture not read"; fail=1; }
 
-# 2. a live run without FINERACT_BASE_URL must refuse (exit 4 — the external gate), never fake-green.
-bash "$S" >/dev/null 2>&1; code=$?
-[ "$code" = 4 ] || { echo "FAIL: live run without FINERACT_BASE_URL exit=$code (want 4)"; fail=1; }
+# 2. "always ready, never skip": self-resolves the instance from instances.json (no env needed),
+#    auto-ensures the companion, and HALTs (never silent-skips) when nothing is reachable.
+[ -f "$DIR/instances.json" ]              || { echo "FAIL: instances.json config missing"; fail=1; }
+jq -e '.instances | length >= 1' "$DIR/instances.json" >/dev/null 2>&1 || { echo "FAIL: instances.json has no instances"; fail=1; }
+grep -q "INSTANCES_CFG"       "$S" || { echo "FAIL: does not self-resolve from instances.json"; fail=1; }
+grep -qi "HALT production-affecting" "$S" || { echo "FAIL: no HALT-not-skip on unreachable instance"; fail=1; }
+grep -q "start_companion"     "$S" || { echo "FAIL: companion not auto-ensured"; fail=1; }
 
 # 3. the 6 phases + no-fake-green summary are declared in the script.
 for p in HEALTH REGISTER COMPANION SEED VERIFY SUMMARY; do

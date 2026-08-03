@@ -62,10 +62,25 @@ echo
 
 ok=0; skipped=0; failed=0
 count="$(jq '.datatables | length' "$MANIFEST")"
+
+# Pre-fetch the already-registered datatables so we skip existing ones by NAME — robust
+# idempotency that does not depend on the exact "already exists" error string (some Fineract
+# builds, e.g. mifos-bank-2, return a generic 400 "Validation errors exist" for a duplicate
+# register rather than 403/409).
+EXISTING=""
+if [[ "$DRY_RUN" -eq 0 && -n "$FINERACT_BASE_URL" ]]; then
+  EXISTING="$(curl "${CURL_OPTS[@]}" -u "${FINERACT_USER}:${FINERACT_PASSWORD}" \
+    -H "Fineract-Platform-TenantId: ${FINERACT_TENANT}" \
+    "${FINERACT_BASE_URL}/datatables" 2>/dev/null | jq -r '.[].registeredTableName' 2>/dev/null || true)"
+fi
+
 for i in $(seq 0 $((count - 1))); do
   entry="$(jq -c ".datatables[$i]" "$MANIFEST")"
   name="$(echo "$entry" | jq -r '.datatableName')"
   [[ -n "$ONLY" && "$ONLY" != "$name" ]] && continue
+  if [[ "$DRY_RUN" -eq 0 ]] && printf '%s\n' "$EXISTING" | grep -qx "$name"; then
+    echo "  SKIP    $name (already registered)"; skipped=$((skipped + 1)); continue
+  fi
 
   # Build the Fineract POST /datatables payload from the manifest entry.
   payload="$(echo "$entry" | jq '{

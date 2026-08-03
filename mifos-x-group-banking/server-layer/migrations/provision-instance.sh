@@ -81,7 +81,30 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "✅ dry-run clean — set FINERACT_BASE_URL + COMPANION_BASE_URL and re-run to apply."
   exit 0
 fi
-[ -n "$FINERACT_BASE_URL" ] || { echo "FATAL: FINERACT_BASE_URL required (or --dry-run)" >&2; exit 4; }
+# ── Resolve the target instance (env override → config primary → fallback) ───
+# "Always ready": never silently skip. If FINERACT_BASE_URL is unset, walk instances.json and
+# pick the FIRST reachable instance (fail-over). If NONE is reachable → HALT production-affecting
+# — an unreachable backend is SURFACED, never dry-run-skipped.
+INSTANCES_CFG="${SCRIPT_DIR}/instances.json"
+health_of(){ "${CURL[@]}" -o /dev/null -w '%{http_code}' -u "$2:$3" -H "Fineract-Platform-TenantId: $4" "$1/offices" 2>/dev/null || echo 000; }
+if [ -z "$FINERACT_BASE_URL" ] && [ -f "$INSTANCES_CFG" ]; then
+  echo "▶ Resolving instance (env unset) — trying configured instances in order…"
+  n="$(jq '.instances | length' "$INSTANCES_CFG")"
+  for i in $(seq 0 $((n - 1))); do
+    u="$(jq -r ".instances[$i].base_url" "$INSTANCES_CFG")"; t="$(jq -r ".instances[$i].tenant" "$INSTANCES_CFG")"
+    us="$(jq -r ".instances[$i].user" "$INSTANCES_CFG")"; pw="$(jq -r ".instances[$i].password" "$INSTANCES_CFG")"
+    nm="$(jq -r ".instances[$i].name" "$INSTANCES_CFG")"
+    c="$(health_of "$u" "$us" "$pw" "$t")"
+    if [ "$c" = 200 ]; then echo "  ✅ using '$nm' ($u) — health 200"
+      FINERACT_BASE_URL="$u"; FINERACT_TENANT="$t"; FINERACT_USER="$us"; FINERACT_PASSWORD="$pw"; break
+    else echo "  ✗ '$nm' unreachable (health $c) — failing over…"; fi
+  done
+fi
+if [ -z "$FINERACT_BASE_URL" ]; then
+  echo "❌ HALT production-affecting: NO configured Fineract instance is reachable — instance NOT ready." >&2
+  echo "   Stand up a Fineract (self-service module on) + add it to instances.json, or set FINERACT_BASE_URL." >&2
+  exit 4
+fi
 
 # ── Phase 1: Fineract HEALTH ─────────────────────────────────────────────────
 if [ "$VERIFY_ONLY" = 0 ]; then
@@ -107,29 +130,38 @@ if [ "$VERIFY_ONLY" = 0 ] && [ "$SKIP_DT" = 0 ]; then
   else echo "  ❌ datatable registration failed"; mark REGISTER FAIL "see log"; fi
 else mark REGISTER SKIP "$([ "$VERIFY_ONLY" = 1 ] && echo verify-only || echo --skip-datatables)"; fi
 
-# ── Phase 3: COMPANION up + pointed at THIS instance ─────────────────────────
+# ── Phase 3: COMPANION up + pointed at THIS instance (AUTO-ENSURED) ──────────
+# "Always ready": the companion is never left unset/mispointed. If none is reachable we build
+# (from the mcp-mifosx go dir) + start one pointed at the RESOLVED instance — no silent skip.
 echo; echo "▶ Phase 3 — companion API"
-if [ "$MANAGE_COMP" = 1 ]; then
-  [ -n "$COMPANION_SRC" ] || { echo "  ❌ --manage-companion needs --companion-src <go-dir>"; mark COMPANION FAIL "no src"; }
-  if [ -n "$COMPANION_SRC" ]; then
-    echo "  building companion from $COMPANION_SRC …"
-    if ( cd "$COMPANION_SRC" && go build -o "$COMPANION_BIN" . ) 2>/tmp/pf_build.$$; then
-      OLD="$(lsof -nP -iTCP:"$COMPANION_PORT" -sTCP:LISTEN -t 2>/dev/null)"; [ -n "$OLD" ] && kill "$OLD" 2>/dev/null; sleep 1
-      MIFOSX_BASE_URL="$FINERACT_BASE_URL" MIFOSX_TENANT_ID="$FINERACT_TENANT" \
-        MIFOSX_USERNAME="$FINERACT_USER" MIFOSX_PASSWORD="$FINERACT_PASSWORD" PORT="$COMPANION_PORT" \
-        nohup "$COMPANION_BIN" >/tmp/companion-live.log 2>&1 & sleep 2
-      COMPANION_BASE_URL="${COMPANION_BASE_URL:-http://localhost:$COMPANION_PORT/companion}"
-      echo "  ✅ companion built + started on :$COMPANION_PORT → $FINERACT_BASE_URL"
-    else echo "  ❌ companion build failed"; sed 's/^/    /' /tmp/pf_build.$$ | tail -4; mark COMPANION FAIL "build"; fi
-  fi
+if [ -z "$COMPANION_SRC" ]; then
+  cand="${SCRIPT_DIR}/../../../../mcp-mifosx/source/mcp-mifosx/go"
+  [ -d "$cand" ] && COMPANION_SRC="$(cd "$cand" && pwd)"
 fi
-if [ -n "$COMPANION_BASE_URL" ]; then
-  # companion base may end in /companion; probe a known route
-  probe="${COMPANION_BASE_URL%/companion}/companion/groups/1"
-  code="$("${CURL[@]}" -o /dev/null -w '%{http_code}' "$probe" 2>/dev/null || echo 000)"
-  if [ "$code" = 200 ] || [ "$code" = 404 ]; then echo "  ✅ companion reachable (probe → $code)"; mark COMPANION PASS "$code"
-  else echo "  ❌ companion NOT reachable (probe → $code) at $COMPANION_BASE_URL"; mark COMPANION FAIL "$code"; fi
-else echo "  ⚠️ COMPANION_BASE_URL not set — cannot seed or verify the app surface"; mark COMPANION FAIL "unset"; fi
+comp_probe(){ local b="${1%/companion}"; "${CURL[@]}" -o /dev/null -w '%{http_code}' "$b/companion/groups/1" 2>/dev/null || echo 000; }
+start_companion(){
+  if [ ! -x "$COMPANION_BIN" ] && [ -n "$COMPANION_SRC" ] && command -v go >/dev/null; then
+    echo "  building companion from $COMPANION_SRC …"
+    ( cd "$COMPANION_SRC" && go build -o "$COMPANION_BIN" . ) 2>/tmp/pf_build.$$ || { echo "  ❌ build failed"; sed 's/^/    /' /tmp/pf_build.$$|tail -4; return 1; }
+  fi
+  [ -x "$COMPANION_BIN" ] || { echo "  ❌ no companion binary ($COMPANION_BIN) and no buildable --companion-src"; return 1; }
+  OLD="$(lsof -nP -iTCP:"$COMPANION_PORT" -sTCP:LISTEN -t 2>/dev/null)"; [ -n "$OLD" ] && kill "$OLD" 2>/dev/null; sleep 1
+  MIFOSX_BASE_URL="$FINERACT_BASE_URL" MIFOSX_TENANT_ID="$FINERACT_TENANT" \
+    MIFOSX_USERNAME="$FINERACT_USER" MIFOSX_PASSWORD="$FINERACT_PASSWORD" PORT="$COMPANION_PORT" \
+    nohup "$COMPANION_BIN" >/tmp/companion-live.log 2>&1 & sleep 2
+  COMPANION_BASE_URL="http://localhost:$COMPANION_PORT/companion"
+  echo "  started companion on :$COMPANION_PORT → $FINERACT_BASE_URL"
+}
+# --manage-companion FORCES a (re)start so the companion is guaranteed to point at THIS instance.
+[ "$MANAGE_COMP" = 1 ] && start_companion || true
+# auto-ensure: if still not reachable, bring one up pointed at the resolved instance.
+if [ -z "$COMPANION_BASE_URL" ] || [ "$(comp_probe "$COMPANION_BASE_URL")" = 000 ]; then
+  echo "  companion not reachable — auto-starting one pointed at the resolved instance…"
+  start_companion || true
+fi
+pcode="$([ -n "$COMPANION_BASE_URL" ] && comp_probe "$COMPANION_BASE_URL" || echo 000)"
+if [ "$pcode" = 200 ] || [ "$pcode" = 404 ]; then echo "  ✅ companion ready (probe → $pcode) at $COMPANION_BASE_URL"; mark COMPANION PASS "$pcode"
+else echo "  ❌ companion could NOT be ensured (probe → $pcode) — instance NOT app-ready"; mark COMPANION FAIL "$pcode"; fi
 
 # ── Phase 4: SEED demo ───────────────────────────────────────────────────────
 if [ "$VERIFY_ONLY" = 0 ] && [ "$SKIP_SEED" = 0 ]; then
