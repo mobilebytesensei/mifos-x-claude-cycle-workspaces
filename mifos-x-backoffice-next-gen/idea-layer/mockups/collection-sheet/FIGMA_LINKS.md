@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — collection-sheet
 
-<!-- schema: v3.2 | generated: 2026-07-26T05:36:36.750Z -->
+<!-- schema: v3.2 | generated: 2026-08-03T14:50:29.403Z -->
 
 ## Stitch Project
 
@@ -8,17 +8,17 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-26T05:36:36.667Z |
+| Generated | 2026-08-03T14:50:29.402Z |
 | Success | 4/4 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| loading | 6a0318c4c6934edf8f3598bc9250db8e | 01-collection-sheet-loading | PNG ✅ | HTML ✅ | ✅ generated |
-| content | 6ea13450f5c0459ba1122ac61f3b8522 | 02-collection-sheet-content | PNG ✅ | HTML ✅ | ✅ generated |
-| empty | 071ad72882a24de3840c1fea79e45efc | 03-collection-sheet-empty | PNG ✅ | HTML ✅ | ✅ generated |
-| error | 02491653c962483bab2e4f887dd5deda | 04-collection-sheet-error | PNG ✅ | HTML ✅ | ✅ generated |
+| loading | 6a0318c4c6934edf8f3598bc9250db8e | 01-collection-sheet-loading | PNG ✅ | HTML ✅ | ♻ resumed |
+| content | 6ea13450f5c0459ba1122ac61f3b8522 | 02-collection-sheet-content | PNG ✅ | HTML ✅ | ♻ resumed |
+| empty | 071ad72882a24de3840c1fea79e45efc | 03-collection-sheet-empty | PNG ✅ | HTML ✅ | ♻ resumed |
+| error | 02491653c962483bab2e4f887dd5deda | 04-collection-sheet-error | PNG ✅ | HTML ✅ | ♻ resumed |
 
 ## Open in Figma / Stitch
 

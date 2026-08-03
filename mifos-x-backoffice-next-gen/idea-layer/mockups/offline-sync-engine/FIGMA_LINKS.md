@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — offline-sync-engine
 
-<!-- schema: v3.2 | generated: 2026-07-26T09:36:43.570Z -->
+<!-- schema: v3.2 | generated: 2026-08-03T15:05:25.193Z -->
 
 ## Stitch Project
 
@@ -8,7 +8,7 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-26T09:36:43.570Z |
+| Generated | 2026-08-03T15:05:25.193Z |
 | Success | 6/6 states |
 
 ## Screen Status

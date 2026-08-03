@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m08-products-charges
 
-<!-- schema: v3.2 | generated: 2026-07-26T10:43:41.980Z -->
+<!-- schema: v3.2 | generated: 2026-08-03T14:56:50.366Z -->
 
 ## Stitch Project
 
@@ -8,19 +8,19 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-26T10:43:41.909Z |
+| Generated | 2026-08-03T14:56:50.366Z |
 | Success | 6/6 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| template-loading | c08608ac858440f7872048c2fc7cc21a | 01-m08-products-charges-template-loading | PNG ✅ | HTML ✅ | ✅ generated |
-| content | e886aa2a4e6f44b38dcfd7ad2f33ea40 | 02-m08-products-charges-content | PNG ✅ | HTML ✅ | ✅ generated |
-| empty | 469919eea7b8436380bbafcccab00fd3 | 03-m08-products-charges-empty | PNG ✅ | HTML ✅ | ✅ generated |
-| submitting | e2af853ba18d40e3a04bdaa6d540b879 | 04-m08-products-charges-submitting | PNG ✅ | HTML ✅ | ✅ generated |
-| config-online-only | 5100636de4da47e7b044946dea20b063 | 05-m08-products-charges-config-online-only | PNG ✅ | HTML ✅ | ✅ generated |
-| error | c9a7bc6a649f4429986497a06fb41fc0 | 06-m08-products-charges-error | PNG ✅ | HTML ✅ | ✅ generated |
+| template-loading | c08608ac858440f7872048c2fc7cc21a | 01-m08-products-charges-template-loading | PNG ✅ | HTML ✅ | ♻ resumed |
+| content | e886aa2a4e6f44b38dcfd7ad2f33ea40 | 02-m08-products-charges-content | PNG ✅ | HTML ✅ | ♻ resumed |
+| empty | 469919eea7b8436380bbafcccab00fd3 | 03-m08-products-charges-empty | PNG ✅ | HTML ✅ | ♻ resumed |
+| submitting | e2af853ba18d40e3a04bdaa6d540b879 | 04-m08-products-charges-submitting | PNG ✅ | HTML ✅ | ♻ resumed |
+| config-online-only | 5100636de4da47e7b044946dea20b063 | 05-m08-products-charges-config-online-only | PNG ✅ | HTML ✅ | ♻ resumed |
+| error | c9a7bc6a649f4429986497a06fb41fc0 | 06-m08-products-charges-error | PNG ✅ | HTML ✅ | ♻ resumed |
 
 ## Open in Figma / Stitch
 
