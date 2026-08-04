@@ -25,7 +25,7 @@ craft_rules_version: v1.0.0
 # share-out-execute — error state
 
 > Bindings resolved to demo values: full failure — all 5 payouts failed, server error
-> Stitch DesignSystem: CommonPurse forest green #2E7D32 / amber #FF8F00, minimalist-ui
+> Stitch DesignSystem: MifosSave forest green #2E7D32 / amber #FF8F00, minimalist-ui
 > DO NOT redeclare colors / fonts / spacing — they live in DESIGN.md.
 
 ↓↓↓ MOCKUP PROMPT
@@ -39,7 +39,7 @@ craft_rules_version: v1.0.0
 - padding: default
 - alignment: start
 
-## Palette (CommonPurse)
+## Palette (MifosSave)
 - Primary: #2E7D32 (forest green) — top bar and avatar circles only
 - Error: #B3261E (red) — error banner border, error icon, FAILED status icons and labels, try-again button
 - Error Container: #FDECEA — error banner card background (light red tint)

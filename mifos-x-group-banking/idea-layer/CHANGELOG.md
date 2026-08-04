@@ -1,4 +1,4 @@
-# Idea Layer Changelog — CommonPurse
+# Idea Layer Changelog — MifosSave
 
 ## v1.0.0 (2026-05-08)
 - 30 screens enriched to `designed` status across 15 features
@@ -9,7 +9,7 @@
 - Export tracking added to all 30 screen YAMLs
 - journeys/ directory: 10 user journeys (7 critical + 3 medium)
 - dtos/ directory: 12 DTOs covering all Fineract entities + custom datatables
-- components.yaml: 10 project-specific components (CommonPurse banking domain)
+- components.yaml: 10 project-specific components (MifosSave banking domain)
 - DESIGN_CONTEXT.md: full design brief (offline-first, rural UX, color system)
 - PROJECT_CONFIG.yaml: schema v2 with branding, client_types, backend environments
 
@@ -23,7 +23,7 @@
 ## v0.8.0 (2026-05-06)
 - Initial enrichment pass on 25 core screens
 - TRAINING_MASTER.yaml generated from enriched screen YAMLs
-- design-tokens.yaml established (CommonPurse green/amber/blue palette)
+- design-tokens.yaml established (MifosSave green/amber/blue palette)
 - Component registry seeded with banking domain types
 - State models defined for all ViewModels
 

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Project** | mifos-x/mifos-x-group-banking (CommonPurse — VSLA group banking, KMP) |
+| **Project** | mifos-x/mifos-x-group-banking (MifosSave — VSLA group banking, KMP) |
 | **Date** | 2026-08-01 |
 | **Command** | `/idea-evolve-plan "<production sign-up / server migration / demo-explore / device-verify feedback>"` |
 | **Auditors** | 5 parallel Claude-Intelligence completability auditors (CP-A/B/C · CP-D/E+server · CP-F · CP-G ×2) |
@@ -124,7 +124,7 @@
 ## 4 · Enrich prompt (ready to run)
 
 ```
-/idea-agent evolve "Make CommonPurse a production-deployable, device-verified group-banking app with real self-signup, accept-invitation, and demo-explore, backed by a migrated server. Close every gap in evolve-plans/20260801-production-signup-server-migration.md, bottom-up:
+/idea-agent evolve "Make MifosSave a production-deployable, device-verified group-banking app with real self-signup, accept-invitation, and demo-explore, backed by a migrated server. Close every gap in evolve-plans/20260801-production-signup-server-migration.md, bottom-up:
 
 (1) REQUIREMENTS+ROADMAP: Add FRs+features for (a) demo-explore mode (guest/offline-seeded session), (b) a server demo-data-seed deliverable, (c) a standing idea→server auto-migrate/server-ready capability, (d) a first-class accept-invitation auth path. Fix orphan FR-025 (add to group-type-config requirement_refs), re-tag FR-026 as a constraint (not a must FR), and fix the notifications↔FR-019 cross-map (re-point meeting-lifecycle to FR-019; give notifications a real notification FR). Schedule the two unscheduled MUST features group-type-config + pluggable-distribution into the 1.0.0 milestone + distribution epic, move member-invitations (FR-024) into the 1.0.0 milestone, and add a Play-Store internal-testing milestone before closed_alpha.
 

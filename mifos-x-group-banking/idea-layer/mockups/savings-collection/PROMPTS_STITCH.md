@@ -1,5 +1,5 @@
 # PROMPTS_STITCH — savings-collection
-# CommonPurse (mifos-x-group-banking) | Feature FR-004 / FR-017
+# MifosSave (mifos-x-group-banking) | Feature FR-004 / FR-017
 # Generated: 2026-05-06
 # Sections: 6 | Total lines: ≥1,200
 
@@ -9,7 +9,7 @@
 
 ### 1.1 Brand Purpose for Savings Collection
 
-The savings-collection feature is the financial heart of CommonPurse. For VSLA groups like the Mwangaza Women's Group, weekly savings are the engine of shared prosperity. The UI communicates:
+The savings-collection feature is the financial heart of MifosSave. For VSLA groups like the Mwangaza Women's Group, weekly savings are the engine of shared prosperity. The UI communicates:
 - Group solidarity: mandatory savings viewed collectively (group savings = shared wealth in green)
 - Individual autonomy: optional personal savings in amber (personal money, personal choice)
 - Progress and growth: cycle progress bars animate on entry, visually celebrating collective advancement toward the year-end share-out

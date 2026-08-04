@@ -1,6 +1,6 @@
 # Companion API — Build & Deploy Spec (mcp-mifosx)
 
-> The **actionable end-to-end plan** for realizing the companion API that CommonPurse consumes.
+> The **actionable end-to-end plan** for realizing the companion API that MifosSave consumes.
 > `/mifos-bridge` produced the **contract** (`API_CONTRACT.yaml` companion section: 20 tools + 6 datatables);
 > this doc is the **runtime**: what to build in `mcp-mifosx`, how to provision the datatables, and how to
 > deploy — so `/device-test` can pass and matrix-green becomes reachable.
@@ -90,7 +90,7 @@ the create-group orchestrator reads the registry and writes the per-group table.
 3. **Deploy the mcp-mifosx server** (Go, SSE transport via `PORT`) with the service credential + tenant header,
    reachable by the app.
 4. **Provision the 6 datatables** (§2) against that Fineract, once.
-5. **Wire the app** — point CommonPurse's companion base URL at the deployed mcp-mifosx.
+5. **Wire the app** — point MifosSave's companion base URL at the deployed mcp-mifosx.
 
 ---
 

@@ -1,6 +1,6 @@
 # Offline Sync — Stitch Prompt Specification
 **Feature**: offline-sync | **Screen**: sync-status
-**Stitch project**: CommonPurse / mifos-x-group-banking
+**Stitch project**: MifosSave / mifos-x-group-banking
 **Total sections**: 6
 
 ---
@@ -8,7 +8,7 @@
 # SECTION 1: DESIGN SYSTEM CONTEXT
 
 ## Application Identity
-CommonPurse is a VSLA (Village Savings and Loan Association) group banking app for rural financial communities in Sub-Saharan Africa. The sync-status screen is the offline resilience hub — it shows members and field officers the real-time state of all locally queued data waiting to be committed to the Fineract backend. The design must communicate trust (data is safe), status clarity (green/amber/red), and actionability (retry failed, sync now).
+MifosSave is a VSLA (Village Savings and Loan Association) group banking app for rural financial communities in Sub-Saharan Africa. The sync-status screen is the offline resilience hub — it shows members and field officers the real-time state of all locally queued data waiting to be committed to the Fineract backend. The design must communicate trust (data is safe), status clarity (green/amber/red), and actionability (retry failed, sync now).
 
 ## Material Design 3 Token System
 

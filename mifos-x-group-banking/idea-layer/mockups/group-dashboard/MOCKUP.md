@@ -2,7 +2,7 @@
 
 ## Design Language
 
-CommonPurse uses Material Design 3 with a VSLA-inspired brand palette designed for low-literacy rural users in East Africa. All touch targets are minimum 48dp (primary CTAs pushed to 56dp). Typography uses the system stack (Roboto on Android / SF Pro on iOS) at comfortable density with an emphasis on clarity for outdoor viewing. Group Dashboard follows the app's `minimalist-ui` family (variance 3/10, motion 3/10, density 7/10) — grid-aligned, predictable, subtle transitions. Amounts (KES values) render in Roboto Mono / SF Mono for column alignment across corpus stats and activity feed.
+MifosSave uses Material Design 3 with a VSLA-inspired brand palette designed for low-literacy rural users in East Africa. All touch targets are minimum 48dp (primary CTAs pushed to 56dp). Typography uses the system stack (Roboto on Android / SF Pro on iOS) at comfortable density with an emphasis on clarity for outdoor viewing. Group Dashboard follows the app's `minimalist-ui` family (variance 3/10, motion 3/10, density 7/10) — grid-aligned, predictable, subtle transitions. Amounts (KES values) render in Roboto Mono / SF Mono for column alignment across corpus stats and activity feed.
 
 **Brand colours (from `design-system/DESIGN.md`)**:
 - Primary 700: #2E7D32 (base VSLA-green — app bar, primary CTAs, corpus balance emphasis)

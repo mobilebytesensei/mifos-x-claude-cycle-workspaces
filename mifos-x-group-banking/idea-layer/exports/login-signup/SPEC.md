@@ -6,7 +6,7 @@
 
 ## Overview
 
-Unified authentication entry-point for the CommonPurse companion app. A single
+Unified authentication entry-point for the MifosSave companion app. A single
 tab-toggle screen handles both returning-user login (COMP-AUTH-002) and new-user
 self-registration (COMP-AUTH-001), plus biometric re-auth (COMP-AUTH-003) for
 returning users. On SIGNUP the companion self-registration bridge atomically creates a

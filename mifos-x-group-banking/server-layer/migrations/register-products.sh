@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# register-products.sh — idempotent provisioning of the CommonPurse VSLA
+# register-products.sh — idempotent provisioning of the MifosSave VSLA
 # financial products (currency + savings product + loan product) on a Fineract
 # instance. The product half of `/mifos-bridge preflight` (Phase 2.5 PRODUCTS).
 # =============================================================================
@@ -75,7 +75,7 @@ if [ -n "$sid" ]; then echo "  ✅ exists (id $sid)"
 else
   resp="$(api POST /savingsproducts -d "{
     \"name\":\"$SAVINGS_NAME\",\"shortName\":\"VGS\",
-    \"description\":\"CommonPurse VSLA group-linked savings\",
+    \"description\":\"MifosSave VSLA group-linked savings\",
     \"currencyCode\":\"$APP_CURRENCY\",\"digitsAfterDecimal\":2,\"inMultiplesOf\":0,
     \"nominalAnnualInterestRate\":0,\"interestCompoundingPeriodType\":1,
     \"interestPostingPeriodType\":4,\"interestCalculationType\":1,
@@ -93,7 +93,7 @@ if [ -n "$lid" ]; then echo "  ✅ exists (id $lid)"
 else
   resp="$(api POST /loanproducts -d "{
     \"name\":\"$LOAN_NAME\",\"shortName\":\"VGL\",
-    \"description\":\"CommonPurse VSLA group loan (3x savings, weekly repayment)\",
+    \"description\":\"MifosSave VSLA group loan (3x savings, weekly repayment)\",
     \"currencyCode\":\"$APP_CURRENCY\",\"digitsAfterDecimal\":2,\"inMultiplesOf\":0,
     \"principal\":5000,\"minPrincipal\":500,\"maxPrincipal\":300000,
     \"numberOfRepayments\":12,\"minNumberOfRepayments\":1,\"maxNumberOfRepayments\":52,

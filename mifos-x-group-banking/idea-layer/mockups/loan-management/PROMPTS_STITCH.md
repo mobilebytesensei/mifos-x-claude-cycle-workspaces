@@ -1,5 +1,5 @@
 # Loan Management — Prompts Stitch
-**Feature**: loan-management | **Project**: CommonPurse (mifos-x-group-banking)
+**Feature**: loan-management | **Project**: MifosSave (mifos-x-group-banking)
 **Screens**: loan-list, loan-apply, loan-detail, meeting-conduct steps 4–5
 
 ---
@@ -7,7 +7,7 @@
 ## 1. Design System Context
 
 ### Brand Identity
-CommonPurse is a VSLA (Village Savings and Loan Association) group banking app designed for rural communities in Sub-Saharan Africa and South Asia. The visual language communicates financial trust, growth, and community — anchored in Material Design 3 with a carefully crafted tonal palette.
+MifosSave is a VSLA (Village Savings and Loan Association) group banking app designed for rural communities in Sub-Saharan Africa and South Asia. The visual language communicates financial trust, growth, and community — anchored in Material Design 3 with a carefully crafted tonal palette.
 
 ### Primary Color System
 - **Primary**: `#2E7D32` — deep VSLA green. Represents growth, stability, nature, and financial health. Used on: TopAppBar backgrounds, FAB fill, primary buttons, active filter chips, loan status badges (active), tab indicators, progress bars.
@@ -710,7 +710,7 @@ Scaffold
 
 ## Component State Matrix
 
-Full state definitions for every interactive component in the loan-management feature. Colors reference the CommonPurse MD3 token system (primary #2E7D32).
+Full state definitions for every interactive component in the loan-management feature. Colors reference the MifosSave MD3 token system (primary #2E7D32).
 
 ### LoanListCard (loan-list screen)
 

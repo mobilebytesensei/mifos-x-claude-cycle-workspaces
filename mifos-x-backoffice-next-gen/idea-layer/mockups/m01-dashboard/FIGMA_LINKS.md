@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — m01-dashboard
 
-<!-- schema: v3.2 | generated: 2026-08-04T11:46:03.525Z -->
+<!-- schema: v3.2 | generated: 2026-08-04T13:34:05.748Z -->
 
 ## Stitch Project
 
@@ -8,20 +8,20 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 15272366959787234099 |
-| Generated | 2026-08-04T11:46:03.465Z |
+| Generated | 2026-08-04T13:34:05.677Z |
 | Success | 1/1 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| content | d88b2f5923a14fafa446cd787130cb08 | 01-m01-dashboard-content | PNG ✅ | HTML ✅ | ✅ generated |
+| content | 731a60a3f17040ddbdc775ce9583912e | 01-m01-dashboard-content | PNG ✅ | HTML ✅ | ✅ generated |
 
 ## Open in Figma / Stitch
 
 | State | Stitch Screen | Figma Export |
 |-------|--------------|--------------|
-| content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/d88b2f5923a14fafa446cd787130cb08) | — |
+| content | [Open](https://stitch.google.com/projects/10243803383444073820/screens/731a60a3f17040ddbdc775ce9583912e) | — |
 
 > **Figma Export**: direct download URL captured from Stitch SDK `screen.data.figmaExport.downloadUrl`. May be `—` if Stitch did not generate a Figma export for this screen.
 >

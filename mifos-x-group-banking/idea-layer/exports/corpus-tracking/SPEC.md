@@ -1,5 +1,5 @@
 # SPEC — corpus-tracking
-# CommonPurse (mifos-x-group-banking) | Feature FR-018
+# MifosSave (mifos-x-group-banking) | Feature FR-018
 # Generated: 2026-05-06
 
 ---

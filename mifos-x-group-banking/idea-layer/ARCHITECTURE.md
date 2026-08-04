@@ -1,4 +1,4 @@
-# Architecture — CommonPurse (mifos-x-group-banking)
+# Architecture — MifosSave (mifos-x-group-banking)
 
 > Global self-signup community-banking app. **Backend strategy: Fineract-only** (the ledger) + a **companion API** (extended `mcp-mifosx`) for the missing behavior, with VSLA/ROSCA/SFG state as Fineract **datatables**. No Supabase, no standalone DDD service.
 >
@@ -10,7 +10,7 @@
 
 ```
 ┌─────────────────────────────────────────────┐
-│  CommonPurse KMP app                          │  single login/signup · offline-first (Store5/SQLDelight)
+│  MifosSave KMP app                          │  single login/signup · offline-first (Store5/SQLDelight)
 │  organizer + member surfaces resolved per-group │  client-side share-out / rotation compute (preview)
 └───────────────────────┬─────────────────────┘
                         │  REST — app never talks to Fineract directly

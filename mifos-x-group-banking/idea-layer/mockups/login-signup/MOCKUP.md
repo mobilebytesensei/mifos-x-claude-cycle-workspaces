@@ -2,7 +2,7 @@
 
 ## Design Language
 
-CommonPurse uses Material Design 3 with a VSLA-inspired brand palette designed for low-literacy rural users in East Africa. All touch targets are minimum 48dp. Typography uses the system stack (Roboto on Android / SF Pro on iOS) at comfortable density with an emphasis on clarity for outdoor viewing. Login/Signup follows the app's `minimalist-ui` family (variance 3/10, motion 3/10, density 7/10) — grid-aligned, predictable, subtle transitions. As the app's entry surface it also carries the brand mark, so it renders with slightly more vertical breathing room than in-app screens.
+MifosSave uses Material Design 3 with a VSLA-inspired brand palette designed for low-literacy rural users in East Africa. All touch targets are minimum 48dp. Typography uses the system stack (Roboto on Android / SF Pro on iOS) at comfortable density with an emphasis on clarity for outdoor viewing. Login/Signup follows the app's `minimalist-ui` family (variance 3/10, motion 3/10, density 7/10) — grid-aligned, predictable, subtle transitions. As the app's entry surface it also carries the brand mark, so it renders with slightly more vertical breathing room than in-app screens.
 
 **Brand colours (from `design-system/DESIGN.md`)**:
 - Primary 700: #2E7D32 (base VSLA-green — Sign In / Create Account CTAs, tab indicator)
@@ -277,7 +277,7 @@ Continue → seed PROJECT_DEMO_DATA locally → NavigateToOrganizerDashboard
 
 ## Empty / Error / Loading States
 
-**Empty (first mount, Login mode default)**: All form fields render at their `default` values from `state_model` — name/emailPhone/password all empty. The Sign In CTA is enabled at all times — validation runs on tap; empty required fields produce inline errors rather than a globally-disabled CTA. This mirrors CommonPurse's "trust the user, guide with errors" pattern used across the app. `isBiometricAvailable` starts false; the ViewModel probes hardware + stored-session on mount and, if both hit, sets it true and the biometric affordance + divider_or animate in (fade+height, 150ms).
+**Empty (first mount, Login mode default)**: All form fields render at their `default` values from `state_model` — name/emailPhone/password all empty. The Sign In CTA is enabled at all times — validation runs on tap; empty required fields produce inline errors rather than a globally-disabled CTA. This mirrors MifosSave's "trust the user, guide with errors" pattern used across the app. `isBiometricAvailable` starts false; the ViewModel probes hardware + stored-session on mount and, if both hit, sets it true and the biometric affordance + divider_or animate in (fade+height, 150ms).
 
 **Loading (submitting state)**: The mode's CTA (Sign In or Create Account) shows a 24dp CircularProgressIndicator onPrimary in place of its label; button disabled. All form fields disabled at 40% opacity — they remain visible so the user can see what's being sent but cannot mutate. Tab toggle disabled. `biometric_unlock_button` hides (not just disables) to prevent a double-submit path. No overlaid scrim. Duration expectation: <2s online, <500ms local biometric round-trip. If the request takes >4s (arbitrary threshold from RESEARCH.md low-bandwidth budget), a bodyMedium helper "Still working… we'll retry automatically if this fails." fades in below the CTA (does not spawn a new banner).
 

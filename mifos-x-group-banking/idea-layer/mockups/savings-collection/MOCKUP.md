@@ -1,12 +1,12 @@
 # MOCKUP — savings-collection
-# CommonPurse (mifos-x-group-banking) | Feature FR-004 / FR-017
+# MifosSave (mifos-x-group-banking) | Feature FR-004 / FR-017
 # Generated: 2026-05-06
 
 ---
 
 ## Design Language
 
-**Brand:** CommonPurse by Mwangaza Women's Group
+**Brand:** MifosSave by Mwangaza Women's Group
 **System:** Material Design 3
 **Primary:** #2E7D32 (VSLA-green) — mandatory group savings, growth, collective wealth
 **Secondary:** #FF8F00 (amber) — individual voluntary savings, personal growth

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Group Management is the foundational admin feature of CommonPurse. It enables field officers and treasurers to create and configure VSLA savings groups (modelled as Fineract Centers), view their full portfolio of groups on a list screen, and access per-group operational dashboards. The group dashboard is the central hub for corpus fund monitoring (FR-018), cycle tracking, and quick navigation to meetings, members, and loans. Group creation is a 3-step wizard that writes both a Fineract Center and a `dt_group_config` datatable entry. All screens are offline-first with stale-while-revalidate caching and offline queueing via SyncQueue.
+Group Management is the foundational admin feature of MifosSave. It enables field officers and treasurers to create and configure VSLA savings groups (modelled as Fineract Centers), view their full portfolio of groups on a list screen, and access per-group operational dashboards. The group dashboard is the central hub for corpus fund monitoring (FR-018), cycle tracking, and quick navigation to meetings, members, and loans. Group creation is a 3-step wizard that writes both a Fineract Center and a `dt_group_config` datatable entry. All screens are offline-first with stale-while-revalidate caching and offline queueing via SyncQueue.
 
 **Feature ID**: group-management
 **Priority**: Must

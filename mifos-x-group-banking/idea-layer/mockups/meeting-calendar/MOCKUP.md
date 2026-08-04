@@ -2,14 +2,14 @@
 
 **Feature**: meeting-calendar | **Route**: `/meetings` | **Type**: list + pinned-hero
 **Feature group**: meeting-management | **Flow**: meeting-management-flow
-**Generated from**: `screens/meeting-calendar/ui.yaml` (schema 4.0), `screens/meeting-calendar/demo-data.yaml` (schema 2.1.0), `design-system/DESIGN.md` (CommonPurse-v3, 2026-06-04)
+**Generated from**: `screens/meeting-calendar/ui.yaml` (schema 4.0), `screens/meeting-calendar/demo-data.yaml` (schema 2.1.0), `design-system/DESIGN.md` (MifosSave-v3, 2026-06-04)
 **Generated at**: 2026-07-18; **regenerated 2026-08-01** (evolve R4 — re-synthesized from enriched ui.yaml: added the upcoming-card **Reschedule** link, the **no-upcoming schedule card** with a **Set / Adjust Schedule** CTA replacing the former dead "Next meeting not scheduled" placeholder, and the **schedule-editor bottom sheet**; Stitch external, MD-only fallback per RULE-STITCH-OPTIN-CONSISTENCY-001)
 
 ---
 
 ## Design Language
 
-**System**: CommonPurse-v3 (Material Design 3 · MD3) — dense financial dashboard (density 7/10)
+**System**: MifosSave-v3 (Material Design 3 · MD3) — dense financial dashboard (density 7/10)
 **Aesthetic**: `minimalist-ui` · variance 3/10 · motion 3/10 · density 7/10 · accessibility-first · regulated-industry
 **Font**: Roboto (Android) / SF Pro (iOS) — system stack · Roboto Mono / SF Mono for KES amounts
 **Primary**: `#2E7D32` (`--primary-700`, VSLA green) — TopAppBar fill, Start Meeting CTA, "Collected" amounts, retry action

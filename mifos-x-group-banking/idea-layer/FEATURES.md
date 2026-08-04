@@ -1,4 +1,4 @@
-# Features - CommonPurse (mifos-x-group-banking)
+# Features - MifosSave (mifos-x-group-banking)
 
 > 24 app features | 18 must | 5 should | 1 could | + 1 external-gate (companion-api-backend)
 > **One unified identity — self-signup**: anyone downloads → self-registers → creates or joins a group. Post-login capabilities auto-resolved **per group** (organizer vs member), never chosen up front.

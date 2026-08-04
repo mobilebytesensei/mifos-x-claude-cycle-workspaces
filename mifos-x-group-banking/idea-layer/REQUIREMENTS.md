@@ -1,4 +1,4 @@
-# Requirements — CommonPurse (mifos-x-group-banking)
+# Requirements — MifosSave (mifos-x-group-banking)
 
 > 31 functional requirements (FR-026 is a v1 non-goal/constraint) · 8 data entities · 2 third-party services
 > **Global self-signup pivot (2026-07-17):** FR-013/014/015 revised, FR-021..FR-026 added, FR-009 demoted. See `ARCHITECTURE.md` for the backend contract + 9-type group registry.
@@ -9,7 +9,7 @@
 | Field | Value |
 |-------|-------|
 | Project | mifos-x-group-banking |
-| Display name | CommonPurse |
+| Display name | MifosSave |
 | Workspace | mifos-x |
 | Type | kmp |
 | Backend | Mifos Fineract (REST + MCP) |
@@ -111,7 +111,7 @@
 | IR-003 | **Companion API — TIER-2 datatable-CRUD tools (7)**: COMP-DT-001..005 (register, create-row, read-row, update-row, delete-row) + COMP-DIST-001/002 (share-out execute, rotation execute) — registered in `go/tools/datatables.go` |
 | IR-004 | **Self-service-enabled Fineract instance**: a Fineract deployment with the self-service module enabled (the community sandbox does NOT qualify); tenant/office strategy configured for global "anyone in the world" onboarding |
 | IR-005 | **6 companion datatables provisioned** against deployed Fineract (once, via COMP-DT-001): `dt_group_type_config`, `dt_companion_invitations`, `dt_rosca_rotation`, `dt_rosca_auction`, `dt_vsla_cycle`, `dt_welfare_fund` (all attached to `m_group`) |
-| IR-006 | **App wired to companion backend**: CommonPurse companion base URL points at deployed mcp-mifosx; end-to-end flow (signup → create group → invite → savings/loan → share-out) verified via Maestro on device |
+| IR-006 | **App wired to companion backend**: MifosSave companion base URL points at deployed mcp-mifosx; end-to-end flow (signup → create group → invite → savings/loan → share-out) verified via Maestro on device |
 
 ## Cross-References
 

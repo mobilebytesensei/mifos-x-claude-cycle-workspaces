@@ -1,5 +1,5 @@
 # Multi-Language — Feature Specification
-**Project**: CommonPurse (mifos-x-group-banking)
+**Project**: MifosSave (mifos-x-group-banking)
 **Feature ID**: multi-language
 **Requirement**: FR-010
 **Version**: 1.0.0
@@ -9,7 +9,7 @@
 
 ## Overview
 
-Multi-language support allows members and field officers to use CommonPurse in their preferred language. Four languages are supported: English (en), Kiswahili (sw), Français (fr), and हिन्दी (hi). Language is selected via a radio group in the Settings screen. On selection, the preference is persisted to DataStore, and the entire composable tree is restarted via `RestartComposableTree` event so the new locale takes effect immediately — no app restart required. The language selector is accessible to both admin and end-user client types.
+Multi-language support allows members and field officers to use MifosSave in their preferred language. Four languages are supported: English (en), Kiswahili (sw), Français (fr), and हिन्दी (hi). Language is selected via a radio group in the Settings screen. On selection, the preference is persisted to DataStore, and the entire composable tree is restarted via `RestartComposableTree` event so the new locale takes effect immediately — no app restart required. The language selector is accessible to both admin and end-user client types.
 
 ---
 

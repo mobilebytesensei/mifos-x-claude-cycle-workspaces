@@ -1,4 +1,4 @@
-# DTOs Index — CommonPurse (mifos-x-group-banking)
+# DTOs Index — MifosSave (mifos-x-group-banking)
 
 > 14 DTOs | 7 Fineract REST | 7 Custom/Companion Datatable
 

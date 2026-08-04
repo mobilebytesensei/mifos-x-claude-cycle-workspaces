@@ -4,14 +4,14 @@
 <!-- generated_at: 2026-07-18 -->
 <!-- source: screens/group-list/{ui.yaml,demo-data.yaml}, design-system/DESIGN.md -->
 
-> Short Figma-optimized per-state prompts for **CommonPurse** (group-list) — the authenticated member's role-aware savings-group roster.
+> Short Figma-optimized per-state prompts for **MifosSave** (group-list) — the authenticated member's role-aware savings-group roster.
 > Design tokens: primary `#2E7D32` (VSLA green) · accent `#FF8F00` (pooled fund amber) · info `#1565C0` · surface `#FAFAFA` · canvas `#FFFFFF`
 
 ---
 
 ## Global Context
 
-- Feature: Group List · CommonPurse KMP community-banking app · 10 components · 4 states
+- Feature: Group List · MifosSave KMP community-banking app · 10 components · 4 states
 - Brand: `#2E7D32` primary · `#FF8F00` accent · `#1565C0` info · `#C62828` danger · `#F57C00` warning
 - Typography: **Noto Sans** — titleLarge 22sp (screen title) · titleMedium 16sp (group name) · bodySmall 12sp (meta) · labelSmall 11sp (chips) · scaled for low-vision rural users
 - Aesthetic dial (from `design_read`): family `minimalist-ui` · density 7/10 (dense financial dashboards) · variance 3/10 · motion 3/10 (subtle only)

@@ -1,4 +1,4 @@
-# Screens — CommonPurse
+# Screens — MifosSave
 
 > 30 screens defined in `idea-plan.yaml` §screens (line 1168, quality 92%, approved 2026-05-04).
 > Per-screen YAML files generated via `/idea sync` or `/idea-extend-api`.

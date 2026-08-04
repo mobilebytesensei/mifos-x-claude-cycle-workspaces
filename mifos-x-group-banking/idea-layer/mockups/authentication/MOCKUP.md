@@ -2,7 +2,7 @@
 
 ## Design Language
 
-CommonPurse uses Material Design 3 with a VSLA-inspired brand palette designed for low-literacy rural users in East Africa. All touch targets are minimum 48dp. Typography uses Noto Sans at comfortable density with a large scale (+1 step above standard M3) for readability in outdoor environments.
+MifosSave uses Material Design 3 with a VSLA-inspired brand palette designed for low-literacy rural users in East Africa. All touch targets are minimum 48dp. Typography uses Noto Sans at comfortable density with a large scale (+1 step above standard M3) for readability in outdoor environments.
 
 **Brand colours**:
 - Primary: #2E7D32 (deep VSLA-green — growth, trust)
@@ -36,8 +36,8 @@ CommonPurse uses Material Design 3 with a VSLA-inspired brand palette designed f
 
 | Component | Type | Style Summary | Interaction |
 |-----------|------|--------------|-------------|
-| AppLogo | Image | 80dp centred, margin_top 64dp. CommonPurse leaf+coin SVG mark. | Non-interactive |
-| AppTitle | Text | "CommonPurse" — headlineLarge (32sp), bold, Noto Sans, colour onSurface (#1A1C19), centred, margin_top 12dp | Non-interactive |
+| AppLogo | Image | 80dp centred, margin_top 64dp. MifosSave leaf+coin SVG mark. | Non-interactive |
+| AppTitle | Text | "MifosSave" — headlineLarge (32sp), bold, Noto Sans, colour onSurface (#1A1C19), centred, margin_top 12dp | Non-interactive |
 | AppSubtitle | Text | "Your community savings group" — bodyLarge (16sp), colour onSurfaceVariant (#424942), centred, margin_bottom 48dp | Non-interactive |
 | AdminTile | Card | Background primaryContainer (#A6F1A6), cornerRadius lg (16dp), padding 24dp, min_height 120dp, elevation 3dp, margin_horizontal 24dp, margin_bottom 16dp. Icon: FluentIcons.people_community_24_filled 48dp onPrimaryContainer. Label: "I manage a group" titleLarge semibold onPrimaryContainer. Sublabel: "Treasurer · Chairperson · Field Officer" bodyMedium onPrimaryContainer. | Tap → OnAdminSelected → login(client_type=admin) |
 | MemberTile | Card | Background secondaryContainer (#FFDDB3), cornerRadius lg (16dp), padding 24dp, min_height 120dp, elevation 3dp, margin_horizontal 24dp, margin_bottom 16dp. Icon: FluentIcons.person_circle_24_filled 48dp onSecondaryContainer. Label: "I'm a group member" titleLarge semibold onSecondaryContainer. Sublabel: "Check savings · Request loans" bodyMedium onSecondaryContainer. | Tap → OnMemberSelected → login(client_type=end_user) |
@@ -77,7 +77,7 @@ VersionLabel      — centred, 24dp bottom
 | Component | Type | Style Summary | Interaction |
 |-----------|------|--------------|-------------|
 | LoginTopBar | TopBar | Background surface (#FAFAFA), elevation 0dp. Back arrow FluentIcons.arrow_left_24_regular onSurface. No title text. | Tap back → navigate to client-type-selector |
-| LoginLogo | Image | 64dp centred, margin_top 24dp. CommonPurse SVG. | Non-interactive |
+| LoginLogo | Image | 64dp centred, margin_top 24dp. MifosSave SVG. | Non-interactive |
 | LoginTitle | Text | Admin: "Staff Login" / Member: "Member Login" — headlineMedium (28sp), bold, Noto Sans, onSurface, centred, margin_top 8dp | Non-interactive. Changes text based on clientType. |
 | LoginSubtitle | Text | "Mwangaza Women's Group" — bodyLarge (16sp), colour primary (#2E7D32), centred, margin_bottom 32dp | Non-interactive. Group name from session context. |
 | UsernameField | OutlinedTextField | label "Username", placeholder "Enter your username", leading icon FluentIcons.person_24_regular, keyboard text, IME next, margin_horizontal 24dp, margin_bottom 12dp. Hidden when isPinMode=true. | Type → OnUsernameChange |
@@ -138,7 +138,7 @@ VersionLabel      — centred, 24dp bottom
 - AdminTile: "I manage a group — staff or treasurer login"
 - MemberTile: "I am a group member — member login"
 - BiometricButton: "Login with fingerprint or face"
-- LoginButton: "Login to CommonPurse"
+- LoginButton: "Login to MifosSave"
 - ErrorBanner: live_region polite for screen reader announcements
 
 **Focus order** (LoginScreen): TopBar back → LoginLogo → LoginTitle → LoginSubtitle → UsernameField → PasswordField → SwitchToPinButton → BiometricButton → LoginButton

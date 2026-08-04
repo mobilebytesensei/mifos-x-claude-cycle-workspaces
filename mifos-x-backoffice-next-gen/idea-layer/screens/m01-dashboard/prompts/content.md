@@ -3,7 +3,7 @@ ui_yaml_sha: b46a9e7ad753c41978e967fee684645a38ab88ab9031299135ddd5ad813993a1
 design_md_hash: 98bff520251b13fe61807f051f0971a6fd7f5cd1364b4d5c1317bdd6df16612d
 app_shell_hash: 3b51792a3cf0662637b47a6b9105fb9030edf792e8caad095b354b7f26ea4461
 design_read_hash: 1bb88b83ca0ec1f4bb6eec3ee4156944dc86d382dd039ce263f6afa55009df03
-content_hash: 9b029d176c6af87906f2e1ffdde73e23b70a4a47bc4cf7f38ba2fc3bbef91433
+content_hash: 7c79d0ba068549ffab90117b2545977c25ab713b2f738c2d6e0e9267f63787b8
 
 design_read_aesthetic: minimalist-ui
 design_read_dials: {variance: 3, motion: 3, density: 7}
@@ -32,8 +32,15 @@ craft_rules_version: v1.0.0
 
 > DO NOT invent navigation, tabs, or screens beyond the declared app-shell (Home, Clients, Collections, Sync) plus the composition below. Every nav item you render MUST come from that list.
 > Only elements that navigate or perform an action may look tappable (cursor, ripple, pressed state). DO NOT add tap affordances to decorative content — page titles, section headings, avatars, standalone icons, badges, and static labels are NOT interactive.
+> The concrete figures below are REALISTIC SAMPLE (demo) data, not fixed values — render believable content of the same KIND and MAGNITUDE (currency amounts, counts, percentages, names, timestamps). Exact reproduction is NOT required; realism and consistency ARE. Never use lorem, generic numbered placeholders, or empty content.
 
 ## Archetype: dashboard
+
+## Visual treatment (professional design brief — honor this hierarchy)
+- Lead with ONE bold summary HERO for the primary KPI — a full-width brand-gradient card (`gradient-hero-from`→`gradient-hero-to`, `on-hero` text) with the value in the display scale and a subtle sparkline; it must visually dominate.
+- Below the hero, a tidy responsive GRID of secondary stat cards — each an elevated `surface` card with a small colored icon chip (`chart-1`..`chart-5`), the value large in tabular-mono, and a muted caption.
+- Then a compact QUICK-ACTIONS row (icon-over-label buttons in `primary-container`), then a clean RECENT-ACTIVITY list (leading status icon, primary text, trailing timestamp).
+- Hierarchy is everything: hero dominates, stat cards are calm and equal, generous spacing, all numerics tabular-mono. App-Store-screenshot fidelity — professional, airy, one focal gradient and the rest typographic.
 
 ## Layout
 - type: scrollable_column
@@ -92,7 +99,7 @@ craft_rules_version: v1.0.0
 Before returning the rendered mockup, verify ALL of these are true. If any fails, FIX the output and re-render.
 
 - [ ] **Per-state shape:** the render shows ONLY this state ("content"). Do not blend multiple states into one mockup.
-- [ ] **Real content:** every text label, image, and data point reflects the content source manifest above — no numbered generic items, no filler text, no dummy text, no empty strings.
+- [ ] **Realistic content:** every text label and data point is realistic, believable, and consistent with the ILLUSTRATIVE sample content above (a microfinance back-office). Figures may differ from the samples as long as they are realistic and of the same kind/magnitude — verbatim reproduction is NOT required. NO lorem, NO generic numbered placeholders, NO empty strings.
 - [ ] **Token fidelity:** colors come from the uploaded design system (primary/secondary/surface/etc.) by name; spacing comes from declared scale tokens. No invented hex codes, no invented size literals.
 - [ ] **Component vocabulary:** every component in the render maps to a named design-system component (Card, FAB, BottomBar, etc.) — no invented or off-system components.
 - [ ] **Archetype honored:** the layout follows the "dashboard" archetype skeleton — composition order top → bottom matches the Composition section.

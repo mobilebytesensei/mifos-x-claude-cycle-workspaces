@@ -9,7 +9,7 @@
 
 ## Design Language
 
-**System**: CommonPurse-v3 (Material Design 3 · MD3) — comfortable density
+**System**: MifosSave-v3 (Material Design 3 · MD3) — comfortable density
 **Aesthetic**: `minimalist-ui` · variance 3/10 · motion 3/10 · density 7/10 · accessibility-first · regulated-industry
 **Font**: Roboto (Android) / SF Pro (iOS) — system stack · Roboto Mono / SF Mono for amounts + running balances
 **Primary**: `#2E7D32` (`--primary-700`, VSLA green) — TopAppBar, balance-hero card fill, progress indicator, selected chip, error CTA, deposit-transaction accent
@@ -287,7 +287,7 @@ Offline behavior: when `NetworkMonitor.isOffline == true`, cache rows still rend
 | Stitch prompts (per state) | `idea-layer/screens/personal-savings/prompts/{loading,content,error}.md` |
 | Stitch mockup (legacy 2026-05-09) | `idea-layer/mockups/personal-savings/stitch/01-personal-savings-content/{code.html,screen.png}` |
 | Feature-group mockup | `idea-layer/mockups/end-user-dashboard/MOCKUP.md` (Screen — Personal Savings section) |
-| Design system SoT | `idea-layer/design-system/DESIGN.md` (CommonPurse-v3) |
+| Design system SoT | `idea-layer/design-system/DESIGN.md` (MifosSave-v3) |
 
 ---
 

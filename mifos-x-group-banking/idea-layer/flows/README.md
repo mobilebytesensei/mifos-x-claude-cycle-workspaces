@@ -1,4 +1,4 @@
-# Flows — CommonPurse
+# Flows — MifosSave
 
 > 14 flows · regenerated 2026-07-17 · +demo-explore & accept-invitation/pendingInviteCode/reschedule wiring 2026-08-01 · source: idea-plan.yaml §flows (global self-signup pivot) + /idea sync
 > Identity is UNIFIED — one login/signup for everyone; capabilities resolve per-group after login (no admin/end_user client_type).

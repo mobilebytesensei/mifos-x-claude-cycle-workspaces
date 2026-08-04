@@ -9,7 +9,7 @@
 
 ## Design Language
 
-**System**: CommonPurse-v3 (Material Design 3 · MD3) — comfortable density
+**System**: MifosSave-v3 (Material Design 3 · MD3) — comfortable density
 **Aesthetic**: `minimalist-ui` · variance 3/10 · motion 3/10 · density 7/10 · accessibility-first · regulated-industry
 **Font**: Roboto (Android) / SF Pro (iOS) — system stack · Roboto Mono / SF Mono for KES amounts
 **Primary**: `#2E7D32` (`--primary-700`, VSLA green) — TopAppBar, Done CTA, progress bar, DONE badges
@@ -348,7 +348,7 @@ Error surfaces mapped to `ShareOutError` types:
 - DONE row transition: 150ms fade-in on the primary checkmark.
 - Completion banner entry: 200ms slide-up + fade under `motion: gentle` preset (`fast:150ms · base:200ms · slow:300ms`, `cubic-bezier(0.4, 0, 0.2, 1)`).
 - Snackbar (`ShowSnackbar` event): standard MD3 slide-up + auto-dismiss 4s — used for `error_server`, `error_queued_offline`, and biometric failure.
-- Biometric prompt: platform-native (Android `BiometricPrompt`, iOS Face/Touch ID) — CommonPurse does not intercept animation.
+- Biometric prompt: platform-native (Android `BiometricPrompt`, iOS Face/Touch ID) — MifosSave does not intercept animation.
 
 ---
 

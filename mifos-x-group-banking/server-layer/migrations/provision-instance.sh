@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # provision-instance.sh — ONE-SHOT end-to-end setup + verify of a Fineract
-# instance for the CommonPurse (mifos-x-group-banking) backend.
+# instance for the MifosSave (mifos-x-group-banking) backend.
 # =============================================================================
 #
 # The single command behind `/mifos-bridge preflight`. Point it at ANY reachable

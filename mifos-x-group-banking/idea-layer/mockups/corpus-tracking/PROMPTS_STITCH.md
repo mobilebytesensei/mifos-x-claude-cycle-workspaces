@@ -1,5 +1,5 @@
 # PROMPTS_STITCH — corpus-tracking
-# CommonPurse (mifos-x-group-banking) | Feature FR-018
+# MifosSave (mifos-x-group-banking) | Feature FR-018
 # Generated: 2026-05-06
 # Sections: 6 | Total lines: ≥1,200
 
@@ -9,7 +9,7 @@
 
 ### 1.1 Brand Purpose for Corpus Tracking
 
-The corpus fund is the soul of CommonPurse. For the Mwangaza Women's Group, the corpus (derived from Latin "body") represents the group's collective financial body — the total pooled capital that grows through savings, shrinks through loans, and is distributed at cycle end through share-out. FR-018 mandates that this critical number be visible, accurate, and actionable throughout the app.
+The corpus fund is the soul of MifosSave. For the Mwangaza Women's Group, the corpus (derived from Latin "body") represents the group's collective financial body — the total pooled capital that grows through savings, shrinks through loans, and is distributed at cycle end through share-out. FR-018 mandates that this critical number be visible, accurate, and actionable throughout the app.
 
 Design principles for corpus-tracking:
 - **Prominence:** The KES balance must be the single most visually prominent number on the GroupDashboard — using displaySmall (36sp) in primary green, impossible to miss.

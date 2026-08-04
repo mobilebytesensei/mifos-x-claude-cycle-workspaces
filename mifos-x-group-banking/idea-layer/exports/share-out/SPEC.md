@@ -1,5 +1,5 @@
 # Share-Out — Feature Specification
-**Project**: CommonPurse (mifos-x-group-banking)
+**Project**: MifosSave (mifos-x-group-banking)
 **Feature ID**: share-out
 **Requirements**: FR-007
 **Version**: 1.0.0

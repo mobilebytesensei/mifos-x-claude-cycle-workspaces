@@ -1,4 +1,4 @@
-# Journeys Index — CommonPurse (mifos-x-group-banking)
+# Journeys Index — MifosSave (mifos-x-group-banking)
 
 > 15 journeys | 8 critical | 7 medium | unified self-signup identity (per-group roles)
 
@@ -17,7 +17,7 @@ David/Sarah=optional supervisory tier (not the default identity).
 | Journey ID | Name | Persona | Tier | Entry | Exit |
 |------------|------|---------|------|-------|------|
 | `organizer-end-to-end` | Organizer End-to-End: Signup to Share-Out | organizer (Kofi) | critical | login-signup | share-out-execute |
-| `demo-explore` | Explore CommonPurse as a Demo User | prospective organizer (pre-signup) | critical | login-signup | savings-dashboard |
+| `demo-explore` | Explore MifosSave as a Demo User | prospective organizer (pre-signup) | critical | login-signup | savings-dashboard |
 | `join-with-code` | Join a Group with an Invite Code | member (Grace) | critical | join-with-code | loan-request |
 | `group-creation-flow` | Create a New Savings Group (Organizer Self-Serve) | organizer | critical | group-type-picker | group-dashboard |
 | `meeting-conduct-full` | Conduct Full Group Meeting | organizer / treasurer | critical | meeting-calendar | meeting-summary |

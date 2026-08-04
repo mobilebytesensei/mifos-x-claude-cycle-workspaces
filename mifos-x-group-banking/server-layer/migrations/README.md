@@ -1,6 +1,6 @@
-# CommonPurse Server Migrations
+# MifosSave Server Migrations
 
-Runnable migrations that provision the CommonPurse (mifos-x-group-banking) backend on a
+Runnable migrations that provision the MifosSave (mifos-x-group-banking) backend on a
 Fineract instance + its companion API (mcp-mifosx). These are the **executable** form of the
 schemas that previously existed only as prose in `../API_CONTRACT.yaml` and
 `../COMPANION_API_BUILD_DEPLOY.md`.

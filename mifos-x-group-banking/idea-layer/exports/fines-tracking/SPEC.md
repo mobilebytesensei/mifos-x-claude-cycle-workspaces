@@ -1,5 +1,5 @@
 # Fines Tracking — Feature Specification
-**Project**: CommonPurse (mifos-x-group-banking)
+**Project**: MifosSave (mifos-x-group-banking)
 **Feature ID**: fines-tracking
 **Requirements**: FR-012, FR-020
 **Version**: 1.0.0

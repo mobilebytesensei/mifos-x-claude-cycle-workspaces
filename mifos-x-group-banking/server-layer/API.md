@@ -1,4 +1,4 @@
-# API — CommonPurse (mifos-x-group-banking)
+# API — MifosSave (mifos-x-group-banking)
 
 > Mifos Fineract REST + Companion API (Go, deferred build) + 116 total MCP tools + 21 custom datatables.
 > Single source of truth: `server-layer/API_CONTRACT.yaml` (bridge runs `bridge-260504-001` + `bridge-260717-002`).

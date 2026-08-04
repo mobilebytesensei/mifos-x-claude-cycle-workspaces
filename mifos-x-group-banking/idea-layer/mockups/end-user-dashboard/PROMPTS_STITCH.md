@@ -6,13 +6,13 @@
 
 ### Overview
 
-CommonPurse is a Kotlin Multiplatform group-banking app serving Village Savings and Loan Associations (VSLAs) in rural East Africa. The end-user dashboard is the self-service face of the app — designed specifically for group members who want to check their savings, understand their loans, and request new credit. The visual language is warm, green (VSLA-green for growth), and emphasises positive financial progress.
+MifosSave is a Kotlin Multiplatform group-banking app serving Village Savings and Loan Associations (VSLAs) in rural East Africa. The end-user dashboard is the self-service face of the app — designed specifically for group members who want to check their savings, understand their loans, and request new credit. The visual language is warm, green (VSLA-green for growth), and emphasises positive financial progress.
 
 The design system is Material Design 3 (M3) with a custom brand palette and a large typography scale optimised for outdoor daylight reading. The primary target device is a mid-range Android phone (Samsung Galaxy A32, 6.4" screen, 360dp width).
 
 ### Brand Identity
 
-**App name**: CommonPurse
+**App name**: MifosSave
 **Tagline**: "Your community savings group"
 **Logo**: Leaf-and-coin SVG mark (leaf = growth, coin = shared savings)
 **Tone of voice**: Warm, encouraging, community-focused. "Your savings", not "Account balance". "Need a loan?" not "Apply for credit."

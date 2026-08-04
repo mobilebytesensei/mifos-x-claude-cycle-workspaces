@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# register-datatables.sh — provision all 21 CommonPurse custom datatables on a Fineract instance.
+# register-datatables.sh — provision all 21 MifosSave custom datatables on a Fineract instance.
 #
 # Reads migrations/datatables/datatables.manifest.json and POSTs each definition to
 # Fineract `POST /datatables` (the COMP-DT-001 "register" operation). Idempotent: a table
@@ -52,7 +52,7 @@ fi
 CURL_OPTS=(-sS --max-time 60)
 [[ "${INSECURE:-0}" == "1" ]] && CURL_OPTS+=(-k)
 
-echo "== CommonPurse datatable migration =="
+echo "== MifosSave datatable migration =="
 echo "   manifest : $MANIFEST"
 echo "   base_url : ${FINERACT_BASE_URL:-<dry-run>}"
 echo "   tenant   : $FINERACT_TENANT"

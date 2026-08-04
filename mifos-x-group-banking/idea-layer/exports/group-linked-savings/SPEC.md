@@ -1,5 +1,5 @@
 # Group-Linked Savings — Feature Specification
-**Project**: CommonPurse (mifos-x-group-banking)
+**Project**: MifosSave (mifos-x-group-banking)
 **Feature ID**: group-linked-savings
 **Requirements**: FR-017
 **Version**: 1.0.0

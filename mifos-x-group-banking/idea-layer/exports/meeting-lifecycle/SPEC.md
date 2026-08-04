@@ -1,5 +1,5 @@
 # SPEC — meeting-lifecycle
-# CommonPurse (mifos-x-group-banking) | Feature FR-003 / FR-019
+# MifosSave (mifos-x-group-banking) | Feature FR-003 / FR-019
 # Generated: 2026-05-06
 
 ---

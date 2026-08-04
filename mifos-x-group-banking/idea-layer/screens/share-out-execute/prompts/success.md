@@ -25,7 +25,7 @@ craft_rules_version: v1.0.0
 # share-out-execute — success state
 
 > Bindings resolved to demo values: all 5 members paid, KES 24,000 fully distributed
-> Stitch DesignSystem: CommonPurse forest green #2E7D32 / amber #FF8F00, minimalist-ui
+> Stitch DesignSystem: MifosSave forest green #2E7D32 / amber #FF8F00, minimalist-ui
 > DO NOT redeclare colors / fonts / spacing — they live in DESIGN.md.
 
 ↓↓↓ MOCKUP PROMPT
@@ -39,7 +39,7 @@ craft_rules_version: v1.0.0
 - padding: default
 - alignment: center
 
-## Palette (CommonPurse)
+## Palette (MifosSave)
 - Primary: #2E7D32 (forest green) — top bar, checkmark icons, DONE chips, Done button
 - Primary Container: #C8E6C9 — success banner card background, DONE chip background
 - On Primary Container: #1B5E20 — text on primaryContainer

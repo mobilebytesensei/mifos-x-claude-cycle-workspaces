@@ -25,7 +25,7 @@ craft_rules_version: v1.0.0
 # group-create — content state (4-step wizard, Step 1 shown)
 
 > Auto-generated from screens/group-create/ui.yaml (bindings resolved to demo values)
-> Stitch DesignSystem: CommonPurse forest green #2E7D32 / amber #FF8F00, minimalist-ui
+> Stitch DesignSystem: MifosSave forest green #2E7D32 / amber #FF8F00, minimalist-ui
 > DO NOT redeclare colors / fonts / spacing — they live in DESIGN.md.
 
 ↓↓↓ MOCKUP PROMPT
@@ -39,7 +39,7 @@ craft_rules_version: v1.0.0
 - padding: default horizontal
 - alignment: start
 
-## Palette (CommonPurse)
+## Palette (MifosSave)
 - Primary: #2E7D32 (forest green) — app bars, primary CTAs
 - Accent: #FF8F00 (amber) — pooled fund emphasis
 - Surface: #FFFFFF — cards

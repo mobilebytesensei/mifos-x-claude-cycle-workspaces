@@ -1,7 +1,7 @@
 # Field Officer View — Stitch Prompt Specification
 **Feature**: field-officer-view | **Screen**: field-officer-dashboard
 **Requirement**: FR-009
-**Stitch project**: CommonPurse / mifos-x-group-banking
+**Stitch project**: MifosSave / mifos-x-group-banking
 **Total sections**: 6
 
 ---
@@ -9,7 +9,7 @@
 # SECTION 1: DESIGN SYSTEM CONTEXT
 
 ## Application Identity
-CommonPurse is a VSLA group banking app. The field officer dashboard is the portfolio supervision view — a field officer at a Fineract-powered microfinance institution monitors 5–20 VSLA groups across a region. The design must communicate portfolio health at a glance: green for healthy groups, amber for groups needing attention, red for groups in crisis. The four KPI cards use the full MD3 tonal palette — one color per KPI — to create a clear visual hierarchy without using the same color for everything.
+MifosSave is a VSLA group banking app. The field officer dashboard is the portfolio supervision view — a field officer at a Fineract-powered microfinance institution monitors 5–20 VSLA groups across a region. The design must communicate portfolio health at a glance: green for healthy groups, amber for groups needing attention, red for groups in crisis. The four KPI cards use the full MD3 tonal palette — one color per KPI — to create a clear visual hierarchy without using the same color for everything.
 
 ## Material Design 3 Token System
 
@@ -733,7 +733,7 @@ FieldOfficerSkeleton:
 
 ## Component State Matrix
 
-Full state definitions for every interactive component in the field-officer-view feature. CommonPurse tokens: primary #2E7D32, secondary #FF8F00, tertiary #1565C0, error #D32F2F.
+Full state definitions for every interactive component in the field-officer-view feature. MifosSave tokens: primary #2E7D32, secondary #FF8F00, tertiary #1565C0, error #D32F2F.
 
 ### KpiCard (field-officer-dashboard — 4 KPI cards in 2×2 grid)
 
@@ -1159,7 +1159,7 @@ This calculation runs in a ViewModel using pure Kotlin — no network needed. He
 ### Portfolio Export Format
 
 The export button generates a portfolio summary report with two format options (bottom sheet):
-1. PDF — formatted table with CommonPurse branding; suitable for printing or sharing with MFI supervisor
+1. PDF — formatted table with MifosSave branding; suitable for printing or sharing with MFI supervisor
 2. CSV — raw data for import into Excel/Google Sheets; includes all GroupHealthEntity fields
 
 Export file naming convention:
@@ -1181,7 +1181,7 @@ Field officer dashboard uses WorkManager for background data refresh:
 
 Field officer can receive push notifications that deep-link to specific group detail:
 - Notification format: "Umoja Bora Group — 3 loans now overdue. Tap to view."
-- Deep link: `commonpurse://field-officer/group/{groupId}`
+- Deep link: `mifossave://field-officer/group/{groupId}`
 - On tap: dashboard opens with RED filter pre-selected, scrolled to the relevant GroupCard
 - Deep link works even from cold start (app not running)
 
@@ -1253,10 +1253,10 @@ At 360dp: groupName truncates to ~22 chars; amounts use compact "KES 24K" form f
 
 | Event | Title | Body | Deep Link |
 |---|---|---|---|
-| Group health degrades (GREEN→AMBER) | "Jua Kali Savings — needs attention" | "1 loan is now overdue in your portfolio" | `commonpurse://field-officer/group/{groupId}` |
-| Group health degrades (AMBER→RED) | "Umoja Bora — critical alert" | "3 loans now overdue. Immediate action required." | `commonpurse://field-officer/group/{groupId}` |
-| No meeting in 30 days | "Mwangaza Women's Group — no recent meeting" | "Last meeting was 35 days ago. Please follow up." | `commonpurse://field-officer/group/{groupId}` |
-| Portfolio sync complete | "Portfolio updated" | "8 groups refreshed — all data current" | `commonpurse://field-officer/dashboard` |
-| Export ready | "Report ready" | "Your portfolio report is ready to download" | `commonpurse://field-officer/export/{exportId}` |
+| Group health degrades (GREEN→AMBER) | "Jua Kali Savings — needs attention" | "1 loan is now overdue in your portfolio" | `mifossave://field-officer/group/{groupId}` |
+| Group health degrades (AMBER→RED) | "Umoja Bora — critical alert" | "3 loans now overdue. Immediate action required." | `mifossave://field-officer/group/{groupId}` |
+| No meeting in 30 days | "Mwangaza Women's Group — no recent meeting" | "Last meeting was 35 days ago. Please follow up." | `mifossave://field-officer/group/{groupId}` |
+| Portfolio sync complete | "Portfolio updated" | "8 groups refreshed — all data current" | `mifossave://field-officer/dashboard` |
+| Export ready | "Report ready" | "Your portfolio report is ready to download" | `mifossave://field-officer/export/{exportId}` |
 
 Notification channel: `field_officer_alerts` — priority HIGH for health degradation events, NORMAL for sync complete and export ready.

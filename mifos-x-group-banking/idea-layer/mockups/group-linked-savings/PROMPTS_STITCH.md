@@ -1,6 +1,6 @@
 # Group-Linked Savings — Stitch Prompt Specification
 **Feature**: group-linked-savings | **Screen**: savings-dashboard
-**Stitch project**: CommonPurse / mifos-x-group-banking
+**Stitch project**: MifosSave / mifos-x-group-banking
 **Total sections**: 6
 
 ---
@@ -8,7 +8,7 @@
 # SECTION 1: DESIGN SYSTEM CONTEXT
 
 ## Application Identity
-CommonPurse is a VSLA (Village Savings and Loan Association) group banking app for rural communities. The savings dashboard is the financial health hub for group treasurers and chairpersons — it visualizes the dual savings model: mandatory group contributions (built collectively, meeting by meeting) and voluntary individual savings (personal balances each member controls). The design must be warm and encouraging: green for group progress, amber for personal balances.
+MifosSave is a VSLA (Village Savings and Loan Association) group banking app for rural communities. The savings dashboard is the financial health hub for group treasurers and chairpersons — it visualizes the dual savings model: mandatory group contributions (built collectively, meeting by meeting) and voluntary individual savings (personal balances each member controls). The design must be warm and encouraging: green for group progress, amber for personal balances.
 
 ## Material Design 3 Token System
 

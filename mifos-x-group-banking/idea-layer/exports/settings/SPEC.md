@@ -8,7 +8,7 @@
 
 Full-featured settings screen reached from the profile overflow menu on the personal-dashboard
 (the authenticated member home). It reads and writes
-CommonPurse app preferences — language (English / Swahili / French / Hindi per FR-010), appearance
+MifosSave app preferences — language (English / Swahili / French / Hindi per FR-010), appearance
 theme (Light / Dark / System), biometric-unlock and push-notification toggles — via
 `multiplatform-settings` local key-value storage (DataStore), applying locale/theme changes
 immediately. The ONLY network write is Change PIN, a dialog that hits Fineract

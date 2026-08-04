@@ -1,5 +1,5 @@
 # Offline Sync — Feature Specification
-**Project**: CommonPurse (mifos-x-group-banking)
+**Project**: MifosSave (mifos-x-group-banking)
 **Feature ID**: offline-sync
 **Requirement**: FR-008
 **Version**: 1.0.0
@@ -9,7 +9,7 @@
 
 ## Overview
 
-CommonPurse operates fully offline using SQLDelight as a local database. Every write operation (meeting records, savings transactions, loan repayments, attendance, share-out) is first written to a local SyncQueue table and then synced to Fineract when connectivity is restored. The sync-status screen provides a real-time view of pending, failed, and conflicting queue items sourced exclusively from the local SQLDelight database — no network call on load.
+MifosSave operates fully offline using SQLDelight as a local database. Every write operation (meeting records, savings transactions, loan repayments, attendance, share-out) is first written to a local SyncQueue table and then synced to Fineract when connectivity is restored. The sync-status screen provides a real-time view of pending, failed, and conflicting queue items sourced exclusively from the local SQLDelight database — no network call on load.
 
 ---
 

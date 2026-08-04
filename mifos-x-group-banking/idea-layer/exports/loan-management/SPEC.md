@@ -1,5 +1,5 @@
 # Loan Management — Feature Specification
-**Project**: CommonPurse (mifos-x-group-banking)
+**Project**: MifosSave (mifos-x-group-banking)
 **Feature ID**: loan-management
 **Requirements**: FR-005, FR-006
 **Version**: 1.0.0

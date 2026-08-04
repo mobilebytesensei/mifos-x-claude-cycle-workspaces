@@ -5,7 +5,7 @@
 ## 1. Design System Context
 
 ### Project Identity
-App name: CommonPurse
+App name: MifosSave
 Platform: Android (Kotlin Multiplatform Mobile — Compose UI)
 Design system: Material Design 3
 Font family: Noto Sans (all weights)

@@ -1,5 +1,5 @@
 # Field Officer View — Feature Specification
-**Project**: CommonPurse (mifos-x-group-banking)
+**Project**: MifosSave (mifos-x-group-banking)
 **Feature ID**: field-officer-view
 **Requirement**: FR-009
 **Version**: 1.0.0

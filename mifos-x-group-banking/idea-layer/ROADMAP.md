@@ -1,4 +1,4 @@
-# Idea Layer Roadmap — CommonPurse (mifos-x-group-banking)
+# Idea Layer Roadmap — MifosSave (mifos-x-group-banking)
 
 > Source of truth: `idea-plan.yaml` (§features, §screens, §release_plan) | Feature detail: `FEATURES.md` | Design context: `DESIGN_CONTEXT.md`
 > **One unified identity — self-signup.** Anyone downloads → self-registers → creates or joins a group. There is no "admin vs end-user" split. Capabilities are auto-resolved **per group** after a single login, based on the role the user holds in that specific group (organizer vs member). (Global self-signup pivot, 2026-07-17.)

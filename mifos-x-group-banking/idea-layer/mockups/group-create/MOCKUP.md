@@ -2,7 +2,7 @@
 
 ## Design Language
 
-CommonPurse uses Material Design 3 with a VSLA-inspired brand palette designed for low-literacy rural users in East Africa. All touch targets are minimum 48dp. Typography uses the system stack (Roboto on Android / SF Pro on iOS) at comfortable density with an emphasis on clarity for outdoor viewing. Group Create follows the app's `minimalist-ui` family (variance 3/10, motion 3/10, density 7/10) — grid-aligned, predictable, subtle transitions.
+MifosSave uses Material Design 3 with a VSLA-inspired brand palette designed for low-literacy rural users in East Africa. All touch targets are minimum 48dp. Typography uses the system stack (Roboto on Android / SF Pro on iOS) at comfortable density with an emphasis on clarity for outdoor viewing. Group Create follows the app's `minimalist-ui` family (variance 3/10, motion 3/10, density 7/10) — grid-aligned, predictable, subtle transitions.
 
 **Brand colours (from `design-system/DESIGN.md`)**:
 - Primary 700: #2E7D32 (base VSLA-green — app bar, primary CTAs)
@@ -201,7 +201,7 @@ CommonPurse uses Material Design 3 with a VSLA-inspired brand palette designed f
 
 ## Empty / Error / Loading States
 
-**Empty (Step 1 first mount)**: All form fields render at their `default` values from `state_model` (currency = "KES", meeting_day empty, etc.). The `next_button` is enabled at all times — validation runs on tap; empty required fields produce inline errors rather than a globally-disabled CTA. This mirrors CommonPurse's "trust the user, guide with errors" pattern used in Login (see mockups/authentication/MOCKUP.md).
+**Empty (Step 1 first mount)**: All form fields render at their `default` values from `state_model` (currency = "KES", meeting_day empty, etc.). The `next_button` is enabled at all times — validation runs on tap; empty required fields produce inline errors rather than a globally-disabled CTA. This mirrors MifosSave's "trust the user, guide with errors" pattern used in Login (see mockups/authentication/MOCKUP.md).
 
 **Loading (submitting state)**: submit_button transitions to spinner-only; back button disabled; all fields disabled (opacity 40%); step indicator remains active state but pill labels dimmed. No overlaid scrim — the wizard body stays visible so the user can see what's being sent. Duration expectation: <2s for online, <500ms for offline queue.
 

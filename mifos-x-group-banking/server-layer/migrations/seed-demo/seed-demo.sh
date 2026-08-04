@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# seed-demo.sh — materialize the CommonPurse demo account + demo data on a live backend.
+# seed-demo.sh — materialize the MifosSave demo account + demo data on a live backend.
 #
 # Creates, from ./demo-fixture.json (the single source of truth):
 #   1. demo user (companion self-register)            -> Amina Otieno
@@ -67,7 +67,7 @@ comp() { # comp METHOD PATH [json-body]
 
 j() { jq -r "$1" "$FIXTURE"; }
 
-echo "== CommonPurse demo seed =="
+echo "== MifosSave demo seed =="
 echo "   fixture   : $FIXTURE"
 echo "   fineract  : ${FINERACT_BASE_URL:-<dry-run>}"
 echo "   companion : ${COMPANION_BASE_URL:-<dry-run>}"

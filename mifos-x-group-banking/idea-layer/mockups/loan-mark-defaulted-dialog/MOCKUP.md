@@ -9,7 +9,7 @@
 
 ## Design Language
 
-**System**: CommonPurse-v3 (Material Design 3 · MD3) — comfortable density, elevated dialog surface
+**System**: MifosSave-v3 (Material Design 3 · MD3) — comfortable density, elevated dialog surface
 **Aesthetic**: `minimalist-ui` · variance 3/10 · motion 3/10 · density 7/10 · accessibility-first
 **Font**: Roboto (Android) / SF Pro (iOS) — system stack · Roboto Mono / SF Mono for KES amounts
 **Primary**: `#2E7D32` (`--primary-700`, VSLA green) — NOT used on this destructive surface
