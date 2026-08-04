@@ -29,3 +29,4 @@
 - **What**: Initial project setup via the `/idea-plan` wizard (15 phases completed).
 - **Impact**: Idea-layer created with the "generic permission-gated Fineract back-office platform" vision, four research audits, and the 17 back-office modules + 4 foundation features.
 - [design-system-stitch] 2026-07-17 — DESIGN.md uploaded to Stitch (asset_id=6486719301524192685, design_md_sha=b87665693755)
+- [design-system-stitch] 2026-08-04 — DESIGN.md uploaded to Stitch (asset_id=15272366959787234099, design_md_sha=98bff520251b)

@@ -13,7 +13,7 @@ description: "A permission-gated, offline-first Fineract back-office. One binary
 
 # ─── Colors (M3 role tokens — Stitch treats these as hard constraints) ───────
 colors:
-  primary:                 "#0091EA"
+  primary:                 "#006098"
   on-primary:              "#FFFFFF"
   primary-container:       "#CBE6FF"
   on-primary-container:    "#001E30"
@@ -40,6 +40,20 @@ colors:
   on-error:                "#FFFFFF"
   error-container:         "#FFDAD6"
   on-error-container:      "#410002"
+  # ─── Data-viz palette (chart series + signed deltas) — stitch-llm-prompt-enrichment P3.
+  # Consumed by donut/gauge/area-chart/sparkline treatments; on-hero for text over the gradient.
+  positive:                "#2E7D32"
+  negative:                "#BA1A1A"
+  chart-1:                 "#006098"
+  chart-2:                 "#00796B"
+  chart-3:                 "#5B5891"
+  chart-4:                 "#F57C00"
+  chart-5:                 "#00A3B4"
+  chart-track:             "#DEE3EB"
+  # ─── Gradient stops (brand-token hero, per CRAFT_RULES — blue→teal, NOT stock purple) ───
+  gradient-hero-from:      "#006098"
+  gradient-hero-to:        "#00897B"
+  on-hero:                 "#FFFFFF"
 
 # ─── Typography ──────────────────────────────────────────────────────────────
 typography:
