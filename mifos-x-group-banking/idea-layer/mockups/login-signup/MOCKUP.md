@@ -23,7 +23,7 @@ MifosSave uses Material Design 3 with a VSLA-inspired brand palette designed for
 - Text secondary: #616161 (labels, helper text)
 - Text disabled: #9E9E9E (unselected tab label, forgot-password link at rest)
 
-**Typography**: Roboto / SF Pro. displaySmall=36sp, headlineMedium=28sp, headlineSmall=24sp, titleLarge=22sp, titleMedium=18sp, bodyLarge=16sp, bodyMedium=14sp, labelLarge=14sp, labelMedium=12sp. Auth title "Welcome to MifosX" renders in headlineMedium (28sp) centered; tab labels are labelLarge semibold; helper / validation text is bodyMedium.
+**Typography**: Roboto / SF Pro. displaySmall=36sp, headlineMedium=28sp, headlineSmall=24sp, titleLarge=22sp, titleMedium=18sp, bodyLarge=16sp, bodyMedium=14sp, labelLarge=14sp, labelMedium=12sp. Auth title "Welcome to MifosSave" renders in headlineMedium (28sp) centered; tab labels are labelLarge semibold; helper / validation text is bodyMedium.
 
 **Shapes**: cornerRadius sm=8dp (chips, small buttons, error banner), md=12dp (input fields, cards), lg=16dp (biometric icon-button surround, illustration frame), full=9999dp (filled Sign In / Create Account CTAs, tab pills).
 
@@ -49,8 +49,8 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 
 | Component | Type | Style Summary | Interaction |
 |-----------|------|---------------|-------------|
-| auth_header_logo | Image | Asset `ic_mifos_logo` 72dp × 72dp, alignment center, top_padding 32dp. Accessibility label "Mifos X logo". | Non-interactive |
-| auth_title | Text | "Welcome to MifosX" — headlineMedium (28sp), color onSurface (#212121), alignment center, top_padding 16dp. | Non-interactive |
+| auth_header_logo | Image | Asset `ic_mifos_logo` 72dp × 72dp, alignment center, top_padding 32dp. Accessibility label "MifosSave logo". | Non-interactive |
+| auth_title | Text | "Welcome to MifosSave" — headlineMedium (28sp), color onSurface (#212121), alignment center, top_padding 16dp. | Non-interactive |
 | mode_toggle_tabs | TabRow | Two pills [Sign In, Sign Up] full-width row 48dp, background surface (#FFFFFF), corner_radius md (12dp), border_subtle divider under row. Selected label color primary (#2E7D32), unselected onSurfaceVariant (#616161). Indicator 3dp bar primary (#2E7D32) under the active tab. Selected reflects `state.mode` (AuthMode.Login default). | Tap → OnModeToggle(mode) — flips `state.mode`, clears name/emailPhone/password + validationErrors + error so the newly-shown tab renders clean (per `action_contract.effect: transform_state`) |
 | signup_name_field | OutlinedTextField | Visible when `mode == AuthMode.Signup`. Label "Full Name", placeholder "e.g. Grace Wanjiku", value bound to `state.name`, keyboard text, IME next, max_length 80, corner_radius md (12dp), min_height 56dp, margin_horizontal 24dp, top_padding 16dp. Validation `{min_length: 2, required: true, error_key: error_name_required}`; error border 2dp danger (#C62828) + helper text "Full name is required." bodyMedium danger. | Type → OnNameChange(value) — updates `state.name` and clears its validationErrors entry; focus-out runs min-length-2 check |
 | email_phone_field | OutlinedTextField | Shared across login/signup forms — MODE-DEPENDENT. **LOGIN mode**: label "Email, Phone or Username", placeholder "username, email or +254700000000", text keyboard; validation `{pattern: email_phone_or_username, error_key: error_identifier_invalid}` (accepts email, E.164 phone, OR username 3–30 chars); helper "Enter a valid email, phone number, or username." **SIGNUP mode**: label "Email or Phone", placeholder "email@example.com or +254700000000", email keyboard; validation `{pattern: email_or_e164_phone, error_key: error_email_phone_invalid}` (account contact still requires email/phone). Common: value bound to `state.emailPhone`, IME next, max_length 100, corner_radius md (12dp), min_height 56dp, margin_horizontal 24dp, top_padding 8dp; error border on invalid. | Type → OnEmailPhoneChange(value) — updates `state.emailPhone`; focus-out validates the mode-appropriate pattern |
@@ -78,7 +78,7 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 [32dp top safe padding]
 [ic_mifos_logo — 72dp × 72dp, centered]
 [16dp gap]
-["Welcome to MifosX" — headlineMedium onSurface, centered]
+["Welcome to MifosSave" — headlineMedium onSurface, centered]
 [32dp gap]
 [mode_toggle_tabs — [ Sign In · Sign Up ], Sign In active, 48dp row]
 [24dp gap]
@@ -108,7 +108,7 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 [32dp top safe padding]
 [ic_mifos_logo]
 [16dp gap]
-["Welcome to MifosX"]
+["Welcome to MifosSave"]
 [32dp gap]
 [mode_toggle_tabs — Sign Up active]
 [24dp gap]
@@ -251,7 +251,7 @@ Continue → seed PROJECT_DEMO_DATA locally → NavigateToOrganizerDashboard
 **Touch targets**: All interactive elements minimum 48dp. Filled CTAs (login_button, signup_button, create_group_button, join_with_code_button) are 56dp for confidence. `forgot_password_link` is a labelMedium TextButton with 12dp side padding so the labelled tap area meets 48dp. `biometric_unlock_button` uses a 48dp icon inside a 64dp tap surface for high-frequency use.
 
 **Content descriptions & live regions**:
-- `auth_header_logo` accessibility_label: "Mifos X logo".
+- `auth_header_logo` accessibility_label: "MifosSave logo".
 - `auth_title` announced as a heading (Compose semantics `heading()`).
 - `mode_toggle_tabs`: each tab announced as "Sign In tab" / "Sign Up tab", selection state "selected" / "not selected".
 - Every text field: label read as the accessibility label; validation errors read as a live_region assertive on populate; character counter announced as label state change, not each keystroke.
