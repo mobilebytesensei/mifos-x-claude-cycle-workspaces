@@ -3,7 +3,7 @@ ui_yaml_sha: b46a9e7ad753c41978e967fee684645a38ab88ab9031299135ddd5ad813993a1
 design_md_hash: 98bff520251b13fe61807f051f0971a6fd7f5cd1364b4d5c1317bdd6df16612d
 app_shell_hash: 3b51792a3cf0662637b47a6b9105fb9030edf792e8caad095b354b7f26ea4461
 design_read_hash: 1bb88b83ca0ec1f4bb6eec3ee4156944dc86d382dd039ce263f6afa55009df03
-content_hash: 7c79d0ba068549ffab90117b2545977c25ab713b2f738c2d6e0e9267f63787b8
+content_hash: 6e764ba285e2254ce4023954d8603510d2b4df2da1562c9b3f8523f5702def82
 
 design_read_aesthetic: minimalist-ui
 design_read_dials: {variance: 3, motion: 3, density: 7}
@@ -46,7 +46,7 @@ craft_rules_version: v1.0.0
 - type: scrollable_column
 - padding: default
 - alignment: start
-- responsive: any multi-column region MUST be mobile-first and collapse to a single column at narrow/phone widths — never a fixed multi-column grid with no single-column fallback.
+- responsive: the primary HERO card spans FULL WIDTH; the secondary KPI/stat cards form a COMPACT 2-COLUMN GRID (2×2 for four cards) that is INTENDED and RETAINED at phone width — this dense KPI grid IS the professional dashboard layout, so do NOT collapse the stat cards to a single column. Only genuine list/activity regions remain single-column.
 
 ## Composition (top → bottom)
 1. **header** (#header) — label: "{strings.m01_title}"
