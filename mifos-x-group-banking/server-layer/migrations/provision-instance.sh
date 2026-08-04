@@ -9,6 +9,7 @@
 #
 #   Phase 1  HEALTH   — Fineract reachable + service creds authenticate + self-service on
 #   Phase 2  REGISTER — provision all 21 datatables (register-datatables.sh, idempotent)
+#   Phase 2.5 PRODUCTS— enable KES + create-or-skip VSLA savings + loan products (register-products.sh)
 #   Phase 3  COMPANION— ensure the mcp-mifosx companion is up + pointed at THIS instance
 #                       (--manage-companion builds+restarts it; else verifies COMPANION_BASE_URL)
 #   Phase 4  SEED     — demo user + group + savings + meetings + corpus + invite (seed-demo.sh)
@@ -39,11 +40,12 @@ COMPANION_BIN="${COMPANION_BIN:-/tmp/mcp-companion}"
 COMPANION_SRC="${COMPANION_SRC:-}"
 COMPANION_PORT="${COMPANION_PORT:-8090}"
 INSECURE="${INSECURE:-0}"
-DRY_RUN=0 VERIFY_ONLY=0 SKIP_DT=0 SKIP_SEED=0 MANAGE_COMP=0
+DRY_RUN=0 VERIFY_ONLY=0 SKIP_DT=0 SKIP_PRODUCTS=0 SKIP_SEED=0 MANAGE_COMP=0
 while [ $# -gt 0 ]; do case "$1" in
   --dry-run)          DRY_RUN=1; shift ;;
   --verify-only)      VERIFY_ONLY=1; shift ;;
   --skip-datatables)  SKIP_DT=1; shift ;;
+  --skip-products)    SKIP_PRODUCTS=1; shift ;;
   --skip-seed)        SKIP_SEED=1; shift ;;
   --manage-companion) MANAGE_COMP=1; shift ;;
   --companion-bin)    COMPANION_BIN="$2"; shift 2 ;;
@@ -130,6 +132,18 @@ if [ "$VERIFY_ONLY" = 0 ] && [ "$SKIP_DT" = 0 ]; then
   else echo "  ❌ datatable registration failed"; mark REGISTER FAIL "see log"; fi
 else mark REGISTER SKIP "$([ "$VERIFY_ONLY" = 1 ] && echo verify-only || echo --skip-datatables)"; fi
 
+# ── Phase 2.5: PRODUCTS (KES currency + VSLA savings + VSLA loan) ─────────────
+# A fresh instance ships no KES currency and no VSLA products, so savings accounts
+# and the loan-apply flow can't function. register-products.sh enables KES and
+# create-or-skips the shared VSLA savings + loan products (all group types).
+if [ "$VERIFY_ONLY" = 0 ] && [ "$SKIP_PRODUCTS" = 0 ]; then
+  echo; echo "▶ Phase 2.5 — VSLA financial products (KES currency + savings + loan)"
+  if FINERACT_BASE_URL="$FINERACT_BASE_URL" FINERACT_USER="$FINERACT_USER" FINERACT_PASSWORD="$FINERACT_PASSWORD" \
+     FINERACT_TENANT="$FINERACT_TENANT" INSECURE="$INSECURE" bash "${SCRIPT_DIR}/register-products.sh"; then
+    echo "  ✅ products provisioned (idempotent)"; mark PRODUCTS PASS "currency+savings+loan"
+  else echo "  ❌ product provisioning failed"; mark PRODUCTS FAIL "see log"; fi
+else mark PRODUCTS SKIP "$([ "$VERIFY_ONLY" = 1 ] && echo verify-only || echo --skip-products)"; fi
+
 # ── Phase 3: COMPANION up + pointed at THIS instance (AUTO-ENSURED) ──────────
 # "Always ready": the companion is never left unset/mispointed. If none is reachable we build
 # (from the mcp-mifosx go dir) + start one pointed at the RESOLVED instance — no silent skip.
@@ -200,6 +214,10 @@ if [ -n "$COMPANION_BASE_URL" ]; then
       vcheck "group $lbl" "$r" 1
     done
   fi
+  # loan-apply readiness: the companion must expose ≥1 KES VSLA loan product to the picker.
+  lp="$("${CURL[@]}" -w '\n%{http_code}' "$CB/loanproducts" 2>/dev/null)"
+  vcheck "loan products (≥1 VSLA/KES)" "$(printf '%s' "$lp"|tail -1)" \
+    "$(printf '%s' "$lp"|sed '$d'|jq -e 'map(select(.currency.code=="KES"))|length>=1' >/dev/null 2>&1 && echo 1||echo 0)"
 else echo "  ❌ no companion — cannot verify the app surface"; vtotal=1; fi
 
 # ── Phase 6: SUMMARY ─────────────────────────────────────────────────────────
