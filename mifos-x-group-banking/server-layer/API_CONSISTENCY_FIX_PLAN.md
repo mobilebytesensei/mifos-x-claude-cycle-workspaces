@@ -327,6 +327,14 @@ migration + client-layer rework) — done incrementally, each phase device-verif
   onrender redeploy to take effect). Companion route fixes now on dev @ d465b50 (be8959c + 4c3818a +
   d465b50) — **onrender redeploy from dev required** for the new routes (/self/*, field-officer,
   dt_member_role, /clients CRUD, /groups/{id}, dt_meeting_schedule) + invite fix to serve live.
+- 2026-08-05 — **Companion DEPLOYED + full-stack health ✓ GREEN**. `/mifos-bridge health` gained
+  Section D (live companion-surface probe of all 43 app-facing routes, side-effect-free GET, GREEN only
+  when the deployed companion serves every route) + default-on auto-heal (onrender deploy-hook trigger +
+  poll-until-live; falls back to setup instruction when no hook). onrender mcp-mifosx redeployed from dev
+  @ d465b50 (Manual Deploy + Auto-Deploy=On Commit enabled) → all 9 previously-missing routes now live.
+  Full health on mifos-bank-2: datatables 21 ok · Fineract API groups 8 · **companion 43 ready / 0 missing**
+  → **RESULT ✓ GREEN — all ready for the source**. Framework changes (mifos-bridge-health.sh + _shared doc)
+  uncommitted on framework session branch.
 - **REMAINING — Phase 6.3 on-device app verify** (create-group → meeting-conduct → share-out on-device
-  against a Group entity, fresh capture after `am force-stop`) + deploy companion dev→onrender. Backend
-  instance is fully provisioned + verified GREEN; Phase 8 commit follows.
+  against a Group entity, fresh capture after `am force-stop`) — now UNBLOCKED (backend + companion fully
+  live + GREEN). Phase 8 commit (client 4 files + framework health changes) follows.
