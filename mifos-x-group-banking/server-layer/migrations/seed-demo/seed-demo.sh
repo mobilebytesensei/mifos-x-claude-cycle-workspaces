@@ -131,24 +131,24 @@ seed_savings() {
 }
 run "4. group-linked + voluntary savings accounts (money-affecting)" seed_savings
 
-# 5. meeting records (dt_meeting_record, multi-row, keyed on centerId)
+# 5. meeting records (dt_meeting_record, multi-row, on m_group keyed by groupId)
 seed_meetings() {
-  local center n; center="$(j '.group.fineractCenterId')"; n="$(jq '.meeting_records | length' "$FIXTURE")"
+  local gid n; gid="$(j '.group.fineractGroupId')"; n="$(jq '.meeting_records | length' "$FIXTURE")"
   for i in $(seq 0 $((n-1))); do
     local body mn
     mn="$(jq -r ".meeting_records[$i].meeting_number" "$FIXTURE")"
     body="$(jq -c ".meeting_records[$i] + {locale: \"en\", dateFormat: \"yyyy-MM-dd\"}" "$FIXTURE")"
     echo "   - meeting #$mn"
-    fin POST "/datatables/dt_meeting_record/${center}" "$body" >/dev/null || true
+    fin POST "/datatables/dt_meeting_record/${gid}" "$body" >/dev/null || true
   done
 }
 run "5. 3 meeting records" seed_meetings
 
-# 6. corpus row (dt_group_corpus, single-row on centerId)
+# 6. corpus row (dt_group_corpus, single-row on m_group keyed by groupId)
 seed_corpus() {
-  local center body; center="$(j '.group.fineractCenterId')"
+  local gid body; gid="$(j '.group.fineractGroupId')"
   body="$(jq -c '.corpus + {locale: "en", dateFormat: "yyyy-MM-dd"}' "$FIXTURE")"
-  fin POST "/datatables/dt_group_corpus/${center}" "$body" >/dev/null || true
+  fin POST "/datatables/dt_group_corpus/${gid}" "$body" >/dev/null || true
 }
 run "6. corpus row (closing balance $(j '.corpus.closing_balance') KES)" seed_corpus
 
