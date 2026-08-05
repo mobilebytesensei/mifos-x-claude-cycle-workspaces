@@ -32,6 +32,26 @@
 
 **Division of record:** Fineract owns *money* (client registry, savings balances, loan accounts, interest, GL). The companion API owns *coordination* (identity bridge, group orchestration, group-type state). The **app** owns *offline UX + distribution compute (preview)*.
 
+### 1.1 Entity model — Group-centric (SoT: `server/ENTITY_MODEL.yaml`)
+
+The savings group **is** a Fineract **Group** (`m_group`, keyed by `groupId`) — members associate to it,
+and it natively owns group roles, GSIM (group savings) and GLIM (group loans). Hierarchy `m_group ⊃ m_client ⊃ m_loan`.
+A MifosSave savings group is always ONE group of members.
+
+- **Fineract Center (`m_center`) is OUT OF SCOPE for v1** — it federates *multiple* groups that meet/collect
+  jointly (not a MifosSave feature) and its one differentiator, the collection sheet, is unused (we collect via
+  individual transaction posts + `dt_meeting_record`). Reserved only for a future federation layer above the group.
+- **All group state is a datatable on `m_group`** (13) — see `server/DATATABLE_REGISTRY.yaml` (the single
+  datatable SoT: name · parent · columns for all 21). Per-member datatables (5) on `m_client`, per-loan (2) on `m_loan`.
+- **Access-level rule (AL-RULE, SoT `server/ACCESS_MODEL.yaml`):** organizers + members are Fineract
+  self-service clients. Any capability whose native API is not reachable at that level is served by the
+  companion (staff service-exec) or, where Fineract has no native API at all, by a **datatable via the companion**
+  — e.g. the meeting schedule (`dt_meeting_schedule`, since `/groups/{id}/calendars` is not self-service-reachable).
+
+These three files (`ENTITY_MODEL.yaml` · `DATATABLE_REGISTRY.yaml` · `ACCESS_MODEL.yaml`) are read top-down by
+`/mifos-bridge` and enforced by gates MB-5..MB-9 (reconcile-then-emit), so the contract can never drift from
+this model. Fix plan: `server-layer/API_CONSISTENCY_FIX_PLAN.md`.
+
 ---
 
 ## 2. Feature → backend map (end-to-end feasibility)
@@ -158,7 +178,7 @@ GroupTypeConfig:
 ```
 
 ### Fineract mapping (clean reuse vs custom datatable)
-- **~60% rides Fineract native:** group/center, recurring-deposit or variable savings products, loan products, calendar/meeting/collection-sheet, charges/fees. Adding a type = pick product templates + fill a `group_type_config` row.
+- **~60% rides Fineract native:** the **group** (`m_group` — Center is out of scope, §1.1), recurring-deposit or variable savings products, loan products, group calendar/meeting, charges/fees. Adding a type = pick product templates + fill a `dt_group_type_config` row.
 - **~40% custom datatables + client compute:** rotation order (`rosca_rotation`), auction/bid (`rosca_auction`), VSLA share-out (`vsla_cycle`), welfare fund (`welfare_fund`), and the `group_type_config` switchboard.
 
 ---

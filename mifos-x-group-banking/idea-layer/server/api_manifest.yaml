@@ -1,6 +1,6 @@
 _schema_version: "1.0"
 _generated_at: "2026-08-01"
-_generated_by: "/idea-agent --auto STEP 4 (project-wide-artifacts-stale drain) — re-derived from per-screen api.yaml across all 32 screens. Freshness re-stamp after the settings/sync-status/personal-dashboard demo-data/data-flow/tests refresh (~02:00); those edits touch no api.yaml, so NO endpoint was added/removed. Endpoint set confirmed current against the two features device-verified on-device this pass: join-with-code (companion invitations datatable validateInviteToken + companion groups getGroupPreview) and meeting-conduct→meeting-summary (dt_meeting_record / dt_group_corpus / centers / savings+loan transaction posts) — all exercised live."
+_generated_by: "Group-centric migration (API_CONSISTENCY_FIX_PLAN Phase 3-4) — re-derived from per-screen api.yaml + server/apis/*.yaml after re-parenting the savings-group entity Center→Group (m_center→m_group, centerId→groupId) per server/ENTITY_MODEL.yaml. Endpoint set unchanged (52); the approve/disburse mcp_tool split was already 2 endpoints. Datatables reconciled to server/DATATABLE_REGISTRY.yaml (m_group:14, m_client:5, m_loan:2). Confirmed current against the features device-verified on-device: join-with-code (companion invitations datatable validateInviteToken + companion groups getGroupPreview) and meeting-conduct→meeting-summary (dt_meeting_record / dt_group_corpus / groups / savings+loan transaction posts)."
 _project: "mifos-x-group-banking"
 _backend: "Fineract 1.8.x (Mifos)"
 _base_url: "https://sandbox.mifos.community/fineract-provider/api/v1"
@@ -8,10 +8,10 @@ _auth: basic + bearer token
 
 summary:
   total_endpoints: 51              # sum of endpoint_groups[].endpoints (real apis/*.yaml only)
-  fineract_standard: 39
-  companion_endpoints: 12          # /companion/* BFF ops across savings + share-out groups
+  fineract_standard: 45
+  companion_endpoints: 6           # /companion/* BFF ops: savings (3) + share-out (3)
   custom_datatables: 15            # Fineract-native domain extension tables (all 21 datatables now have runnable register migrations — server-layer/migrations/)
-  companion_datatables: 6          # self-signup pivot — group_type_config · invitations · rosca_rotation · rosca_auction · vsla_cycle · welfare_fund
+  companion_datatables: 6          # self-signup pivot — dt_group_type_config · dt_companion_invitations · dt_rosca_rotation · dt_rosca_auction · dt_vsla_cycle · dt_welfare_fund
   endpoint_groups_mapped: 10       # one per real apis/*.yaml file (added clients-members, savings, share-out, field-officer 2026-08-01)
   screens_unmapped: 9              # remaining pivot screens with no dedicated group file (v1.1 features / client-local / companion-datatable-only)
   runnable_migrations: "server-layer/migrations/ — 21 datatable register defs + demo seed (S2/S3 closed; deploy externally gated)"
@@ -33,11 +33,10 @@ endpoint_groups:
     file: "apis/groups-centers.yaml"
     endpoints: 8
     screens: [group-list, group-dashboard, group-create, meeting-conduct]
-    # NOTE (2026-07-18): group-dashboard's api.yaml now reads via the companion BFF
-    # (/companion/groups/{groupId}, /my-role, /corpus, /accounts) rather than the raw
-    # Fineract /centers/* endpoints in this file. Companion reads are backed by the
-    # companion_datatables below (dt_member_role, group_type_config, dt_group_corpus).
-    # The raw /centers/* endpoints remain the write/underlying path.
+    # NOTE (group-centric migration): group-dashboard's api.yaml reads via the companion BFF
+    # (/companion/groups/{groupId}, /my-role, /corpus, /accounts); the raw Fineract /groups/*
+    # endpoints in this file remain the write/underlying path. Companion reads are backed by the
+    # companion_datatables below (dt_member_role, dt_group_type_config, dt_group_corpus).
 
   - group: meetings
     file: "apis/meetings.yaml"
@@ -46,7 +45,7 @@ endpoint_groups:
 
   - group: loans
     file: "apis/loans.yaml"
-    endpoints: 7
+    endpoints: 9
     screens: [loan-list, loan-apply, loan-detail, meeting-conduct]
 
   - group: offline-sync
@@ -78,7 +77,7 @@ endpoint_groups:
 
   - group: field-officer
     file: "apis/field-officer.yaml"
-    endpoints: 3
+    endpoints: 2
     version: v1.1.0
     screens: [field-officer-dashboard]
 
@@ -115,18 +114,65 @@ gaps:
     - "apis/share-out.yaml (share-out-preview, share-out-execute)"
     - "apis/field-officer.yaml (field-officer-dashboard, v1.1)"
 
+# custom_datatables (15) — Fineract-native domain extension tables, parents per
+# server/DATATABLE_REGISTRY.yaml (m_group: 8 · m_client: 5 · m_loan: 2). The 6 companion-served
+# m_group tables are listed separately under companion_datatables (m_group total = 8 + 6 = 14).
 custom_datatables:
+  # ── m_group (8) ──
   - name: dt_group_config
-    attached_to: m_center
+    attached_to: m_group
     feature: group-management
-    purpose: Cycle rules, contribution limits, loan multiplier, fine amounts
-    columns: [cycle_length_weeks, contribution_amount, loan_multiplier, fine_amount, cycle_start_date]
+    purpose: Per-group instance rules — cycle, contribution limits, loan multiplier, fines
+    columns: [cycle_number, cycle_length_weeks, contribution_amount, contribution_min, contribution_max, loan_multiplier, interest_rate, fine_amount, meeting_frequency, cycle_start_date, cycle_end_date]
+
+  - name: dt_group_corpus
+    attached_to: m_group
+    feature: corpus-tracking
+    purpose: Running fund balance (reconciled against Fineract GSIM savings balances)
+    columns: [meeting_number, opening_balance, total_inflows, total_outflows, closing_balance, corpus_balance, cash_on_hand, last_updated_meeting, last_updated_date]
 
   - name: dt_meeting_record
-    attached_to: m_center
+    attached_to: m_group
     feature: meeting-lifecycle
-    purpose: Per-meeting summary
-    columns: [meeting_number, meeting_date, opening_balance, closing_balance, total_inflows, total_outflows, notes]
+    purpose: Per-meeting summary row
+    columns: [meeting_number, meeting_date, opening_balance, closing_balance, total_inflows, total_outflows, total_savings_collected, total_repayments_received, total_loans_disbursed, total_fines_collected, attendance_count, notes]
+
+  - name: dt_meeting_schedule
+    attached_to: m_group
+    feature: meeting-lifecycle
+    purpose: Forward meeting schedule (cadence, next meeting date) — companion-served (AL-RULE)
+    columns: [meeting_number, scheduled_date, cadence, status]
+
+  - name: dt_share_out
+    attached_to: m_group
+    feature: share-out
+    purpose: Cycle share-out record
+    columns: [cycle_number, total_pool, profit_earned, status, executed_date]
+
+  - name: dt_social_fund
+    attached_to: m_group
+    feature: social-fund
+    purpose: Emergency/social fund balance and disbursements
+    columns: [current_balance, total_inflows, total_disbursed, last_updated]
+
+  - name: dt_sync_metadata
+    attached_to: m_group
+    feature: offline-sync
+    purpose: Sync state tracking for the group's offline queue
+    columns: [last_sync_at, pending_count, conflict_count, sync_version]
+
+  - name: dt_group_loan_policy
+    attached_to: m_group
+    feature: loan-ceilings
+    purpose: Per-group loan ceiling policy
+    columns: [max_loan_multiplier, max_loan_amount, min_savings_ratio, max_term_weeks, interest_rate, requires_guarantor]
+
+  # ── m_client (5) ──
+  - name: dt_member_role
+    attached_to: m_client
+    feature: unified-auth, member-onboarding
+    purpose: Per-(member, group) role for post-login per-group RBAC routing (group_id mandatory)
+    columns: [role, client_type, group_id, joined_date, is_active]
 
   - name: dt_meeting_attendance
     attached_to: m_client
@@ -134,59 +180,42 @@ custom_datatables:
     purpose: Per-member attendance per meeting
     columns: [meeting_number, status, fine_amount, savings_collected, repayment_amount]
 
-  - name: dt_member_role
-    attached_to: m_client
-    feature: unified-auth, member-onboarding
-    purpose: Per-(member, group) role for post-login per-group RBAC routing
-    columns: [role, client_type, joined_date, is_active]
-
-  - name: dt_share_out
-    attached_to: m_center
-    feature: share-out
-    purpose: Cycle share-out record
-    columns: [cycle_number, total_pool, profit_earned, status, executed_date]
-
-  - name: dt_social_fund
-    attached_to: m_center
-    feature: social-fund
-    purpose: Emergency fund balance and disbursements
-    columns: [current_balance, total_inflows, total_disbursed, last_updated]
-
-  - name: dt_loan_vote
-    attached_to: m_loan
-    feature: loan-management
-    purpose: Member voting on loan applications
-    columns: [meeting_number, votes_for, votes_against, chairperson_approved, outcome]
-
-  - name: dt_sync_metadata
-    attached_to: m_center
-    feature: offline-sync
-    purpose: Sync state tracking
-    columns: [last_sync_at, pending_count, conflict_count, sync_version]
-
   - name: dt_loan_request
     attached_to: m_client
     feature: end-user-dashboard
     purpose: End-user loan requests for organizer review at meetings
     columns: [amount, purpose, duration_weeks, requested_at, status, reviewed_at]
 
-  - name: dt_group_corpus
-    attached_to: m_center
-    feature: corpus-tracking
-    purpose: Running fund balance
-    columns: [meeting_number, opening_balance, total_inflows, total_outflows, closing_balance]
-
-  - name: dt_member_invitation
+  - name: dt_member_ceiling_override
     attached_to: m_client
-    feature: member-invitations
-    purpose: Invite token audit trail — code, role, expiry, accepted state
-    columns: [token, role_to_assign, expires_at, accepted_at, is_active]
+    feature: loan-ceilings
+    purpose: Per-member loan ceiling override
+    columns: [max_loan_amount, max_loan_multiplier, reason, effective_date]
+
+  - name: dt_notification
+    attached_to: m_client
+    feature: notifications
+    purpose: Per-member notification feed (event_created_at — created_at reserved by Fineract)
+    columns: [title, body, type, is_read, event_created_at, deep_link]
+
+  # ── m_loan (2) ──
+  - name: dt_loan_vote
+    attached_to: m_loan
+    feature: loan-management
+    purpose: Member voting on loan applications
+    columns: [meeting_number, votes_for, votes_against, votes_abstain, chairperson_approved, outcome]
+
+  - name: dt_loan_guarantor
+    attached_to: m_loan
+    feature: loan-guarantees
+    purpose: Per-loan guarantors and guaranteed amounts
+    columns: [guarantor_client_id, guarantor_name, share_pct, guaranteed_amount]
 
 # ── Companion datatables (self-signup pivot — ARCHITECTURE.md §4 + §companion_datatables)
 # Surfaced from ../server-layer/API_CONTRACT.yaml#companion_datatables (6 new datatables,
 # bridge-260717-002). Attached to m_group; served via the companion API /companion/datatables/*.
 companion_datatables:
-  - name: group_type_config
+  - name: dt_group_type_config
     attached_to: m_group
     feature: group-type-config
     purpose: >
@@ -198,7 +227,7 @@ companion_datatables:
     columns: [slug, display_name, pool_model, payout_order_method, shareout_formula, contribution_model, share_value, min_shares_per_meeting, max_shares_per_meeting, contribution_amount, internal_lending_enabled, loan_interest_model, loan_multiplier_cap, loan_max_term_periods, external_linkage, joint_liability, share_capital, social_fund_enabled, social_fund_contribution, welfare_only_mode, benefit_waiting_period_days, cycle_model, cycle_length_months, meeting_cadence, group_size_min, group_size_max, formality, promoter_role]
     seed_count: 9
 
-  - name: invitations
+  - name: dt_companion_invitations
     attached_to: m_group
     feature: member-invitations, unified-auth
     purpose: >
@@ -210,7 +239,7 @@ companion_datatables:
     multi_row: true
     columns: [token, group_id, inviter_client_id, invited_email_phone, role_to_assign, expires_at, accepted_at]
 
-  - name: rosca_rotation
+  - name: dt_rosca_rotation
     attached_to: m_group
     feature: pluggable-distribution
     purpose: >
@@ -221,7 +250,7 @@ companion_datatables:
     multi_row: true
     columns: [cycle_number, position, recipient_client_id, recipient_name, amount, scheduled_date, paid_at, payout_order_method]
 
-  - name: rosca_auction
+  - name: dt_rosca_auction
     attached_to: m_group
     feature: pluggable-distribution
     purpose: >
@@ -232,7 +261,7 @@ companion_datatables:
     multi_row: true
     columns: [cycle_number, meeting_number, bidder_client_id, bid_amount, bid_status, bid_at]
 
-  - name: vsla_cycle
+  - name: dt_vsla_cycle
     attached_to: m_group
     feature: pluggable-distribution, share-out
     purpose: >
@@ -243,7 +272,7 @@ companion_datatables:
     multi_row: false
     columns: [cycle_number, share_value, total_shares_outstanding, total_interest_earned, cycle_start_date, cycle_end_date, status]
 
-  - name: welfare_fund
+  - name: dt_welfare_fund
     attached_to: m_group
     feature: social-fund
     purpose: >

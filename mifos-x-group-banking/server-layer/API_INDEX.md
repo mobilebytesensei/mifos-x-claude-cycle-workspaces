@@ -15,9 +15,9 @@ _blueprint:
 | Feature | Endpoint Group | MCP Tools | Fineract Resource |
 |---------|---------------|-----------|------------------|
 | authentication | /authentication, /self/userdetails | authenticate, self_authenticate | POST /authentication |
-| group-management | /groups, /centers | create_lending_group, get_group, list_all_groups | POST/GET /groups |
+| group-management | /groups | create_group, get_group, list_all_groups | POST/GET /groups |
 | member-onboarding | /clients | create_new_client, get_client, search_clients | POST/GET /clients |
-| meeting-lifecycle | /meetings | record_meeting, list_meetings, record_attendance | POST/GET /meetings |
+| meeting-lifecycle | /datatables/dt_meeting_record, /datatables/dt_meeting_schedule | record_meeting, list_meetings, record_attendance | GET/POST /datatables/dt_meeting_*/{groupId} |
 | savings-collection | /savingsaccounts | approve_activate_savings, deposit, withdraw | POST /savingsaccounts |
 | group-linked-savings | /savingsaccounts | approve_activate_savings, calc_post_interest | POST /savingsaccounts |
 | corpus-tracking | /datatables/dt_group_corpus | get_group_corpus, update_group_corpus | GET/PUT datatables |
@@ -30,4 +30,4 @@ _blueprint:
 | social-fund | /datatables/dt_social_fund | get_social_fund, update_social_fund | GET/PUT datatables |
 | multi-language | — | — | client-side only |
 
-**Source of truth**: `API_CONTRACT.yaml` · **MCP server**: mifos (65 tools)
+**Source of truth**: `API_CONTRACT.yaml` (`#coverage` → `total_endpoints: 101`, `native_resolved: 56`) · **MCP server**: mifos (101 tools)

@@ -1,0 +1,67 @@
+# ENTITY_MODEL.yaml — the SINGLE source of truth for MifosSave's Fineract entity mapping.
+# Group-centric: the savings group IS a Fineract Group. Enforced by mifos-bridge gate MB-5.
+# RULE-CI-001: idea-layer — Claude Intelligence only. Aligns with ARCHITECTURE.md §1-2.
+_schema_version: "1.0"
+_model: group-centric
+_decided: "2026-08-05"
+
+# ── The canonical mapping: MifosSave concept → Fineract entity ──
+entities:
+  savings_group:
+    fineract_entity: m_group
+    api_resource: /groups
+    key_param: groupId
+    rationale: >
+      Members associate to a Group (not a Center), and a Fineract Group natively owns group roles,
+      GSIM (group savings), and GLIM (group loans) — i.e. everything that defines a savings group.
+      A MifosSave savings group is always ONE group of members, so the Group is the whole unit.
+    owns:
+      - group state (13 group datatables — see DATATABLE_REGISTRY.yaml, parent: m_group)
+      - membership (associateClients)
+      - group roles (native assignRole; see dt_member_role for client_type/routing)
+      - GSIM group savings · GLIM group loans
+      - meeting schedule (dt_meeting_schedule via companion — AL-RULE; see ACCESS_MODEL.yaml)
+
+  member:
+    fineract_entity: m_client
+    api_resource: /clients   # self-service surface: /self/clients
+    key_param: clientId
+    owns: [per-member datatables (5), self-service reads]
+
+  loan:
+    fineract_entity: m_loan
+    api_resource: /loans
+    key_param: loanId
+    owns: [per-loan datatables (2)]
+
+# ── Invariants (gated) ──
+invariants:
+  INV-1: "groupId is the single group identity. No centerId anywhere in the per-group unit."
+  INV-2: "Each datatable is keyed by its TRUE parent id (m_group→groupId, m_client→clientId, m_loan→loanId)."
+  INV-3: "One canonical name/parent/column-set per datatable — defined in DATATABLE_REGISTRY.yaml."
+  INV-4: "Every endpoint mcp_tool resolves to a defined tool in the contract catalog."
+  INV-5: "Every capability maps to a mechanism in ACCESS_MODEL.yaml; no self-service client calls a staff-only endpoint directly; nothing is unreachable."
+
+# ── Out of scope for v1 (do NOT reintroduce without a design decision) ──
+out_of_scope:
+  m_center:
+    status: not-used
+    reason: >
+      A Fineract Center federates MULTIPLE groups that meet/collect jointly. MifosSave has no
+      multi-group federation feature, and it never uses Center's one native differentiator (the
+      collection sheet — MifosSave collects via individual transaction posts + dt_meeting_record).
+      So Center was empty overhead + a second id (the source of the entity-split drift). Reserved
+      ONLY for a future federation layer ABOVE the group; never the per-group unit.
+
+# ── Migration note (Center → Group) ──
+migration:
+  from: m_center (centerId) as the group entity
+  to: m_group (groupId) as the group entity
+  endpoint_map:
+    "POST /centers": "POST /groups"
+    "GET /centers?staffId=": "GET /groups?staffId="
+    "GET /centers/{centerId}?associations=...": "GET /groups/{groupId}?associations=clientMembers,groupRoles"
+    "GET /centers/{centerId}/accounts": "GET /groups/{groupId}/accounts (GSIM)"
+    "GET /centers/{centerId}/meetings": "dt_meeting_schedule/{groupId} via companion (AL-RULE) OR /groups/{groupId}/calendars via companion"
+    "/datatables/{t}/{centerId}": "/datatables/{t}/{groupId}"
+  dto_field_map: { fineractCenterId: fineractGroupId }

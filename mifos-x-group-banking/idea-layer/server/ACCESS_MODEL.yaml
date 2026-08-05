@@ -1,0 +1,102 @@
+# ACCESS_MODEL.yaml — the SINGLE source of truth for each capability's ACCESS mechanism.
+# AL-RULE (user-directed 2026-08-05): any capability whose native Fineract API is NOT reachable at the
+# required access level (a self-signed-up organizer or member = a Fineract SELF-SERVICE client) is
+# modeled as a DATATABLE served by the companion with a service credential — never left unreachable,
+# never by forcing a self-service client to call a staff-only endpoint directly.
+# Enforced by mifos-bridge gate MB-9. RULE-CI-001: idea-layer — Claude Intelligence only.
+_schema_version: "1.0"
+
+# ── Access tiers ──
+tiers:
+  self_service:
+    who: a self-signed-up organizer or member (a Fineract self-service client)
+    surface: /self/*   # own profile, own savings, own loans, own beneficiaries
+  companion_service_exec:
+    who: the companion API holding a staff/service credential, acting for the user after authz
+    surface: any staff-only native Fineract endpoint (/groups, /clients, /loans, /savingsaccounts, /datatables, /batches)
+  datatable_via_companion:
+    who: the companion, when Fineract has NO native API at the right level (AL-RULE fallback)
+    surface: /datatables/{table}/{parentId} (parent per DATATABLE_REGISTRY.yaml)
+
+# mechanism ∈ { native_self_service | companion_service_exec | datatable_via_companion }
+capabilities:
+  - cap: authenticate (organizer/member)
+    native_api: POST /self/authentication
+    self_service_reachable: true
+    mechanism: native_self_service
+  - cap: own profile / savings / loans
+    native_api: [/self/clients/{id}, /self/savingsaccounts, /self/loans]
+    self_service_reachable: true
+    mechanism: native_self_service
+  - cap: create group
+    native_api: POST /groups (+ ?command=activate)
+    self_service_reachable: false     # staff-only
+    mechanism: companion_service_exec
+  - cap: list groups for staff/organizer
+    native_api: GET /groups?staffId=
+    self_service_reachable: false
+    mechanism: companion_service_exec
+  - cap: group detail (members + roles)
+    native_api: GET /groups/{groupId}?associations=clientMembers,groupRoles
+    self_service_reachable: false
+    mechanism: companion_service_exec
+  - cap: associate members
+    native_api: POST /groups/{groupId}?command=associateClients
+    self_service_reachable: false
+    mechanism: companion_service_exec
+  - cap: assign role
+    native_api: POST /groups/{groupId}?command=assignRole
+    self_service_reachable: false
+    mechanism: companion_service_exec
+    datatable_ref: dt_member_role      # client_type + routing bit stays in the datatable
+  - cap: create client (member)
+    native_api: POST /clients
+    self_service_reachable: false
+    mechanism: companion_service_exec
+  - cap: open group savings (GSIM)
+    native_api: POST /savingsaccounts
+    self_service_reachable: false
+    mechanism: companion_service_exec
+  - cap: post deposit / repayment
+    native_api: [POST /savingsaccounts/{id}/transactions?command=deposit, POST /loans/{id}/transactions?command=repayment]
+    self_service_reachable: false
+    mechanism: companion_service_exec
+  - cap: loan apply / approve / disburse / reject
+    native_api: [POST /loans, POST /loans/{id}?command=approve|disburse|reject]
+    self_service_reachable: false
+    mechanism: companion_service_exec
+  - cap: schedule meeting
+    native_api: POST /groups/{groupId}/calendars
+    self_service_reachable: false      # calendar write is NOT on the self-service surface
+    mechanism: datatable_via_companion  # AL-RULE fallback
+    datatable_ref: dt_meeting_schedule
+    note: >
+      Phase 1.5 verifies on mifos-bank-2 whether the companion's service credential can attach a
+      native group calendar. If yes AND recurrence is needed, switch to companion_service_exec on
+      /groups/{id}/calendars and drop dt_meeting_schedule. Default = datatable.
+  - cap: meeting record / attendance / corpus
+    native_api: none
+    self_service_reachable: false
+    mechanism: datatable_via_companion
+    datatable_ref: [dt_meeting_record, dt_meeting_attendance, dt_group_corpus]
+  - cap: group savings summary (contribution-model-aware)
+    native_api: none at self-service (GSIM aggregation is staff-side)
+    self_service_reachable: false
+    mechanism: companion_service_exec   # exposed as /companion/groups/{id}/savings BFF
+  - cap: share-out / rotation / auction / welfare / group-type / invitations
+    native_api: none
+    self_service_reachable: false
+    mechanism: datatable_via_companion
+    datatable_ref: [dt_share_out, dt_rosca_rotation, dt_rosca_auction, dt_welfare_fund, dt_vsla_cycle, dt_group_type_config, dt_companion_invitations]
+  - cap: offline batch replay
+    native_api: POST /batches
+    self_service_reachable: false
+    mechanism: companion_service_exec
+
+# ── Conformance (MB-9): no capability has mechanism absent; no self_service_reachable:false capability
+#    is called by the app directly (must route through companion or datatable). ──
+conformance:
+  rule: >
+    For every capability, mechanism != none. For every capability with self_service_reachable:false,
+    the app MUST NOT declare a direct native call — it declares the companion BFF path or a datatable
+    path. MB-9 fails on any violation.
