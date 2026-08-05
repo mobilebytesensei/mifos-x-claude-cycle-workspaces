@@ -1,0 +1,108 @@
+schema_version: "1.0"
+feature_id: feat-add-to-watchlist
+screen_id: add-to-watchlist
+generated_by: "/idea-plan-add (scaffolded from screens/watchlist tests.yaml — the AddToWatchlistViewModel/star cases)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SHIPPED tests (real, in-tree — shared data-layer contract with feat-watchlist):
+#   core/data/.../demo/watchlist/WatchlistReactiveInvalidationTest.kt
+#   core/data/.../demo/watchlist/FakeWatchlistDao.kt (cold-snapshot fake — models
+#     Room 3 alpha05 wasmJs InvalidationTracker NOT self-re-emitting)
+# PENDING tests (documented UI intent — AddToWatchlistViewModel / AddToWatchlistStar
+#   are not yet in-tree; their cases are enumerated here as the target contract).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Repository / invalidation-bridge contract (SHIPPED — the write path this screen drives) ──
+repository_contract:
+  - name: "contains re-emits when coin added then removed"
+    source_test: "WatchlistReactiveInvalidationTest.containsReEmitsWhenCoinAddedThenRemoved"
+    status: shipped
+    setup: "observe contains('btc')"
+    assertions:
+      - "emits false initially"
+      - "after add('btc') emits true"
+      - "after remove('btc') emits false"
+      - "passes ONLY because reads are daoFlow(WATCHLIST_TABLE){} and writes notifyingWrite(WATCHLIST_TABLE){}"
+  - name: "watchlist re-emits after add (wasmJs invalidation bridge)"
+    source_test: "WatchlistReactiveInvalidationTest.watchlistReEmitsAfterAdd"
+    status: shipped
+    setup: "WatchlistRepositoryImpl over FakeWatchlistDao (cold-snapshot flows that never self-re-emit)"
+    assertions:
+      - "after add('btc') the collector re-emits {btc}"
+
+# ── Screen/ViewModel state coverage (PENDING — target contract for the documented UI) ──
+state_coverage:
+  - screen: add-to-watchlist
+    state: content
+    status: pending
+    name: "star reflects membership (filled when tracked, outline when not)"
+    setup: "AddToWatchlistViewModel(coinId='bitcoin') with bitcoin already tracked; and coinId='dogecoin' untracked"
+    assertions:
+      - "tracked coin → isTracked == true (star_filled)"
+      - "untracked coin → isTracked == false (star_outline)"
+  - screen: add-to-watchlist
+    state: submitting
+    status: pending
+    name: "toggle in flight surfaces SubmitState.Submitting"
+    setup: "onToggle('dogecoin') dispatched; SubmitHandler mid-commit"
+    assertions: ["submit stream emits Submitting before Submitted"]
+  - screen: add-to-watchlist
+    state: submitted
+    status: pending
+    name: "toggle completes and membership flips"
+    setup: "onToggle('dogecoin') on an untracked coin"
+    assertions:
+      - "submit stream reaches Submitted"
+      - "contains('dogecoin') re-emits true; star fills"
+  - screen: add-to-watchlist
+    state: failed
+    status: pending
+    name: "SubmitState.Failed arm exists (framework contract; local commit does not fail on-device)"
+    setup: "injected repository whose add() throws (test-only)"
+    assertions: ["submit stream emits Failed; star reverts to prior state"]
+
+interactions:
+  - screen: add-to-watchlist
+    component: "star toggle (watchlist_star_{coinId})"
+    trigger: tap
+    status: pending
+    name: "toggling the star adds/removes membership via SubmitHandler"
+    expected: "untracked → repository.add(coinId); tracked → repository.remove(coinId); SubmitState Submitting → Submitted"
+    assertions:
+      - "add path inserts a row with addedAtMs≈now; contains() flips to true; star fills"
+      - "remove path deletes the row; contains() flips to false; star outlines"
+      - "re-tapping is idempotent (add REPLACEs, remove no-ops)"
+
+api_integration:
+  - operation: add-to-watchlist
+    status: shipped
+    name: "add is idempotent — re-add REPLACEs and refreshes addedAtMs"
+    source_test: "WatchlistReactiveInvalidationTest (add path) + FakeWatchlistDao insert(REPLACE)"
+    assertions: ["adding an already-tracked coin does not duplicate the row"]
+  - operation: remove-from-watchlist
+    status: shipped
+    name: "remove is idempotent — no-op if absent"
+    source_test: "WatchlistReactiveInvalidationTest.watchlistReEmitsAfterRemove"
+    assertions: ["removing a non-tracked coin is a safe no-op"]
+
+acceptance_criteria:
+  - ref: "AC-ADDWATCH-01"
+    name: "Add a coin to the watchlist from a coin surface"
+    given: "a user browsing crypto coins with an untracked coin"
+    when: "they tap the outline star (Coin Markets row or Coin Detail)"
+    then: "the coinId is persisted to the local personal_watchlist (addedAtMs=now), contains() flips true, and the star fills — nothing leaves the device"
+  - ref: "AC-ADDWATCH-02"
+    name: "Remove a coin via the same star"
+    given: "a tracked coin"
+    when: "the user taps the filled star"
+    then: "the coin is removed from personal_watchlist, contains() flips false, and the star outlines"
+  - ref: "AC-ADDWATCH-03"
+    name: "Reactive on wasmJs"
+    given: "the app running on the wasmJs target (Room 3 alpha05)"
+    when: "a coin is added or removed via the star"
+    then: "the long-lived contains() collector re-emits (via the daoFlow/notifyingWrite invalidation bridge), flipping the star, not just on the initial subscription"
+  - ref: "AC-ADDWATCH-04"
+    name: "SubmitHandler 'input simple' seam"
+    given: "the star toggle"
+    when: "a toggle is committed"
+    then: "it flows through SubmitHandler<Unit> (Idle/Submitting/Submitted/Failed) — the same seam a remote mutation would use, over a local Room commit"

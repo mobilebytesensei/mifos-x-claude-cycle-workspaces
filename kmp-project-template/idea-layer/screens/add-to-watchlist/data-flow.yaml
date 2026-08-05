@@ -1,0 +1,61 @@
+# data-flow.yaml — per-screen data flows for feature/add-to-watchlist (Watchlist star toggle).
+# WRITE side of the watch-list. Local membership on `personal_watchlist`
+# (OFFLINE_LOCAL_ONLY, raw Room DAO + core-base/database invalidation bridge — NO Store5).
+# Scaffolded from screens/watchlist/data-flow.yaml (the add-to-watchlist entries).
+sibling: data-flow
+schema_version: "2.2.0"
+feature_id: feat-add-to-watchlist
+
+# The persisted watch-list is NOT a Store5 store — it is a direct DAO wrapped in the
+# invalidation bridge. SHARED with feat-watchlist (same WatchlistRepository/DAO/table).
+store:
+  name: none                          # WatchlistRepositoryImpl reads/writes WatchlistDao directly
+  archetype: OFFLINE_LOCAL_ONLY
+  key: coinId                         # contains(coinId) is a keyed membership stream
+  value: "Boolean"
+  source_of_truth: "Room personal_watchlist (WatchlistDao)"
+  remote_fetcher: none
+  invalidation: "core-base/database daoFlow{} + notifyingWrite{} (absorbs Room 3 alpha05 wasmJs async-fan-out gap)"
+
+entries:
+  # ── add-to-watchlist (embedded star toggle): reactive membership read ──
+  - screen_id: add-to-watchlist
+    trigger: on_subscribe              # observes contains(coinId) while the host coin surface is visible
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: personal_watchlist
+        mutation: read
+        filter: { coinId: "{coinId}" }
+        columns: [coinId]              # SELECT EXISTS(SELECT 1 ...)
+    dtos:
+      - { name: Boolean, role: response, api_id: observe-contains }
+    produces_state: content            # the star always renders (filled/outline) — no empty/error arm
+    cache: { strategy: source_of_truth_only, ttl_seconds: 0, key_template: "watchlist:contains:{coinId}" }
+    error_paths: []
+    notes: "Reactive membership drives filled (tracked) vs outline (not tracked)."
+
+  # ── add-to-watchlist: the toggle write ──
+  - screen_id: add-to-watchlist
+    trigger: on_toggle
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: personal_watchlist
+        mutation: upsert_or_delete     # add → insert(REPLACE); remove → delete
+        columns: [coinId, addedAtMs]
+    dtos:
+      - { name: WatchlistItem, role: request, api_id: "add-to-watchlist | remove-from-watchlist" }
+    produces_state: submitted
+    write_pipeline:
+      handler: SubmitHandler           # simple single-formKey SubmitHandler<Unit> (NOT DraftSubmitHandler)
+      submit_target: "repository.add(coinId) | repository.remove(coinId)  # local Room commit — no network"
+      states: [Idle, Submitting, Submitted, Failed]
+    error_paths:
+      - error_code: local.commit_failure
+        behavior: surface_failed_state
+        note: "SubmitState.Failed arm exists per the framework SubmitHandler contract; a local Room commit does not fail on a real device."
+    notes: >-
+      The watchlist WRITE path is the framework's 'input simple' showcase — the same
+      SubmitHandler seam as a remote mutation, but the block is a local commit. Forks
+      swapping in a remote sync get the Saving…/Saved-✓ UX for free with no ViewModel change.

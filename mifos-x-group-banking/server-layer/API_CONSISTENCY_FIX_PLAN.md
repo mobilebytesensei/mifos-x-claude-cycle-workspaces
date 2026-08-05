@@ -286,7 +286,47 @@ migration + client-layer rework) — done incrementally, each phase device-verif
 - 2026-08-05 — **Phase 7 DONE + verified live**: site/api.html re-authored Group-centric (51 endpoints,
   ERD 4→3 lanes m_office→m_group→m_client→m_loan, datatables re-parented + dt_meeting_schedule);
   deployed to https://mifossave.netlify.app (HTTP 200); ERD rendered on-device (3 lanes, no Center).
-- **REMAINING — Phase 6 (app client-layer + on-device verify) + Phase 1.5 live mifos-bank-2 spike**:
-  HALT `pending-device-verify` — external dependency (live Fineract/companion + device/build env). All
-  contract/site/framework work authored + verified; the on-device proof + client-layer migration await
-  the live instance. Phase 8 commit follows this entry.
+- 2026-08-05 — **Phase 6.1 companion-API-availability pass** (client↔companion coverage audit + gap
+  closure). Verified all 27 client `core/network` services now target `COMPANION_BASE_URL` and the
+  companion has NO generic Fineract proxy (http_server.go — unregistered path = hard 404), so every
+  client path needs an exact companion route. Full path-constant matrix: 26/33 resolved; **4 real gaps**
+  (initial audit over-counted 7 — two "gaps" were false, served by string-concatenated
+  `fineractV1Prefix` routes in meeting.go:124–125 that a naive grep truncated; the two client
+  prefix-drops were reverted before they broke live routes). Gaps closed:
+  (1) `/self/*` — companion now proxies the native self-service surface with the CALLER's own
+  Authorization (changepin PUT /self/user/updatePassword + savings GET /self/savingsaccounts/{id}/
+  transactions) — app stays single-host, `self_passthrough.go`;
+  (2)+(3) field-officer staff facade `GET /companion/field-officer/{groups,report}` (service-exec
+  passthrough) — `field_officer.go` + client `FieldOfficerApiImpl` repointed;
+  (4) `dt_member_role` GET+POST facade (assign/read member role) — `member_role.go`.
+  Companion: `go build`+`vet`+`test` green + RegisterRoutes no-panic; committed + pushed
+  `therajanmaurya/mcp-mifosx` dev @ be8959c. Client: 4 files edited (changepin path → /self/,
+  FieldOfficer → /companion/field-officer/*), uncommitted on session-mifos-x-group-banking branch.
+- 2026-08-05 — **Phase 6.1 EXHAUSTIVE re-audit** (compose EVERY httpClient call across all 27 services,
+  not just base-path constants — the first pass sampled constants and under-counted). Found **6 more
+  gaps** all now closed on `therajanmaurya/mcp-mifosx` dev @ 4c3818a: (G-A) bare `GET /groups/{groupId}`
+  +associations (loanapply + meetingconduct.getGroupMembers — the Group-centric client dropped
+  `/centers/{id}`); (G-B) `GET …/datatables/dt_meeting_schedule/{groupId}` (the new AL-RULE table —
+  `HandleMeetingSchedule` reuses `buildMeetingSchedule`, synthesized-weekly fallback so it works
+  pre-provision); (G-C) `POST /clients`; (G-D) `POST /clients/{clientId}/images` (multipart);
+  (G-E) `GET /clients/{clientId}`; (G-F) `PUT /datatables/dt_member_role/{clientId}` (my first fix did
+  GET+POST only). G-A/C/D/E served by one shared verbatim reverse-proxy `proxyToFineract` (service-auth
+  for staff, caller-auth for /self/*) in `fineract_passthrough.go`; self_passthrough.go refactored onto
+  it. **Locked with `TestAppRouteCoverage`** (60+ app paths asserted to resolve to a registered route —
+  regression guard). Coverage now COMPLETE: all 27 services' calls resolve, 0 gaps.
+- 2026-08-05 — **Phase 6.2 DONE + Phase 1.5 live spike GREEN** (`/mifos-bridge health` + `preflight`
+  end-to-end on live `mifos-bank-2`). `mifos-bridge-health.sh`: AUTH ✓, all **21 datatables registered +
+  readable on CORRECT Group-centric parents** (14 m_group incl. `dt_meeting_schedule` / 5 m_client /
+  2 m_loan, 0 m_center), products (KES + savings id 2 + loan id 5), 9-row group-type catalogue on anchor
+  group 25, 8 API groups reachable (field-officer `/groups?staffId=` 200, self-service 401) → RESULT
+  ✓ GREEN. `provision-instance.sh` (preflight) full seed: demo user Amina Otieno, group, 5 members+roles,
+  8 funded savings, 3 meetings, corpus 15,500 KES, vsla_cycle → Phase 5 VERIFY **8/8 app-facing endpoints
+  200** through the deployed companion (mifossave-companion.onrender.com) → ✅ GREEN. Seed surfaced +
+  fixed a companion defect: `fetchInvitationRows` propagated Fineract's empty-multiRow 404 as a hard
+  error → first-invite generation for a fresh group was broken; now 404-tolerant (dev @ d465b50, needs
+  onrender redeploy to take effect). Companion route fixes now on dev @ d465b50 (be8959c + 4c3818a +
+  d465b50) — **onrender redeploy from dev required** for the new routes (/self/*, field-officer,
+  dt_member_role, /clients CRUD, /groups/{id}, dt_meeting_schedule) + invite fix to serve live.
+- **REMAINING — Phase 6.3 on-device app verify** (create-group → meeting-conduct → share-out on-device
+  against a Group entity, fresh capture after `am force-stop`) + deploy companion dev→onrender. Backend
+  instance is fully provisioned + verified GREEN; Phase 8 commit follows.
