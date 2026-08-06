@@ -13,15 +13,15 @@
 #      to the selected-currency list.
 #   2. A KES savings product — "VSLA Group Savings" — the apptable every group /
 #      member savings account is opened against (meeting savings collection).
-#   3. A KES loan product     — "VSLA Group Loan"    — what the loan-apply flow
-#      applies against (3x savings, weekly repayment, flat interest).
+#   3. KES loan products      — ONE PER GROUP ARCHETYPE (VSLA/ROSCA/ASCA/SILC/
+#      SHG/SACCO/Village-Bank/Welfare/JLG) — what the loan-apply "Loan Product"
+#      dropdown lists, each tuned to how that archetype lends (term/cadence/rate).
 #
-# ONE loan + ONE savings product serve ALL group types (VSLA/ROSCA/ASCA/SILC/
-# SHG): the group TYPE differences (pool model, share value, cycle) live in the
-# companion's dt_group_type_config datatable + app logic, not in separate
-# Fineract products — a member borrows/saves as an individual client under the
-# group regardless of type, so one shared product per operation is correct and
-# avoids product sprawl.
+# ONE savings product serves all group types (a member saves as an individual
+# client under the group regardless of type). Loan products are PER-ARCHETYPE so
+# the operator picks archetype-appropriate terms in loan-apply; Fineract has no
+# "group type" on a loan product, so these are individual-client products and the
+# archetype nuance still lives in the companion's dt_group_type_config + app logic.
 #
 # Idempotent: currency is a set-PUT; products are create-or-skip (matched by
 # name). Safe to re-run — that IS the preflight contract ("verify + configure if
@@ -85,29 +85,49 @@ else
   else echo "  ❌ create failed: $(printf '%s' "$resp" | jq -r '.errors[0].defaultUserMessage // .defaultUserMessage // .' 2>/dev/null | head -1)"; rc=1; fi
 fi
 
-# ── 3. VSLA loan product (create-or-skip) ────────────────────────────────────
-LOAN_NAME="VSLA Group Loan"
-echo "▶ loan product — '$LOAN_NAME'"
-lid="$(api GET /loanproducts | jq -r --arg n "$LOAN_NAME" '.[]?|select(.name==$n)|.id' 2>/dev/null | head -1)"
-if [ -n "$lid" ]; then echo "  ✅ exists (id $lid)"
-else
+# ── 3. Loan products — ONE PER GROUP ARCHETYPE (create-or-skip) ──────────────
+# The loan-apply "Loan Product" dropdown lists every registered KES loan product, so each group
+# archetype gets a product tuned to how it lends (term, cadence, rate, ceiling). All are individual-
+# client products under the group (Fineract has no "group type" on a loan product); the archetype
+# nuance lives in dt_group_type_config + app logic, and these give the operator archetype-appropriate
+# starting terms. Spec = shortName|name|principal|minP|maxP|numRepay|minRepay|maxRepay|every|freq|rate|maxRate|description
+#   freq: 1=months, 2=weeks (repaymentFrequencyType). rate is per-period (interestRateFrequencyType matches).
+LOAN_PRODUCTS=(
+  "VGL|VSLA Group Loan|5000|500|300000|12|1|52|1|2|10|30|VSLA group loan (3x savings, weekly flat)"
+  "RRA|ROSCA Rotation Advance|5000|1000|100000|4|1|12|1|2|0|10|ROSCA interest-free rotation-pot advance"
+  "AAL|ASCA Accumulating Loan|8000|1000|300000|16|1|52|1|2|8|30|ASCA accumulating-fund loan"
+  "SCL|SILC Community Loan|5000|500|200000|12|1|52|1|2|10|30|SILC internal-lending community loan"
+  "SDL|SHG Development Loan|10000|1000|500000|12|1|36|1|1|2|10|SHG monthly development loan"
+  "SAC|SACCO Development Loan|50000|5000|2000000|24|1|60|1|1|2|10|SACCO long-term development loan"
+  "VBL|Village Bank Loan|15000|2000|500000|12|1|36|1|1|3|10|Village-bank (CBO) group loan"
+  "WEL|Welfare Emergency Loan|2000|200|50000|6|1|24|1|2|5|20|Welfare / burial emergency loan"
+  "JLL|JLG Joint Liability Loan|10000|1000|300000|12|1|52|1|2|8|30|Joint-liability group loan"
+)
+echo "▶ loan products — ${#LOAN_PRODUCTS[@]} archetypes"
+existing_lp="$(api GET /loanproducts | jq -c '[.[]?|{name,id}]' 2>/dev/null)"
+lid=""; created=0; skipped=0
+for spec in "${LOAN_PRODUCTS[@]}"; do
+  IFS='|' read -r sn name pr minp maxp nr minr maxr every freq rate maxrate desc <<< "$spec"
+  eid="$(printf '%s' "$existing_lp" | jq -r --arg n "$name" '.[]?|select(.name==$n)|.id' 2>/dev/null | head -1)"
+  if [ -n "$eid" ]; then echo "  ✅ '$name' exists (id $eid)"; [ -z "$lid" ] && lid="$eid"; skipped=$((skipped+1)); continue; fi
   resp="$(api POST /loanproducts -d "{
-    \"name\":\"$LOAN_NAME\",\"shortName\":\"VGL\",
-    \"description\":\"MifosSave VSLA group loan (3x savings, weekly repayment)\",
+    \"name\":\"$name\",\"shortName\":\"$sn\",
+    \"description\":\"MifosSave $desc\",
     \"currencyCode\":\"$APP_CURRENCY\",\"digitsAfterDecimal\":2,\"inMultiplesOf\":0,
-    \"principal\":5000,\"minPrincipal\":500,\"maxPrincipal\":300000,
-    \"numberOfRepayments\":12,\"minNumberOfRepayments\":1,\"maxNumberOfRepayments\":52,
-    \"repaymentEvery\":1,\"repaymentFrequencyType\":2,
-    \"interestRatePerPeriod\":10,\"minInterestRatePerPeriod\":0,\"maxInterestRatePerPeriod\":30,\"interestRateFrequencyType\":2,
+    \"principal\":$pr,\"minPrincipal\":$minp,\"maxPrincipal\":$maxp,
+    \"numberOfRepayments\":$nr,\"minNumberOfRepayments\":$minr,\"maxNumberOfRepayments\":$maxr,
+    \"repaymentEvery\":$every,\"repaymentFrequencyType\":$freq,
+    \"interestRatePerPeriod\":$rate,\"minInterestRatePerPeriod\":0,\"maxInterestRatePerPeriod\":$maxrate,\"interestRateFrequencyType\":$freq,
     \"amortizationType\":1,\"interestType\":1,\"interestCalculationPeriodType\":1,
     \"transactionProcessingStrategyCode\":\"mifos-standard-strategy\",
     \"accountingRule\":1,\"daysInYearType\":1,\"daysInMonthType\":1,
     \"isInterestRecalculationEnabled\":false,
     \"locale\":\"en\",\"dateFormat\":\"dd MMMM yyyy\"}")"
-  lid="$(printf '%s' "$resp" | jq -r '.resourceId // empty')"
-  if [ -n "$lid" ]; then echo "  ✅ created (id $lid)"
-  else echo "  ❌ create failed: $(printf '%s' "$resp" | jq -r '.errors[0].defaultUserMessage // .defaultUserMessage // .' 2>/dev/null | head -1)"; rc=1; fi
-fi
+  nid="$(printf '%s' "$resp" | jq -r '.resourceId // empty')"
+  if [ -n "$nid" ]; then echo "  ✅ created '$name' (id $nid)"; [ -z "$lid" ] && lid="$nid"; created=$((created+1))
+  else echo "  ❌ '$name' failed: $(printf '%s' "$resp" | jq -r '.errors[0].defaultUserMessage // .defaultUserMessage // .' 2>/dev/null | head -1)"; rc=1; fi
+done
+echo "  → loan products: created=$created skipped=$skipped"
 
 echo
 [ "$rc" = 0 ] && echo "✅ products ready: KES enabled · savings id ${sid:-?} · loan id ${lid:-?}" \

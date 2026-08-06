@@ -264,9 +264,9 @@ seed_group_savings() { # $1=group_index $2=gid
   sid="$(capture '.savingsId // .resourceId' -- fin POST /savingsaccounts "$sbody")"
   if [[ -n "$sid" ]]; then
     fin POST "/savingsaccounts/${sid}?command=approve"  "$(jq -nc --arg d "$TXN_DATE" '{approvedOnDate:$d, locale:"en", dateFormat:"yyyy-MM-dd"}')"  >/dev/null 2>&1 || true
-    fin POST "/savingsaccounts/${sid}?command=activate" "$(jq -nc --arg d "$TXN_DATE" '{activationDate:$d, locale:"en", dateFormat:"yyyy-MM-dd"}')" >/dev/null 2>&1 || true
+    fin POST "/savingsaccounts/${sid}?command=activate" "$(jq -nc --arg d "$TXN_DATE" '{activatedOnDate:$d, locale:"en", dateFormat:"yyyy-MM-dd"}')" >/dev/null 2>&1 || true
     fin POST "/savingsaccounts/${sid}/transactions?command=deposit" \
-        "$(jq -nc --arg d "$TXN_DATE" --argjson a "$total" '{transactionDate:$d, transactionAmount:$a, locale:"en", dateFormat:"yyyy-MM-dd"}')" >/dev/null 2>&1 || true
+        "$(jq -nc --arg d "$TXN_DATE" --argjson a "$total" '{transactionDate:$d, transactionAmount:$a, paymentTypeId:1, locale:"en", dateFormat:"yyyy-MM-dd"}')" >/dev/null 2>&1 || true
     echo "   group savings acct $sid: deposited $total KES (group-linked corpus)"
   else
     echo "   (warn) group savings account create returned no id"
@@ -289,9 +289,9 @@ seed_individual_savings() { # $1=group_index
     sid="$(capture '.savingsId // .resourceId' -- fin POST /savingsaccounts "$sbody")"
     [[ -z "$sid" ]] && continue
     fin POST "/savingsaccounts/${sid}?command=approve"  "$(jq -nc --arg d "$TXN_DATE" '{approvedOnDate:$d, locale:"en", dateFormat:"yyyy-MM-dd"}')"  >/dev/null 2>&1 || true
-    fin POST "/savingsaccounts/${sid}?command=activate" "$(jq -nc --arg d "$TXN_DATE" '{activationDate:$d, locale:"en", dateFormat:"yyyy-MM-dd"}')" >/dev/null 2>&1 || true
+    fin POST "/savingsaccounts/${sid}?command=activate" "$(jq -nc --arg d "$TXN_DATE" '{activatedOnDate:$d, locale:"en", dateFormat:"yyyy-MM-dd"}')" >/dev/null 2>&1 || true
     fin POST "/savingsaccounts/${sid}/transactions?command=deposit" \
-        "$(jq -nc --arg d "$TXN_DATE" --argjson a "$ind" '{transactionDate:$d, transactionAmount:$a, locale:"en", dateFormat:"yyyy-MM-dd"}')" >/dev/null 2>&1 || true
+        "$(jq -nc --arg d "$TXN_DATE" --argjson a "$ind" '{transactionDate:$d, transactionAmount:$a, paymentTypeId:1, locale:"en", dateFormat:"yyyy-MM-dd"}')" >/dev/null 2>&1 || true
     echo "   individual savings acct $sid (client $cid): deposited $ind KES"
   done
 }
@@ -511,11 +511,20 @@ for gi in $(seq 0 $((GN-1))); do
   gid="$(printf '%s' "$gresp" | jq -r '.fineractGroupId // .groupId // empty' 2>/dev/null)"
   invite="$(printf '%s' "$gresp" | jq -r '.inviteCode // empty' 2>/dev/null)"
   if [[ -z "$gid" || "$gid" == "null" ]]; then
-    echo "  FAIL — group create returned no fineractGroupId: $(printf '%s' "$gresp" | head -c 200)"
-    STEP_ERR=$((STEP_ERR+1)); continue
+    # Create failed. A "data integrity"/duplicate-name 403 means the group DOES exist but the initial
+    # resolve_group_by_name missed it (a transient /groups listing failure while the instance was busy).
+    # Resolve once more and REUSE its id rather than hard-failing — so the enriched data still lands on
+    # the existing group. Only a genuinely-uncreatable group falls through to FAIL.
+    gid="$(resolve_group_by_name "$gname")"
+    if [[ -z "$gid" || "$gid" == "null" ]]; then
+      echo "  FAIL — group create returned no fineractGroupId: $(printf '%s' "$gresp" | head -c 200)"
+      STEP_ERR=$((STEP_ERR+1)); continue
+    fi
+    echo "  REUSE — create hit a conflict; resolved existing fineractGroupId=$gid (seeding onto it)"
+  else
+    STEP_OK=$((STEP_OK+1))
+    echo "  created group fineractGroupId=$gid  inviteCode=${invite:-<none>}"
   fi
-  STEP_OK=$((STEP_OK+1))
-  echo "  created group fineractGroupId=$gid  inviteCode=${invite:-<none>}"
 
   # 2. members
   for mi in $(seq 0 $((mcount-1))); do seed_member "$gi" "$mi" "$gid"; done
