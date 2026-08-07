@@ -23,7 +23,11 @@
 #   FINERACT_TENANT=<tenant> [FINERACT_USER=mifos FINERACT_PASSWORD=password] \
 #   COMPANION_BASE_URL=http://localhost:8090/companion \
 #   bash provision-instance.sh [--dry-run] [--verify-only] [--skip-datatables] [--skip-seed] \
-#        [--manage-companion] [--companion-bin <path>] [--companion-src <dir>]
+#        [--manage-companion] [--companion-bin <path>] [--companion-src <dir>] [--fineract-only]
+#
+# --fineract-only: run Phases 1/2/2.5/4 only, SKIPPING Phase 3 (companion) + Phase 5 (companion
+#   verify). For a "deploy" orchestrator that provisions the Fineract instance first and repoints
+#   the companion as its own separate governed step.
 #
 # New instance: just set FINERACT_BASE_URL / FINERACT_TENANT to the new one and run.
 # Requires: bash, curl, jq.
@@ -40,7 +44,7 @@ COMPANION_BIN="${COMPANION_BIN:-/tmp/mcp-companion}"
 COMPANION_SRC="${COMPANION_SRC:-}"
 COMPANION_PORT="${COMPANION_PORT:-8090}"
 INSECURE="${INSECURE:-0}"
-DRY_RUN=0 VERIFY_ONLY=0 SKIP_DT=0 SKIP_PRODUCTS=0 SKIP_SEED=0 MANAGE_COMP=0
+DRY_RUN=0 VERIFY_ONLY=0 SKIP_DT=0 SKIP_PRODUCTS=0 SKIP_SEED=0 MANAGE_COMP=0 FINERACT_ONLY=0
 while [ $# -gt 0 ]; do case "$1" in
   --dry-run)          DRY_RUN=1; shift ;;
   --verify-only)      VERIFY_ONLY=1; shift ;;
@@ -48,6 +52,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --skip-products)    SKIP_PRODUCTS=1; shift ;;
   --skip-seed)        SKIP_SEED=1; shift ;;
   --manage-companion) MANAGE_COMP=1; shift ;;
+  --fineract-only)    FINERACT_ONLY=1; shift ;;
   --companion-bin)    COMPANION_BIN="$2"; shift 2 ;;
   --companion-src)    COMPANION_SRC="$2"; shift 2 ;;
   -h|--help)          grep -E '^# ' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -74,10 +79,15 @@ echo "║  instance : ${FINERACT_BASE_URL:-<dry-run>}"
 echo "║  tenant   : ${FINERACT_TENANT}"
 echo "║  companion: ${COMPANION_BASE_URL:-<none>}$([ "$MANAGE_COMP" = 1 ] && echo ' (managed)')"
 echo "║  demo user: ${DEMO_LOGIN:-?}   group: ${DEMO_GROUP:-?}"
+[ "${FINERACT_ONLY:-0}" = 1 ] && echo "║  mode: fineract-only (skips companion + companion-verify)"
 echo "╚══════════════════════════════════════════════════════════════╝"
 
 if [ "$DRY_RUN" = 1 ]; then
-  echo "[dry-run] would: HEALTH → REGISTER(21 datatables) → COMPANION → SEED(demo) → VERIFY(e2e)"
+  if [ "${FINERACT_ONLY:-0}" = 1 ]; then
+    echo "[dry-run] would: HEALTH → REGISTER(21 datatables) → PRODUCTS → SEED(demo)  [fineract-only: companion + verify skipped]"
+  else
+    echo "[dry-run] would: HEALTH → REGISTER(21 datatables) → COMPANION → SEED(demo) → VERIFY(e2e)"
+  fi
   bash "${SCRIPT_DIR}/register-datatables.sh" --dry-run 2>&1 | tail -3
   bash "${SCRIPT_DIR}/seed-demo/seed-demo.sh" --dry-run 2>&1 | tail -3
   echo "✅ dry-run clean — set FINERACT_BASE_URL + COMPANION_BASE_URL and re-run to apply."
@@ -147,35 +157,41 @@ else mark PRODUCTS SKIP "$([ "$VERIFY_ONLY" = 1 ] && echo verify-only || echo --
 # ── Phase 3: COMPANION up + pointed at THIS instance (AUTO-ENSURED) ──────────
 # "Always ready": the companion is never left unset/mispointed. If none is reachable we build
 # (from the mcp-mifosx go dir) + start one pointed at the RESOLVED instance — no silent skip.
-echo; echo "▶ Phase 3 — companion API"
-if [ -z "$COMPANION_SRC" ]; then
-  cand="${SCRIPT_DIR}/../../../../mcp-mifosx/source/mcp-mifosx/go"
-  [ -d "$cand" ] && COMPANION_SRC="$(cd "$cand" && pwd)"
-fi
-comp_probe(){ local b="${1%/companion}"; "${CURL[@]}" -o /dev/null -w '%{http_code}' "$b/companion/groups/1" 2>/dev/null || echo 000; }
-start_companion(){
-  if [ ! -x "$COMPANION_BIN" ] && [ -n "$COMPANION_SRC" ] && command -v go >/dev/null; then
-    echo "  building companion from $COMPANION_SRC …"
-    ( cd "$COMPANION_SRC" && go build -o "$COMPANION_BIN" . ) 2>/tmp/pf_build.$$ || { echo "  ❌ build failed"; sed 's/^/    /' /tmp/pf_build.$$|tail -4; return 1; }
+# --fineract-only SKIPS this phase entirely: a later "deploy" orchestrator provisions the
+# Fineract instance first and repoints/manages the companion as its own separate step.
+if [ "${FINERACT_ONLY:-0}" != 1 ]; then
+  echo; echo "▶ Phase 3 — companion API"
+  if [ -z "$COMPANION_SRC" ]; then
+    cand="${SCRIPT_DIR}/../../../../mcp-mifosx/source/mcp-mifosx/go"
+    [ -d "$cand" ] && COMPANION_SRC="$(cd "$cand" && pwd)"
   fi
-  [ -x "$COMPANION_BIN" ] || { echo "  ❌ no companion binary ($COMPANION_BIN) and no buildable --companion-src"; return 1; }
-  OLD="$(lsof -nP -iTCP:"$COMPANION_PORT" -sTCP:LISTEN -t 2>/dev/null)"; [ -n "$OLD" ] && kill "$OLD" 2>/dev/null; sleep 1
-  MIFOSX_BASE_URL="$FINERACT_BASE_URL" MIFOSX_TENANT_ID="$FINERACT_TENANT" \
-    MIFOSX_USERNAME="$FINERACT_USER" MIFOSX_PASSWORD="$FINERACT_PASSWORD" PORT="$COMPANION_PORT" \
-    nohup "$COMPANION_BIN" >/tmp/companion-live.log 2>&1 & sleep 2
-  COMPANION_BASE_URL="http://localhost:$COMPANION_PORT/companion"
-  echo "  started companion on :$COMPANION_PORT → $FINERACT_BASE_URL"
-}
-# --manage-companion FORCES a (re)start so the companion is guaranteed to point at THIS instance.
-[ "$MANAGE_COMP" = 1 ] && start_companion || true
-# auto-ensure: if still not reachable, bring one up pointed at the resolved instance.
-if [ -z "$COMPANION_BASE_URL" ] || [ "$(comp_probe "$COMPANION_BASE_URL")" = 000 ]; then
-  echo "  companion not reachable — auto-starting one pointed at the resolved instance…"
-  start_companion || true
+  comp_probe(){ local b="${1%/companion}"; "${CURL[@]}" -o /dev/null -w '%{http_code}' "$b/companion/groups/1" 2>/dev/null || echo 000; }
+  start_companion(){
+    if [ ! -x "$COMPANION_BIN" ] && [ -n "$COMPANION_SRC" ] && command -v go >/dev/null; then
+      echo "  building companion from $COMPANION_SRC …"
+      ( cd "$COMPANION_SRC" && go build -o "$COMPANION_BIN" . ) 2>/tmp/pf_build.$$ || { echo "  ❌ build failed"; sed 's/^/    /' /tmp/pf_build.$$|tail -4; return 1; }
+    fi
+    [ -x "$COMPANION_BIN" ] || { echo "  ❌ no companion binary ($COMPANION_BIN) and no buildable --companion-src"; return 1; }
+    OLD="$(lsof -nP -iTCP:"$COMPANION_PORT" -sTCP:LISTEN -t 2>/dev/null)"; [ -n "$OLD" ] && kill "$OLD" 2>/dev/null; sleep 1
+    MIFOSX_BASE_URL="$FINERACT_BASE_URL" MIFOSX_TENANT_ID="$FINERACT_TENANT" \
+      MIFOSX_USERNAME="$FINERACT_USER" MIFOSX_PASSWORD="$FINERACT_PASSWORD" PORT="$COMPANION_PORT" \
+      nohup "$COMPANION_BIN" >/tmp/companion-live.log 2>&1 & sleep 2
+    COMPANION_BASE_URL="http://localhost:$COMPANION_PORT/companion"
+    echo "  started companion on :$COMPANION_PORT → $FINERACT_BASE_URL"
+  }
+  # --manage-companion FORCES a (re)start so the companion is guaranteed to point at THIS instance.
+  [ "$MANAGE_COMP" = 1 ] && start_companion || true
+  # auto-ensure: if still not reachable, bring one up pointed at the resolved instance.
+  if [ -z "$COMPANION_BASE_URL" ] || [ "$(comp_probe "$COMPANION_BASE_URL")" = 000 ]; then
+    echo "  companion not reachable — auto-starting one pointed at the resolved instance…"
+    start_companion || true
+  fi
+  pcode="$([ -n "$COMPANION_BASE_URL" ] && comp_probe "$COMPANION_BASE_URL" || echo 000)"
+  if [ "$pcode" = 200 ] || [ "$pcode" = 404 ]; then echo "  ✅ companion ready (probe → $pcode) at $COMPANION_BASE_URL"; mark COMPANION PASS "$pcode"
+  else echo "  ❌ companion could NOT be ensured (probe → $pcode) — instance NOT app-ready"; mark COMPANION FAIL "$pcode"; fi
+else
+  mark COMPANION SKIP "--fineract-only"
 fi
-pcode="$([ -n "$COMPANION_BASE_URL" ] && comp_probe "$COMPANION_BASE_URL" || echo 000)"
-if [ "$pcode" = 200 ] || [ "$pcode" = 404 ]; then echo "  ✅ companion ready (probe → $pcode) at $COMPANION_BASE_URL"; mark COMPANION PASS "$pcode"
-else echo "  ❌ companion could NOT be ensured (probe → $pcode) — instance NOT app-ready"; mark COMPANION FAIL "$pcode"; fi
 
 # ── Phase 4: SEED demo ───────────────────────────────────────────────────────
 if [ "$VERIFY_ONLY" = 0 ] && [ "$SKIP_SEED" = 0 ]; then
@@ -188,37 +204,44 @@ if [ "$VERIFY_ONLY" = 0 ] && [ "$SKIP_SEED" = 0 ]; then
 else mark SEED SKIP "$([ "$VERIFY_ONLY" = 1 ] && echo verify-only || echo --skip-seed)"; fi
 
 # ── Phase 5: VERIFY end-to-end (the app-facing surface) ──────────────────────
-echo; echo "▶ Phase 5 — end-to-end verify (demo login → real data)"
-vpass=0; vtotal=0
-vcheck(){ vtotal=$((vtotal+1)); local d="$1" c="$2" ok="$3"
-  if [ "$c" = 200 ] && [ "$ok" = 1 ]; then echo "  ✅ $d ($c)"; vpass=$((vpass+1))
-  else echo "  ❌ $d (http=$c)"; fi; }
-if [ -n "$COMPANION_BASE_URL" ]; then
-  CB="${COMPANION_BASE_URL%/companion}"
-  login="$("${CURL[@]}" -w '\n%{http_code}' -X POST "$CB/companion/auth/login" -H 'Content-Type: application/json' \
-      -d "{\"emailPhone\":\"$DEMO_LOGIN\",\"password\":\"$DEMO_PASS\"}" 2>/dev/null)"
-  lcode="$(printf '%s' "$login" | tail -1)"; ltok="$(printf '%s' "$login" | sed '$d' | jq -r '.sessionToken // empty' 2>/dev/null)"
-  vcheck "demo login" "$lcode" "$([ -n "$ltok" ] && echo 1 || echo 0)"
-  H=(-H "Authorization: Bearer $ltok")
-  d="$("${CURL[@]}" "${H[@]}" -w '\n%{http_code}' "$CB/companion/organizer/dashboard" 2>/dev/null)"
-  vcheck "organizer dashboard" "$(printf '%s' "$d"|tail -1)" "$(printf '%s' "$d"|sed '$d'|jq -e '.myGroupCount>=0' >/dev/null 2>&1 && echo 1||echo 0)"
-  g="$("${CURL[@]}" -w '\n%{http_code}' "$CB/companion/groups" 2>/dev/null)"
-  gcode="$(printf '%s' "$g"|tail -1)"; GID="$(printf '%s' "$g"|sed '$d'|jq -r --arg n "$DEMO_GROUP" '.pageItems[]? | select(.name|test($n)) | .id' 2>/dev/null|head -1)"
-  [ -z "$GID" ] && GID="$(printf '%s' "$g"|sed '$d'|jq -r '.pageItems[0].id // empty' 2>/dev/null)"
-  vcheck "groups list (seeded group present)" "$gcode" "$([ -n "$GID" ] && echo 1||echo 0)"
-  if [ -n "$GID" ]; then
-    for pair in "members:/companion/groups/$GID/members" "savings:/companion/groups/$GID/savings" \
-                "corpus:/companion/groups/$GID/corpus" "loans:/groups/$GID/loans"; do
-      lbl="${pair%%:*}"; path="${pair#*:}"
-      r="$("${CURL[@]}" -o /dev/null -w '%{http_code}' "$CB$path" 2>/dev/null||echo 000)"
-      vcheck "group $lbl" "$r" 1
-    done
-  fi
-  # loan-apply readiness: the companion must expose ≥1 KES VSLA loan product to the picker.
-  lp="$("${CURL[@]}" -w '\n%{http_code}' "$CB/loanproducts" 2>/dev/null)"
-  vcheck "loan products (≥1 VSLA/KES)" "$(printf '%s' "$lp"|tail -1)" \
-    "$(printf '%s' "$lp"|sed '$d'|jq -e 'map(select(.currency.code=="KES"))|length>=1' >/dev/null 2>&1 && echo 1||echo 0)"
-else echo "  ❌ no companion — cannot verify the app surface"; vtotal=1; fi
+# --fineract-only SKIPS this phase entirely: with no companion (re)pointed at this instance
+# (Phase 3 skipped) there is no app-facing surface to verify yet — that happens in the
+# deploy orchestrator's own verify step, after it repoints the companion.
+vpass=0; vtotal=0; VERIFY_SKIPPED=0
+if [ "${FINERACT_ONLY:-0}" != 1 ]; then
+  echo; echo "▶ Phase 5 — end-to-end verify (demo login → real data)"
+  vcheck(){ vtotal=$((vtotal+1)); local d="$1" c="$2" ok="$3"
+    if [ "$c" = 200 ] && [ "$ok" = 1 ]; then echo "  ✅ $d ($c)"; vpass=$((vpass+1))
+    else echo "  ❌ $d (http=$c)"; fi; }
+  if [ -n "$COMPANION_BASE_URL" ]; then
+    CB="${COMPANION_BASE_URL%/companion}"
+    login="$("${CURL[@]}" -w '\n%{http_code}' -X POST "$CB/companion/auth/login" -H 'Content-Type: application/json' \
+        -d "{\"emailPhone\":\"$DEMO_LOGIN\",\"password\":\"$DEMO_PASS\"}" 2>/dev/null)"
+    lcode="$(printf '%s' "$login" | tail -1)"; ltok="$(printf '%s' "$login" | sed '$d' | jq -r '.sessionToken // empty' 2>/dev/null)"
+    vcheck "demo login" "$lcode" "$([ -n "$ltok" ] && echo 1 || echo 0)"
+    H=(-H "Authorization: Bearer $ltok")
+    d="$("${CURL[@]}" "${H[@]}" -w '\n%{http_code}' "$CB/companion/organizer/dashboard" 2>/dev/null)"
+    vcheck "organizer dashboard" "$(printf '%s' "$d"|tail -1)" "$(printf '%s' "$d"|sed '$d'|jq -e '.myGroupCount>=0' >/dev/null 2>&1 && echo 1||echo 0)"
+    g="$("${CURL[@]}" -w '\n%{http_code}' "$CB/companion/groups" 2>/dev/null)"
+    gcode="$(printf '%s' "$g"|tail -1)"; GID="$(printf '%s' "$g"|sed '$d'|jq -r --arg n "$DEMO_GROUP" '.pageItems[]? | select(.name|test($n)) | .id' 2>/dev/null|head -1)"
+    [ -z "$GID" ] && GID="$(printf '%s' "$g"|sed '$d'|jq -r '.pageItems[0].id // empty' 2>/dev/null)"
+    vcheck "groups list (seeded group present)" "$gcode" "$([ -n "$GID" ] && echo 1||echo 0)"
+    if [ -n "$GID" ]; then
+      for pair in "members:/companion/groups/$GID/members" "savings:/companion/groups/$GID/savings" \
+                  "corpus:/companion/groups/$GID/corpus" "loans:/groups/$GID/loans"; do
+        lbl="${pair%%:*}"; path="${pair#*:}"
+        r="$("${CURL[@]}" -o /dev/null -w '%{http_code}' "$CB$path" 2>/dev/null||echo 000)"
+        vcheck "group $lbl" "$r" 1
+      done
+    fi
+    # loan-apply readiness: the companion must expose ≥1 KES VSLA loan product to the picker.
+    lp="$("${CURL[@]}" -w '\n%{http_code}' "$CB/loanproducts" 2>/dev/null)"
+    vcheck "loan products (≥1 VSLA/KES)" "$(printf '%s' "$lp"|tail -1)" \
+      "$(printf '%s' "$lp"|sed '$d'|jq -e 'map(select(.currency.code=="KES"))|length>=1' >/dev/null 2>&1 && echo 1||echo 0)"
+  else echo "  ❌ no companion — cannot verify the app surface"; vtotal=1; fi
+else
+  VERIFY_SKIPPED=1
+fi
 
 # ── Phase 6: SUMMARY ─────────────────────────────────────────────────────────
 echo; echo "$(fin 64)"; echo "  PREFLIGHT SUMMARY"; echo "$(fin 64)"
@@ -226,8 +249,12 @@ red=0
 for r in "${RESULTS[@]}"; do IFS='|' read -r ph st dt <<<"$r"
   ic="✅"; [ "$st" = FAIL ] && { ic="❌"; red=1; }; [ "$st" = SKIP ] && ic="⏭️"; [ "$st" = WARN ] && ic="⚠️"
   printf "  %s  %-10s %-6s %s\n" "$ic" "$ph" "$st" "$dt"; done
-printf "  %s  %-10s %-6s %s\n" "$([ "$vpass" = "$vtotal" ] && [ "$vtotal" -gt 0 ] && echo ✅ || echo ❌)" "VERIFY" "$vpass/$vtotal" "app-facing endpoints"
-[ "$vpass" = "$vtotal" ] && [ "$vtotal" -gt 0 ] || red=1
+if [ "$VERIFY_SKIPPED" = 1 ]; then
+  printf "  %s  %-10s %-6s %s\n" "⏭️" "VERIFY" "SKIP" "--fineract-only"
+else
+  printf "  %s  %-10s %-6s %s\n" "$([ "$vpass" = "$vtotal" ] && [ "$vtotal" -gt 0 ] && echo ✅ || echo ❌)" "VERIFY" "$vpass/$vtotal" "app-facing endpoints"
+  [ "$vpass" = "$vtotal" ] && [ "$vtotal" -gt 0 ] || red=1
+fi
 echo "$(fin 64)"
 if [ "$red" = 0 ]; then echo "  ✅ GREEN — instance provisioned + verified end-to-end. App is ready."; exit 0
 else echo "  ❌ RED — one or more phases failed (see above). NOT production-ready."; exit 1; fi
