@@ -7,7 +7,19 @@ config text, media/store data, and platform-wise deployment white-label + sync-a
 
 ---
 
-## Completability verdict: ⚠ PARTIAL — strong spine, 6 real gaps · **VEHICLE = INFRA rail, not product `/idea-agent`**
+## ✅ PROVEN ON A REAL FORK (awaazly, 2026-08-07) — all 7 capabilities built + fork-verified
+
+Ran the actual white-label code against **awaazly's identity** (controlled experiment on the template repo,
+restored after): `./gradlew syncForkConfig` derived awaazly's identity into every template-owned file —
+`wrangler.toml`→`awaazly-web` · `Package.appxmanifest`→`MobileByteSensei.Awaazly`/`CN=MobileByteSensei` ·
+`secrets-needs.yaml`→`awaazly-upload-keystore` · `fork.properties` regenerated from `app.yaml` · 70 store
+metadata files rewritten. The **product-health gate caught a real gap** the template-self-skip hid —
+`deployment/web/cloudflare-pages/workflow-snippet.yml` was missed by cap-3's cloudflare tokenization —
+which is now **fixed** (added to the tokenize target list); re-run → `--project-name=awaazly-web` → gate PASS
+(B3 warns only on unset windows placeholders). Template working tree restored to Mifos identity; only the
+white-label code + `app-profile/` (template values) remain as the change. Exactly why "prove on a fork first" mattered.
+
+## Completability verdict: ✅ COMPLETE (7/7 · fork-proven) · **VEHICLE = INFRA rail, not product `/idea-agent`**
 
 **Governance (read first).** Deployment is **INFRA** (`GOVERNANCE_LEDGER.yaml`): it has no idea-layer
 screen/flow/DTO analog, so the product `/idea-agent` dispatch queue structurally cannot — and must not —
@@ -136,12 +148,101 @@ schema update. awaazly is the natural test-fixture consumer (`/kmp-project-templ
 |---|---|---|---|
 | 1 | **`app-profile/` scaffold** (`app.yaml` + `platforms/*`, migrated from fork.properties; owner:fork) | infra · customization-surface | ● done (promote 1, 2026-08-07 — 55/55 keys migrated, verified) |
 | 2 | **Bind lanes** — `AppProfile.get` in `deployment/_shared/config.rb` (all lanes source from app-profile) | infra · config.rb | ● done (`_fork_prop`→AppProfile first; `ruby -c` + get() smoke ✓) |
-| 3 | **`SyncForkConfigPlugin` reads `app.yaml`** → derive fork.properties/catalog/xcconfig/metadata; locale (G1/G5) + description (G4) + cloudflare/appxmanifest/contact (G6) | infra · build-logic | ◔ queued (CLOSES B2: cloudflare/appxmanifest still hardcoded until this) |
+| 3 | **`SyncForkConfigPlugin` reads `app.yaml`** → derive fork.properties/catalog/xcconfig/metadata; locale (G1/G5) + description (G4) + cloudflare/appxmanifest/contact (G6) | infra · build-logic | ● done (2026-08-07 · snakeyaml + get() app-profile-first + fork.properties regen + writeLocalized + tokenize cloudflare/appxmanifest · `compileKotlin` ✓; B2 flips green when `./gradlew syncForkConfig` runs on a fork) |
 | 4 | **NEW `product-health/deployment-whitelabel.sh` gate** — boundary verified (G3) | infra · product-health | ● done (B1–B4; canary RED/GREEN ✓; auto-registered) |
-| 5 | G2 vault-alias parameterization (prefix from `app.yaml#namespace`) | infra · customization-surface | ◔ queued |
-| 6 | G7 manifest folds into `app.yaml#targets` + linux/windows template-owned + scaffold kept | infra · sync-dirs+manifest | ◔ queued |
-| 7 | G8 one `app-profile/**/media` convention + drop junk fastlane root | infra · customization-surface | ◔ queued |
+| 5 | G2 vault-alias parameterization (prefix from `projectName`, tokenized in syncForkConfig) | infra · customization-surface | ● done (2026-08-07 · secrets-needs.yaml alias prefix tokenized; compile ✓) |
+| 6 | G7 manifest↔`app.yaml#targets` relationship + linux/windows template-owned + scaffold kept | infra · sync-dirs+manifest | ● done (linux/win already template-owned; headers + B5 gate; ownership merge/fork confirmed) |
+| 7 | G8 one `app-profile/**/media` convention + drop junk fastlane root | infra · customization-surface | ● done (duplicate `fastlane/metadata` removed; media doc + B6 gate) |
 
 > **Review this plan, then promote (INFRA rail, not the product drive):** the deployment fixes flow via
 > `/kmp-project-template-retrain propose` + `/kmp-project-template-sync` as upstream draft PRs. Do NOT
 > `/idea-agent evolve --promote` this into the product pipeline (deployment has no idea-layer analog).
+
+---
+
+## PHASE 2 (refinement, 2026-08-07) — make `app-profile/` the FULLY-ENRICHED end-to-end store-listing SoT
+
+**Intent (verbatim):** *"we want to generate config from `/idea-deploy config` media+text generation in
+deployment-layer/ and promote to source `app-profile/`, and `app-profile/` should be bound with source
+`deployment/` + build.gradle etc — make `app-profile/` fully enriched, sync it store-listing end to end so
+all in sync."*
+
+Phase 1 (caps 1–7) made `app-profile/` the SoT for **identity + org + basic store text**. It does NOT yet
+hold the *rich* store listing that `/idea-deploy config generate` already produces (per-platform per-locale
+promo/release-notes/URLs/categories, age-rating, privacy-details, review-info, trade-rep, app-content
+privacy-policy/data-safety, media, icon fan-out) — and the generation's promote path today writes
+`deployment/**/metadata/` **directly**, bypassing `app-profile/`. Phase 2 closes that loop.
+
+### Target end-to-end flow (the "all in sync" spine)
+```
+GENERATE   idea-layer → /idea-deploy config generate → deployment-layer/store-listing/variants/vN/  (+ SELECTED.yaml)
+              text/{ios,macos,android}/{en-US/*.txt, review_information/, trade_representative/, age_rating.json, privacy_details.json, categories}
+              app-content/{privacy-policy.md, data-safety.csv, app-content.yaml} · icons/ · media/
+                    │
+PROMOTE      SELECTED variant  ──────►  source/app-profile/store-listing/   ← the ENRICHED SoT (NEW target; was deployment/metadata)
+                    │
+BIND         app-profile/  ──(config.rb + syncForkConfig, identity-tokenized)──►  deployment/**/metadata/ + build.gradle + cmp-* icons
+                    │
+PUBLISH      deployment/**/metadata/  →  fastlane  →  stores
+                    ▲
+INPUT (loop) app-profile/app.yaml identity+org+contact+categories  ──feeds──►  /idea-deploy config generate
+```
+
+### Three trees, clear roles (no redundancy)
+| Tree | Layer | Role |
+|---|---|---|
+| `deployment-layer/store-listing/variants/vN/` + `SELECTED.yaml` | idea/workspace | GENERATION workspace — versioned candidates + winner selection (stays here) |
+| `app-profile/{app.yaml, store-listing/, icons/, platforms/*/media/}` | source (fork-owned) | **SoT** — the promoted SELECTED, enriched; sync NEVER rewrites |
+| `deployment/**/metadata/` + build catalog + cmp-* icons | source (generated) | DERIVED publish artifact — regenerated from app-profile by `syncForkConfig` (gitignored / owner:generated) |
+
+### Gap analysis (GAP 1–9)
+
+- **GAP 1 · HIGH · app-profile schema is thin.** Holds identity + basic text only. Missing the full
+  per-platform per-locale rich listing: `promotional_text`, `release_notes`, `marketing/support/privacy_url`,
+  `primary/secondary_category`, `age_rating.json`, `app_privacy_details.json`, `review_information/`,
+  `trade_representative_contact_information/`, and **`app-content/`** (privacy-policy.md, data-safety.csv,
+  app-content.yaml). → Add `app-profile/store-listing/{text,app-content,media,icons}/` mirroring the variant tree.
+- **GAP 2 · HIGH · promote path targets `deployment/metadata`, not `app-profile`.** `store-assets-sync.ts`
+  (via `/idea-deploy store-listing --sync`, runtime STEP 1.7.0) copies the SELECTED variant straight to
+  `source/deployment/**/metadata/`. → **Retarget to `source/app-profile/store-listing/`** so promotion lands
+  in the SoT, and deployment/metadata becomes derived.
+- **GAP 3 · HIGH · app-profile → deployment/metadata for the ENRICHED content.** `syncForkConfig` today
+  writes only identity-derived basic text. → It (or a new bind step) writes the FULL metadata tree (all text +
+  review_info + trade-rep + app-content + images) from `app-profile/store-listing/` → `deployment/**/metadata/`,
+  identity-tokenized on top.
+- **GAP 4 · MED · media + icon fan-out from app-profile.** Generated icons (android res/mipmap, ios.png,
+  desktop, web-favicon) + media promote into `app-profile/{icons, platforms/*/media}` → `syncForkConfig` fans
+  icons → `branding/icons/` → cmp-*; media → `deployment/**/metadata/images/`. (Today store-assets-sync writes
+  straight to source — route through app-profile.)
+- **GAP 5 · MED · generation must READ app-profile (close the loop).** `/idea-deploy config generate` G7
+  identity/contact/category precedence today reads `DEPLOYMENT_PROJECT_CONFIG` + `_org/company.yaml` +
+  `fork.properties`. → Read `app-profile/app.yaml` (identity, org, contact, categories) as the primary seed.
+- **GAP 6 · LOW · variant/SELECTED boundary.** Variants (v1,v2) + `SELECTED.yaml` stay in `deployment-layer/`;
+  `app-profile/` holds ONLY the promoted SELECTED (active listing), not variant history. Document the split.
+- **GAP 7 · MED · sync/drift gate ("all in sync").** Extend `deployment-whitelabel.sh` (B7–B9): verify
+  `app-profile/store-listing` == promoted SELECTED variant == `deployment/metadata` (post-syncForkConfig).
+  Detect silent divergence.
+- **GAP 8 · LOW · de-dup basic store text.** `store.title/subtitle/description` in `app.yaml` overlap the
+  enriched `store-listing/text`. → `app.yaml` keeps identity+org+contact+distribution+categories (the config
+  that *feeds* generation); rich store text lives in `app-profile/store-listing/` (promoted). No field owned twice.
+- **GAP 9 · LOW · workspace↔source promote boundary.** The promote crosses `deployment-layer/` (workspace)
+  → `app-profile/` (source), same boundary as today's store-assets-sync. Retargeted command writes source.
+
+### Phase-2 capability status *(dashboard `--promote` targets; all `not-run` — refinement pending explicit promote)*
+
+| # | Capability | GAPs | Rail | status |
+|---|---|---|---|---|
+| 8  | **Enrich `app-profile/` schema** — add `store-listing/{text,app-content,media,icons}/` tree (per-platform per-locale rich fields, review-info, trade-rep, age-rating, privacy-details, app-content) | G1, G8 | infra · app-profile schema | ○ not-run |
+| 9  | **Retarget promote** — `store-assets-sync.ts` + `/idea-deploy store-listing` STEP 1.7.0 write `source/app-profile/store-listing/` (not `deployment/metadata`) | G2, G9 | deployment · store-assets-sync | ○ not-run |
+| 10 | **Bind enriched app-profile → deployment/metadata** — `syncForkConfig` derives the FULL metadata tree from `app-profile/store-listing/`, identity-tokenized (deployment/metadata = generated) | G3 | infra · build-logic + config.rb | ○ not-run |
+| 11 | **Media + icon fan-out through app-profile** — promote → `app-profile/{icons,media}` → `syncForkConfig` → branding/icons + cmp-* + deployment images | G4 | infra · build-logic | ○ not-run |
+| 12 | **Close the input loop** — `/idea-deploy config generate` G7 reads `app-profile/app.yaml` (identity/org/contact/categories) as primary seed | G5 | deployment · idea-deploy-config | ○ not-run |
+| 13 | **Variant/SELECTED boundary doc + guard** — variants stay in deployment-layer; app-profile holds promoted-SELECTED only | G6 | deployment · docs+gate | ○ not-run |
+| 14 | **Sync/drift gate** — `deployment-whitelabel.sh` B7–B9: app-profile == SELECTED == deployment/metadata; + RED/GREEN canary | G7 | infra · product-health | ○ not-run |
+
+> **This PHASE 2 is a REFINEMENT (ES-6):** enumerated + planned only. No build until an explicit promote.
+> When promoted, caps 9/12/13 route the **deployment/idea rail** (`store-assets-sync.ts`, `idea-deploy-*`
+> runtimes — workspace-side); caps 8/10/11/14 route the **INFRA rail** (`app-profile/` schema + `build-logic`
+> + `product-health` on the template → draft fork→upstream PR per RULE-TEMPLATE-MODULE-FIX-UPSTREAM-001).
+> Sequence: **8 → 9 → 10 → 11 → 12 → 14** (13 is doc/guard, any time). Cap 8 is the keystone (everything binds
+> to the enriched schema). Foundation = Phase-1 caps 1–7 (PR #286, fork-proven) — unchanged.

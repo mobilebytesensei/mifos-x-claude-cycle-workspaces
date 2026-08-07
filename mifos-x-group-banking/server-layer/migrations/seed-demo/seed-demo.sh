@@ -5,9 +5,11 @@
 # =============================================================================
 #
 # WHAT IT SEEDS (one fully-populated group PER catalogue archetype — 9 groups —
-# plus 4 self-registered demo LOGIN accounts distributed as members):
+# plus 6 self-registered demo LOGIN accounts, one per user type, distributed as members):
 #
-#   0. demo LOGIN accounts   companion /auth/self-register (Amina, David, Grace, Joseph)
+#   0. demo LOGIN accounts   companion /auth/self-register — one per user type:
+#                            Amina (treasurer), Joseph (chairperson), Grace (member),
+#                            Faith (organizer), Peter (secretary), David (field officer)
 #   1. group + type-config   companion POST /companion/groups (captures fineractGroupId)
 #   2. members + roles       regular -> companion POST /companion/members (client+associate+role);
 #                            demo    -> resolve self-registered client + associate + dt_member_role
