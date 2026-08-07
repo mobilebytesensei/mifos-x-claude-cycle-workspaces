@@ -63,9 +63,16 @@ command -v curl >/dev/null || { echo "FATAL: curl required" >&2; exit 3; }
 command -v jq   >/dev/null || { echo "FATAL: jq required" >&2; exit 3; }
 CURL=(curl -sS --max-time 60); [ "$INSECURE" = 1 ] && CURL+=(-k)
 FIXTURE="${SCRIPT_DIR}/seed-demo/demo-fixture.json"
-DEMO_LOGIN="$(jq -r '.demo_user.emailPhone' "$FIXTURE" 2>/dev/null)"
-DEMO_PASS="$(jq -r '.demo_user.password' "$FIXTURE" 2>/dev/null)"
-DEMO_GROUP="$(jq -r 'if (.group|type)=="object" then .group.name else .group end' "$FIXTURE" 2>/dev/null)"
+# Phase-5 demo login creds — read from the fixture's real `.demo_accounts[]` shape (the primary
+# showcase account [0], e.g. the VSLA organizer). The legacy `.demo_user.*` keys are kept as a
+# fallback but no shipped fixture uses them — reading only `.demo_user` yielded `demo user: null`
+# and a guaranteed 401 on every --verify-only run regardless of instance health (fixture-key
+# mismatch heal). `empty` avoids the literal string "null" leaking into the login body.
+DEMO_LOGIN="$(jq -r '.demo_accounts[0].email_phone // .demo_user.emailPhone // empty' "$FIXTURE" 2>/dev/null)"
+DEMO_PASS="$(jq -r '.demo_accounts[0].password // .demo_user.password // empty' "$FIXTURE" 2>/dev/null)"
+# Primary showcase group = the demo account's `primary_group_local_id` resolved to a name in
+# `.groups[]` (fall back to the first group, then the legacy singular `.group`).
+DEMO_GROUP="$(jq -r '(.demo_accounts[0].primary_group_local_id) as $g | (.groups[]? | select(.local_id==$g) | .name) // .groups[0].name // (if (.group|type)=="object" then .group.name elif (.group|type)=="string" then .group else empty end) // empty' "$FIXTURE" 2>/dev/null)"
 
 # ── phase-result accounting ──────────────────────────────────────────────────
 declare -a RESULTS
@@ -222,7 +229,7 @@ if [ "${FINERACT_ONLY:-0}" != 1 ]; then
     H=(-H "Authorization: Bearer $ltok")
     d="$("${CURL[@]}" "${H[@]}" -w '\n%{http_code}' "$CB/companion/organizer/dashboard" 2>/dev/null)"
     vcheck "organizer dashboard" "$(printf '%s' "$d"|tail -1)" "$(printf '%s' "$d"|sed '$d'|jq -e '.myGroupCount>=0' >/dev/null 2>&1 && echo 1||echo 0)"
-    g="$("${CURL[@]}" -w '\n%{http_code}' "$CB/companion/groups" 2>/dev/null)"
+    g="$("${CURL[@]}" "${H[@]}" -w '\n%{http_code}' "$CB/companion/groups" 2>/dev/null)"
     gcode="$(printf '%s' "$g"|tail -1)"; GID="$(printf '%s' "$g"|sed '$d'|jq -r --arg n "$DEMO_GROUP" '.pageItems[]? | select(.name|test($n)) | .id' 2>/dev/null|head -1)"
     [ -z "$GID" ] && GID="$(printf '%s' "$g"|sed '$d'|jq -r '.pageItems[0].id // empty' 2>/dev/null)"
     vcheck "groups list (seeded group present)" "$gcode" "$([ -n "$GID" ] && echo 1||echo 0)"
@@ -230,7 +237,7 @@ if [ "${FINERACT_ONLY:-0}" != 1 ]; then
       for pair in "members:/companion/groups/$GID/members" "savings:/companion/groups/$GID/savings" \
                   "corpus:/companion/groups/$GID/corpus" "loans:/groups/$GID/loans"; do
         lbl="${pair%%:*}"; path="${pair#*:}"
-        r="$("${CURL[@]}" -o /dev/null -w '%{http_code}' "$CB$path" 2>/dev/null||echo 000)"
+        r="$("${CURL[@]}" "${H[@]}" -o /dev/null -w '%{http_code}' "$CB$path" 2>/dev/null||echo 000)"
         vcheck "group $lbl" "$r" 1
       done
     fi

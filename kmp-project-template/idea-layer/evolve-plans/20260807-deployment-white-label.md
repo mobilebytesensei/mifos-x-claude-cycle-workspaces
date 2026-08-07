@@ -69,20 +69,57 @@ never propagated to consumers" — **extensions, not new infrastructure.**
 
 ---
 
-## Fix direction (bottom-up — extend the existing spine, never a parallel one)
+## Architecture decision (LOCKED 2026-08-07): `app-profile/` — one per-platform fork-owned SoT
 
-1. **fork.properties schema** (SoT) — add: `store.description` (+ `store.{ios,android,macos}.description`),
-   `store.ios.secondary.category`, `store.primary.locale` honored, contact/trade-rep keys, confirm windows/
-   cloudflare keys. (Keys mostly already exist per the template audit §4.)
-2. **`SyncForkConfigPlugin`** (generator) — add `writeIfPresent(...)` for: primary-locale metadata dir (G1/G5),
-   `store.description` targets (G4), cloudflare `wrangler.toml`/`config.yaml` (G6), MS-Store appxmanifest (G6).
-3. **vault-alias parameterization** (G2) — prefix from projectName; or `secrets-needs.yaml` → fork/merge in
-   `customization-surface.yaml`.
-4. **propagate enforcement** (G3/G7) — `scripts/product-health/` + `DEPLOYMENT_MANIFEST.yaml` + `PROMOTION_LOG.yaml`
-   become part of the synced white-label deploy layer (extend `fork-identity.sh` TEMPLATE_DEFAULTS to catch
-   `mifos-x-web`, `MifosInitiative.MoneyToolkit`, stale en-US store name, placeholder firebase/windows ids).
-5. **media convention** (G8) — one canonical location, reconcile the two trees, drop the junk fastlane root.
-6. **template owns linux/windows targets** (G7) so forks don't hand-add.
+Supersedes the earlier "text in fork.properties + media in a separate dir" split. The whole-project
+white-label data lives in ONE fork-owned module the deployment logic binds to:
+
+```
+app-profile/                     ← owner: fork · project-level SoT · sync NEVER rewrites
+  app.yaml                       ← COMMON: identity, org, shared store text, media root
+  platforms/
+    android/  { android.yaml,  media/screenshots/{phone,sevenInch,tenInch}/ · feature-graphic/ }
+    apple/    { apple.yaml (team_id·match·ASC contact·keywords·categories),
+                ios/{ios.yaml, media/screenshots/{iPhone_6.9,iPad_13}/},
+                macos/{macos.yaml, media/screenshots/} }
+    web/      { web.yaml (cloudflare project·base url·og),  media/og-images/ }
+    desktop/  { desktop.yaml (win msix·linux deb·categories), media/screenshots/{hd,qhd,fhd}/ }
+  icons/                         ← shared icon source (platform icons derived by syncForkConfig)
+```
+
+- **Shared-once / override-per-platform:** `app.yaml` = identity/org + base title/description; each
+  `platforms/<p>/<p>.yaml` holds only that store's differences (Android short-desc+changelog · Apple
+  keywords+categories · web cloudflare · desktop msix/deb). No duplication. Media lives with its platform
+  (collapses the G8 two-tree collision into one location).
+- **`fork.properties` is KEPT but DEMOTED to a GENERATED build-bridge** (owner: generated). Gradle keeps
+  its native `.properties` fast path at config time; a human NEVER edits it — `./gradlew syncForkConfig`
+  DERIVES `fork.properties` + `libs.versions.toml#appId` + `Config.xcconfig` + metadata `.txt` FROM
+  `app-profile/app.yaml`. One human SoT (yaml), zero build-path change.
+- **Binding:** the fastlane lanes already go through `deployment/_shared/config.rb` (`ForkIdentity`,
+  `TESTFLIGHT_CONFIG`, `APPSTORE_CONFIG`, `get_firebase_config`, `TESTERS`) → add ONE resolver
+  `AppProfile.load` reading `app-profile/**` so every lane sources from it with no per-lane change.
+- **Boundary (customization-surface.yaml):** `app-profile/** → owner: fork` (sync can't overwrite) ·
+  `fork.properties`+catalog+metadata `.txt` → `owner: generated` (ignored) · `deployment/**` logic +
+  `SyncForkConfigPlugin` + `scripts/product-health/**` → `owner: template` (COPIED EXACTLY by sync).
+
+## Fix direction (bottom-up — build the `app-profile/` island, bind it, gate it)
+
+1. **Scaffold `app-profile/`** — `app.yaml` + `platforms/*/` skeleton, migrated from the current
+   `fork.properties` values; mark `owner: fork` in `customization-surface.yaml`.
+2. **Bind the lanes** — add `AppProfile.load` to `deployment/_shared/config.rb`; every `config.rb` accessor
+   sources from `app-profile/**` (identity, org, per-platform store text, distribution ids, media paths).
+3. **`SyncForkConfigPlugin` reads `app.yaml`** — derive `fork.properties` (bridge) + catalog + xcconfig +
+   metadata `.txt` (build artifacts, gitignored). Honor `store.primary.locale` (G1/G5); write long
+   `description` (G4); cover cloudflare + MS-Store appxmanifest + contact/trade-rep (G6).
+4. **NEW product-health gate `deployment-whitelabel.sh`** — verifies the boundary: `app-profile/` present +
+   filled (no `YOUR_*`/placeholder), NO store-bound literal in any `owner: template` deployment file, no
+   template-default identity (`mifos-x-web`, `MifosInitiative.MoneyToolkit`, stale en-US store name,
+   `org.mifos.kmp.template`, placeholder firebase/windows ids) survives. Extends `fork-identity.sh`.
+5. **vault-alias parameterization** (G2) — alias prefix from `app.yaml#identity.namespace`; or
+   `secrets-needs.yaml` → fork/merge ownership.
+6. **manifest/promotion/health scaffold + linux/windows ownership** (G7) — `DEPLOYMENT_MANIFEST` folds into
+   `app.yaml#targets`; template owns linux/windows targets; scaffold kept per-consumer.
+7. **media convention** (G8) — one `app-profile/platforms/<p>/media/**` location; drop the junk fastlane root.
 
 ## Vehicle + how to promote
 
@@ -97,14 +134,13 @@ schema update. awaazly is the natural test-fixture consumer (`/kmp-project-templ
 
 | # | Capability | Rail | status |
 |---|---|---|---|
-| 1 | G1 iOS primary-locale metadata sync | infra · syncForkConfig | ○ not-run |
-| 2 | G2 vault-alias parameterization | infra · customization-surface | ○ not-run |
-| 3 | G3 propagate product-health drift gate to consumers | infra · retrain | ○ not-run |
-| 4 | G4 `store.description` schema + generator | infra · fork.properties+plugin | ○ not-run |
-| 5 | G5 locale parameterization | infra · syncForkConfig | ○ not-run |
-| 6 | G6 contact/cloudflare/appxmanifest coverage | infra · syncForkConfig | ○ not-run |
-| 7 | G7 manifest/promotion/health scaffold + linux/windows ownership | infra · sync-dirs+manifest | ○ not-run |
-| 8 | G8 media convention + junk-root cleanup | infra · customization-surface | ○ not-run |
+| 1 | **`app-profile/` scaffold** (`app.yaml` + `platforms/*`, migrated from fork.properties; owner:fork) | infra · customization-surface | ● done (promote 1, 2026-08-07 — 55/55 keys migrated, verified) |
+| 2 | **Bind lanes** — `AppProfile.get` in `deployment/_shared/config.rb` (all lanes source from app-profile) | infra · config.rb | ● done (`_fork_prop`→AppProfile first; `ruby -c` + get() smoke ✓) |
+| 3 | **`SyncForkConfigPlugin` reads `app.yaml`** → derive fork.properties/catalog/xcconfig/metadata; locale (G1/G5) + description (G4) + cloudflare/appxmanifest/contact (G6) | infra · build-logic | ◔ queued (CLOSES B2: cloudflare/appxmanifest still hardcoded until this) |
+| 4 | **NEW `product-health/deployment-whitelabel.sh` gate** — boundary verified (G3) | infra · product-health | ● done (B1–B4; canary RED/GREEN ✓; auto-registered) |
+| 5 | G2 vault-alias parameterization (prefix from `app.yaml#namespace`) | infra · customization-surface | ◔ queued |
+| 6 | G7 manifest folds into `app.yaml#targets` + linux/windows template-owned + scaffold kept | infra · sync-dirs+manifest | ◔ queued |
+| 7 | G8 one `app-profile/**/media` convention + drop junk fastlane root | infra · customization-surface | ◔ queued |
 
 > **Review this plan, then promote (INFRA rail, not the product drive):** the deployment fixes flow via
 > `/kmp-project-template-retrain propose` + `/kmp-project-template-sync` as upstream draft PRs. Do NOT
