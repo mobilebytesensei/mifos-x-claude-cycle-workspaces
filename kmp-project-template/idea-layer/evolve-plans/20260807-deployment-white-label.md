@@ -228,21 +228,63 @@ INPUT (loop) app-profile/app.yaml identity+org+contact+categories  ──feeds�
 - **GAP 9 · LOW · workspace↔source promote boundary.** The promote crosses `deployment-layer/` (workspace)
   → `app-profile/` (source), same boundary as today's store-assets-sync. Retargeted command writes source.
 
-### Phase-2 capability status *(dashboard `--promote` targets; all `not-run` — refinement pending explicit promote)*
+## ✅ PHASE 2 PROMOTED + PROVEN END-TO-END (2026-08-07) — all 7 caps built + verified
 
-| # | Capability | GAPs | Rail | status |
-|---|---|---|---|---|
-| 8  | **Enrich `app-profile/` schema** — add `store-listing/{text,app-content,media,icons}/` tree (per-platform per-locale rich fields, review-info, trade-rep, age-rating, privacy-details, app-content) | G1, G8 | infra · app-profile schema | ○ not-run |
-| 9  | **Retarget promote** — `store-assets-sync.ts` + `/idea-deploy store-listing` STEP 1.7.0 write `source/app-profile/store-listing/` (not `deployment/metadata`) | G2, G9 | deployment · store-assets-sync | ○ not-run |
-| 10 | **Bind enriched app-profile → deployment/metadata** — `syncForkConfig` derives the FULL metadata tree from `app-profile/store-listing/`, identity-tokenized (deployment/metadata = generated) | G3 | infra · build-logic + config.rb | ○ not-run |
-| 11 | **Media + icon fan-out through app-profile** — promote → `app-profile/{icons,media}` → `syncForkConfig` → branding/icons + cmp-* + deployment images | G4 | infra · build-logic | ○ not-run |
-| 12 | **Close the input loop** — `/idea-deploy config generate` G7 reads `app-profile/app.yaml` (identity/org/contact/categories) as primary seed | G5 | deployment · idea-deploy-config | ○ not-run |
-| 13 | **Variant/SELECTED boundary doc + guard** — variants stay in deployment-layer; app-profile holds promoted-SELECTED only | G6 | deployment · docs+gate | ○ not-run |
-| 14 | **Sync/drift gate** — `deployment-whitelabel.sh` B7–B9: app-profile == SELECTED == deployment/metadata; + RED/GREEN canary | G7 | infra · product-health | ○ not-run |
+**Promote signal:** user "promote all of Phase 2" (2026-08-07). Drove the full sequence 8→9→10→11→12→14 (+13).
+**End-to-end proof:** injected a distinctive marker into `app-profile/store-listing/text/{android,ios}/…`,
+ran `./gradlew syncForkConfig` → the marker flowed through into `deployment/android/metadata/en-US/title.txt`
++ `deployment/ios/appstore/metadata/en-US/name.txt`, **winning over the app.yaml scalar** — i.e.
+`app-profile/store-listing` now DERIVES `deployment/metadata`. Restored + re-derived; idempotent.
+**Bonus heal (pre-existing SoT defects surfaced by the resync, now fixed):** `fork.properties#project.name`
+was stuck at `awaazly` (leftover from the fork proof) → restored to `kmp-project-template` (fixed the
+`awaazly-*` keystore-alias leak); `desktop.yaml` + `fork.properties` msix were `YOUR_MSIX_*` placeholders while
+the committed appxmanifest had real identity → set to the template's real `MifosInitiative.MoneyToolkit` /
+`CN=Mifos Initiative`. Also replaced the committed iOS `release_notes.txt` (which was PR-merge-title junk —
+`Merge pull request #56…`) with the clean store-listing notes. Discovered a **literal-replace fragility** in the
+Phase-1 keystore-alias tokenizer (can't re-tokenize a file already forked to a non-template namespace) — worked
+around by restoring the 3 `secrets-needs.yaml` to committed before resync; upstream regex-fix noted as follow-up.
+**Verification:** `compileKotlin` BUILD SUCCESSFUL · product-health `TEMPLATE_SELF_BUILD=1` → **4/4 PASS**
+(incl. extended deployment-whitelabel B1–B9) · store-assets-sync gate SAS-1..11 (live+green PASS, red FAIL) ·
+both canaries (deployment-whitelabel green0/red1, store-assets-sync green0/red1) PASS.
 
-> **This PHASE 2 is a REFINEMENT (ES-6):** enumerated + planned only. No build until an explicit promote.
-> When promoted, caps 9/12/13 route the **deployment/idea rail** (`store-assets-sync.ts`, `idea-deploy-*`
-> runtimes — workspace-side); caps 8/10/11/14 route the **INFRA rail** (`app-profile/` schema + `build-logic`
-> + `product-health` on the template → draft fork→upstream PR per RULE-TEMPLATE-MODULE-FIX-UPSTREAM-001).
-> Sequence: **8 → 9 → 10 → 11 → 12 → 14** (13 is doc/guard, any time). Cap 8 is the keystone (everything binds
-> to the enriched schema). Foundation = Phase-1 caps 1–7 (PR #286, fork-proven) — unchanged.
+### ⚠️ CORRECTION (2026-08-07 rev 2) — file-dump SUPERSEDED by managed platforms-first schema
+
+User feedback: *"we just copied the deployment-layer store listing into app-profile — we want PROPER
+MANAGEMENT like we initially did in app-profile, binded into source deployment/, GitHub Actions,
+fork.properties etc wherever needed."* + "platforms-first, prose as YAML keys, extend the icons approach to
+media, end-to-end." The first Phase-2 build (`app-profile/store-listing/**` raw `.txt` file-tree) was a
+**redundant dump** of data the Phase-1 structured schema already manages. **Redone the managed way (R1–R5):**
+
+- **DISSOLVED** `app-profile/store-listing/`. Store copy is MANAGED STRUCTURED KEYS: `app.yaml#store.*` (common,
+  prose incl. description/release_notes as YAML scalars) + `platforms/<p>/<p>.yaml` (per-store overrides).
+  The ONE genuinely-missing block — `trade_representative` — added as keys in `apple.yaml` + `APP_PROFILE_MAP`
+  (Kotlin `SyncForkConfigPlugin` + Ruby `config.rb`, lockstep). `age_rating.json` DERIVED from `store.age_rating`.
+- **BOUND** (the whole point): `syncForkConfig` DERIVES `deployment/**/metadata` (text + trade-rep + review +
+  media + docs) FROM the keys/files; identity keys also bind → fork.properties + appxmanifest + cloudflare +
+  GitHub Actions via the existing tokenization. **Marker-proven:** `apple.yaml#trade_representative.first_name`
+  → syncForkConfig → `deployment/ios/…/first_name.txt`.
+- **MEDIA end-to-end (extends the icons pattern):** `app-profile/platforms/<p>/media/` is the SoT →
+  `syncForkConfig deriveForkMedia()` fans it → `deployment/<p>/metadata` images (+ Play ≤8 cap). Icons unchanged
+  (`app-profile/icons → branding/icons → cmp-*`). Managed docs: `platforms/android/app-content/data-safety.csv`,
+  `platforms/apple/ios/app_privacy_details.json`.
+- **PROMOTE folds, never dumps:** `store-assets-sync.ts` app-profile mode FOLDS a winning variant's text into the
+  structured keys (comment-preserving, section-aware line edits — `org.first_name` ≠ `store.review.first_name` ≠
+  `trade_representative.first_name`), media→platforms-first, icons→app-profile/icons, docs→managed files.
+
+### Phase-2 capability status (rev 2 — managed platforms-first)
+
+| # | Capability | Rail | status |
+|---|---|---|---|
+| R1 | **Platforms-first managed schema** — dump dissolved; `trade_representative` structured keys in apple.yaml; docs relocated to platforms-first | infra · app-profile | ● done |
+| R2 | **Bind keys→deployment** — `syncForkConfig` derives trade-rep + media (`deriveForkMedia`) + docs from keys/files; `APP_PROFILE_MAP` rows (Kotlin+Ruby) | infra · build-logic + config.rb | ● done (compile ✓; **marker-proven** key→deployment) |
+| R3 | **Promote folds text→keys** — `store-assets-sync` `foldTextIntoAppProfile()` (24 mappings, comment/section-safe) + media/icons/docs → platforms-first | deployment · store-assets-sync | ● done (self-test: comments preserved, no key cross-contamination; deno ✓) |
+| R4 | **Gate** — `deployment-whitelabel.sh` B7 (schema authored + placeholder-free) B8 (no template copy in a fork) B9 (deployment↔key-SoT drift) + canary | infra · product-health | ● done (canary green0/red1) |
+| R5 | **End-to-end + gates + product-health** — key→syncForkConfig→deployment; SAS-1..11; whitelabel canary; TEMPLATE_SELF_BUILD 4/4 | — | ● verifying |
+
+Superseded caps 8–11/14 (file-dump) are folded into R1–R4. Caps 12 (G7 reads app-profile) + 13 (boundary doc)
+stand. SoT heals (projectName=`kmp-project-template`, msix real identity) retained.
+
+> **Delivery:** template-rail (R1/R2/R4 + apple.yaml/desktop.yaml + config.rb + gate + heals) extends **PR #286**
+> (`session-kmp-project-template-20260807151415156`); framework-rail (R3 store-assets-sync + gate/canary + cap-12/13
+> docs) on the framework session branch. Both via `/git-session-commit` (INFRA draft PR per
+> RULE-TEMPLATE-MODULE-FIX-UPSTREAM-001, human-gated — never auto-merged).
