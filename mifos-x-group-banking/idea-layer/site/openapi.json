@@ -1,0 +1,2397 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "MifosSave API",
+    "version": "1.0.0",
+    "description": "MifosSave API — layered over **Fineract 1.8.x** (Mifos X) and orchestrated by the MifosSave companion BFF.\n\n**Group-centric model**: the savings group IS a Fineract Group (`m_group`, keyed by `groupId`). No Center entity in scope.\n\n**Auth**: HTTP Basic or Bearer token. All Fineract endpoints require the `Fineract-Platform-TenantId` header: `mifos-bank-2` for the active instance, `default` for the sandbox. Companion endpoints accept the same Bearer token.\n\n**Server selection**:\n- Paths under `/groups/{id}/savings`, `/groups/{id}/shareout/*`, `/groups/{id}/rotation/*` → **Companion BFF** (`https://mifossave-companion.onrender.com/companion`)\n- All other paths → **Fineract** (select mifos-bank-2 or sandbox)\n\n**Demo credentials** (mifos-bank-2 + sandbox): `+254700000001` / `DemoExplore@2026`\n\n**Datatables**: 21 Mifos X datatables (15 domain + 6 companion) extend the core schema with VSLA/ROSCA/meeting/corpus state, reached via `/datatables/{table}/{apptableId}`."
+  },
+  "servers": [
+    {
+      "url": "https://mifossave-companion.onrender.com/companion",
+      "description": "MifosSave Companion BFF — use for /groups/{id}/savings and share-out paths"
+    },
+    {
+      "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1",
+      "description": "Fineract mifos-bank-2 (active) — Fineract-Platform-TenantId: mifos-bank-2"
+    },
+    {
+      "url": "https://sandbox.mifos.community/fineract-provider/api/v1",
+      "description": "Fineract Sandbox — Fineract-Platform-TenantId: default"
+    }
+  ],
+  "security": [
+    { "basicAuth": [] },
+    { "bearerAuth": [] }
+  ],
+  "tags": [
+    {
+      "name": "authentication",
+      "description": "Unified self-signup — single login screen, per-group role resolved post-auth via dt_member_role datatable"
+    },
+    {
+      "name": "groups-centers",
+      "description": "Savings group CRUD, group config (dt_group_config) and corpus (dt_group_corpus) datatables. Reads go through companion BFF; /groups/* is the Fineract write path."
+    },
+    {
+      "name": "meetings",
+      "description": "Meeting schedule (dt_meeting_schedule), per-member attendance (dt_meeting_attendance), meeting summary records (dt_meeting_record), and end-of-cycle advance"
+    },
+    {
+      "name": "loans",
+      "description": "Loan application, group vote (dt_loan_vote), approve/disburse/reject state commands, list, and repayment collection during meeting"
+    },
+    {
+      "name": "offline-sync",
+      "description": "Fineract Batch API — one POST /batches replays the entire durable offline sync queue in order"
+    },
+    {
+      "name": "end-user-self-service",
+      "description": "Member-scoped reads over their own client profile, savings, and loans (Fineract /self/* tier) plus loan request submission to dt_loan_request"
+    },
+    {
+      "name": "clients-members",
+      "description": "Create Fineract clients (group members), associate to group, assign/update role (dt_member_role), upload photo, read profile and accounts"
+    },
+    {
+      "name": "savings",
+      "description": "Savings account creation, activation, deposits during meeting, transaction history. Group/member summaries via companion BFF; raw /savingsaccounts/* is the Fineract write path."
+    },
+    {
+      "name": "share-out",
+      "description": "End-of-cycle distribution — strategy-aware preview then execute. ACCUMULATING (VSLA/ASCA/SHG/SILC): pro-rata. ROTATING_PAYOUT (ROSCA/chit): rotation/lottery/auction. Companion BFF only."
+    },
+    {
+      "name": "field-officer",
+      "description": "v1.1 — Read-only cross-group MFI/NGO supervisory view: all assigned groups and the FieldOfficerGroupReport KPI rollup (read-only)"
+    }
+  ],
+  "paths": {
+    "/authentication": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "post": {
+        "tags": ["authentication"],
+        "operationId": "staffAuthenticate",
+        "summary": "Staff / admin authentication",
+        "description": "Authenticate a Fineract staff or admin user. Returns a bearer token and office context. Used for organizer, treasurer, and field-officer logins.",
+        "parameters": [{ "$ref": "#/components/parameters/TenantId" }],
+        "security": [{ "basicAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AuthRequest" },
+              "example": { "username": "admin", "password": "DemoExplore@2026" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authentication successful",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/StaffAuthResponse" },
+                "example": {
+                  "userId": 1,
+                  "username": "admin",
+                  "authenticated": true,
+                  "officeId": 1,
+                  "token": "eyJhbGciOiJIUzI1NiJ9.example.token"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/self/authentication": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "post": {
+        "tags": ["authentication"],
+        "operationId": "selfAuthenticate",
+        "summary": "End-user (member) self-service authentication",
+        "description": "Authenticate an end-user client for self-service access. Returns token and clientId. Mobile number is the typical username for member login.",
+        "parameters": [{ "$ref": "#/components/parameters/TenantId" }],
+        "security": [{ "basicAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AuthRequest" },
+              "example": { "username": "+254700000001", "password": "DemoExplore@2026" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authentication successful",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SelfAuthResponse" },
+                "example": {
+                  "clientId": 42,
+                  "authenticated": true,
+                  "selfServiceUserDetails": { "username": "+254700000001" },
+                  "token": "eyJhbGciOiJIUzI1NiJ9.example.token"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/datatables/dt_member_role/{clientId}": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "clientId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" },
+          "description": "Fineract client (member) ID"
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "get": {
+        "tags": ["authentication", "clients-members"],
+        "operationId": "getMemberRole",
+        "summary": "Get member role (post-auth role resolution)",
+        "description": "Read the client_type and per-group role from dt_member_role after authentication. Used to route to organizer vs. member UI and resolve which group to load. Also used on member-profile screen.",
+        "responses": {
+          "200": {
+            "description": "Member role row(s)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/MemberRoleRow" },
+                    { "type": "array", "items": { "$ref": "#/components/schemas/MemberRoleRow" } }
+                  ]
+                },
+                "example": {
+                  "role": "TREASURER",
+                  "client_type": "admin",
+                  "group_id": 7,
+                  "joined_date": "2026-01-15",
+                  "is_active": true
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "tags": ["clients-members"],
+        "operationId": "assignMemberRole",
+        "summary": "Assign role to new member (dt_member_role create)",
+        "description": "Write a new member's role row to dt_member_role when adding a member to a group.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MemberRoleWriteRequest" },
+              "example": { "role": "MEMBER", "group_id": 7, "assignedDate": "2026-08-01" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Role assigned", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      },
+      "put": {
+        "tags": ["clients-members"],
+        "operationId": "updateMemberRole",
+        "summary": "Update member role (chairperson-only)",
+        "description": "Update an existing member's role in dt_member_role. Requires chairperson authorization.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MemberRoleWriteRequest" },
+              "example": { "role": "SECRETARY", "group_id": 7, "assignedDate": "2026-08-01" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Role updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/groups": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "get": {
+        "tags": ["groups-centers", "field-officer"],
+        "operationId": "listGroups",
+        "summary": "List savings groups (staff portfolio)",
+        "description": "Paginated list of all Fineract Groups (savings groups) for a staff member. Used by group-list screen and field-officer-dashboard (v1.1). Filter by staffId for portfolio view.",
+        "parameters": [
+          { "$ref": "#/components/parameters/TenantId" },
+          {
+            "name": "staffId",
+            "in": "query",
+            "schema": { "type": "integer", "format": "int64" },
+            "description": "Filter by assigned staff member ID"
+          },
+          {
+            "name": "paged",
+            "in": "query",
+            "schema": { "type": "boolean", "default": true }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "default": 50 }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": { "type": "integer", "default": 0 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paged list of groups",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pageItems": { "type": "array", "items": { "$ref": "#/components/schemas/GroupSummary" } },
+                    "totalFilteredRecords": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["groups-centers"],
+        "operationId": "createGroup",
+        "summary": "Create a new savings group",
+        "description": "Create a new Fineract Group (savings group). Follow with POST /datatables/dt_group_config/{groupId} to set group rules.",
+        "parameters": [{ "$ref": "#/components/parameters/TenantId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateGroupRequest" },
+              "example": {
+                "name": "Wanjiru VSLA",
+                "officeId": 1,
+                "staffId": 3,
+                "active": true,
+                "activationDate": "2026-08-01"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Group created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResourceIdResponse" },
+                "example": { "resourceId": 12 }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/groups/{groupId}": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "groupId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" },
+          "description": "Fineract group (savings group) ID"
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "get": {
+        "tags": ["groups-centers"],
+        "operationId": "getGroup",
+        "summary": "Get group details (with members and roles)",
+        "description": "Get full group details including clientMembers list and groupRoles associations. Used on group-dashboard.",
+        "parameters": [
+          {
+            "name": "associations",
+            "in": "query",
+            "schema": { "type": "string", "default": "clientMembers,groupRoles" },
+            "description": "Comma-separated association expansions"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Group detail with associations",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GroupDetail" },
+                "example": {
+                  "id": 7,
+                  "name": "Wanjiru VSLA",
+                  "status": { "id": 300, "value": "Active" },
+                  "officeId": 1,
+                  "officeName": "Head Office",
+                  "staffId": 3,
+                  "staffName": "Jane Kamau",
+                  "clientMembers": [{ "id": 42, "displayName": "Mary Wanjiru" }]
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "tags": ["clients-members"],
+        "operationId": "associateClients",
+        "summary": "Associate clients to group (command=associateClients)",
+        "description": "Associate one or more existing Fineract clients with this group. Used during member-add flow after creating the client record.",
+        "parameters": [
+          {
+            "name": "command",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "enum": ["associateClients"] }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AssociateClientsRequest" },
+              "example": { "clientMembers": [55, 56] }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Clients associated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/groups/{groupId}/accounts": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "groupId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "get": {
+        "tags": ["groups-centers"],
+        "operationId": "getGroupAccounts",
+        "summary": "Get all savings accounts for the group (GSIM)",
+        "description": "Returns all savings accounts linked to this group, including the Group Savings with Individual Management (GSIM) accounts used for per-member mandatory savings.",
+        "responses": {
+          "200": {
+            "description": "Group accounts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "savingsAccounts": { "type": "array", "items": { "type": "object" } },
+                    "loanAccounts": { "type": "array", "items": { "type": "object" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/groups/{groupId}/clients": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "groupId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "get": {
+        "tags": ["clients-members"],
+        "operationId": "listGroupMembers",
+        "summary": "List members (clients) belonging to this group",
+        "description": "Paginated list of Fineract clients (group members) for the member-list screen.",
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer", "default": 0 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paged member list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pageItems": { "type": "array", "items": { "$ref": "#/components/schemas/MemberListItem" } },
+                    "totalFilteredRecords": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/groups/{groupId}/loans": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "groupId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "get": {
+        "tags": ["loans"],
+        "operationId": "listGroupLoans",
+        "summary": "List all loans for this group",
+        "description": "Returns all loan accounts associated with the group, with optional repaymentSchedule and guarantors associations. Used on loan-list screen.",
+        "parameters": [
+          {
+            "name": "associations",
+            "in": "query",
+            "schema": { "type": "string", "default": "repaymentSchedule,guarantors" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Group loan accounts",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/datatables/dt_group_corpus/{groupId}": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "groupId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "get": {
+        "tags": ["groups-centers"],
+        "operationId": "getGroupCorpus",
+        "summary": "Get group running fund balance (dt_group_corpus)",
+        "description": "Returns the group's running fund balance row: opening/closing balances, total inflows/outflows, corpus balance, and cash on hand. Reconciled against Fineract GSIM savings.",
+        "responses": {
+          "200": {
+            "description": "Group corpus row",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GroupCorpus" },
+                "example": {
+                  "meeting_number": 12,
+                  "opening_balance": 45000.00,
+                  "total_inflows": 8500.00,
+                  "total_outflows": 3200.00,
+                  "closing_balance": 50300.00,
+                  "corpus_balance": 50300.00,
+                  "cash_on_hand": 2800.00,
+                  "last_updated_meeting": 12,
+                  "last_updated_date": "2026-08-01"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["groups-centers"],
+        "operationId": "updateGroupCorpus",
+        "summary": "Update group fund balance after meeting (dt_group_corpus)",
+        "description": "Upsert the corpus balance row after a meeting close. Called as part of meeting-conduct Step 7.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GroupCorpus" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Corpus updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } }
+        }
+      }
+    },
+    "/datatables/dt_group_config/{groupId}": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "groupId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "get": {
+        "tags": ["groups-centers"],
+        "operationId": "getGroupConfig",
+        "summary": "Get group rules (dt_group_config)",
+        "description": "Returns contribution limits, loan multiplier, interest rate, fine amount, and cycle window for this group.",
+        "responses": {
+          "200": {
+            "description": "Group config row",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GroupConfig" },
+                "example": {
+                  "cycle_number": 3,
+                  "cycle_length_weeks": 52,
+                  "contribution_amount": 500.00,
+                  "loan_multiplier": 3.0,
+                  "interest_rate": 10.0,
+                  "fine_amount": 50.00,
+                  "meeting_frequency": "weekly",
+                  "cycle_start_date": "2026-01-01",
+                  "cycle_end_date": "2026-12-31"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["groups-centers"],
+        "operationId": "createGroupConfig",
+        "summary": "Save group rules after group creation (dt_group_config)",
+        "description": "Write the initial group configuration row. Called immediately after POST /groups in the group-create flow.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GroupConfig" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Config created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } }
+        }
+      },
+      "put": {
+        "tags": ["meetings"],
+        "operationId": "advanceCycle",
+        "summary": "Advance group to next cycle (dt_group_config update)",
+        "description": "Advance the group cycle by incrementing cycle_number and updating cycle_start_date / cycle_end_date. Called at end of meeting-summary when the current cycle completes.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AdvanceCycleRequest" },
+              "example": {
+                "cycle_number": 4,
+                "cycle_start_date": "2027-01-01",
+                "cycle_end_date": "2027-12-31"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Cycle advanced", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } }
+        }
+      }
+    },
+    "/datatables/dt_meeting_schedule/{groupId}": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "groupId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "get": {
+        "tags": ["meetings"],
+        "operationId": "getMeetingSchedule",
+        "summary": "List forward meeting schedule (dt_meeting_schedule)",
+        "description": "Returns the companion-served forward meeting schedule for the group. This is NOT the past-meeting summary table (dt_meeting_record) — it is the cadence-resolved upcoming schedule. Served by the companion AL-RULE (native group calendar write is not reachable at self-service level).",
+        "responses": {
+          "200": {
+            "description": "Meeting schedule rows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/MeetingScheduleRow" }
+                },
+                "example": [
+                  { "meeting_number": 13, "scheduled_date": "2026-08-15", "cadence": "weekly", "status": "upcoming" },
+                  { "meeting_number": 14, "scheduled_date": "2026-08-22", "cadence": "weekly", "status": "upcoming" }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/datatables/dt_meeting_record/{groupId}": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "groupId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "get": {
+        "tags": ["meetings"],
+        "operationId": "getPreviousMeeting",
+        "summary": "Get previous meeting summary (dt_meeting_record)",
+        "description": "Retrieve the last meeting summary row for previous-meeting-review screen. Filter by meetingNumber to get a specific meeting.",
+        "parameters": [
+          {
+            "name": "meetingNumber",
+            "in": "query",
+            "schema": { "type": "integer" },
+            "description": "Meeting number to retrieve (omit for latest)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Meeting summary record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/MeetingRecordRequest" },
+                    { "type": "array", "items": { "$ref": "#/components/schemas/MeetingRecordRequest" } }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["meetings"],
+        "operationId": "recordMeeting",
+        "summary": "Save meeting summary record (dt_meeting_record)",
+        "description": "Write a new meeting summary row at the close of a meeting (meeting-conduct Step 7). Includes financial totals, attendance count, and notes.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MeetingRecordRequest" },
+              "example": {
+                "meeting_number": 12,
+                "meeting_date": "2026-08-01",
+                "opening_balance": 45000.00,
+                "closing_balance": 50300.00,
+                "total_inflows": 8500.00,
+                "total_outflows": 3200.00,
+                "total_savings_collected": 6000.00,
+                "total_repayments_received": 2500.00,
+                "total_loans_disbursed": 3200.00,
+                "total_fines_collected": 250.00,
+                "attendance_count": 18,
+                "notes": "Loan to Mary Wanjiru approved 3-0"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Meeting record saved", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } }
+        }
+      }
+    },
+    "/datatables/dt_meeting_attendance/{clientId}": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "clientId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" },
+          "description": "Client (member) ID — dt_meeting_attendance attaches to m_client"
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "post": {
+        "tags": ["meetings"],
+        "operationId": "recordAttendance",
+        "summary": "Record per-member attendance for meeting (dt_meeting_attendance)",
+        "description": "Write one attendance row per member at meeting-conduct Step 1. Also captures fine amount and savings collected for that meeting.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AttendanceRequest" },
+              "example": {
+                "meeting_number": 12,
+                "status": "present",
+                "fine_amount": 0,
+                "savings_collected": 500.00,
+                "repayment_amount": 0
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Attendance recorded", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } }
+        }
+      }
+    },
+    "/loans": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "get": {
+        "tags": ["loans"],
+        "operationId": "listLoans",
+        "summary": "List active / group loans",
+        "description": "Paginated list of loans filtered by groupId and optional loanStatus. Used for loan-list screen and meeting-conduct Step 4 repayment entry. Note: the app's get_active_loans calls this endpoint (FIX S5: the contract previously only documented GET /loans/{loanId}).",
+        "parameters": [
+          { "$ref": "#/components/parameters/TenantId" },
+          { "name": "groupId", "in": "query", "schema": { "type": "integer", "format": "int64" } },
+          { "name": "loanStatus", "in": "query", "schema": { "type": "string", "enum": ["active", "overpaid", "closed", "submitted"] } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer", "default": 0 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paged loan list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pageItems": { "type": "array", "items": { "$ref": "#/components/schemas/LoanListItem" } },
+                    "totalFilteredRecords": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["loans"],
+        "operationId": "createLoan",
+        "summary": "Submit loan application",
+        "description": "Submit a loan application for group review. Creates the loan in SUBMITTED_AND_PENDING_APPROVAL status. Group vote then drives the approve/disburse/reject flow.",
+        "parameters": [{ "$ref": "#/components/parameters/TenantId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateLoanRequest" },
+              "example": {
+                "clientId": 42,
+                "loanProductId": 1,
+                "principal": 15000,
+                "numberOfRepayments": 12,
+                "repaymentEvery": 1,
+                "repaymentFrequencyType": 1,
+                "interestRatePerPeriod": 10,
+                "groupId": 7,
+                "submittedOnDate": "01 August 2026",
+                "locale": "en",
+                "dateFormat": "dd MMMM yyyy"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Loan application submitted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/loans/template": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "get": {
+        "tags": ["loans"],
+        "operationId": "getLoanTemplate",
+        "summary": "Get loan product template for application form",
+        "description": "Returns the available loan products and default values for the loan application form. Filters to activeOnly=true for the specific client and group.",
+        "parameters": [
+          { "$ref": "#/components/parameters/TenantId" },
+          { "name": "activeOnly", "in": "query", "schema": { "type": "boolean", "default": true } },
+          { "name": "clientId", "in": "query", "required": true, "schema": { "type": "integer", "format": "int64" } },
+          { "name": "groupId", "in": "query", "schema": { "type": "integer", "format": "int64" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Loan product template",
+            "content": { "application/json": { "schema": { "type": "object" } } }
+          }
+        }
+      }
+    },
+    "/loans/{loanId}": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "loanId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "post": {
+        "tags": ["loans"],
+        "operationId": "loanStateCommand",
+        "summary": "Loan state command: approve / disburse / reject",
+        "description": "Execute a state transition on a loan via the `command` query parameter. These are Fineract state commands (NOT /transactions — that returns 404 for these). FIX S11: approve/disburse/reject are loan state commands on `/loans/{loanId}?command=...`, not on the transactions path.\n\n- `command=approve`: approves a submitted loan. Body: `{approvedOnDate, locale, dateFormat}`\n- `command=disburse`: disburses an approved loan (money out). Body: `{actualDisbursementDate, note, locale, dateFormat}`\n- `command=reject`: rejects a submitted loan. Body: `{rejectedOnDate, locale, dateFormat}`",
+        "parameters": [
+          {
+            "name": "command",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "enum": ["approve", "disburse", "reject"] },
+            "description": "Loan state transition command"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoanStateCommandRequest" },
+              "examples": {
+                "approve": {
+                  "summary": "Approve a loan",
+                  "value": { "approvedOnDate": "01 August 2026", "locale": "en", "dateFormat": "dd MMMM yyyy" }
+                },
+                "disburse": {
+                  "summary": "Disburse an approved loan",
+                  "value": { "actualDisbursementDate": "01 August 2026", "note": "Cash disbursement at meeting", "locale": "en", "dateFormat": "dd MMMM yyyy" }
+                },
+                "reject": {
+                  "summary": "Reject a loan application",
+                  "value": { "rejectedOnDate": "01 August 2026", "locale": "en", "dateFormat": "dd MMMM yyyy" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "State command applied", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/loans/{loanId}/transactions": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "loanId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "post": {
+        "tags": ["loans"],
+        "operationId": "makeRepayment",
+        "summary": "Record loan repayment collected during meeting",
+        "description": "Post a loan repayment transaction. Called during meeting-conduct Step 3 for each member with an outstanding loan balance.",
+        "parameters": [
+          {
+            "name": "command",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "enum": ["repayment"] }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RepaymentRequest" },
+              "example": {
+                "transactionDate": "01 August 2026",
+                "transactionAmount": 1250,
+                "paymentTypeId": 1,
+                "locale": "en",
+                "dateFormat": "dd MMMM yyyy"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Repayment recorded", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } }
+        }
+      }
+    },
+    "/datatables/dt_loan_vote/{loanId}": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "loanId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "post": {
+        "tags": ["loans"],
+        "operationId": "recordLoanVote",
+        "summary": "Record group voting outcome on loan (dt_loan_vote)",
+        "description": "Write the group's voting result for a loan application. Called during meeting-conduct Step 5 before the approve/disburse/reject command.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoanVoteRequest" },
+              "example": {
+                "meeting_number": 12,
+                "votes_for": 15,
+                "votes_against": 2,
+                "votes_abstain": 1,
+                "chairperson_approved": true,
+                "outcome": "approved"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Vote recorded", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } }
+        }
+      }
+    },
+    "/batches": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "post": {
+        "tags": ["offline-sync"],
+        "operationId": "batchSync",
+        "summary": "Submit offline sync queue (Fineract Batch API)",
+        "description": "Replay all queued offline operations in a single batch request. Called on connectivity restore from the sync-status screen. Each request in the batch is a serialized CRUD operation from the Room-backed SyncQueue. Conflict resolution UI is shown if the server responds 4xx for any item.",
+        "parameters": [{ "$ref": "#/components/parameters/TenantId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/BatchRequest" },
+              "example": {
+                "requests": [
+                  { "requestId": 1, "relativeUrl": "/clients", "method": "POST", "body": { "firstname": "Mary", "lastname": "Wanjiru" } },
+                  { "requestId": 2, "relativeUrl": "/datatables/dt_member_role/55", "method": "POST", "body": { "role": "MEMBER", "group_id": 7 } }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Batch results (per-request status codes)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "requestId": { "type": "integer" },
+                      "statusCode": { "type": "integer" },
+                      "body": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/self/clients/{clientId}": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "clientId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "get": {
+        "tags": ["end-user-self-service"],
+        "operationId": "getSelfClient",
+        "summary": "Get end-user's own client profile",
+        "description": "Returns the member's own Fineract client record. Used on personal-dashboard screen. Requires self-service token.",
+        "responses": {
+          "200": {
+            "description": "Client profile",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ClientProfile" } } }
+          }
+        }
+      }
+    },
+    "/self/savingsaccounts": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "get": {
+        "tags": ["end-user-self-service"],
+        "operationId": "listSelfSavings",
+        "summary": "List end-user's own savings accounts",
+        "description": "Returns savings accounts visible to the logged-in member (self-service tier). Used on personal-savings screen.",
+        "parameters": [{ "$ref": "#/components/parameters/TenantId" }],
+        "responses": {
+          "200": {
+            "description": "Member's savings accounts",
+            "content": { "application/json": { "schema": { "type": "object" } } }
+          }
+        }
+      }
+    },
+    "/self/loans": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "get": {
+        "tags": ["end-user-self-service"],
+        "operationId": "listSelfLoans",
+        "summary": "List end-user's active loans",
+        "description": "Returns active loan accounts visible to the logged-in member. Used on personal-loans screen.",
+        "parameters": [{ "$ref": "#/components/parameters/TenantId" }],
+        "responses": {
+          "200": {
+            "description": "Member's loan accounts",
+            "content": { "application/json": { "schema": { "type": "object" } } }
+          }
+        }
+      }
+    },
+    "/datatables/dt_loan_request/{clientId}": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "clientId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "post": {
+        "tags": ["end-user-self-service"],
+        "operationId": "submitLoanRequest",
+        "summary": "Submit end-user loan request for admin review (dt_loan_request)",
+        "description": "Member submits a pre-meeting loan request that the organizer reviews at the next meeting. Stored in dt_loan_request on m_client. Status starts as 'pending'.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoanRequestSubmission" },
+              "example": {
+                "amount": 15000,
+                "purpose": "School fees",
+                "duration_weeks": 12,
+                "requested_at": "2026-08-01",
+                "status": "pending"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Loan request submitted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } }
+        }
+      }
+    },
+    "/clients": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "post": {
+        "tags": ["clients-members"],
+        "operationId": "createClient",
+        "summary": "Create a new Fineract client (group member)",
+        "description": "Create a new member as a Fineract client. Follow with POST /groups/{groupId}?command=associateClients and POST /datatables/dt_member_role/{clientId} to complete member onboarding. Supports offline queueing (operation: CREATE_MEMBER).",
+        "parameters": [{ "$ref": "#/components/parameters/TenantId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateClientRequest" },
+              "example": {
+                "firstname": "Mary",
+                "lastname": "Wanjiru",
+                "mobileNo": "+254712345678",
+                "active": true,
+                "activationDate": "01 August 2026",
+                "officeId": 1,
+                "groupId": 7,
+                "locale": "en",
+                "dateFormat": "dd MMMM yyyy"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Client created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CreateClientResponse" },
+                "example": { "resourceId": 55, "clientId": 55 }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/clients/{clientId}": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "clientId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "get": {
+        "tags": ["clients-members"],
+        "operationId": "getClient",
+        "summary": "Get full client (member) profile",
+        "description": "Returns the full Fineract client record for a member. Used on member-profile screen.",
+        "responses": {
+          "200": {
+            "description": "Client profile",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ClientProfile" },
+                "example": {
+                  "id": 55,
+                  "displayName": "Mary Wanjiru",
+                  "firstname": "Mary",
+                  "lastname": "Wanjiru",
+                  "mobileNo": "+254712345678",
+                  "status": { "id": 300, "value": "Active" },
+                  "activationDate": "01 August 2026",
+                  "officeId": 1
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/clients/{clientId}/accounts": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "clientId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "get": {
+        "tags": ["clients-members"],
+        "operationId": "getClientAccounts",
+        "summary": "Get savings and loan accounts for member",
+        "description": "Returns all savings and loan accounts for a client. Used on member-profile to show savings history and active loan.",
+        "responses": {
+          "200": {
+            "description": "Client accounts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "savingsAccounts": { "type": "array", "items": { "type": "object" } },
+                    "loanAccounts": { "type": "array", "items": { "type": "object" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/clients/{clientId}/images": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "clientId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "post": {
+        "tags": ["clients-members"],
+        "operationId": "uploadMemberPhoto",
+        "summary": "Upload member profile photo (multipart)",
+        "description": "Upload a profile photo for the member. Uses multipart/form-data. Supports offline queueing (operation: UPLOAD_MEMBER_PHOTO).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": { "type": "string", "format": "binary" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Photo uploaded" },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/savingsaccounts": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "post": {
+        "tags": ["savings"],
+        "operationId": "createSavingsAccount",
+        "summary": "Open a savings account (mandatory group-linked or voluntary individual)",
+        "description": "Create a savings account for a member. Called during member-add (mandatory GSIM account) and optionally for individual voluntary savings. Must be followed by a POST /savingsaccounts/{accountId}?command=approve to activate.",
+        "parameters": [{ "$ref": "#/components/parameters/TenantId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateSavingsRequest" },
+              "example": {
+                "clientId": 55,
+                "productId": 1,
+                "submittedOnDate": "01 August 2026",
+                "locale": "en",
+                "dateFormat": "dd MMMM yyyy"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Savings account created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } }
+        }
+      }
+    },
+    "/savingsaccounts/{savingsId}": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "savingsId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "get": {
+        "tags": ["savings"],
+        "operationId": "getSavingsTransactions",
+        "summary": "Get savings account with transaction history",
+        "description": "Returns a savings account record with transaction history (associations=transactions). Used for savings-dashboard drill-down and meeting reconciliation.",
+        "parameters": [
+          {
+            "name": "associations",
+            "in": "query",
+            "schema": { "type": "string", "default": "transactions" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Savings account with transactions",
+            "content": { "application/json": { "schema": { "type": "object" } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["savings"],
+        "operationId": "approveSavingsAccount",
+        "summary": "Approve and activate savings account (command=approve)",
+        "description": "Approve a submitted savings account. A subsequent ?command=activate call activates it. Used in member-add flow.",
+        "parameters": [
+          {
+            "name": "command",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "enum": ["approve", "activate"] }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "approvedOnDate": { "type": "string" },
+                  "locale": { "type": "string" },
+                  "dateFormat": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Account approved/activated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } }
+        }
+      }
+    },
+    "/savingsaccounts/{savingsId}/transactions": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "parameters": [
+        {
+          "name": "savingsId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        { "$ref": "#/components/parameters/TenantId" }
+      ],
+      "post": {
+        "tags": ["savings"],
+        "operationId": "postSavingsDeposit",
+        "summary": "Post savings deposit (command=deposit)",
+        "description": "Record a savings deposit — one call per member per savings type during meeting-conduct Step 2. Supports offline queueing (operation: POST_SAVINGS_TRANSACTION, priority 3).",
+        "parameters": [
+          {
+            "name": "command",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "enum": ["deposit", "withdrawal"] }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SavingsDepositRequest" },
+              "example": {
+                "transactionDate": "01 August 2026",
+                "transactionAmount": 500,
+                "paymentTypeId": 1,
+                "locale": "en",
+                "dateFormat": "dd MMMM yyyy"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Deposit posted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceIdResponse" } } } }
+        }
+      }
+    },
+    "/groups/{groupId}/savings": {
+      "servers": [
+        { "url": "https://mifossave-companion.onrender.com/companion", "description": "MifosSave Companion BFF" }
+      ],
+      "parameters": [
+        {
+          "name": "groupId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" },
+          "description": "Group ID (resolved by companion from bearer token context)"
+        }
+      ],
+      "get": {
+        "tags": ["savings"],
+        "operationId": "getGroupSavingsSummary",
+        "summary": "Group savings summary — contribution-model-aware (companion BFF)",
+        "description": "Returns group savings summary with model-aware per-member rows. SHARE_BASED_VARIABLE groups (VSLA/SILC): sharesHeld + shareValue. FIXED_AMOUNT groups (ROSCA/SHG): totalContributed + meetingsContributed. Backed by GSIM savings aggregation + dt_group_config + dt_vsla_cycle.\n\n**Companion BFF endpoint** — use server: `https://mifossave-companion.onrender.com/companion`",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Group savings summary",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GroupSavingsSummary" },
+                "example": {
+                  "cycleTarget": 520000,
+                  "cycleCollected": 384000,
+                  "totalCollected": 384000,
+                  "weeklyTrend": [
+                    { "week": "2026-W31", "amount": 9500 },
+                    { "week": "2026-W32", "amount": 10000 }
+                  ],
+                  "memberRows": [
+                    { "clientId": 55, "clientName": "Mary Wanjiru", "sharesHeld": 5, "shareValue": 500, "totalContributed": 2500, "meetingsContributed": 5 }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/groups/{groupId}/savings/individual": {
+      "servers": [
+        { "url": "https://mifossave-companion.onrender.com/companion", "description": "MifosSave Companion BFF" }
+      ],
+      "parameters": [
+        {
+          "name": "groupId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        }
+      ],
+      "get": {
+        "tags": ["savings"],
+        "operationId": "getIndividualSavingsSummary",
+        "summary": "Individual voluntary savings per member (companion BFF)",
+        "description": "Returns the Individual tab data for savings-dashboard: per-member voluntary savings balances and weekly trend.\n\n**Companion BFF endpoint** — use server: `https://mifossave-companion.onrender.com/companion`",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Individual savings summary",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/IndividualSavingsSummary" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/groups/{groupId}/members/{memberId}/savings": {
+      "servers": [
+        { "url": "https://mifossave-companion.onrender.com/companion", "description": "MifosSave Companion BFF" }
+      ],
+      "parameters": [
+        {
+          "name": "groupId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        },
+        {
+          "name": "memberId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        }
+      ],
+      "get": {
+        "tags": ["savings"],
+        "operationId": "getMemberSavingsDetail",
+        "summary": "Member savings detail — model-aware drill-down (companion BFF)",
+        "description": "Member savings detail for the member-savings-detail screen: model-aware display (sharesHeld/shareValue OR savingsBalance/meetingsContributed) + sparkline + paginated transaction history.\n\n**Companion BFF endpoint** — use server: `https://mifossave-companion.onrender.com/companion`",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Member savings detail",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MemberSavingsDetail" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/groups/{groupId}/shareout/preview": {
+      "servers": [
+        { "url": "https://mifossave-companion.onrender.com/companion", "description": "MifosSave Companion BFF" }
+      ],
+      "parameters": [
+        {
+          "name": "groupId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        }
+      ],
+      "get": {
+        "tags": ["share-out"],
+        "operationId": "getShareoutPreview",
+        "summary": "Strategy-aware distribution preview (companion BFF)",
+        "description": "Returns cycle share-out preview. ACCUMULATING types (VSLA/ASCA/SHG/SILC): returns memberPayouts[] with pro-rata amounts. ROTATING_PAYOUT types (ROSCA/chit): returns rotationPosition, nextRecipientName, nextRecipientAmount. Aggregates dt_group_corpus + dt_share_out + dt_rosca_rotation + dt_group_config.\n\n**Companion BFF endpoint** — use server: `https://mifossave-companion.onrender.com/companion`\n\nContract: COMP-DIST-001",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Share-out preview",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ShareoutPreview" },
+                "examples": {
+                  "accumulating": {
+                    "summary": "VSLA pro-rata share-out",
+                    "value": {
+                      "cycleNumber": 3,
+                      "poolModel": "ACCUMULATING",
+                      "shareoutFormula": "PRORATA_SHARES",
+                      "totalCorpus": 480000.00,
+                      "totalProfit": 48000.00,
+                      "totalPool": 528000.00,
+                      "memberPayouts": [
+                        { "clientId": 55, "clientName": "Mary Wanjiru", "payout": 29333.33, "sharesPct": 5.56 }
+                      ],
+                      "rotationPosition": null,
+                      "nextRecipientName": null,
+                      "nextRecipientAmount": null
+                    }
+                  },
+                  "rotating": {
+                    "summary": "ROSCA rotation payout",
+                    "value": {
+                      "cycleNumber": 1,
+                      "poolModel": "ROTATING_PAYOUT",
+                      "shareoutFormula": "FIXED_ORDER",
+                      "totalCorpus": 60000.00,
+                      "totalProfit": 0,
+                      "totalPool": 60000.00,
+                      "memberPayouts": null,
+                      "rotationPosition": 3,
+                      "nextRecipientName": "John Odhiambo",
+                      "nextRecipientAmount": 60000.00
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/groups/{groupId}/shareout/execute": {
+      "servers": [
+        { "url": "https://mifossave-companion.onrender.com/companion", "description": "MifosSave Companion BFF" }
+      ],
+      "parameters": [
+        {
+          "name": "groupId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        }
+      ],
+      "post": {
+        "tags": ["share-out"],
+        "operationId": "executeShareout",
+        "summary": "Execute ACCUMULATING share-out (companion BFF)",
+        "description": "Execute share-out for ACCUMULATING types. Records dt_share_out entry + per-member savings withdrawals via Fineract in a single transaction (idempotent via externalId per withdrawal). Offline: enqueued as SHARE_OUT_EXECUTE (HIGH priority).\n\n**Companion BFF endpoint** — use server: `https://mifossave-companion.onrender.com/companion`\n\nContract: COMP-DIST-001",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ShareoutExecuteRequest" },
+              "example": {
+                "cycleNumber": 3,
+                "totalPool": 528000.00,
+                "memberPayouts": [
+                  { "clientId": 55, "amount": 29333.33 },
+                  { "clientId": 56, "amount": 32000.00 }
+                ],
+                "shareoutFormula": "PRORATA_SHARES",
+                "executedAt": "2026-08-01T10:00:00Z"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Share-out executed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ShareoutExecuteResponse" },
+                "example": {
+                  "shareoutRecordId": "so-grp7-cycle3",
+                  "succeededCount": 18,
+                  "failedCount": 0,
+                  "failedMemberIds": []
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/groups/{groupId}/rotation/execute": {
+      "servers": [
+        { "url": "https://mifossave-companion.onrender.com/companion", "description": "MifosSave Companion BFF" }
+      ],
+      "parameters": [
+        {
+          "name": "groupId",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer", "format": "int64" }
+        }
+      ],
+      "post": {
+        "tags": ["share-out"],
+        "operationId": "executeRotationPayout",
+        "summary": "Execute ROTATING_PAYOUT (ROSCA/chit) rotation (companion BFF)",
+        "description": "Execute a rotation payout for ROTATING_PAYOUT types (ROSCA, chit fund). Advances the dt_rosca_rotation position (marks current slot paid) + single-recipient savings withdrawal via Fineract.\n\n**Companion BFF endpoint** — use server: `https://mifossave-companion.onrender.com/companion`\n\nContract: COMP-DIST-002",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RotationExecuteRequest" },
+              "example": {
+                "recipientMemberId": "56",
+                "amount": 60000.00,
+                "payoutOrderMethod": "FIXED_ORDER",
+                "executedAt": "2026-08-01T10:00:00Z"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rotation payout executed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RotationExecuteResponse" },
+                "example": {
+                  "rotationRecordId": "rot-grp7-pos3",
+                  "newRotationPosition": 4,
+                  "nextRecipientId": "57"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runreports/FieldOfficerGroupReport": {
+      "servers": [
+        { "url": "https://mifos-bank-2.mifos.community/fineract-provider/api/v1", "description": "Fineract mifos-bank-2 — tenant: mifos-bank-2" },
+        { "url": "https://sandbox.mifos.community/fineract-provider/api/v1", "description": "Fineract Sandbox — tenant: default" }
+      ],
+      "get": {
+        "tags": ["field-officer"],
+        "operationId": "runFieldOfficerReport",
+        "summary": "Field officer group health KPI report (v1.1)",
+        "description": "Generate the group-health KPI report across all groups assigned to this field officer: savings balance, loans outstanding, overdue rate, GREEN/AMBER/RED health indicator. The FieldOfficerGroupReport definition must exist on the target Fineract instance. If absent, the dashboard falls back to per-group aggregation over GET /groups + dt_group_corpus.",
+        "parameters": [
+          { "$ref": "#/components/parameters/TenantId" },
+          {
+            "name": "R_staffId",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" },
+            "description": "Staff ID — prefixed with R_ per Fineract report parameter convention"
+          },
+          {
+            "name": "output-type",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["CSV", "JSON", "PDF"], "default": "CSV" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Report output (CSV by default)",
+            "content": {
+              "text/csv": { "schema": { "type": "string" } },
+              "application/json": { "schema": { "type": "object" } }
+            }
+          },
+          "404": { "description": "Report definition not found on this Fineract instance — fall back to manual aggregation" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "basicAuth": {
+        "type": "http",
+        "scheme": "basic",
+        "description": "HTTP Basic authentication (username + password). Used for /authentication and /self/authentication. The Fineract-Platform-TenantId header must also be present."
+      },
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Bearer token returned by POST /authentication or POST /self/authentication. Pass as `Authorization: Bearer <token>`. Also accepted by the companion BFF for companion endpoints."
+      }
+    },
+    "parameters": {
+      "TenantId": {
+        "name": "Fineract-Platform-TenantId",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "enum": ["mifos-bank-2", "default"],
+          "default": "mifos-bank-2"
+        },
+        "description": "Fineract multi-tenancy header. Use `mifos-bank-2` for the active instance (primary), `default` for the sandbox. Required on all Fineract endpoints."
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Authentication required or invalid credentials",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "Forbidden": {
+        "description": "Insufficient permissions for this operation",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "BadRequest": {
+        "description": "Invalid request body or parameters",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      }
+    },
+    "schemas": {
+      "AuthRequest": {
+        "type": "object",
+        "required": ["username", "password"],
+        "properties": {
+          "username": { "type": "string", "description": "Fineract username or mobile number (+E.164) for self-service" },
+          "password": { "type": "string", "format": "password" }
+        }
+      },
+      "StaffAuthResponse": {
+        "type": "object",
+        "properties": {
+          "userId": { "type": "integer", "format": "int64" },
+          "username": { "type": "string" },
+          "authenticated": { "type": "boolean" },
+          "officeId": { "type": "integer", "format": "int64" },
+          "token": { "type": "string", "description": "Bearer token for subsequent API calls" }
+        }
+      },
+      "SelfAuthResponse": {
+        "type": "object",
+        "properties": {
+          "clientId": { "type": "integer", "format": "int64" },
+          "authenticated": { "type": "boolean" },
+          "selfServiceUserDetails": { "type": "object" },
+          "token": { "type": "string" }
+        }
+      },
+      "MemberRoleRow": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": ["TREASURER", "CHAIRPERSON", "SECRETARY", "MEMBER", "FIELD_OFFICER"],
+            "description": "Per-group role for RBAC routing post-login"
+          },
+          "client_type": { "type": "string", "enum": ["admin", "end_user"] },
+          "group_id": { "type": "integer", "format": "int64", "description": "The (member, group) composite key" },
+          "joined_date": { "type": "string", "format": "date" },
+          "is_active": { "type": "boolean" }
+        }
+      },
+      "MemberRoleWriteRequest": {
+        "type": "object",
+        "required": ["role", "group_id"],
+        "properties": {
+          "role": { "type": "string", "enum": ["TREASURER", "CHAIRPERSON", "SECRETARY", "MEMBER", "FIELD_OFFICER"] },
+          "group_id": { "type": "integer", "format": "int64" },
+          "assignedDate": { "type": "string", "format": "date" }
+        }
+      },
+      "GroupSummary": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64" },
+          "name": { "type": "string" },
+          "status": { "$ref": "#/components/schemas/StatusObject" },
+          "officeId": { "type": "integer", "format": "int64" },
+          "officeName": { "type": "string" },
+          "staffId": { "type": "integer", "format": "int64" },
+          "staffName": { "type": "string" },
+          "activeClientCount": { "type": "integer" }
+        }
+      },
+      "GroupDetail": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64" },
+          "name": { "type": "string" },
+          "status": { "$ref": "#/components/schemas/StatusObject" },
+          "officeId": { "type": "integer", "format": "int64" },
+          "officeName": { "type": "string" },
+          "staffId": { "type": "integer", "format": "int64" },
+          "staffName": { "type": "string" },
+          "clientMembers": { "type": "array", "items": { "type": "object" } },
+          "groupRoles": { "type": "array", "items": { "type": "object" } }
+        }
+      },
+      "StatusObject": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "value": { "type": "string" }
+        }
+      },
+      "CreateGroupRequest": {
+        "type": "object",
+        "required": ["name", "officeId"],
+        "properties": {
+          "name": { "type": "string" },
+          "officeId": { "type": "integer", "format": "int64" },
+          "staffId": { "type": "integer", "format": "int64" },
+          "active": { "type": "boolean", "default": true },
+          "activationDate": { "type": "string", "format": "date" }
+        }
+      },
+      "ResourceIdResponse": {
+        "type": "object",
+        "properties": {
+          "resourceId": { "type": "integer", "format": "int64" }
+        }
+      },
+      "CreateClientResponse": {
+        "type": "object",
+        "properties": {
+          "resourceId": { "type": "integer", "format": "int64" },
+          "clientId": { "type": "integer", "format": "int64" }
+        }
+      },
+      "AssociateClientsRequest": {
+        "type": "object",
+        "required": ["clientMembers"],
+        "properties": {
+          "clientMembers": {
+            "type": "array",
+            "items": { "type": "integer", "format": "int64" },
+            "description": "List of Fineract client IDs to associate with this group"
+          }
+        }
+      },
+      "GroupCorpus": {
+        "type": "object",
+        "description": "Running fund balance row from dt_group_corpus (m_group, 1:1)",
+        "properties": {
+          "meeting_number": { "type": "integer" },
+          "opening_balance": { "type": "number", "format": "double" },
+          "total_inflows": { "type": "number", "format": "double" },
+          "total_outflows": { "type": "number", "format": "double" },
+          "closing_balance": { "type": "number", "format": "double" },
+          "corpus_balance": { "type": "number", "format": "double" },
+          "cash_on_hand": { "type": "number", "format": "double" },
+          "last_updated_meeting": { "type": "integer" },
+          "last_updated_date": { "type": "string", "format": "date" }
+        }
+      },
+      "GroupConfig": {
+        "type": "object",
+        "description": "Group rules from dt_group_config (m_group, 1:1)",
+        "properties": {
+          "cycle_number": { "type": "integer" },
+          "cycle_length_weeks": { "type": "integer" },
+          "contribution_amount": { "type": "number", "format": "double" },
+          "contribution_min": { "type": "number", "format": "double" },
+          "contribution_max": { "type": "number", "format": "double" },
+          "loan_multiplier": { "type": "number", "format": "double", "description": "Maximum loan = savings balance × multiplier" },
+          "interest_rate": { "type": "number", "format": "double", "description": "% per cycle" },
+          "fine_amount": { "type": "number", "format": "double" },
+          "meeting_frequency": { "type": "string", "enum": ["weekly", "bi-weekly", "monthly"] },
+          "cycle_start_date": { "type": "string", "format": "date" },
+          "cycle_end_date": { "type": "string", "format": "date" }
+        }
+      },
+      "AdvanceCycleRequest": {
+        "type": "object",
+        "required": ["cycle_number"],
+        "description": "Partial update to dt_group_config for cycle advance",
+        "properties": {
+          "cycle_number": { "type": "integer", "description": "Next cycle number (incremented)" },
+          "cycle_start_date": { "type": "string", "format": "date" },
+          "cycle_end_date": { "type": "string", "format": "date" }
+        }
+      },
+      "MeetingScheduleRow": {
+        "type": "object",
+        "description": "Forward meeting schedule row from dt_meeting_schedule (companion-served, m_group, 1:N)",
+        "properties": {
+          "meeting_number": { "type": "integer" },
+          "scheduled_date": { "type": "string", "format": "date" },
+          "cadence": { "type": "string", "enum": ["weekly", "bi-weekly", "monthly"] },
+          "status": { "type": "string", "enum": ["upcoming", "completed", "cancelled"] }
+        }
+      },
+      "MeetingRecordRequest": {
+        "type": "object",
+        "description": "Meeting summary row for dt_meeting_record (m_group, 1:N)",
+        "required": ["meeting_number", "meeting_date"],
+        "properties": {
+          "meeting_number": { "type": "integer" },
+          "meeting_date": { "type": "string", "format": "date" },
+          "opening_balance": { "type": "number", "format": "double" },
+          "closing_balance": { "type": "number", "format": "double" },
+          "total_inflows": { "type": "number", "format": "double" },
+          "total_outflows": { "type": "number", "format": "double" },
+          "total_savings_collected": { "type": "number", "format": "double" },
+          "total_repayments_received": { "type": "number", "format": "double" },
+          "total_loans_disbursed": { "type": "number", "format": "double" },
+          "total_fines_collected": { "type": "number", "format": "double" },
+          "attendance_count": { "type": "integer" },
+          "notes": { "type": "string" }
+        }
+      },
+      "AttendanceRequest": {
+        "type": "object",
+        "description": "Per-member attendance row for dt_meeting_attendance (m_client, 1:N)",
+        "required": ["meeting_number"],
+        "properties": {
+          "meeting_number": { "type": "integer" },
+          "status": { "type": "string", "enum": ["present", "absent", "late"] },
+          "fine_amount": { "type": "number", "format": "double" },
+          "savings_collected": { "type": "number", "format": "double" },
+          "repayment_amount": { "type": "number", "format": "double" }
+        }
+      },
+      "LoanListItem": {
+        "type": "object",
+        "properties": {
+          "loanId": { "type": "string" },
+          "clientId": { "type": "string" },
+          "clientName": { "type": "string" },
+          "principal": { "type": "integer", "format": "int64" },
+          "outstandingBalance": { "type": "integer", "format": "int64" },
+          "isOverdue": { "type": "boolean" },
+          "numberOfRepayments": { "type": "integer" },
+          "expectedWeeklyRepayment": { "type": "integer", "format": "int64" },
+          "status": { "$ref": "#/components/schemas/StatusObject" }
+        }
+      },
+      "CreateLoanRequest": {
+        "type": "object",
+        "required": ["clientId", "loanProductId", "principal", "submittedOnDate"],
+        "properties": {
+          "clientId": { "type": "integer", "format": "int64" },
+          "loanProductId": { "type": "integer", "format": "int64" },
+          "principal": { "type": "number" },
+          "numberOfRepayments": { "type": "integer" },
+          "repaymentEvery": { "type": "integer" },
+          "repaymentFrequencyType": { "type": "integer", "description": "1=weeks, 2=months" },
+          "interestRatePerPeriod": { "type": "number" },
+          "groupId": { "type": "integer", "format": "int64" },
+          "submittedOnDate": { "type": "string" },
+          "locale": { "type": "string", "example": "en" },
+          "dateFormat": { "type": "string", "example": "dd MMMM yyyy" }
+        }
+      },
+      "LoanStateCommandRequest": {
+        "type": "object",
+        "description": "Request body varies by command query parameter. approve: {approvedOnDate, locale, dateFormat}. disburse: {actualDisbursementDate, note, locale, dateFormat}. reject: {rejectedOnDate, locale, dateFormat}.",
+        "properties": {
+          "approvedOnDate": { "type": "string", "description": "Used with command=approve" },
+          "actualDisbursementDate": { "type": "string", "description": "Used with command=disburse" },
+          "rejectedOnDate": { "type": "string", "description": "Used with command=reject" },
+          "note": { "type": "string" },
+          "locale": { "type": "string", "example": "en" },
+          "dateFormat": { "type": "string", "example": "dd MMMM yyyy" }
+        }
+      },
+      "LoanVoteRequest": {
+        "type": "object",
+        "description": "Voting outcome row for dt_loan_vote (m_loan, 1:1)",
+        "properties": {
+          "meeting_number": { "type": "integer" },
+          "votes_for": { "type": "integer" },
+          "votes_against": { "type": "integer" },
+          "votes_abstain": { "type": "integer" },
+          "chairperson_approved": { "type": "boolean" },
+          "outcome": { "type": "string", "enum": ["approved", "rejected"] }
+        }
+      },
+      "RepaymentRequest": {
+        "type": "object",
+        "required": ["transactionDate", "transactionAmount"],
+        "properties": {
+          "transactionDate": { "type": "string" },
+          "transactionAmount": { "type": "integer", "format": "int64" },
+          "paymentTypeId": { "type": "integer", "description": "1 = Cash", "example": 1 },
+          "locale": { "type": "string", "example": "en" },
+          "dateFormat": { "type": "string", "example": "dd MMMM yyyy" }
+        }
+      },
+      "BatchRequest": {
+        "type": "object",
+        "required": ["requests"],
+        "description": "Fineract Batch API payload — serialized offline queue operations",
+        "properties": {
+          "requests": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["requestId", "relativeUrl", "method"],
+              "properties": {
+                "requestId": { "type": "integer", "description": "Monotonic ID from SyncQueue" },
+                "relativeUrl": { "type": "string", "description": "Relative URL of the Fineract API (no base path)" },
+                "method": { "type": "string", "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"] },
+                "body": { "type": "object", "description": "JSON request body for POST/PUT operations" }
+              }
+            }
+          }
+        }
+      },
+      "ClientProfile": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64" },
+          "displayName": { "type": "string" },
+          "firstname": { "type": "string" },
+          "lastname": { "type": "string" },
+          "mobileNo": { "type": "string" },
+          "status": { "$ref": "#/components/schemas/StatusObject" },
+          "activationDate": { "type": "string" },
+          "officeId": { "type": "integer", "format": "int64" }
+        }
+      },
+      "MemberListItem": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64" },
+          "displayName": { "type": "string" },
+          "status": { "$ref": "#/components/schemas/StatusObject" },
+          "mobileNo": { "type": "string" },
+          "savingsAccountBalance": { "type": "number", "format": "double" },
+          "loanStatus": { "type": "string" }
+        }
+      },
+      "CreateClientRequest": {
+        "type": "object",
+        "required": ["firstname", "lastname", "mobileNo", "officeId"],
+        "properties": {
+          "firstname": { "type": "string" },
+          "lastname": { "type": "string" },
+          "mobileNo": { "type": "string" },
+          "active": { "type": "boolean", "default": true },
+          "activationDate": { "type": "string" },
+          "officeId": { "type": "integer", "format": "int64" },
+          "groupId": { "type": "integer", "format": "int64" },
+          "locale": { "type": "string", "example": "en" },
+          "dateFormat": { "type": "string", "example": "dd MMMM yyyy" }
+        }
+      },
+      "CreateSavingsRequest": {
+        "type": "object",
+        "required": ["clientId", "productId"],
+        "properties": {
+          "clientId": { "type": "integer", "format": "int64" },
+          "productId": { "type": "integer", "format": "int64" },
+          "submittedOnDate": { "type": "string" },
+          "locale": { "type": "string", "example": "en" },
+          "dateFormat": { "type": "string", "example": "dd MMMM yyyy" }
+        }
+      },
+      "SavingsDepositRequest": {
+        "type": "object",
+        "required": ["transactionDate", "transactionAmount"],
+        "properties": {
+          "transactionDate": { "type": "string" },
+          "transactionAmount": { "type": "integer", "format": "int64" },
+          "paymentTypeId": { "type": "integer", "description": "1 = Cash", "example": 1 },
+          "locale": { "type": "string", "example": "en" },
+          "dateFormat": { "type": "string", "example": "dd MMMM yyyy" }
+        }
+      },
+      "LoanRequestSubmission": {
+        "type": "object",
+        "description": "End-user loan request row for dt_loan_request (m_client, 1:N)",
+        "properties": {
+          "amount": { "type": "number", "format": "double" },
+          "purpose": { "type": "string" },
+          "duration_weeks": { "type": "integer" },
+          "requested_at": { "type": "string", "format": "date" },
+          "status": { "type": "string", "enum": ["pending", "approved", "rejected"], "default": "pending" }
+        }
+      },
+      "GroupSavingsSummary": {
+        "type": "object",
+        "description": "Companion BFF group savings summary — contribution-model-aware per-member rows",
+        "properties": {
+          "cycleTarget": { "type": "integer", "format": "int64", "description": "Total target savings for this cycle" },
+          "cycleCollected": { "type": "integer", "format": "int64", "description": "Total collected so far this cycle" },
+          "totalCollected": { "type": "integer", "format": "int64" },
+          "weeklyTrend": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "week": { "type": "string", "description": "ISO week string (e.g. 2026-W31)" },
+                "amount": { "type": "integer", "format": "int64" }
+              }
+            }
+          },
+          "memberRows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "clientId": { "type": "integer", "format": "int64" },
+                "clientName": { "type": "string" },
+                "sharesHeld": { "type": "integer", "description": "SHARE_BASED_VARIABLE groups (VSLA/SILC)" },
+                "shareValue": { "type": "number", "description": "Share value for SHARE_BASED_VARIABLE" },
+                "totalContributed": { "type": "number", "description": "FIXED_AMOUNT groups (ROSCA/SHG)" },
+                "meetingsContributed": { "type": "integer", "description": "Meetings member has contributed" }
+              }
+            }
+          }
+        }
+      },
+      "IndividualSavingsSummary": {
+        "type": "object",
+        "description": "Individual voluntary savings summary (companion BFF)",
+        "properties": {
+          "totalBalance": { "type": "integer", "format": "int64" },
+          "weeklyTrend": { "type": "array", "items": { "type": "object" } },
+          "memberRows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "clientId": { "type": "integer", "format": "int64" },
+                "clientName": { "type": "string" },
+                "balance": { "type": "number" }
+              }
+            }
+          }
+        }
+      },
+      "MemberSavingsDetail": {
+        "type": "object",
+        "description": "Model-aware member savings detail (companion BFF) — sparkline + transaction history",
+        "properties": {
+          "savingsBalance": { "type": "number" },
+          "sharesHeld": { "type": "integer", "description": "SHARE_BASED_VARIABLE only" },
+          "shareValue": { "type": "number", "description": "SHARE_BASED_VARIABLE only" },
+          "meetingsContributed": { "type": "integer" },
+          "sparkline": {
+            "type": "array",
+            "items": { "type": "number" },
+            "description": "Recent balance trend data points"
+          },
+          "transactions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": { "type": "string", "format": "date" },
+                "amount": { "type": "number" },
+                "type": { "type": "string", "enum": ["deposit", "withdrawal", "fee"] },
+                "balance": { "type": "number" }
+              }
+            }
+          }
+        }
+      },
+      "ShareoutPreview": {
+        "type": "object",
+        "description": "Strategy-aware distribution preview from companion BFF",
+        "properties": {
+          "cycleNumber": { "type": "integer" },
+          "poolModel": { "type": "string", "enum": ["ACCUMULATING", "ROTATING_PAYOUT"] },
+          "shareoutFormula": {
+            "type": "string",
+            "enum": ["PRORATA_SHARES", "PRORATA_SAVINGS", "EQUAL", "FIXED_ORDER", "LOTTERY", "AUCTION"]
+          },
+          "totalCorpus": { "type": "number", "format": "double" },
+          "totalProfit": { "type": "number", "format": "double" },
+          "totalPool": { "type": "number", "format": "double" },
+          "memberPayouts": {
+            "type": "array",
+            "nullable": true,
+            "description": "Populated for ACCUMULATING pool model",
+            "items": {
+              "type": "object",
+              "properties": {
+                "clientId": { "type": "integer", "format": "int64" },
+                "clientName": { "type": "string" },
+                "payout": { "type": "number" },
+                "sharesPct": { "type": "number" }
+              }
+            }
+          },
+          "rotationPosition": { "type": "integer", "nullable": true, "description": "Current rotation slot for ROTATING_PAYOUT" },
+          "nextRecipientName": { "type": "string", "nullable": true },
+          "nextRecipientAmount": { "type": "number", "nullable": true }
+        }
+      },
+      "ShareoutExecuteRequest": {
+        "type": "object",
+        "required": ["cycleNumber", "totalPool", "memberPayouts", "shareoutFormula", "executedAt"],
+        "properties": {
+          "cycleNumber": { "type": "integer" },
+          "totalPool": { "type": "number", "format": "double" },
+          "memberPayouts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["clientId", "amount"],
+              "properties": {
+                "clientId": { "type": "integer", "format": "int64" },
+                "amount": { "type": "number" }
+              }
+            }
+          },
+          "shareoutFormula": { "type": "string" },
+          "executedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ShareoutExecuteResponse": {
+        "type": "object",
+        "properties": {
+          "shareoutRecordId": { "type": "string" },
+          "succeededCount": { "type": "integer" },
+          "failedCount": { "type": "integer" },
+          "failedMemberIds": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "RotationExecuteRequest": {
+        "type": "object",
+        "required": ["recipientMemberId", "amount", "payoutOrderMethod", "executedAt"],
+        "properties": {
+          "recipientMemberId": { "type": "string" },
+          "amount": { "type": "number", "format": "double" },
+          "payoutOrderMethod": { "type": "string", "enum": ["FIXED_ORDER", "LOTTERY", "AUCTION"] },
+          "executedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "RotationExecuteResponse": {
+        "type": "object",
+        "properties": {
+          "rotationRecordId": { "type": "string" },
+          "newRotationPosition": { "type": "integer" },
+          "nextRecipientId": { "type": "string", "nullable": true }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "description": "Fineract standard error envelope",
+        "properties": {
+          "httpStatusCode": { "type": "integer" },
+          "developerMessage": { "type": "string" },
+          "defaultUserMessage": { "type": "string" },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "developerMessage": { "type": "string" },
+                "defaultUserMessage": { "type": "string" },
+                "parameterName": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
