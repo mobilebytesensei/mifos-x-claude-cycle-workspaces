@@ -718,7 +718,7 @@ LazyColumn(contentPadding=PaddingValues(horizontal=16dp, vertical=8dp)) {
 ### Group List Load Sequence
 1. Screen enters: GroupListScreen composable launches, GroupListViewModel.init() called
 2. isLoading=true: shimmer list renders (5 cards × 88dp), TopAppBar and SearchBar visible
-3. API call: GET /centers?staffId={id}&paged=true&limit=20&offset=0
+3. API call: GET /groups?staffId={id}&paged=true&limit=20&offset=0
 4. Shimmer duration: shimmer animates for up to 3000ms; replaced immediately when data arrives
 5. Success: isLoading=false, groups populated. Shimmer fades out (100ms, accelerated). LazyColumn fades in (150ms, decelerated) with staggered item entry: each item slides up 8dp + fades in with 50ms delay per item.
 6. Empty: EmptyState component fades in (200ms) centered in available space.
@@ -748,7 +748,7 @@ LazyColumn(contentPadding=PaddingValues(horizontal=16dp, vertical=8dp)) {
 
 ### Dashboard Parallel API Load
 1. GroupDashboardViewModel.init() called with groupId from nav params
-2. Four coroutines launched in parallel: get_center, get_center_accounts, get_group_corpus, get_group_config
+2. Four coroutines launched in parallel: get_group, get_group_accounts, get_group_corpus, get_group_config
 3. isLoading=true: 4× shimmer cards (h=120dp) shown
 4. As each call returns, partial state updates — shimmer replaced only when ALL calls complete (or one fails)
 5. compute_derived_state:
@@ -776,7 +776,7 @@ LazyColumn(contentPadding=PaddingValues(horizontal=16dp, vertical=8dp)) {
 1. User taps "Create Group" on step 3: OnSubmit fires
 2. isSubmitting=true: button label "Create Group" fades out (100ms), CircularProgressIndicator 16dp white fades in (100ms). All fields in step 3 become disabled.
 3. NetworkMonitor.isOnline check:
-   - Online: POST /centers → on success: POST /datatables/dt_group_config/{centerId}
+   - Online: POST /groups → on success: POST /datatables/dt_group_config/{groupId}
      - On success: NavigateToGroupDashboard event emitted (navigate with groupId)
    - Offline: enqueue SyncQueueItem(operation=CREATE_GROUP), emit ShowOfflineSyncDialog. Dialog: "Group queued for sync — it will be created when you reconnect." Dismiss → NavigateBack to group list.
 4. Error: isSubmitting=false, button restores. Snackbar: error.message. Step 3 remains open.
@@ -1209,7 +1209,7 @@ CREATE_GROUP_CONFIG entry (chained, runs after CREATE_GROUP success):
 
 **SyncStatus screen indicator**: when pending ops exist for group-management, a sync icon badge appears on the group list toolbar. Tapping navigates to the sync-status screen which shows pending/synced/failed operations.
 
-**Conflict resolution**: if CREATE_GROUP already created on server but config write failed, the config write retries independently using the stored centerId. Duplicate detection: if 409 conflict received on CREATE_GROUP, the local record is updated with the server's resourceId.
+**Conflict resolution**: if CREATE_GROUP already created on server but config write failed, the config write retries independently using the stored groupId. Duplicate detection: if 409 conflict received on CREATE_GROUP, the local record is updated with the server's resourceId.
 
 ---
 

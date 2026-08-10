@@ -43,7 +43,7 @@ Group-linked savings implements the dual savings model for VSLA groups: mandator
 | isRefreshing | Boolean | false |
 | error | String? | null |
 | lastSyncAt | String? | null |
-| centerId | Int | 0 |
+| groupId | Int | 0 |
 | cycleTarget | Long | 0L |
 | cycleCollected | Long | 0L |
 
@@ -61,8 +61,8 @@ Group-linked savings implements the dual savings model for VSLA groups: mandator
 
 | From | Action | To | Params |
 |------|--------|----|--------|
-| home-dashboard | Tap Savings nav | savings-dashboard | centerId |
-| bottom_nav | Savings tab selected | savings-dashboard | centerId |
+| home-dashboard | Tap Savings nav | savings-dashboard | groupId |
+| bottom_nav | Savings tab selected | savings-dashboard | groupId |
 | savings-dashboard | Tap member row (GROUP tab) | member-savings-detail | memberId, savingsType=GROUP_LINKED |
 | savings-dashboard | Tap member row (INDIVIDUAL tab) | member-savings-detail | memberId, savingsType=INDIVIDUAL |
 

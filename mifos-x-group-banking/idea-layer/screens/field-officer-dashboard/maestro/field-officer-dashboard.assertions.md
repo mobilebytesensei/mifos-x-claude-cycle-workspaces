@@ -9,7 +9,7 @@ appId: `org.mifos.groupbanking` · TestTags: `FieldOfficerDashboardTestTags.kt` 
 ## State → success_signal → tag mapping
 | State | success_signal | Selector | Encoded? |
 |---|---|---|---|
-| Loading | shimmer while parallel centers+groups fetch | `id: field_officer_dashboard_loading_indicator` | waited-through via `extendedWaitUntil` |
+| Loading | shimmer while groups fetch | `id: field_officer_dashboard_loading_indicator` | waited-through via `extendedWaitUntil` |
 | Content | KPI row + filter chips + group-health list | `id: field_officer_dashboard_kpi_row` (+ `filter_row`, `group_list`) | yes — asserted |
 | Empty | no groups assigned | `id: field_officer_dashboard_empty_section` | NOT asserted — contradicts seeded-groups prereq; induced-only |
 | Error | inline error + retry | `id: field_officer_dashboard_error_section` / `error_retry_button` | NOT asserted — induced API failure only |

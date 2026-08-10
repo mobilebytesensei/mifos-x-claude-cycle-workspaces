@@ -30,7 +30,7 @@
 ## Screen: Meeting Calendar
 
 ### Entry
-- From **home-dashboard** ("Meetings" nav link); nav-param `center_id: Int`
+- From **home-dashboard** ("Meetings" nav link); nav-param `group_id: Int`
 - From **bottom_nav** "Meetings" tab (`condition: meetings_tab_selected`)
 - Back navigation pops the route and returns to `home-dashboard`
 
@@ -136,7 +136,7 @@ Opened by the upcoming card's **Reschedule** link, the **Set / Adjust Schedule**
 
 ### Demo Data (state: `content`, from `demo-data.yaml`)
 
-Five weekly-Tuesday meetings for Mwangaza Women's Group (centerId=1) — 1 UPCOMING pinned + 4 past rows:
+Five weekly-Tuesday meetings for Mwangaza Women's Group (groupId=1) — 1 UPCOMING pinned + 4 past rows:
 
 | # | Meeting ID          | Date         | Status    | Attendance | Collected (KES) |
 |---|---------------------|--------------|-----------|------------|-----------------|
@@ -166,7 +166,7 @@ Companion `MeetingRecordItem` (3 records, one per COMPLETED meeting — MISSED #
 The ui.yaml declares 4 `screen_state` members (`Loading`, `Content`, `Empty`, `Error`) plus a hybrid `content_with_error` composite. Each renders as a distinct HTML preview surface under `preview/`.
 
 ### `loading`
-Skeleton shimmer while `MeetingRepository.getMeetings(centerId)` Store5 stream is in flight — cold-start with no cache.
+Skeleton shimmer while `MeetingRepository.getMeetings(groupId)` Store5 stream is in flight — cold-start with no cache.
 
 ```
 ┌ Meetings                        [⇋]    ┐  top_app_bar remains rendered
@@ -202,11 +202,11 @@ Content visible but a persistent error banner shown for stale-data warning — S
 ```
 
 - Banner is non-blocking — hero card + past list remain tappable.
-- Retry re-hits `centers/{centerId}/meetings` network-first, gated by `cmp-network-monitor`.
+- Retry re-hits `groups/{groupId}/meetings` network-first, gated by `cmp-network-monitor`.
 - Offline → banner persists, list keeps cached rows visible (stale-while-revalidate).
 
 ### `empty`
-Center has never held a meeting yet (e.g. a fresh group in its bootstrap window).
+Group has never held a meeting yet (e.g. a fresh group in its bootstrap window).
 
 ```
 ┌ Meetings                        [⇋]    ┐
@@ -257,15 +257,15 @@ Error message vocabulary (from `state_model.errors`):
 ## Interaction Patterns
 
 1. **Toggle view tap (top bar action)** → `ToggleViewMode` (effect: `transform_state`) → flips `viewMode` between `LIST` and `CALENDAR`; pure ViewModel state transition, no network, no persistence. The same cached meetings re-render in the chosen layout.
-2. **Start Meeting tap (hero CTA)** → `StartMeeting(meetingId, meetingNumber, centerId)` (effect: `navigate`) → NavController push `meeting-conduct` with route args. No Fineract mutation at tap time (collection sheet screen owns the writes).
-3. **Past meeting row tap** → `OpenPastMeeting(meetingId, meetingNumber, centerId)` (effect: `navigate`) → NavController push `previous-meeting-review` — read-only drill-down into the past meeting record.
+2. **Start Meeting tap (hero CTA)** → `StartMeeting(meetingId, meetingNumber, groupId)` (effect: `navigate`) → NavController push `meeting-conduct` with route args. No Fineract mutation at tap time (collection sheet screen owns the writes).
+3. **Past meeting row tap** → `OpenPastMeeting(meetingId, meetingNumber, groupId)` (effect: `navigate`) → NavController push `previous-meeting-review` — read-only drill-down into the past meeting record.
 4. **Pull to refresh** → `RefreshMeetings` (effect: `call_api`) → Store5 network-first, `cmp-network-monitor`-gated; success replaces SQLDelight cache, offline preserves cached rows behind the error banner.
 5. **Retry tap (banner / full-screen error)** → `RefreshMeetings` (same as PTR) → identical Store5 fresh=true re-fetch. Banner dismisses on success.
 6. **Screen enters composition** → `LoadMeetings` fires (default action, `on_mount`) — Store5 emits cached rows immediately then background-refreshes.
 7. **Toggle icon focus** → 2dp solid `--primary-700` focus ring, 2dp offset (per DS §Accessibility) — screen-reader label "Toggle calendar/list view".
 8. **Reschedule / Set-Adjust-Schedule tap** → `OpenScheduleEditor` (effect: `transform_state`) → sets `showScheduleEditor = true` and opens the `schedule_editor_sheet` prefilled with the group's current recurring `meetingDay` / `meetingTime` / `frequency`. Fired from three surfaces: the upcoming card's **Reschedule** link, the no-upcoming card's **Set / Adjust Schedule** CTA, and the empty-state CTA. Pure VM flip — no write until Confirm.
 9. **Edit schedule fields (day / time / frequency)** → `OnScheduleFieldChange(day|time|frequency)` (effect: `transform_state`) → updates the corresponding draft field (`scheduleDay` / `scheduleTime` / `scheduleFrequency`); pure in-VM, no side effects.
-10. **Save Schedule tap** → `RescheduleMeeting(day, time, frequency)` (effect: `call_api`) → PUTs `updateCalendar` to the Fineract collection-meeting Calendar (`PUT /centers/{centerId}/calendars/{calendarId}?command=updateCalendar` — the recurrence source of truth) and mirrors `meetingDay`/`meetingTime`/`frequency` into the `dt_group_config` datatable. On success re-runs `LoadMeetings` so the shifted recurrence renders, emits `ShowScheduleUpdated`, and dismisses the sheet. `cmp-network-monitor` gates connectivity; offline the PUT is queued to the SQLDelight `sync_queue`. Meetings are never created ad-hoc here — only the recurring schedule is adjusted.
+10. **Save Schedule tap** → `RescheduleMeeting(day, time, frequency)` (effect: `call_api`) → PUTs `updateCalendar` to the Fineract collection-meeting Calendar (`PUT /groups/{groupId}/calendars/{calendarId}?command=updateCalendar` — the recurrence source of truth) and mirrors `meetingDay`/`meetingTime`/`frequency` into the `dt_group_config` datatable. On success re-runs `LoadMeetings` so the shifted recurrence renders, emits `ShowScheduleUpdated`, and dismisses the sheet. `cmp-network-monitor` gates connectivity; offline the PUT is queued to the SQLDelight `sync_queue`. Meetings are never created ad-hoc here — only the recurring schedule is adjusted.
 11. **Cancel / scrim tap (editor sheet)** → `DismissScheduleEditor` (effect: `transform_state`) → sets `showScheduleEditor = false` and discards the unsaved draft; no write.
 
 ---
@@ -304,16 +304,16 @@ Error message vocabulary (from `state_model.errors`):
 **Required modules**: `core/network`, `core/database`
 
 Read paths (offline-first, stale-while-revalidate):
-- `meetings[]` ← `MeetingRepository.getMeetings(centerId)` via Store5 stream
+- `meetings[]` ← `MeetingRepository.getMeetings(groupId)` via Store5 stream
   - Source of truth: SQLDelight `meetings` cache
-  - Fetcher: Fineract `GET /centers/{centerId}/meetings` (gated by `cmp-network-monitor`)
+  - Fetcher: Fineract `GET /groups/{groupId}/meetings` (gated by `cmp-network-monitor`)
   - `RefreshMeetings` triggers Store5 `fresh=true` (network-first)
-- `meetingRecords[]` ← `get_meeting_records_datatable(centerId)` from `dt_meeting_record` (server-side datatable; populates the past-meeting rows' trailing KES + attendance)
+- `meetingRecords[]` ← `get_meeting_records_datatable(groupId)` from `dt_meeting_record` (server-side datatable; populates the past-meeting rows' trailing KES + attendance)
 - `viewMode` — pure in-memory ViewModel state (LIST | CALENDAR), no persistence
 - `isLoading` / `isRefreshing` — derived from Store5 stream state
 - `error` — nullable, populated on `NetworkError` (transient) or fatal Fineract failure
 
-Write path: **one — the recurring schedule only** (`RescheduleMeeting`). The schedule-editor sheet PUTs `updateCalendar` to the Fineract collection-meeting Calendar (`PUT /centers/{centerId}/calendars/{calendarId}?command=updateCalendar`) and mirrors `meetingDay`/`meetingTime`/`frequency` into the `dt_group_config` datatable; `cmp-network-monitor` gates it, offline it queues to the SQLDelight `sync_queue`. No individual meeting is created or mutated here — only the recurrence the list reads from. Meeting-conduct still owns the per-meeting collection-sheet money writes.
+Write path: **one — the recurring schedule only** (`RescheduleMeeting`). The schedule-editor sheet PUTs `updateCalendar` to the Fineract collection-meeting Calendar (`PUT /groups/{groupId}/calendars/{calendarId}?command=updateCalendar`) and mirrors `meetingDay`/`meetingTime`/`frequency` into the `dt_group_config` datatable; `cmp-network-monitor` gates it, offline it queues to the SQLDelight `sync_queue`. No individual meeting is created or mutated here — only the recurrence the list reads from. Meeting-conduct still owns the per-meeting collection-sheet money writes.
 
 Offline behavior: when `NetworkMonitor.isOffline == true`, cache rows still render and the error banner surfaces "Showing cached meetings — tap Retry to refresh." The list itself stays in `content` state; the banner overlays as `content_with_error`.
 

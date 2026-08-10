@@ -161,7 +161,7 @@ Amina (Chairperson) taps "Chairperson Approve":
 ## Interaction Patterns
 
 **GroupDashboard — parallel API load:**
-1. Screen enters: all 4 API calls fired simultaneously (get_center, get_center_accounts, get_group_corpus, get_group_config)
+1. Screen enters: all 4 API calls fired simultaneously (get_group, get_group_accounts, get_group_corpus, get_group_config)
 2. While loading: 4 shimmer blocks, 120dp each, surface_variant with shimmer gradient
 3. As each call resolves: state partially updates (corpus card may appear before activity feed)
 4. isCorpusInsufficient computed: corpus.currentBalance < config.minimumDisbursementThreshold

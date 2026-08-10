@@ -266,7 +266,7 @@ Error types (from `OrganizerDashboardError`):
 Read paths (offline-first):
 - `OrganizerDashboardSummary` ← `OrganizerDashboardRepository.getOrganizerDashboard()` via Store5 stream
   - Source of truth: SQLDelight `organizer_dashboard_cache` entity
-  - Fetcher: companion `GET /companion/organizer/dashboard` (single call replaces the legacy 3 raw Fineract calls: `/staff/{id}/summary` + `/centers` + `/journal-entries`)
+  - Fetcher: companion `GET /companion/organizer/dashboard` (single call replaces the legacy 3 raw Fineract calls: `/staff/{id}/summary` + `/groups` + `/journal-entries`)
   - Gated by `cmp-network-monitor` — when `NetworkMonitor.isOffline == true`, cache rows still render and `Network` error surfaces as a non-blocking snackbar/toast, the four sections stay in `content` state.
   - `Retry` triggers `fresh=true`, `OnRefresh` triggers cache invalidation
 - Session-derived fields:

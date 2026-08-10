@@ -92,13 +92,13 @@ Seed state from `SyncQueueSummary` + `SyncStatusState` — a Mwangaza Women's Gr
 
 | id | entityType  | operation | payload (excerpt)                            | status  | createdAt            |
 |----|-------------|-----------|----------------------------------------------|---------|----------------------|
-| 1  | MEETING     | CREATE    | `centerId=1, meetingDate=2026-05-05`         | PENDING | 2026-05-09T07:00:00Z |
+| 1  | MEETING     | CREATE    | `groupId=1, meetingDate=2026-05-05`          | PENDING | 2026-05-09T07:00:00Z |
 | 2  | SAVINGS     | CREATE    | `savingsAccountId=1001, amount=500`          | PENDING | 2026-05-09T07:05:00Z |
 | 3  | SAVINGS     | CREATE    | `savingsAccountId=1002, amount=400`          | PENDING | 2026-05-09T07:05:30Z |
-| 4  | ATTENDANCE  | CREATE    | `centerId=1, clientIds=[101,102,103,104,105]`| FAILED  | 2026-05-08T15:00:00Z (retried 06:45) |
+| 4  | ATTENDANCE  | CREATE    | `groupId=1, clientIds=[101,102,103,104,105]` | FAILED  | 2026-05-08T15:00:00Z (retried 06:45) |
 
 - **`item` binding** — the singular row over `failedOperations` renders id 4 (the attendance batch): `entityType=ATTENDANCE`, `operation=CREATE`, `errorMessage="HTTP 503 — server unavailable"`.
-- **Batch drain preview** — on `Sync Now`, the 3 pending rows compose into a `BatchSyncRequest` targeting Fineract `/batches` with `relativeUrl` `centers/1/meetings` + two `savingsaccounts/{id}/transactions?command=deposit` POSTs.
+- **Batch drain preview** — on `Sync Now`, the 3 pending rows compose into a `BatchSyncRequest` targeting Fineract `/batches` with `relativeUrl` `groups/1/meetings` + two `savingsaccounts/{id}/transactions?command=deposit` POSTs.
 - **Batch response** — happy-path `SyncResult { successCount: 3, failedCount: 0, conflictCount: 0 }` returns `resourceId` 9001/9002/9003 for the three queue items → Store5 Bookkeeper advances rows to `synced`, `lastSyncAt` refreshes.
 - **`conflict_chip` hidden** on the seed (`conflictCount == 0`); would render `tertiaryContainer` pill above `pending_breakdown_card` when set.
 - **`all_synced_empty` hidden** on the seed (`pendingCount + failedCount > 0`); replaces the middle stack when both counters drop to zero.

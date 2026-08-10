@@ -8,17 +8,17 @@
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
-| GET | /fineract-provider/api/v1/centers?staffId={staffId}&limit=100 | All centers supervised by this field officer | BasicAuth (staff) |
+| GET | /fineract-provider/api/v1/groups?staffId={staffId}&limit=100 | All groups supervised by this field officer | BasicAuth (staff) |
 | GET | /fineract-provider/api/v1/loans?groupId={groupId}&loanStatus=active | Active loans for a group (for overdue rate calculation) | BasicAuth |
-| GET | /fineract-provider/api/v1/datatables/dt_group_corpus/{centerId} | Corpus balance for a group | BasicAuth |
+| GET | /fineract-provider/api/v1/datatables/dt_group_corpus/{groupId} | Corpus balance for a group | BasicAuth |
 
 ---
 
 ## Request / Response Details
 
-### GET /centers?staffId={staffId}&limit=100
+### GET /groups?staffId={staffId}&limit=100
 
-**Purpose**: Fetch all VSLA centers (groups) this field officer supervises. Called once on dashboard load.
+**Purpose**: Fetch all VSLA groups this field officer supervises. Called once on dashboard load.
 
 **Query params**: `staffId={staffId}` (Fineract staff ID from session), `limit=100`
 
@@ -78,7 +78,7 @@
 
 **Errors**:
 - 401: Session expired — redirect to login
-- 404: Staff has no centers assigned — show empty state
+- 404: Staff has no groups assigned — show empty state
 - 5xx: Show cached data from SQLDelight
 
 ---
@@ -124,14 +124,14 @@ overdueRate = if (totalActiveLoans > 0) overdueCount.toFloat() / totalActiveLoan
 
 ---
 
-### GET /datatables/dt_group_corpus/{centerId}
+### GET /datatables/dt_group_corpus/{groupId}
 
 **Purpose**: Fetch total savings (corpus balance) for each group.
 
 **Response**:
 ```json
 {
-  "centerId": 7,
+  "groupId": 7,
   "corpusBalance": 47500,
   "cashOnHand": 5000,
   "lastUpdatedMeeting": 4,
@@ -149,8 +149,8 @@ overdueRate = if (totalActiveLoans > 0) overdueCount.toFloat() / totalActiveLoan
 After fetching all groups, KPIs are computed:
 
 ```
-kpiTotalGroups = centers.size
-kpiTotalMembers = centers.sumOf { it.activeClientMembers.size }  // from centers detail
+kpiTotalGroups = groups.size
+kpiTotalMembers = groups.sumOf { it.activeClientMembers.size }  // from groups detail
 kpiTotalSavings = corpora.sumOf { it.corpusBalance }
 kpiLoansOutstanding = activeLoans.sumOf { it.principal - it.totalAmountRepaid }
 ```
@@ -167,12 +167,12 @@ kpiLoansOutstanding = sum of outstanding loan balances = KES 87,500
 
 ## DTOs
 
-### CenterSummary (from GET /centers)
+### GroupSummary (from GET /groups)
 | Field | Type | Description |
 |-------|------|-------------|
-| id | Long | Center ID (used as groupId) |
+| id | Long | Group ID |
 | name | String | Group name |
-| status | CenterStatus | Active / Pending / Closed |
+| status | GroupStatus | Active / Pending / Closed |
 | staffId | Long | Assigned field officer staff ID |
 | staffName | String | Field officer name |
 | officeId | Long | Branch office ID |
@@ -190,7 +190,7 @@ kpiLoansOutstanding = sum of outstanding loan balances = KES 87,500
 ### CorpusRecord (from dt_group_corpus)
 | Field | Type | Description |
 |-------|------|-------------|
-| centerId | Long | Center ID |
+| groupId | Long | Group ID |
 | corpusBalance | Long | Total group corpus in KES |
 | cashOnHand | Long | Physical cash on hand |
 | lastUpdatedMeeting | Int | Meeting number of last update |
@@ -199,7 +199,7 @@ kpiLoansOutstanding = sum of outstanding loan balances = KES 87,500
 ### GroupHealthCard (computed)
 | Field | Type | Description |
 |-------|------|-------------|
-| groupId | Long | Fineract center ID |
+| groupId | Long | Fineract group ID |
 | groupName | String | Group display name |
 | region | String | officeName (branch) |
 | status | GroupStatus | ACTIVE / PENDING / CLOSED |

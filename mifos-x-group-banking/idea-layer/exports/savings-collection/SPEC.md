@@ -52,7 +52,7 @@ The savings-collection feature enables the Mwangaza Women's Group admin (treasur
 | isRefreshing | Boolean | false |
 | error | String? | null |
 | lastSyncAt | String? | null |
-| centerId | Int | 0 |
+| groupId | Int | 0 |
 | cycleTarget | Long | 0L |
 | cycleCollected | Long | 0L |
 
@@ -82,8 +82,8 @@ Relevant fields from MeetingConductState:
 
 | From | To | Condition | Params |
 |------|----|-----------|--------|
-| home-dashboard | savings-dashboard | user_taps_savings_nav | centerId |
-| bottom_nav | savings-dashboard | savings_tab_selected | centerId |
+| home-dashboard | savings-dashboard | user_taps_savings_nav | groupId |
+| bottom_nav | savings-dashboard | savings_tab_selected | groupId |
 | savings-dashboard (GROUP row) | member-savings-detail | user_taps_member_row | memberId, savingsType=GROUP_LINKED |
 | savings-dashboard (INDIVIDUAL row) | member-savings-detail | user_taps_member_row | memberId, savingsType=INDIVIDUAL |
 | meeting-conduct step 3 | (no navigation — in-wizard) | input changes only | — |

@@ -472,7 +472,7 @@ Scaffold
    - Confirmation section hides (AnimatedVisibility collapse, 250ms)
    - Progress indicator appears (AnimatedVisibility expand, 250ms)
 3. **Step 1 — Create share-out record**:
-   - POST /datatables/dt_share_out/{centerId}
+   - POST /datatables/dt_share_out/{groupId}
    - On success: proceed to per-member payouts
    - On 403: navigate back, show "Chairperson role required" snackbar
    - On 500: queue everything to SyncQueue (fall through to offline path)
@@ -513,7 +513,7 @@ Scaffold
 ## 5. Content Data
 
 ### Group: Mwangaza Women's Group
-- Center ID: 7 (Fineract centerId)
+- Group ID: 7 (Fineract groupId)
 - Cycle: 1
 - Cycle length: 12 months
 - Meetings conducted: 12 (cycle complete)

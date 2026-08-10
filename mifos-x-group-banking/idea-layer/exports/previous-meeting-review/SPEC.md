@@ -28,7 +28,7 @@ context and forwards to `meeting-conduct` for the next meeting.
        show a fine line when `fineAmount > 0`; savings rows show group/individual/total; loan rows
        show repaid/outstanding and a disbursed chip when `amountDisbursed > 0`.
 - AC6: Start Meeting CTA (conduct only) navigates to `meeting-conduct` with `nextMeetingId`,
-       `nextMeetingNumber`, `centerId`.
+       `nextMeetingNumber`, `groupId`.
 - AC7: Load failure shows the Error state; back returns to the launch origin (conduct or calendar).
 
 ## Screens (1)
@@ -51,7 +51,7 @@ context and forwards to `meeting-conduct` for the next meeting.
 | launchedFrom | String | `"calendar"` | `conduct` \| `calendar` |
 | meetingId | String | `""` | Reviewed meeting id (nav_params) |
 | meetingNumber | Int | `0` | Reviewed meeting number (nav_params) |
-| centerId | Int | `0` | Group/center id (nav_params) |
+| groupId | Int | `0` | Group id (nav_params) |
 | nextMeetingId | String? | `null` | Next meeting to start (conduct) |
 | nextMeetingNumber | Int? | `null` | Next meeting number |
 | unresolvedItems | List<UnresolvedItem> | `emptyList()` | Unpaid fines / pending votes / missed attendance |
@@ -92,20 +92,20 @@ context and forwards to `meeting-conduct` for the next meeting.
 
 ## Navigation
 
-- **Route**: `/meetings/{previousMeetingId}/review` (nav_params `meeting_id`, `meeting_number`, `center_id`, `launched_from` ∈ {conduct, calendar})
+- **Route**: `/meetings/{previousMeetingId}/review` (nav_params `meeting_id`, `meeting_number`, `group_id`, `launched_from` ∈ {conduct, calendar})
 - **From**: `meeting-conduct` (view full report on step 0), `meeting-calendar` (completed meeting card)
 - **To**: `meeting-conduct`, `meeting-calendar`
 
 | Action | Destination | Params |
 |---|---|---|
-| `StartNewMeeting` (conduct only) | `meeting-conduct` | `meeting_id=nextMeetingId`, `meeting_number=nextMeetingNumber`, `center_id` |
+| `StartNewMeeting` (conduct only) | `meeting-conduct` | `meeting_id=nextMeetingId`, `meeting_number=nextMeetingNumber`, `group_id` |
 | `NavigateBack` | `meeting-calendar` / `meeting-conduct` | — |
 
 ## API Endpoints (3)
 
 | Function | Method | Endpoint | Params | Errors | Cache |
 |---|---|---|---|---|---|
-| `get_meeting_record_detail` | GET | `/fineract-provider/api/v1/datatables/dt_meeting_record/{centerId}` | centerId(Int), meetingNumber(Int) | 404, 5xx→cached | 300 s SWR, offline show_cached |
+| `get_meeting_record_detail` | GET | `/fineract-provider/api/v1/datatables/dt_meeting_record/{groupId}` | groupId(Int), meetingNumber(Int) | 404, 5xx→cached | 300 s SWR, offline show_cached |
 | `get_meeting_attendance` | GET | `/fineract-provider/api/v1/datatables/dt_meeting_attendance/{meetingId}` | meetingId(String) | 404→empty | 300 s SWR, offline show_cached |
 | `get_pending_loan_votes` | GET | `/fineract-provider/api/v1/datatables/dt_loan_vote/{loanId}` | loanId(String) | 404→no votes | — |
 
@@ -118,7 +118,7 @@ context and forwards to `meeting-conduct` for the next meeting.
 | `on_load` (context) | `launchedFrom == conduct` | conducting banner + Start Meeting CTA |
 | `on_load` (context) | `launchedFrom == calendar` | completed banner, hide CTA |
 | `on_load` (unresolved) | `unresolvedItems.isNotEmpty()` | render unresolved alert |
-| `on_start_meeting` | `launchedFrom == conduct` | navigate `meeting-conduct(nextMeetingId, nextMeetingNumber, centerId)` |
+| `on_start_meeting` | `launchedFrom == conduct` | navigate `meeting-conduct(nextMeetingId, nextMeetingNumber, groupId)` |
 
 ## Data-Flow
 

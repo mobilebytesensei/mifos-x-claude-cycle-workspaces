@@ -236,7 +236,7 @@ For each member m, for each transaction t in m.individualTransactions:
 ## Demo Data
 
 ### Group: Mwangaza Women's Group
-**centerId**: 7 | **groupSavingsAccountId**: 200
+**groupId**: 7 | **groupSavingsAccountId**: 200
 
 **5 members with group savings contributions (Cycle 1, Meetings #1–4)**:
 

@@ -423,12 +423,12 @@ LaunchedEffect(Unit): viewModel.loadDashboard()
 isLoading = true → ShimmerSkeleton (KPI grid + 5 shimmer cards)
   ↓
 Parallel API calls (Dispatchers.IO):
-  GET /centers?staffId=3&limit=100
-  → 8 centers returned
+  GET /groups?staffId=3&limit=100
+  → 8 groups returned
   ↓
-For each center (parallel):
+For each group (parallel):
   GET /loans?groupId={id}&loanStatus=active
-  GET /datatables/dt_group_corpus/{centerId}
+  GET /datatables/dt_group_corpus/{groupId}
   ↓
 Compute per group:
   overdueRate = overdueLoans / totalActiveLoans

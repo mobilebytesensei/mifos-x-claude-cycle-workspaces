@@ -453,14 +453,14 @@ IndividualTotalCard specification:
 ```
 SavingsDashboardScreen enters composition
   ↓
-LaunchedEffect(Unit): viewModel.loadDashboard(centerId)
+LaunchedEffect(Unit): viewModel.loadDashboard(groupId)
   ↓
 isLoading = true → ShimmerSkeleton (6 items × 72dp)
   ↓
 Parallel reads:
-  ├── LocalSavingsDao: getCachedGroupSummary(centerId)
-  ├── LocalSavingsDao: getCachedIndividualSummary(centerId)
-  └── LocalSavingsDao: getLastSyncAt(centerId)
+  ├── LocalSavingsDao: getCachedGroupSummary(groupId)
+  ├── LocalSavingsDao: getCachedIndividualSummary(groupId)
+  └── LocalSavingsDao: getLastSyncAt(groupId)
   ↓
 if cachedData != null:
   isLoading = false
@@ -579,7 +579,7 @@ SyncBand: lastSyncAt = "Just now"
 
 ## Group Context
 **Group Name**: Mwangaza Women's Group
-**centerId**: 7 (Fineract center ID)
+**groupId**: 7 (Fineract group ID)
 **groupSavingsAccountId**: 200 (mandatory savings product: "Group Mandatory Savings")
 **Cycle**: Cycle 1 (first 26-week cycle)
 **Meetings completed**: 4 (of 26 planned)
@@ -654,7 +654,7 @@ SavingsDashboardState(
   isRefreshing = false,
   error = null,
   lastSyncAt = "Today 8:30 AM",
-  centerId = 7,
+  groupId = 7,
   cycleTarget = 26_000L,
   cycleCollected = 4_600L,
   groupSavingsSummary = GroupSavingsSummary(

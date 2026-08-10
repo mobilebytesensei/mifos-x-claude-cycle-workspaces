@@ -147,7 +147,7 @@ MifosSave uses Material Design 3 with a VSLA-inspired brand palette designed for
 2. Button transitions to loading state — icon+label replaced by CircularProgressIndicator (150ms cross-fade); button disabled
 3. `isSubmitting = true` → screen state = `submitting`; back_step_button disabled
 4. COMP-GRP-001 POST /companion/groups called with CreateGroupOrchestrationRequest assembled from state
-5. On success (2xx): response {groupId, fineractCenterId, inviteCode} written to groups_cache + group_type_config_cache; NavigateToGroupDashboard(groupId) emitted; screen navigates
+5. On success (2xx): response {groupId, inviteCode} written to groups_cache + group_type_config_cache; NavigateToGroupDashboard(groupId) emitted; screen navigates
 6. On 400 (validation): validationErrors populated; screen state = `error`; error_banner shows "error_validation"
 7. On 409 (group-name-taken): screen state = `error`; ShowSnackbar("This group name is already taken.") emitted
 8. On 5xx: screen state = `error`; error_banner shows "error_server" with Retry button (retry=true)

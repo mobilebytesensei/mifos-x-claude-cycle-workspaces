@@ -14,9 +14,9 @@ The meeting-lifecycle feature provides the complete end-to-end flow for conducti
 
 ## Acceptance Criteria
 
-- AC-ML-001: Admin can view a list of all scheduled and past meetings for center ID in chronological order.
+- AC-ML-001: Admin can view a list of all scheduled and past meetings for the group in chronological order.
 - AC-ML-002: Upcoming meeting card is pinned at top with "Start Meeting" CTA when an upcoming meeting exists.
-- AC-ML-003: Tapping "Start Meeting" navigates to the 7-step meeting conduct wizard with correct meetingId, meetingNumber, centerId params.
+- AC-ML-003: Tapping "Start Meeting" navigates to the 7-step meeting conduct wizard with correct meetingId, meetingNumber, groupId params.
 - AC-ML-004: Wizard step 0 displays the previous meeting summary (Meeting #3: KES 1,850 collected, corpus KES 12,400, 5/5 attendance); first meeting shows empty state.
 - AC-ML-005: Wizard step 1 requires attendance recorded for all 5 group members (Amina Hassan, Peter Otieno, Grace Wanjiku, John Mwangi, Mary Akinyi) before advancing; LATE = KES 50 fine, ABSENT = KES 100 fine (FR-012).
 - AC-ML-006: Wizard step 2 confirms opening corpus (KES 12,400) and cash on hand (KES 2,000) from dt_group_corpus.
@@ -53,7 +53,7 @@ The meeting-lifecycle feature provides the complete end-to-end flow for conducti
 | isRefreshing | Boolean | false | Pull-to-refresh in progress |
 | viewMode | ViewMode | ViewMode.LIST | LIST or CALENDAR |
 | error | String? | null | Inline error message |
-| centerId | Int | 0 | Navigation param |
+| groupId | Int | 0 | Navigation param |
 
 **Actions:** LoadMeetings, RefreshMeetings, ToggleViewMode, StartMeeting, OpenPastMeeting
 **Events:** NavigateToConduct, NavigateToReview, ShowError
@@ -66,7 +66,7 @@ The meeting-lifecycle feature provides the complete end-to-end flow for conducti
 | totalSteps | Int | 7 |
 | meetingId | String | "" |
 | meetingNumber | Int | 0 |
-| centerId | Int | 0 |
+| groupId | Int | 0 |
 | previousMeetingSummary | PreviousMeetingSummary? | null |
 | groupMembers | List\<GroupMember\> | emptyList() |
 | attendanceMap | Map\<String, AttendanceStatus\> | emptyMap() |
@@ -103,12 +103,12 @@ The meeting-lifecycle feature provides the complete end-to-end flow for conducti
 
 | From | To | Condition | Params |
 |------|----|-----------|--------|
-| meeting-calendar | meeting-conduct | user_taps_start_meeting | meetingId, meetingNumber, centerId |
-| meeting-calendar | previous-meeting-review | user_taps_completed_meeting | meetingId, meetingNumber, centerId |
-| meeting-conduct | meeting-summary | wizard_submitted_successfully | meetingId, meetingNumber, centerId |
-| meeting-conduct | previous-meeting-review | user_taps_view_full_previous | meetingId, centerId |
+| meeting-calendar | meeting-conduct | user_taps_start_meeting | meetingId, meetingNumber, groupId |
+| meeting-calendar | previous-meeting-review | user_taps_completed_meeting | meetingId, meetingNumber, groupId |
+| meeting-conduct | meeting-summary | wizard_submitted_successfully | meetingId, meetingNumber, groupId |
+| meeting-conduct | previous-meeting-review | user_taps_view_full_previous | meetingId, groupId |
 | meeting-conduct | meeting-calendar | user_taps_back_or_cancel | — |
-| previous-meeting-review | meeting-conduct | user_taps_start_meeting (launchedFrom=conduct) | meetingId, meetingNumber, centerId |
+| previous-meeting-review | meeting-conduct | user_taps_start_meeting (launchedFrom=conduct) | meetingId, meetingNumber, groupId |
 | previous-meeting-review | meeting-calendar | user_taps_back (launchedFrom=calendar) | — |
 | meeting-summary | meeting-calendar | user_taps_done_or_back | — |
 
@@ -118,11 +118,11 @@ The meeting-lifecycle feature provides the complete end-to-end flow for conducti
 
 | ID | Method | Path | Description |
 |----|--------|------|-------------|
-| get_center_meetings | GET | /fineract-provider/api/v1/centers/{centerId}/meetings | Fetch scheduled meetings for calendar |
-| get_meeting_records_datatable | GET | /fineract-provider/api/v1/datatables/dt_meeting_record/{centerId} | Fetch completed meeting records |
-| get_previous_meeting_record | GET | /fineract-provider/api/v1/datatables/dt_meeting_record/{centerId}?meetingNumber={n-1} | Step 0 previous meeting data |
-| get_group_members | GET | /fineract-provider/api/v1/centers/{centerId} | Group members for attendance/savings |
-| get_group_corpus | GET | /fineract-provider/api/v1/datatables/dt_group_corpus/{centerId} | Opening corpus and cash on hand |
+| get_group_meetings | GET | /fineract-provider/api/v1/groups/{groupId}/meetings | Fetch scheduled meetings for calendar |
+| get_meeting_records_datatable | GET | /fineract-provider/api/v1/datatables/dt_meeting_record/{groupId} | Fetch completed meeting records |
+| get_previous_meeting_record | GET | /fineract-provider/api/v1/datatables/dt_meeting_record/{groupId}?meetingNumber={n-1} | Step 0 previous meeting data |
+| get_group_members | GET | /fineract-provider/api/v1/groups/{groupId} | Group members for attendance/savings |
+| get_group_corpus | GET | /fineract-provider/api/v1/datatables/dt_group_corpus/{groupId} | Opening corpus and cash on hand |
 | get_active_loans | GET | /fineract-provider/api/v1/loans?groupId=X&loanStatus=active | Active loans for step 4 |
 | get_loan_votes | GET | /fineract-provider/api/v1/datatables/dt_loan_vote/{loanId} | Existing vote tallies for step 5 |
 | post_meeting_record | POST | /fineract-provider/api/v1/datatables/dt_meeting_record | Create meeting record on submit |
@@ -130,7 +130,7 @@ The meeting-lifecycle feature provides the complete end-to-end flow for conducti
 | post_savings_transaction | POST | /fineract-provider/api/v1/savingsaccounts/{savingsId}/transactions | Savings deposit per member |
 | post_loan_repayment | POST | /fineract-provider/api/v1/loans/{loanId}/transactions?command=repayment | Loan repayment on submit |
 | post_loan_disbursal | POST | /fineract-provider/api/v1/loans/{loanId}/transactions?command=disburse | Loan disbursement on submit |
-| patch_corpus | PUT | /fineract-provider/api/v1/datatables/dt_group_corpus/{centerId} | Update corpus to closingCorpus |
+| patch_corpus | PUT | /fineract-provider/api/v1/datatables/dt_group_corpus/{groupId} | Update corpus to closingCorpus |
 
 ---
 

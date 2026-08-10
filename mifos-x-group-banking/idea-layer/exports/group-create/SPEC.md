@@ -4,7 +4,7 @@
 
 4-step wizard for creating a new savings group. Receives a `GroupTypeConfig` from
 `group-type-picker` and adapts the wizard's Step 2 fields to the contribution model.
-Submits a single companion orchestration call (COMP-GRP-001) that handles center creation,
+Submits a single companion orchestration call (COMP-GRP-001) that handles group creation,
 activation, member association, role assignment, and datatable provisioning server-side.
 Supports offline creation via sync queue.
 
@@ -121,7 +121,7 @@ Supports offline creation via sync queue.
 | `get_offices` | GET | `/offices` | — | no (cache 3600 s) |
 | `create_group_orchestrate` | POST | `/companion/groups` | COMP-GRP-001 | yes |
 
-COMP-GRP-001 orchestrates server-side: createCenter → activate → associateClients → assignRole(ORGANIZER) → provision dt_group_type_config.
+COMP-GRP-001 orchestrates server-side: createGroup → activate → associateClients → assignRole(ORGANIZER) → provision dt_group_type_config.
 
 ## Data-Flow
 
@@ -150,7 +150,7 @@ Key types: `GroupTypeConfig` (pool_model, contribution_model, shareout_formula,
 payout_order_method, share_value, contribution_amount, social_fund_enabled,
 social_fund_percent, cycle_length_months, loan_multiplier, interest_rate, fine_amount,
 max_members), `CreateGroupOrchestrationRequest`, `CreateGroupOrchestrationResponse`
-(groupId, fineractCenterId, inviteCode), `Office`.
+(groupId, inviteCode), `Office`.
 
 ## Designed UX Reference
 

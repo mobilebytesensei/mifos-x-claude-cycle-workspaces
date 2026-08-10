@@ -9,18 +9,18 @@ Source of truth for API shapes across all features.
 
 | DTO | Fineract Mapping | Source Type | Features | Tier |
 |-----|-----------------|-------------|----------|------|
-| `GroupDto` | `m_center` (Center) + `dt_group_type_config` ref | REST `GET /centers/{id}` | group-management, authentication | critical |
+| `GroupDto` | `m_group` + `dt_group_type_config` ref | REST `GET /groups/{id}` | group-management, authentication | critical |
 | `MemberDto` | `m_client` (Client) + `dt_member_role` (per-group) | REST `GET /clients/{id}` | member-onboarding, meeting-lifecycle | critical |
 | `GroupTypeConfigDto` | `dt_group_type_config` (m_group) | Companion `GET /companion/datatables/group_type_config/{id}` | group-management | critical |
 | `InvitationDto` | `dt_companion_invitations` (m_group) | Companion `GET/POST/PUT/DELETE /companion/datatables/invitations/*` | member-onboarding, authentication | critical |
-| `MeetingDto` | `dt_meeting_record` | Datatable on `m_center` | meeting-lifecycle | critical |
+| `MeetingDto` | `dt_meeting_record` | Datatable on `m_group` | meeting-lifecycle | critical |
 | `SavingsTransactionDto` | `m_savings_transaction` | REST `GET /savingsaccounts/{id}/transactions` | savings-collection, member-onboarding, end-user-dashboard | medium |
 | `LoanDto` | `m_loan` | REST `GET /loans/{id}` | loan-management, end-user-dashboard | critical |
 | `LoanRepaymentDto` | `m_loan_transaction` | REST `POST /loans/{id}/transactions` | loan-management | medium |
 | `AttendanceRecordDto` | `dt_meeting_attendance` | Datatable on `m_client` | meeting-lifecycle, fines-tracking | medium |
-| `SyncQueueDto` | `dt_sync_metadata` | Datatable on `m_center` | offline-sync | critical |
-| `ShareOutDto` | `dt_share_out` | Datatable on `m_center` | share-out | critical |
-| `GroupConfigDto` | `dt_group_config` | Datatable on `m_center` | group-management, loan-management | critical |
+| `SyncQueueDto` | `dt_sync_metadata` | Datatable on `m_group` | offline-sync | critical |
+| `ShareOutDto` | `dt_share_out` | Datatable on `m_group` | share-out | critical |
+| `GroupConfigDto` | `dt_group_config` | Datatable on `m_group` | group-management, loan-management | critical |
 | `LoanVoteDto` | `dt_loan_vote` | Datatable on `m_loan` | loan-management | medium |
 | `LoanRequestDto` | `dt_loan_request` | Datatable on `m_client` | end-user-dashboard, loan-management | medium |
 
@@ -28,7 +28,7 @@ Source of truth for API shapes across all features.
 
 | Fineract Entity | Covered By |
 |----------------|------------|
-| Center (Group) | `GroupDto` |
+| Group | `GroupDto` |
 | Client (Member) | `MemberDto` |
 | SavingsAccount + Transactions | `SavingsTransactionDto` |
 | Loan + Transactions | `LoanDto`, `LoanRepaymentDto` |

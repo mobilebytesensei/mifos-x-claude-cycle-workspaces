@@ -126,7 +126,7 @@ mobile-money-integration, web-admin-dashboard, sms-notifications, inter-group-le
 
 | Entity | Key Fields | Fineract Mapping |
 |--------|------------|------------------|
-| Group | name, cycle, rules, currency, corpus_balance, group_type_config | Center + group_type_config datatable |
+| Group | name, cycle, rules, currency, corpus_balance, group_type_config | m_group + group_type_config datatable |
 | Member | name, phone, photo, role (per group) | Client + dt_member_role |
 | Meeting | number, date, attendance, collected, opening_balance, closing_balance | dt_meeting_record |
 | SavingsTransaction | member, amount, type (group-linked / individual) | Savings Transaction |
@@ -137,7 +137,7 @@ mobile-money-integration, web-admin-dashboard, sms-notifications, inter-group-le
 
 ## API Coverage
 
-- **Fineract endpoints**: 55+ (centers, groups, clients, savings, loans, charges, reports, batch, self-service)
+- **Fineract endpoints**: 55+ (groups, clients, savings, loans, charges, reports, batch, self-service)
 - **Companion API contracts**: 16 (COMP-AUTH-001..003, COMP-GRP-001..005, COMP-CAL-001..003, COMP-DT-001..005, COMP-DIST-001/002) — abstract contract, backend built later
 - **MCP tools**: 101 (full programmatic access via extended Mifos MCP Server / mcp-mifosx)
 - **Custom Data Tables**: 11 Fineract-native domain extensions + 6 companion datatables provisioned via COMP-DT-001
@@ -150,16 +150,16 @@ mobile-money-integration, web-admin-dashboard, sms-notifications, inter-group-le
 
 | Data Table | Attached To | Feature | Purpose |
 |-----------|-------------|---------|---------|
-| dt_group_config | m_center | group-management | Cycle rules, contribution limits, loan multiplier, fine amounts, cycle dates |
-| dt_meeting_record | m_center | meeting-lifecycle | Per-meeting summary: attendance, totals, decisions |
+| dt_group_config | m_group | group-management | Cycle rules, contribution limits, loan multiplier, fine amounts, cycle dates |
+| dt_meeting_record | m_group | meeting-lifecycle | Per-meeting summary: attendance, totals, decisions |
 | dt_meeting_attendance | m_client | meeting-lifecycle, fines-tracking | Per-member attendance: present/late/fined |
 | dt_member_role | m_client | unified-auth, member-onboarding | Per-(member, group) role — organizer/treasurer/chairperson/secretary/member; drives per-group RBAC |
-| dt_share_out | m_center | share-out | Cycle share-out record: pool, distribution, status |
-| dt_social_fund | m_center | social-fund | Emergency fund balance and disbursement tracking |
+| dt_share_out | m_group | share-out | Cycle share-out record: pool, distribution, status |
+| dt_social_fund | m_group | social-fund | Emergency fund balance and disbursement tracking |
 | dt_loan_vote | m_loan | loan-management | Loan approval voting: for/against/chairperson approval |
-| dt_sync_metadata | m_center | offline-sync | Sync state: last sync, pending ops, conflicts |
+| dt_sync_metadata | m_group | offline-sync | Sync state: last sync, pending ops, conflicts |
 | dt_loan_request | m_client | end-user-dashboard | Member loan requests submitted for organizer review at meetings |
-| dt_group_corpus | m_center | corpus-tracking | Running fund balance: current, inflows, outflows, meeting open/close |
+| dt_group_corpus | m_group | corpus-tracking | Running fund balance: current, inflows, outflows, meeting open/close |
 | dt_member_invitation | m_client | member-invitations | Invite token audit trail — code, role, expiry, accepted state |
 
 **Companion datatables (6) — provisioned via COMP-DT-001 at deploy:**

@@ -101,9 +101,9 @@ The field officer dashboard provides a supervision view for Fineract field offic
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | /fineract-provider/api/v1/centers?staffId={staffId}&limit=100 | All centers supervised by this field officer |
+| GET | /fineract-provider/api/v1/groups?staffId={staffId}&limit=100 | All groups supervised by this field officer |
 | GET | /fineract-provider/api/v1/loans?groupId={groupId}&loanStatus=active | Active loans per group (for overdue rate) |
-| GET | /fineract-provider/api/v1/datatables/dt_group_corpus/{centerId} | Corpus balance per group |
+| GET | /fineract-provider/api/v1/datatables/dt_group_corpus/{groupId} | Corpus balance per group |
 
 ---
 

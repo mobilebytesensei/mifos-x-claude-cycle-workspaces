@@ -372,7 +372,7 @@ Write paths (all irreversible; gated by `isConfirmed`):
 
 Legacy raw-Fineract equivalent (replaced by companion endpoints):
 ```
-POST /datatables/dt_share_out/{centerId}
+POST /datatables/dt_share_out/{groupId}
   → for each member: POST /savingsaccounts/{savingsAccountId}/transactions {transactionType: WITHDRAWAL, amount: payoutAmount}
 ```
 The companion endpoint collapses this into a single-call orchestration + `share_out_record` audit row.

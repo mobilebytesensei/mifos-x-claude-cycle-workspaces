@@ -37,17 +37,17 @@ because modern Fineract requires it.
 
 | # | Table | apptable | rows | feature |
 |---|-------|----------|------|---------|
-| 1 | dt_group_config | m_center | single | group-management |
-| 2 | dt_meeting_record | m_center | multi | meeting-lifecycle |
+| 1 | dt_group_config | m_group | single | group-management |
+| 2 | dt_meeting_record | m_group | multi | meeting-lifecycle |
 | 3 | dt_meeting_attendance | m_client | multi | meeting / fines |
 | 4 | dt_member_role | m_client | single | auth / onboarding |
-| 5 | dt_share_out | m_center | multi | share-out |
-| 6 | dt_social_fund | m_center | single | social-fund |
+| 5 | dt_share_out | m_group | multi | share-out |
+| 6 | dt_social_fund | m_group | single | social-fund |
 | 7 | dt_loan_vote | m_loan | single | loan-management |
-| 8 | dt_sync_metadata | m_center | single | offline-sync |
+| 8 | dt_sync_metadata | m_group | single | offline-sync |
 | 9 | dt_loan_request | m_client | multi | end-user-dashboard |
-| 10 | dt_group_corpus | m_center | single | corpus-tracking |
-| 11 | dt_group_loan_policy | m_center | single | loan-ceilings |
+| 10 | dt_group_corpus | m_group | single | corpus-tracking |
+| 11 | dt_group_loan_policy | m_group | single | loan-ceilings |
 | 12 | dt_member_ceiling_override | m_client | single | loan-ceilings |
 | 13 | dt_loan_guarantor | m_loan | multi | loan-guarantees |
 | 14 | dt_notification | m_client | multi | notifications |

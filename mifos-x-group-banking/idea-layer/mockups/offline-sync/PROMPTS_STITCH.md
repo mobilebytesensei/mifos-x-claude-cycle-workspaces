@@ -613,7 +613,7 @@ ShowSnackbar("Sync complete — all data saved")
 
 ### SyncQueueItem details
 
-**Item 1 — Meeting Record (centerId=7, meeting #4)**
+**Item 1 — Meeting Record (groupId=7, meeting #4)**
 ```json
 {
   "id": 1,

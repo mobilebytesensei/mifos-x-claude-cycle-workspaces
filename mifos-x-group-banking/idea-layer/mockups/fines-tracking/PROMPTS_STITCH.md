@@ -580,7 +580,7 @@ All 2xx → NavigateToMeetingSummary
 
 ## Meeting Context
 **Group**: Mwangaza Women's Group
-**centerId**: 7
+**groupId**: 7
 **meetingId**: "meeting-7-4"
 **meetingNumber**: 4
 **meetingDate**: 06 May 2026
@@ -649,7 +649,7 @@ closingCorpus = 12_400 + 1_000 + 1_125 + 250 - 0 = 14_775L
 
 ```json
 {
-  "centerId": 7,
+  "groupId": 7,
   "meetingNumber": 4,
   "actualDate": "06 May 2026",
   "openingCorpus": 12400,

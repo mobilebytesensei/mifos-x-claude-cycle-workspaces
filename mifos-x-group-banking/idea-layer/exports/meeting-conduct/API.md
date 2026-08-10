@@ -15,13 +15,13 @@ Base path: `/fineract-provider/api/v1` · Auth BasicAuth · Tenant `X-Fineract-P
 
 | ID | Method | Endpoint | Errors |
 |---|---|---|---|
-| `get_previous_meeting_record` | GET | `/datatables/dt_meeting_record/{centerId}` | 404 first-meeting placeholder · 401 login · 5xx continue empty |
-| `get_group_members` | GET | `/centers/{centerId}` | 404 block advance (members required) · 401 login |
-| `get_group_corpus` | GET | `/datatables/dt_group_corpus/{centerId}` | 404 default 0 · 5xx warning chip |
+| `get_previous_meeting_record` | GET | `/datatables/dt_meeting_record/{groupId}` | 404 first-meeting placeholder · 401 login · 5xx continue empty |
+| `get_group_members` | GET | `/groups/{groupId}` | 404 block advance (members required) · 401 login |
+| `get_group_corpus` | GET | `/datatables/dt_group_corpus/{groupId}` | 404 default 0 · 5xx warning chip |
 | `get_active_loans` | GET | `/loans?loanStatus=active` | 404 empty step 4 · 5xx error chip |
 | `get_loan_votes` | GET | `/datatables/dt_loan_vote/{loanId}` | 404 no votes (0/0) |
 
-`get_previous_meeting_record` params: `centerId` (nav_params), `meetingNumber` (computed = current − 1).
+`get_previous_meeting_record` params: `groupId` (nav_params), `meetingNumber` (computed = current − 1).
 `get_active_loans` param: `groupId` (nav_params).
 
 ### Write (ordered submit sequence — sync_queue priority in parentheses)
@@ -33,7 +33,7 @@ Base path: `/fineract-provider/api/v1` · Auth BasicAuth · Tenant `X-Fineract-P
 | `post_savings_transaction` | POST | `/savingsaccounts/{savingsId}/transactions` | SavingsTransactionRequest | POST_SAVINGS_TRANSACTION (3) |
 | `post_loan_repayment` | POST | `/loans/{loanId}/transactions?command=repayment` | LoanRepaymentRequest | POST_LOAN_REPAYMENT (4) |
 | `post_loan_disbursal` | POST | `/loans/{loanId}/transactions?command=disburse` | LoanDisbursalRequest | POST_LOAN_DISBURSAL (5) |
-| `patch_corpus` | PUT | `/datatables/dt_group_corpus/{centerId}` | UpdateCorpusRequest | UPDATE_CORPUS (6) |
+| `patch_corpus` | PUT | `/datatables/dt_group_corpus/{groupId}` | UpdateCorpusRequest | UPDATE_CORPUS (6) |
 
 Write errors: 400 validation snackbar · 5xx → queue that item to `sync_queue`. Disbursal 400 means
 the corpus gate should have blocked it (log + error).
@@ -44,8 +44,8 @@ the corpus gate should have blocked it (log + error).
 ```
 MeetingRecordDetail { meetingNumber, actualDate, totalSavings, totalRepayments,
   totalLoansDisbursed, totalFinesCollected, closingCorpus, attendanceCount }
-CenterDetail { id, name, groups: List<GroupSummary>, activeClientMembers: List<ClientMember> }
-CorpusRecord { centerId, corpusBalance, cashOnHand, lastUpdatedMeeting, lastUpdatedDate }
+GroupDetail { id, name, groups: List<GroupSummary>, activeClientMembers: List<ClientMember> }
+CorpusRecord { groupId, corpusBalance, cashOnHand, lastUpdatedMeeting, lastUpdatedDate }
 LoanListResponse { totalFilteredRecords, pageItems: List<LoanDetail> }
 LoanDetail { loanId, clientId, clientName, principal, outstandingBalance, isOverdue,
   weekNumber, numberOfRepayments, expectedWeeklyRepayment }
@@ -54,7 +54,7 @@ LoanVoteRecord { loanId, votesFor, votesAgainst, votesAbstain }
 
 ### Submit request DTOs
 ```
-CreateMeetingRecordRequest { centerId, meetingNumber, actualDate, openingCorpus, closingCorpus,
+CreateMeetingRecordRequest { groupId, meetingNumber, actualDate, openingCorpus, closingCorpus,
   totalSavingsCollected, totalRepaymentsReceived, totalLoansDisbursed, totalFinesCollected,
   attendanceCount, locale="en", dateFormat="dd MMMM yyyy" }
 CreateAttendanceRequest { meetingId, memberId, status ∈ {PRESENT,LATE,ABSENT}, fineAmount, locale="en" }

@@ -588,7 +588,7 @@ Scaffold
 
 ### Demo Group
 - **Group**: Mwangaza Women's Group
-- **Group ID**: 7 (Fineract centerId)
+- **Group ID**: 7 (Fineract groupId)
 - **Cycle**: 1 of 12 months
 - **Meeting schedule**: Weekly (Monday 9:00 AM)
 - **Corpus balance**: KES 24,000

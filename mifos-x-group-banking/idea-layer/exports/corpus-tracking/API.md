@@ -8,42 +8,42 @@
 
 | Method | Path | Description | Auth | Cache Strategy |
 |--------|------|-------------|------|---------------|
-| GET | /fineract-provider/api/v1/centers/{centerId} | Fetch center (group) data | BasicAuth | stale-while-revalidate, TTL 300s |
-| GET | /fineract-provider/api/v1/centers/{centerId}/accounts | Fetch savings and loan accounts linked to group | BasicAuth | stale-while-revalidate, TTL 180s |
-| GET | /fineract-provider/api/v1/datatables/dt_group_corpus/{centerId} | Fetch real-time corpus balance from custom datatable | BasicAuth | network-first, TTL 60s |
-| GET | /fineract-provider/api/v1/datatables/dt_group_config/{centerId} | Fetch group rules including minimumDisbursementThreshold | BasicAuth | stale-while-revalidate, TTL 600s |
-| PUT | /fineract-provider/api/v1/datatables/dt_group_corpus/{centerId} | Update corpus to closingCorpus after meeting | BasicAuth | no cache (write) |
+| GET | /fineract-provider/api/v1/groups/{groupId} | Fetch group data | BasicAuth | stale-while-revalidate, TTL 300s |
+| GET | /fineract-provider/api/v1/groups/{groupId}/accounts | Fetch savings and loan accounts linked to group | BasicAuth | stale-while-revalidate, TTL 180s |
+| GET | /fineract-provider/api/v1/datatables/dt_group_corpus/{groupId} | Fetch real-time corpus balance from custom datatable | BasicAuth | network-first, TTL 60s |
+| GET | /fineract-provider/api/v1/datatables/dt_group_config/{groupId} | Fetch group rules including minimumDisbursementThreshold | BasicAuth | stale-while-revalidate, TTL 600s |
+| PUT | /fineract-provider/api/v1/datatables/dt_group_corpus/{groupId} | Update corpus to closingCorpus after meeting | BasicAuth | no cache (write) |
 
 ---
 
 ## Request/Response Details
 
-### GET /centers/{centerId}
-**Path params:** centerId (Long — from nav params)
-**Response:** Center object (subset shown below)
+### GET /groups/{groupId}
+**Path params:** groupId (Long — from nav params)
+**Response:** Group object (subset shown below)
 **Cache:** TTL 300s, stale-while-revalidate, offline: show_cached
 **Error handling:** 401 → redirect login; 403 → forbidden error state; 404 → "Group not found" error; 500 → show cached
 
-### GET /centers/{centerId}/accounts
-**Path params:** centerId (Long)
-**Response:** CenterAccountsResponse with savings and loan accounts arrays
+### GET /groups/{groupId}/accounts
+**Path params:** groupId (Long)
+**Response:** GroupAccountsResponse with savings and loan accounts arrays
 **Cache:** TTL 180s, stale-while-revalidate, offline: show_cached
 **Error handling:** 401 → redirect login; 404 → group accounts not found; 500 → show cached
 
-### GET /datatables/dt_group_corpus/{centerId}
-**Path params:** centerId (Long)
+### GET /datatables/dt_group_corpus/{groupId}
+**Path params:** groupId (Long)
 **Response:** CorpusRecord — currentBalance, openingBalance, totalContributionsThisCycle, totalLoansOutstanding, lastUpdated
 **Cache:** TTL 60s, network-first (short TTL for real-time accuracy)
 **Error handling:** 401 → redirect login; 404 → corpus record not found → show KES 0 balance with note; 500 → show cached with warning chip
 
-### GET /datatables/dt_group_config/{centerId}
-**Path params:** centerId (Long)
+### GET /datatables/dt_group_config/{groupId}
+**Path params:** groupId (Long)
 **Response:** GroupConfigRecord with all group rules
 **Cache:** TTL 600s (config changes rarely)
 **Error handling:** 404 → use defaults (contributionMin=100, contributionMax=500, minimumDisbursementThreshold=1000)
 
-### PUT /datatables/dt_group_corpus/{centerId}
-**Path params:** centerId (Long)
+### PUT /datatables/dt_group_corpus/{groupId}
+**Path params:** groupId (Long)
 **Body:** UpdateCorpusRequest
 **Response:** DataTableEntryResponse
 **Error handling:** 400 → validation error, log and show snackbar; 5xx → queue to SyncQueue (highest priority = priority 1)
@@ -79,11 +79,10 @@
 | fineAmount | Double | Per-meeting fine for late/absent — 50.00 |
 | minimumDisbursementThreshold | Double | Corpus must be >= this to disburse loans — 5,000.00 |
 
-### Group (from GET /centers/{centerId})
+### Group (from GET /groups/{groupId})
 | Field | Type | Notes |
 |-------|------|-------|
-| id | String | Fineract center ID |
-| fineractCenterId | Long | Numeric center ID |
+| id | String | Fineract group ID |
 | name | String | "Mwangaza Women's Group" |
 | cycleNumber | Int | 1 (first cycle) |
 | cycleLengthMonths | Int | 12 |
@@ -92,7 +91,7 @@
 | overdueLoansCount | Int | 0 (no overdue loans in demo) |
 | status | String | "ACTIVE" |
 
-### GroupAccounts (computed from /centers/{centerId}/accounts)
+### GroupAccounts (computed from /groups/{groupId}/accounts)
 | Field | Type | Notes |
 |-------|------|-------|
 | savingsBalance | Double | Total savings account balance — KES 52,500 |
@@ -122,9 +121,9 @@
 | Field | Type | Notes |
 |-------|------|-------|
 | resourceId | Long | Updated datatable row ID |
-| resourceIdentifier | String | Echo of centerId as string |
+| resourceIdentifier | String | Echo of groupId as string |
 
-### CenterAccountsResponse (GET /centers/{centerId}/accounts)
+### GroupAccountsResponse (GET /groups/{groupId}/accounts)
 | Field | Type | Notes |
 |-------|------|-------|
 | savingsAccounts | List\<SavingsAccountItem\> | All savings accounts |

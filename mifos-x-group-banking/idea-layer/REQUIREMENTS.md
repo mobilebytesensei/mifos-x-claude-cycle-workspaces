@@ -78,13 +78,13 @@
 
 | Entity | Key Fields | Relationships | Fineract Mapping |
 |--------|-----------|--------------|------------------|
-| Group | id, name, cycle_number, cycle_length_months, meeting_frequency, contribution_min/max, loan_multiplier, interest_rate, currency, fineract_center_id, status | has_many Members · has_many Meetings · has_one SavingsPool | m_center (+ dt_group_config datatable) |
+| Group | id, name, cycle_number, cycle_length_months, meeting_frequency, contribution_min/max, loan_multiplier, interest_rate, currency, status | has_many Members · has_many Meetings · has_one SavingsPool | m_group (+ dt_group_config datatable) |
 | Member | id, name, phone, photo_uri, role, joined_date, fineract_client_id, status | belongs_to Group · has_many SavingsTransactions · has_many Loans | m_client (+ dt_member_role datatable) |
-| Meeting | id, meeting_number, scheduled_date, actual_date, status, attendance_count, total_collected, notes | belongs_to Group · has_many AttendanceRecords · has_many SavingsTransactions | dt_meeting datatable on m_center |
+| Meeting | id, meeting_number, scheduled_date, actual_date, status, attendance_count, total_collected, notes | belongs_to Group · has_many AttendanceRecords · has_many SavingsTransactions | dt_meeting datatable on m_group |
 | SavingsTransaction | id, member_id, meeting_id, amount, type (contribution/withdrawal/fine/social_fund), fineract_transaction_id, sync_status | belongs_to Member · belongs_to Meeting | m_savings_account_transaction |
 | Loan | id, member_id, amount, interest_rate, duration_weeks, status (requested/approved/disbursed/repaying/closed/defaulted), approved_by, disbursed_date, fineract_loan_id, sync_status | belongs_to Member · has_many LoanRepayments | m_loan |
 | LoanRepayment | id, loan_id, amount, meeting_id, paid_date, fineract_transaction_id, sync_status | belongs_to Loan | m_loan_transaction |
-| AttendanceRecord | id, meeting_id, member_id, present, late, fine_amount | belongs_to Meeting · belongs_to Member | dt_attendance datatable on m_center |
+| AttendanceRecord | id, meeting_id, member_id, present, late, fine_amount | belongs_to Meeting · belongs_to Member | dt_attendance datatable on m_group |
 | SyncQueue | id, entity_type, entity_id, operation (create/update/delete), payload_json, created_at, retry_count, last_error, status (pending/in_progress/synced/failed) | polymorphic to any entity | local-only (offline-first) |
 
 ---
@@ -93,7 +93,7 @@
 
 | Service | Purpose | Integration |
 |---------|---------|-------------|
-| Mifos Fineract | Core banking backend — groups (Centers), members (Clients), savings accounts, loan products, transactions | REST API + MCP server |
+| Mifos Fineract | Core banking backend — groups, members (Clients), savings accounts, loan products, transactions | REST API + MCP server |
 | SQLDelight | Local offline database for all entities | SDK (compile-time SQL → Kotlin) |
 
 ---

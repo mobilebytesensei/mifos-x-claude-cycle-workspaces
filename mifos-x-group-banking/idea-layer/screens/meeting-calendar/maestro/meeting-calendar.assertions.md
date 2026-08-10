@@ -18,7 +18,7 @@ login(ORGANIZER) → organizer-dashboard → `organizer_dashboard_nav_group_list
 - `meeting_calendar_start_meeting_button` (StartMeeting) → assert `id: meeting_conduct_screen` (NavHost §9c `onNavigateToConduct`).
 
 ## Backend seed prerequisites
-- ORGANIZER account + ≥1 group + a **seeded UPCOMING meeting** on that center. Without an upcoming meeting the pinned card + Start-Meeting CTA do not render, so `meeting_calendar_upcoming_card` / `start_meeting_button` asserts halt — a truthful data-gap signal, not a fake.
+- ORGANIZER account + ≥1 group + a **seeded UPCOMING meeting** for that group. Without an upcoming meeting the pinned card + Start-Meeting CTA do not render, so `meeting_calendar_upcoming_card` / `start_meeting_button` asserts halt — a truthful data-gap signal, not a fake.
 
 ## Notes / gaps
 - `group_list_card_` / substring id match taps the first seeded group without hardcoding a seed groupId (Maestro matches `id:` by regex substring).

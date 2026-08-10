@@ -8,7 +8,6 @@
 
 | Function | Method | Table | Auth | Params | Response | Cache |
 |----------|--------|-------|------|--------|----------|-------|
-| get_centers_for_staff | GET | /centers | Yes | staffId(Long), paged(Boolean), limit(Int), offset(Int) | PagedCentersResponse: totalFilteredRecords, pageItems(List<CenterItem>) | stale-while-revalidate (ttl 300) |
 | get_groups_for_staff | GET | /groups | Yes | staffId(Long), paged(Boolean), limit(Int), offset(Int) | PagedGroupsResponse: totalFilteredRecords, pageItems(List<GroupItem>) | stale-while-revalidate (ttl 300) |
 | run_report | GET | /runreports/FieldOfficerGroupReport | No | R_staffId(Long), output-type(String) | FileResponse: content(ByteArray), mimeType(String) | -- |
 

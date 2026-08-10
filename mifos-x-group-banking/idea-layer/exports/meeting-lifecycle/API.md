@@ -8,10 +8,10 @@
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
-| GET | /fineract-provider/api/v1/centers/{centerId}/meetings | Fetch scheduled meetings for center | BasicAuth + Fineract-Platform-TenantId header |
-| GET | /fineract-provider/api/v1/datatables/dt_meeting_record/{centerId} | Fetch completed meeting records from custom datatable | BasicAuth |
-| GET | /fineract-provider/api/v1/centers/{centerId} | Fetch center detail including group members list | BasicAuth |
-| GET | /fineract-provider/api/v1/datatables/dt_group_corpus/{centerId} | Fetch opening corpus balance | BasicAuth |
+| GET | /fineract-provider/api/v1/groups/{groupId}/meetings | Fetch scheduled meetings for group | BasicAuth + Fineract-Platform-TenantId header |
+| GET | /fineract-provider/api/v1/datatables/dt_meeting_record/{groupId} | Fetch completed meeting records from custom datatable | BasicAuth |
+| GET | /fineract-provider/api/v1/groups/{groupId} | Fetch group detail including group members list | BasicAuth |
+| GET | /fineract-provider/api/v1/datatables/dt_group_corpus/{groupId} | Fetch opening corpus balance | BasicAuth |
 | GET | /fineract-provider/api/v1/loans?groupId={groupId}&loanStatus=active | Fetch active loans for group members | BasicAuth |
 | GET | /fineract-provider/api/v1/datatables/dt_loan_vote/{loanId} | Fetch vote tally for a pending loan application | BasicAuth |
 | POST | /fineract-provider/api/v1/datatables/dt_meeting_record | Create meeting record (submit step 1 of 6) | BasicAuth |
@@ -19,20 +19,20 @@
 | POST | /fineract-provider/api/v1/savingsaccounts/{savingsId}/transactions | Post savings deposit per member per type (submit step 3 of 6) | BasicAuth |
 | POST | /fineract-provider/api/v1/loans/{loanId}/transactions?command=repayment | Record loan repayment (submit step 4 of 6) | BasicAuth |
 | POST | /fineract-provider/api/v1/loans/{loanId}/transactions?command=disburse | Disburse approved loan (submit step 5 of 6) | BasicAuth |
-| PUT | /fineract-provider/api/v1/datatables/dt_group_corpus/{centerId} | Update corpus to closingCorpus (submit step 6 of 6) | BasicAuth |
+| PUT | /fineract-provider/api/v1/datatables/dt_group_corpus/{groupId} | Update corpus to closingCorpus (submit step 6 of 6) | BasicAuth |
 
 ---
 
 ## Request/Response Details
 
-### GET /centers/{centerId}/meetings
-**Path params:** centerId (Int)
+### GET /groups/{groupId}/meetings
+**Path params:** groupId (Int)
 **Query params:** fromDate (YYYY-MM-DD, optional), toDate (YYYY-MM-DD, optional)
 **Response:** Array of MeetingListResponse objects
 **Error handling:** 401 → redirect login; 404 → empty state; 5xx → cached data + error banner
 
-### GET /datatables/dt_meeting_record/{centerId}
-**Path params:** centerId (Int)
+### GET /datatables/dt_meeting_record/{groupId}
+**Path params:** groupId (Int)
 **Query params:** meetingNumber (Int, optional — used to fetch single previous meeting)
 **Response:** MeetingRecordList or MeetingRecordDetail (single)
 **Error handling:** 404 → no records yet, empty list; 5xx → error banner
@@ -59,8 +59,8 @@
 **Response:** LoanTransactionResponse {officeId, loanId, resourceId}
 **Error handling:** 5xx → queue to SyncQueue
 
-### PUT /datatables/dt_group_corpus/{centerId}
-**Path params:** centerId (Int)
+### PUT /datatables/dt_group_corpus/{groupId}
+**Path params:** groupId (Int)
 **Body:** UpdateCorpusRequest
 **Response:** DataTableEntryResponse
 **Error handling:** 5xx → queue corpus update (highest priority in SyncQueue)
@@ -94,7 +94,7 @@
 ### CreateMeetingRecordRequest
 | Field | Type | Default |
 |-------|------|---------|
-| centerId | Int | from nav params |
+| groupId | Int | from nav params |
 | meetingNumber | Int | from nav params |
 | actualDate | String | today |
 | openingCorpus | Long | from dt_group_corpus |
@@ -137,7 +137,7 @@
 ### CorpusRecord (GET response)
 | Field | Type | Notes |
 |-------|------|-------|
-| centerId | Int | |
+| groupId | Int | |
 | corpusBalance | Long | Current corpus = openingCorpus for new meeting |
 | cashOnHand | Long | Physical cash held by treasurer |
 | lastUpdatedMeeting | Int | Last meeting number that updated corpus |

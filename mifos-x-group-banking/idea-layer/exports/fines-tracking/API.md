@@ -24,7 +24,7 @@ Fines are not posted as standalone Fineract transactions. They are embedded in m
 **Request Body (CreateMeetingRecordRequest)**:
 ```json
 {
-  "centerId": 7,
+  "groupId": 7,
   "meetingNumber": 4,
   "actualDate": "06 May 2026",
   "openingCorpus": 12400,
@@ -143,7 +143,7 @@ closingCorpus = 12,400 (opening)
 ### CreateMeetingRecordRequest
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| centerId | Int | Yes | Fineract center ID |
+| groupId | Int | Yes | Fineract group ID |
 | meetingNumber | Int | Yes | Sequential meeting number (1-indexed) |
 | actualDate | String | Yes | "dd MMMM yyyy" format |
 | openingCorpus | Long | Yes | KES at start of meeting (from dt_group_corpus) |
@@ -159,7 +159,7 @@ closingCorpus = 12,400 (opening)
 ### CreateAttendanceRequest
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| meetingId | String | Yes | "{centerId}-{meetingNumber}" composite key |
+| meetingId | String | Yes | "{groupId}-{meetingNumber}" composite key |
 | memberId | String | Yes | Fineract client ID |
 | status | String | Yes | "PRESENT", "LATE", or "ABSENT" |
 | fineAmount | Long | Yes | 0 for PRESENT, 50 for LATE, 100 for ABSENT |
@@ -189,7 +189,7 @@ closingCorpus = 12,400 (opening)
 
 ## Demo Data — Meeting #4 Fines
 
-**Group**: Mwangaza Women's Group (centerId=7, meeting #4, 06 May 2026)
+**Group**: Mwangaza Women's Group (groupId=7, meeting #4, 06 May 2026)
 
 ### Attendance Records
 

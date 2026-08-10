@@ -2,14 +2,14 @@
 
 ## Overview
 
-Group Management is the foundational admin feature of MifosSave. It enables field officers and treasurers to create and configure VSLA savings groups (modelled as Fineract Centers), view their full portfolio of groups on a list screen, and access per-group operational dashboards. The group dashboard is the central hub for corpus fund monitoring (FR-018), cycle tracking, and quick navigation to meetings, members, and loans. Group creation is a 3-step wizard that writes both a Fineract Center and a `dt_group_config` datatable entry. All screens are offline-first with stale-while-revalidate caching and offline queueing via SyncQueue.
+Group Management is the foundational admin feature of MifosSave. It enables field officers and treasurers to create and configure VSLA savings groups (modelled as Fineract Groups), view their full portfolio of groups on a list screen, and access per-group operational dashboards. The group dashboard is the central hub for corpus fund monitoring (FR-018), cycle tracking, and quick navigation to meetings, members, and loans. Group creation is a 3-step wizard that writes both a Fineract Group and a `dt_group_config` datatable entry. All screens are offline-first with stale-while-revalidate caching and offline queueing via SyncQueue.
 
 **Feature ID**: group-management
 **Priority**: Must
 **Client**: Admin (staff auth)
 **Version**: 1.0.0
 **FR Coverage**: FR-001 (group creation + config), FR-018 (corpus fund real-time tracking), FR-020 (penalty/contribution rules defined at creation)
-**Fineract Mapping**: Centers API + `dt_group_config` datatable + `dt_group_corpus` datatable
+**Fineract Mapping**: Groups API + `dt_group_config` datatable + `dt_group_corpus` datatable
 
 **Acceptance Criteria**
 - Admin can create a savings group with group name (3–60 chars), office assignment, currency (default KES), meeting day, meeting time, minimum contribution, maximum contribution, loan multiplier, interest rate, cycle length in months, and late fine amount.
@@ -148,7 +148,7 @@ Group Management is the foundational admin feature of MifosSave. It enables fiel
 | Bottom Nav / App Launch | group-list | user_authenticated | — |
 | group-list card tap | group-dashboard | always | groupId: String |
 | group-list FAB | group-create | always | — |
-| group-create success | group-dashboard | submit success | groupId: String (from create_center response) |
+| group-create success | group-dashboard | submit success | groupId: String (from create_group response) |
 | group-create back | group-list | always | — |
 | group-dashboard "Start Meeting" | meeting-calendar | corpus sufficient | groupId: String |
 | group-dashboard "Members" | member-list | always | groupId: String |
@@ -162,14 +162,14 @@ Group Management is the foundational admin feature of MifosSave. It enables fiel
 
 | ID | Method | Path | Auth | Cache |
 |----|--------|------|------|-------|
-| get_centers | GET | /centers | Bearer (staffId from session) | TTL 300s, stale-while-revalidate |
-| get_center | GET | /centers/{centerId} | Bearer | TTL 300s, stale-while-revalidate |
-| get_center_accounts | GET | /centers/{centerId}/accounts | Bearer | TTL 180s, stale-while-revalidate |
-| get_group_corpus | GET | /datatables/dt_group_corpus/{centerId} | Bearer | TTL 60s, network-first |
-| get_group_config | GET | /datatables/dt_group_config/{centerId} | Bearer | TTL 600s, stale-while-revalidate |
+| get_groups | GET | /groups | Bearer (staffId from session) | TTL 300s, stale-while-revalidate |
+| get_group | GET | /groups/{groupId} | Bearer | TTL 300s, stale-while-revalidate |
+| get_group_accounts | GET | /groups/{groupId}/accounts | Bearer | TTL 180s, stale-while-revalidate |
+| get_group_corpus | GET | /datatables/dt_group_corpus/{groupId} | Bearer | TTL 60s, network-first |
+| get_group_config | GET | /datatables/dt_group_config/{groupId} | Bearer | TTL 600s, stale-while-revalidate |
 | get_offices | GET | /offices | Bearer | TTL 3600s, stale-while-revalidate |
-| create_center | POST | /centers | Bearer | — |
-| create_group_config | POST | /datatables/dt_group_config/{centerId} | Bearer | — |
+| create_group | POST | /groups | Bearer | — |
+| create_group_config | POST | /datatables/dt_group_config/{groupId} | Bearer | — |
 
 ---
 

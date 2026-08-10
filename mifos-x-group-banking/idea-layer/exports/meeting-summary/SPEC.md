@@ -17,11 +17,11 @@ collected (group + individual breakdown), loans disbursed, repayments received, 
 and closing corpus balance, plus a share/export button. On entry it renders `MeetingRecordDetail`
 from in-memory meeting-conduct wizard state if available, else fetches `dt_meeting_record` over
 REST gated by `cmp-network-monitor` with a Store5 stale-while-revalidate SQLDelight cache keyed by
-center/meeting. Totals and opening/closing corpus are reconciled at close by the collection-sheet
+group/meeting. Totals and opening/closing corpus are reconciled at close by the collection-sheet
 companion; no money movement occurs here. Admin only. Covers FR-003 / FR-019.
 
 **Route:** `/meetings/{meetingId}/summary` · **Entry:** `meeting-conduct` (submit success), `meeting-calendar` (completed-meeting deep link)
-**Nav params:** `meeting_id: String`, `meeting_number: Int`, `center_id: Int`
+**Nav params:** `meeting_id: String`, `meeting_number: Int`, `group_id: Int`
 
 **Acceptance Criteria:**
 
@@ -54,7 +54,7 @@ companion; no money movement occurs here. Admin only. Covers FR-003 / FR-019.
 | isSharing | Boolean | `false` | Share report composing |
 | meetingId | String | `""` | From nav_params |
 | meetingNumber | Int | `0` | From nav_params |
-| centerId | Int | `0` | From nav_params |
+| groupId | Int | `0` | From nav_params |
 
 **Screen States — `MeetingSummaryScreenState`**: `Loading`, `Content`, `Error`
 
@@ -104,7 +104,7 @@ companion; no money movement occurs here. Admin only. Covers FR-003 / FR-019.
 
 | ID | Method | Endpoint | Writable |
 |---|---|---|---|
-| `get_meeting_record` | GET | `/fineract-provider/api/v1/datatables/dt_meeting_record/{centerId}` | no |
+| `get_meeting_record` | GET | `/fineract-provider/api/v1/datatables/dt_meeting_record/{groupId}` | no |
 
 See `exports/meeting-summary/API.md`.
 
