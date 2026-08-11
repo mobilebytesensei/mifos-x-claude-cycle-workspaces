@@ -1,14 +1,14 @@
 # Multi-Language — Figma Prompts (Auto-Complete Style)
 
 > Generated from v3.1 YAML siblings via /idea-migration reference.
-> Short Figma-optimized per-state prompts for CommonPurse (multi-language).
+> Short Figma-optimized per-state prompts for MifosSave (multi-language).
 > Design tokens: primary #2E7D32 (green) · secondary #FF8F00 (amber) · tertiary #1565C0 (blue)
 
 ---
 
 ## Global Context
 
-- Feature: Multi-Language · CommonPurse banking app · 7 components · 3 states
+- Feature: Multi-Language · MifosSave banking app · 7 components · 3 states
 - Brand: `#2E7D32` primary · `#FF8F00` amber warnings · `#1565C0` blue info
 - Typography: Noto Sans — titleLarge (screen titles) · bodyLarge (list items) · labelSmall (chips/badges)
 - Touch targets: 48dp minimum · 56dp for financial inputs · outdoor WCAG AAA contrast

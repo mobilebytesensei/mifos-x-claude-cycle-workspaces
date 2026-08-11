@@ -1,5 +1,5 @@
 # API — savings-collection
-# CommonPurse (mifos-x-group-banking) | Feature FR-004 / FR-017
+# MifosSave (mifos-x-group-banking) | Feature FR-004 / FR-017
 # Generated: 2026-05-06
 
 ---

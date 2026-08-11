@@ -9,9 +9,12 @@ description: >
   The invite/join path (global self-signup pivot, 2026-07-17; FR-024). An organizer
   generates a single-use invite link/code for their group from member-invite. The invitee
   opens the deep-link, enters the code on join-with-code, then self-registers (if new) via
-  the unified login-signup screen. On successful auth the stewardship code auto-associates
-  the invitee to the inviting group with a per-group member role. There is NO client-type
-  selector anywhere in this flow.
+  the unified login-signup screen. Because the code was entered while unauthenticated, it is
+  carried as pendingInviteCode through auth and, on success, login-signup resumes the join by
+  routing BACK to join-with-code, which — now authenticated — performs the real association
+  (associate_client_to_group) with the pre-selected per-group member role and marks the
+  invitation accepted. The association happens on join-with-code, NOT on login-signup. There
+  is NO client-type selector anywhere in this flow.
 
 entry_point:
   screen: member-invite
@@ -38,26 +41,35 @@ steps:
   - step: 3
     screen: join-with-code
     action: >
-      Invitee taps the deep-link (or opens the app and chooses "Join with Invite Code");
-      join-with-code screen opens with the code pre-filled from the deep-link, or the invitee
-      types the 6-char code manually.
+      Invitee taps the deep-link (or opens the app and chooses the first-class "Accept an
+      Invitation" entry on login-signup); join-with-code opens with the code pre-filled from
+      the deep-link, or the invitee types the 6-char code manually and validates it. Because
+      the invitee is not yet authenticated, join-with-code redirects to login-signup carrying
+      nav_params.pendingInviteCode = the entered code (join-with-code on_confirm_join /
+      classify → NavigateToLoginSignup(pendingInviteCode)).
     transition: login-signup
-    condition: code_entered_and_valid
+    condition: code_entered_unauthenticated
 
   - step: 4
     screen: login-signup
     action: >
       Invitee logs in (existing user) or self-signs-up (first-time) via the unified
       login/signup screen — companion API creates the account if new. No client-type selector.
-    transition: login-signup
-    condition: invitee_authenticated
+      Because a pendingInviteCode is present, on_login/on_signup on_success resumes the join by
+      emitting NavigateToJoinWithCode(inviteCode = pendingInviteCode) instead of the default
+      ZeroGroups landing (F3/F4 — satisfies TC-LS-010).
+    transition: join-with-code
+    condition: invitee_authenticated_with_pending_invite
 
   - step: 5
-    screen: login-signup
+    screen: join-with-code
     action: >
-      App matches the stewardship code → POST /companion/groups/{groupId}/join associates
-      the invitee to the inviting group with the pre-selected per-group member role
-      (dt_member_role). The invitation row is marked accepted / consumed (single-use).
+      Back on join-with-code and now authenticated, the code auto-validates and the invitee
+      confirms Join. join-with-code on_confirm_join (authenticated branch) calls
+      associate_client_to_group → POST /companion/groups/{groupId}/join, associating the
+      invitee to the inviting group with the pre-selected per-group member role (dt_member_role),
+      then marks the invitation row accepted / consumed (single-use). This is the REAL
+      association path — login-signup never performs the join itself.
     transition: personal-dashboard
     condition: invitee_associated_to_group
 

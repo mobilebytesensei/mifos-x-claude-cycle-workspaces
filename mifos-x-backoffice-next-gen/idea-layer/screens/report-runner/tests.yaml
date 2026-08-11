@@ -1,44 +1,227 @@
 schema_version: v1.0.0
 feature: report-runner
-# Regenerated 2026-07-25 (/idea-test-generate) against the enriched ui.yaml —
-# coverage verified: one scenario per ui.yaml state (loading/content/empty/error)
-# + per api operation (list_reports, resolve_report_parameter, run_report).
+# Regenerated 2026-07-31 (/idea-test-generate) against the enriched ui.yaml/api.yaml —
+# coverage: one scenario per ui.yaml state (loading/content/empty/error) + per api operation
+# (list_reports, resolve_report_parameter, run_report) + all 5 on_click interactions
+# (param_change, run_report, sort_column, export_report, retry) + docs acceptance refs.
+# Grounded in demo-data: reports["Active Loans by Loan Officer", "Client Listing", "Portfolio at Risk"],
+# offices[Head Office:1, Nairobi CBD:3, Kisumu Central:5], loanOfficers[Peter Kariuki:41].
+# Re-verified 2026-07-31 (post-21:09 ui.yaml enrich): scenarios still cover the state set (incl. running/results) + on_click set; no delta — mtime re-stamp to clear content-hash staleness.
 scenarios:
+  # ── state coverage ──
   - id: loading_shows_param_form_shimmer
-    preconditions: ["a report is opened", "its parameter metadata has not resolved yet"]
-    actions: ["open Portfolio at Risk from the M01 PAR tile"]
-    assertions: ["the loading state shows a parameter-form shimmer", "no error is shown"]
-    priority: medium
-  - id: content_shows_params_run_and_table
-    preconditions: ["the report parameter metadata + lookup options resolve", "the user holds the report's run permission"]
-    actions: ["open the report", "fill parameters", "tap Run"]
+    preconditions:
+      - "report-runner screen opened for 'Active Loans by Loan Officer' from M01 PAR tile"
+      - "parameter metadata has not yet resolved from GET /v1/runreports/FullParameterList"
+    actions:
+      - "navigate to report-runner with reportName='Active Loans by Loan Officer'"
     assertions:
-      - "the parameter form shows office, from/to date, currency and loan officer resolved from lookup reports"
-      - "GET /v1/runreports/{reportName} runs with the captured R_ parameters"
-      - "the result renders as a sortable, horizontally-scrollable table with an export action"
-    priority: high
-  - id: empty_when_zero_rows
-    preconditions: ["the report ran successfully but returned zero rows for the parameters"]
-    actions: ["run with parameters matching no data"]
-    assertions: ["a no-data panel is shown with adjust-parameters guidance"]
-    priority: low
-  - id: error_when_params_or_run_fail
-    preconditions: ["the parameter metadata failed to resolve, or the run failed hard with no cache"]
-    actions: ["open / run the report"]
-    assertions: ["the error state is shown", "Retry re-resolves parameters or re-runs"]
+      - "uiState is loading"
+      - "a parameter-form shimmer placeholder is visible"
+      - "no result table is shown"
+      - "no error panel is shown"
     priority: medium
-  - id: recent_report_opens_offline
-    preconditions: ["the device is offline", "the same report+parameters were recently run"]
-    actions: ["run the report offline with the same parameters"]
-    assertions: ["the cached result renders (CACHE_FIRST_SWR keyed by parameter hash)"]
+
+  - id: content_param_form_populated_after_resolution
+    preconditions:
+      - "parameter metadata resolved successfully from FullParameterList"
+      - "user holds READ_REPORT permission"
+    actions:
+      - "open 'Active Loans by Loan Officer' and wait for parameter form to populate"
+    assertions:
+      - "uiState transitions to content"
+      - "Office dropdown lists: Head Office, Nairobi CBD, Kisumu Central"
+      - "from-date and to-date fields are rendered"
+      - "currency and loan officer dropdowns are rendered"
+      - "Run button (testTag: report-runner_run) is visible"
     priority: high
-  - id: dependent_param_cascades
-    preconditions: ["the parameter form is shown"]
-    actions: ["change the office parameter"]
-    assertions: ["the loan-officer options re-resolve scoped to the chosen office"]
-    priority: medium
-  - id: sort_and_export_are_local
-    preconditions: ["a result table is shown"]
-    actions: ["tap a column header", "tap Export"]
-    assertions: ["the table sorts in-VM with no refetch", "Export renders the current result to CSV/PDF and hands off to the platform share sheet"]
+
+  - id: content_result_table_shows_active_loans_data
+    preconditions:
+      - "parameter form is shown in content state"
+      - "R_officeId=3 (Nairobi CBD), R_loanOfficerId=41 (Peter Kariuki) are set"
+    actions:
+      - "tap Run (testTag: report-runner_run)"
+      - "wait for GET /v1/runreports/Active Loans by Loan Officer?R_officeId=3&R_loanOfficerId=41 to respond"
+    assertions:
+      - "result table renders columns: Client, Account No, Principal, Outstanding"
+      - "row 1: Grace Wanjiru Mwangi | 000055231 | 60000.00 | 42500.00"
+      - "row 2: Samuel Otieno Odhiambo | 000055240 | 45000.00 | 31000.00"
+      - "row 3: Fatuma Njeri Kimani | 000055299 | 52000.00 | 48800.00"
+      - "Export button (testTag: report-runner_export) is visible"
+    priority: high
+
+  - id: empty_when_zero_rows_returns
+    preconditions:
+      - "parameter form is shown for 'Client Listing'"
+      - "run with parameters that match no data"
+    actions:
+      - "tap Run with date range that returns zero rows"
+    assertions:
+      - "uiState is empty"
+      - "no-data panel is shown"
+      - "adjust-parameters guidance is present"
+      - "result table is not rendered"
     priority: low
+
+  - id: error_params_load_failed_shows_retry
+    preconditions:
+      - "GET /v1/runreports/FullParameterList fails with no cached data"
+    actions:
+      - "open 'Active Loans by Loan Officer'"
+    assertions:
+      - "uiState is error"
+      - "error_code: parameters_load_failed is surfaced"
+      - "Retry button (testTag: report-runner_error_retry) is visible"
+      - "no parameter form is shown"
+    priority: medium
+
+  - id: error_run_failed_shows_retry
+    preconditions:
+      - "parameter form resolved and populated"
+      - "GET /v1/runreports/{reportName} fails hard with no cached result"
+    actions:
+      - "fill parameters and tap Run"
+    assertions:
+      - "uiState is error"
+      - "error_code: report_run_failed is surfaced"
+      - "Retry button (testTag: report-runner_error_retry) is visible"
+      - "previously resolved parameter form state is preserved"
+    priority: medium
+
+  # ── interaction coverage ──
+  - id: param_change_cascades_loan_officer_options
+    preconditions:
+      - "parameter form is shown in content state"
+      - "Office is initially set to Head Office (id: 1)"
+    actions:
+      - "change Office (testTag: report-runner_param) to Nairobi CBD (id: 3)"
+    assertions:
+      - "paramValues.OfficeId updates to 3"
+      - "loan officer dropdown re-resolves scoped to officeId=3: Peter Kariuki (41), Mercy Achieng (45)"
+      - "no network refetch for other unrelated parameter dropdowns"
+      - "uiState remains content"
+    priority: medium
+
+  - id: run_report_fires_get_with_r_params
+    preconditions:
+      - "R_officeId=3 (Nairobi CBD), R_loanOfficerId=41 (Peter Kariuki) are set in paramValues"
+      - "required parameters are all filled"
+    actions:
+      - "tap Run (testTag: report-runner_run)"
+    assertions:
+      - "GET /v1/runreports/Active Loans by Loan Officer is called with query params R_officeId=3 and R_loanOfficerId=41"
+      - "result is cached to report_result_cache keyed by (reportName, paramHash)"
+      - "result table updates with returned columnHeaders + data rows"
+    priority: high
+
+  - id: sort_column_sorts_in_vm_no_refetch
+    preconditions:
+      - "result table is shown with Active Loans by Loan Officer data"
+      - "no sort is active"
+    actions:
+      - "tap column header 'Outstanding' (testTag: report-runner_sort)"
+    assertions:
+      - "rows re-order by Outstanding descending: Fatuma Njeri Kimani (48800.00) first"
+      - "sortColumn state updates to 'Outstanding'"
+      - "no GET /v1/runreports call is made"
+    priority: low
+
+  - id: export_report_hands_to_share_sheet
+    preconditions:
+      - "result table is shown (Active Loans by Loan Officer, 3 rows)"
+      - "sort by Outstanding descending is active"
+    actions:
+      - "tap Export (testTag: report-runner_export)"
+    assertions:
+      - "platform share sheet opens with the export payload"
+      - "export reflects current sort order (Outstanding descending)"
+      - "export reflects current parameter set (officeId=3, loanOfficerId=41)"
+      - "no error_code: export_failed shown on success"
+    priority: low
+
+  - id: retry_re_resolves_params_from_error
+    preconditions:
+      - "uiState is error with error_code: parameters_load_failed"
+      - "network has recovered"
+    actions:
+      - "tap Retry (testTag: report-runner_error_retry)"
+    assertions:
+      - "uiState resets to loading"
+      - "GET /v1/runreports/FullParameterList is retried"
+      - "on success uiState transitions to content with parameter form populated"
+    priority: medium
+
+  # ── endpoint / behavior coverage ──
+  - id: list_reports_returns_catalog_for_picker
+    preconditions:
+      - "user navigates to M14 reports list"
+      - "user holds READ_REPORT permission"
+    actions:
+      - "GET /v1/reports is called"
+    assertions:
+      - "response includes 'Active Loans by Loan Officer' (id:1, type:Table, category:Loan)"
+      - "response includes 'Client Listing' (id:2, type:Table, category:Client)"
+      - "response includes 'Portfolio at Risk' (id:5, type:Chart, category:Loan)"
+      - "list is read from cache_first_swr"
+    priority: medium
+
+  - id: resolve_report_parameter_populates_office_dropdown
+    preconditions:
+      - "'Active Loans by Loan Officer' is opened"
+    actions:
+      - "GET /v1/runreports/FullParameterList is called for OfficeId parameter"
+    assertions:
+      - "response provides options: Head Office (1), Nairobi CBD (3), Kisumu Central (5)"
+      - "options are written to report_parameter_cache (report_name, parameter_id, option_id, option_label)"
+      - "parameter dropdown hydrates from cache when offline"
+    priority: high
+
+  - id: run_report_response_maps_to_columnar_result_dto
+    preconditions:
+      - "paramValues set: R_officeId=3, R_loanOfficerId=41"
+    actions:
+      - "GET /v1/runreports/Active Loans by Loan Officer?R_officeId=3&R_loanOfficerId=41 completes"
+    assertions:
+      - "ReportRunResultDto.columnHeaders contains: Client(STRING), Account No(STRING), Principal(DECIMAL), Outstanding(DECIMAL)"
+      - "ReportRunResultDto.data contains 3 rows matching demo-data: Grace Wanjiru Mwangi, Samuel Otieno Odhiambo, Fatuma Njeri Kimani"
+      - "result is written to report_result_cache keyed by (Active Loans by Loan Officer, paramHash)"
+    priority: high
+
+  - id: cache_first_swr_serves_cached_result_offline
+    preconditions:
+      - "device is offline"
+      - "'Active Loans by Loan Officer' with R_officeId=3 was previously run and cached"
+    actions:
+      - "open report-runner with same report and parameters"
+    assertions:
+      - "cached result renders without a network call"
+      - "columns: Client, Account No, Principal, Outstanding"
+      - "cached rows for Grace Wanjiru Mwangi, Samuel Otieno Odhiambo, Fatuma Njeri Kimani are shown"
+      - "uiState is content (not error)"
+    priority: high
+
+  - id: permission_gate_blocks_run_without_read_report
+    preconditions:
+      - "user does not hold READ_REPORT permission"
+    actions:
+      - "attempt to open report-runner for 'Portfolio at Risk'"
+    assertions:
+      - "Run button (rr_run) with gated_permission: READ_REPORT is not shown or is disabled"
+      - "GET /v1/runreports/{reportName} is not called"
+    priority: medium
+
+  - id: acceptance_parameterised_runner_end_to_end
+    preconditions:
+      - "user holds READ_REPORT permission"
+      - "network is available"
+    actions:
+      - "open 'Active Loans by Loan Officer' from M01 PAR tile"
+      - "wait for parameter form (OfficeId, date-range, currency, loan officer) to populate"
+      - "set Office to Nairobi CBD (3), Loan Officer to Peter Kariuki (41)"
+      - "tap Run"
+    assertions:
+      - "sortable result table shows: Client | Account No | Principal | Outstanding"
+      - "Export button is available"
+      - "scenario satisfies docs.yaml acceptance_refs: parameterised report runner pick-fill-run-view-export gated on READ_REPORT"
+    priority: high

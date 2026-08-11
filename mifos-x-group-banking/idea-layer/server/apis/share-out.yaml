@@ -1,0 +1,78 @@
+_group: share-out
+_feature: share-out, pluggable-distribution
+_screens: [share-out-preview, share-out-execute]
+
+# Strategy-aware end-of-cycle distribution. Preview compute stays client-side; the companion
+# only executes the Fineract money moves after re-validating corpus (CK4). ACCUMULATING types
+# (VSLA/ASCA/SHG/SILC) use shareout/execute; ROTATING_PAYOUT types (ROSCA/chit) use rotation/execute.
+endpoints:
+  - id: get-shareout-preview
+    method: GET
+    path: /companion/groups/{groupId}/shareout/preview
+    description: >
+      Strategy-aware distribution preview. Returns totalCorpus/totalProfit/totalPool +
+      memberPayouts[] for ACCUMULATING OR rotationPosition/nextRecipientName/nextRecipientAmount
+      for ROTATING_PAYOUT. Aggregates savings balances + dt_group_corpus + dt_share_out +
+      dt_rosca_rotation + dt_group_config.
+    response:
+      cycleNumber: Int
+      poolModel: String            # ACCUMULATING | ROTATING_PAYOUT
+      shareoutFormula: String      # PRORATA_SHARES | PRORATA_SAVINGS | EQUAL | FIXED_ORDER | LOTTERY | AUCTION
+      totalCorpus: Double
+      totalProfit: Double
+      totalPool: Double
+      memberPayouts: "List<MemberPayout>?"
+      rotationPosition: "Int?"
+      nextRecipientName: "String?"
+      nextRecipientAmount: "Double?"
+    mcp_tool: companion_get_shareout_preview
+    contract_ref: COMP-DIST-001
+    used_by_screen: share-out-preview
+
+  - id: post-shareout-execute
+    method: POST
+    path: /companion/groups/{groupId}/shareout/execute
+    description: >
+      Execute share-out for ACCUMULATING types. Records dt_share_out entry + per-member savings
+      withdrawals via Fineract in a single transaction (idempotent via externalId per withdrawal).
+    request_body:
+      cycleNumber: Int
+      totalPool: Double
+      memberPayouts: "List<MemberPayoutRequest>"
+      shareoutFormula: String
+      executedAt: String
+    response:
+      shareoutRecordId: String
+      succeededCount: Int
+      failedCount: Int
+      failedMemberIds: "List<String>"
+    mcp_tool: companion_execute_shareout
+    contract_ref: COMP-DIST-001
+    used_by_screen: share-out-execute
+    offline_queue: { strategy: enqueue_to_sync_queue, entity_type: SHARE_OUT_EXECUTE, priority: HIGH }
+
+  - id: post-rotation-payout-execute
+    method: POST
+    path: /companion/groups/{groupId}/rotation/execute
+    description: >
+      Execute rotation payout for ROTATING_PAYOUT types (ROSCA/chit). Advances dt_rosca_rotation
+      position (marks current slot paid) + single-recipient savings withdrawal via Fineract.
+    request_body:
+      recipientMemberId: String
+      amount: Double
+      payoutOrderMethod: String     # FIXED_ORDER | LOTTERY | AUCTION
+      executedAt: String
+    response:
+      rotationRecordId: String
+      newRotationPosition: Int
+      nextRecipientId: "String?"
+    mcp_tool: companion_execute_rotation_payout
+    contract_ref: COMP-DIST-002
+    used_by_screen: share-out-execute
+    offline_queue: { strategy: enqueue_to_sync_queue, entity_type: ROTATION_PAYOUT_EXECUTE, priority: HIGH }
+
+datatables_used:
+  - dt_share_out          # ACCUMULATING cycle share-out record
+  - dt_rosca_rotation     # ROTATING_PAYOUT queue + paid slots
+  - dt_rosca_auction      # AUCTION payout-order (chit/hui bids)
+  - dt_group_corpus       # corpus re-validation before execute (CK4)

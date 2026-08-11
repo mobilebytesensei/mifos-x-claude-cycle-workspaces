@@ -1,7 +1,7 @@
 # Multi-Language — Stitch Prompt Specification
 **Feature**: multi-language | **Screen**: settings
 **Requirement**: FR-010
-**Stitch project**: CommonPurse / mifos-x-group-banking
+**Stitch project**: MifosSave / mifos-x-group-banking
 **Total sections**: 6
 
 ---
@@ -9,7 +9,7 @@
 # SECTION 1: DESIGN SYSTEM CONTEXT
 
 ## Application Identity
-CommonPurse is a VSLA group banking app for rural communities across Kenya, West Africa, and South Asia. Multi-language support is a core accessibility feature: a member in Nairobi uses Kiswahili, a group in Dakar uses Français, and a community in rural Rajasthan uses हिन्दी. The settings screen must render all four languages correctly using Noto Sans (which supports Latin, Cyrillic, Arabic, and Devanagari scripts). Language switching must feel instant — no loading states.
+MifosSave is a VSLA group banking app for rural communities across Kenya, West Africa, and South Asia. Multi-language support is a core accessibility feature: a member in Nairobi uses Kiswahili, a group in Dakar uses Français, and a community in rural Rajasthan uses हिन्दी. The settings screen must render all four languages correctly using Noto Sans (which supports Latin, Cyrillic, Arabic, and Devanagari scripts). Language switching must feel instant — no loading states.
 
 ## Material Design 3 Token System
 
@@ -935,7 +935,7 @@ User selects language →
 11. "Change PIN" button — role = Button; "Change PIN"
 12. "About" section header — role = Heading level 2
 13. App version row — role = none; contentDescription = "App version 1.0.0"
-14. Logout button — role = Button; "Log out of CommonPurse, double-tap to confirm"
+14. Logout button — role = Button; "Log out of MifosSave, double-tap to confirm"
 
 ## TalkBack Announcement Strings
 
@@ -961,7 +961,7 @@ User selects language →
 | Icons.Outlined.Language | Language section header icon | "Language settings" |
 | Icons.Outlined.Palette | Appearance section header icon | "Appearance settings" |
 | Icons.Outlined.Security | Security section header icon | "Security settings" |
-| Icons.Outlined.Info | About section header icon | "About CommonPurse" |
+| Icons.Outlined.Info | About section header icon | "About MifosSave" |
 | Icons.Outlined.Fingerprint | Biometric toggle icon | "Fingerprint" |
 | Icons.Outlined.Lock | PIN section icon | "PIN security" |
 | Icons.Outlined.Logout | Logout button icon | "Log out" |
@@ -1169,7 +1169,7 @@ Settings screen does not support pull-to-refresh. Data is loaded once on entry; 
 | `settings_pin_success` | "PIN updated successfully" | "PIN imebadilishwa" | "PIN modifié avec succès" |
 | `settings_pin_error` | "PIN change failed. Check current PIN." | "Imeshindwa kubadilisha PIN" | "Échec du changement de PIN" |
 | `settings_logout_label` | "Log Out" | "Toka" | "Se déconnecter" |
-| `settings_logout_confirm_title` | "Log out of CommonPurse?" | "Toka kwenye CommonPurse?" | "Se déconnecter de CommonPurse ?" |
+| `settings_logout_confirm_title` | "Log out of MifosSave?" | "Toka kwenye MifosSave?" | "Se déconnecter de MifosSave ?" |
 | `settings_logout_confirm_body` | "You will need your credentials to log back in." | "Utahitaji neno lako la siri kuingia tena." | "Vous aurez besoin de vos identifiants pour vous reconnecter." |
 | `settings_logout_confirm_yes` | "Log Out" | "Toka" | "Se déconnecter" |
 | `settings_logout_confirm_cancel` | "Cancel" | "Ghairi" | "Annuler" |

@@ -9,7 +9,7 @@
 
 ## Design Language
 
-**System**: CommonPurse-v3 (Material Design 3 · MD3) — comfortable density
+**System**: MifosSave-v3 (Material Design 3 · MD3) — comfortable density
 **Aesthetic**: `minimalist-ui` · variance 3/10 · motion 3/10 · density 7/10 · accessibility-first · regulated-industry
 **Font**: Roboto (Android) / SF Pro (iOS) — system stack · Roboto Mono / SF Mono for KES amounts
 **Primary**: `#2E7D32` (`--primary-700`, VSLA green) — TopAppBar background, hero card, Done CTA, corpus net-change value
@@ -37,7 +37,7 @@
 ### Entry
 - From **meeting-conduct** (`condition: wizard_submitted_successfully`) — Save-Collection-Sheet flow lands here after the COMP-CAL server call closes the meeting record.
 - From **meeting-calendar** (`condition: user_taps_completed_meeting_summary_deep_link`) — deep link from a completed calendar row.
-- Nav params: `meeting_id: String`, `meeting_number: Int`, `center_id: Int`.
+- Nav params: `meeting_id: String`, `meeting_number: Int`, `group_id: Int`.
 - Back navigation (TopAppBar arrow OR Done button) pops the route and returns to `meeting-calendar`.
 
 ### Layout (state: `content`)
@@ -152,7 +152,7 @@ Meeting #5 of Mwangaza Women's Group (12 May 2026, all 5 members present):
 The ui.yaml declares 3 `screen_state` members (`Loading`, `Content`, `Error`) — each renders as a distinct HTML preview surface under `preview/`.
 
 ### `loading`
-Fetching `MeetingRecordDetail` from Store5 stream (SQLDelight cache warm-start + Fineract `GET /centers/{centerId}/meetings/{meetingId}` fresh fetch gated by `cmp-network-monitor`) OR reading from in-memory meeting-conduct wizard state on same-session entry.
+Fetching `MeetingRecordDetail` from Store5 stream (SQLDelight cache warm-start + Fineract `GET /groups/{groupId}/meetings/{meetingId}` fresh fetch gated by `cmp-network-monitor`) OR reading from in-memory meeting-conduct wizard state on same-session entry.
 
 ```
 ┌─────────────────────────────────────────┐
@@ -219,7 +219,7 @@ Fineract API failed AND cache is empty for this meeting — retry surface.
 
 ## Interaction Patterns
 
-1. **Screen enters composition** → `LoadSummary` (effect: `call_api`, external: `Store5`) — Store5 stream from SQLDelight SoT + Fineract fetcher `GET /centers/{centerId}/meetings/{meetingId}` gated by `cmp-network-monitor`. On same-session entry from meeting-conduct, in-memory wizard state is projected onto `MeetingSummaryData` and the Store5 stream backfills the SoT.
+1. **Screen enters composition** → `LoadSummary` (effect: `call_api`, external: `Store5`) — Store5 stream from SQLDelight SoT + Fineract fetcher `GET /groups/{groupId}/meetings/{meetingId}` gated by `cmp-network-monitor`. On same-session entry from meeting-conduct, in-memory wizard state is projected onto `MeetingSummaryData` and the Store5 stream backfills the SoT.
 2. **Share icon tap** → `ShareMeetingReport` (effect: `share_external`, external: `kmpToolkit`, `FileKit`). Composes a text/PDF meeting report from the loaded `MeetingRecordDetail` (totals, savings breakdown, opening/closing corpus) and opens the OS share-sheet via kmpToolkit ShareSheet. Toggles `isSharing = true` while composing (icon → circular progress); auto-resets on share-sheet dismissal. No cash-in/cash-out and no copy retained after dismissal.
 3. **Done button tap** → `NavigateDone` (effect: `navigate`, target: `meeting-calendar`). NavController pops the summary route; read-only screen so no persistence or corpus reconciliation runs on the Done tap.
 4. **TopAppBar back arrow tap** → same `NavigateDone` action, same effect. UI-level convenience: two affordances → identical VM action.
@@ -261,9 +261,9 @@ Fineract API failed AND cache is empty for this meeting — retry surface.
 **DI**: `MeetingRepository`, `ShareManager`, `NavigationManager`
 
 Read paths (offline-first, single write happens off-screen at meeting-conduct save):
-- `meetingSummary` ← `MeetingRepository.getMeetingSummary(centerId, meetingId)` via Store5 stream
+- `meetingSummary` ← `MeetingRepository.getMeetingSummary(groupId, meetingId)` via Store5 stream
   - Source of truth: SQLDelight `meeting_records` cache
-  - Fetcher: Fineract `GET /centers/{centerId}/meetings/{meetingId}` (single-row, gated by `cmp-network-monitor`)
+  - Fetcher: Fineract `GET /groups/{groupId}/meetings/{meetingId}` (single-row, gated by `cmp-network-monitor`)
   - Same-session hand-off: meeting-conduct passes the in-memory wizard state directly; Store5 backfill runs in parallel to warm SoT for future re-entries
   - `Retry` re-triggers the stream with `fresh=true`
 - Derived: `netCorpusChange = closingCorpus - openingCorpus` (client-side, rendered in reconciliation card).

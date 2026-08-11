@@ -1,12 +1,12 @@
 # MOCKUP — meeting-lifecycle
-# CommonPurse (mifos-x-group-banking) | Feature FR-003 / FR-019
+# MifosSave (mifos-x-group-banking) | Feature FR-003 / FR-019
 # Generated: 2026-05-06
 
 ---
 
 ## Design Language
 
-**Brand:** CommonPurse by Mwangaza Women's Group
+**Brand:** MifosSave by Mwangaza Women's Group
 **System:** Material Design 3
 **Primary:** #2E7D32 (VSLA-green) — growth, trust, agricultural roots
 **Secondary:** #FF8F00 (amber) — shared coin, harvest wealth

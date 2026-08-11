@@ -33,24 +33,210 @@ summary: >-
   mutating action is enqueued to the offline outbox (durable idempotency key → POST /v1/batches on next sync), so a
   repayment captured in the field replays exactly-once. Amounts, arrears and the schedule read cache-first so the loan
   opens offline.
+metadata:
+  category: back-office-domain
+  implementation_ready: true
+  impl_ready_at: '2026-07-31T00:00:00Z'
+  impl_ready_schema: v2
+contracts:
+  - capability: loan_aggregate_read
+    platform_spec: >-
+      GET /v1/loans/{loanId}?associations=all read cache-first through a Store5 SourceOfTruth over Room (loan_cache) —
+      the summary (client, product, status, principal, outstanding, arrears, next installment), the amortised repayment
+      schedule and the transactions ledger hydrate in one association-rich call and persist to loan_cache so the loan
+      opens offline under CACHE_FIRST_SWR; a stale entry renders immediately with a background-refreshing badge while
+      SWR revalidates.
+    permission: READ_LOAN
+    error_cases:
+      - loan_not_found
+      - loan_load_failed
+  - capability: loan_lifecycle_command
+    platform_spec: >-
+      POST /v1/loans/{loanId}?command=approve|disburse|undoapproval|foreclosure — the action bar exposes only the
+      commands permitted for the current loan status AND held in the PermissionSet; each command is written to the
+      draft_outbox Room table with a fresh durable idempotency key (action=APPROVE_LOAN|DISBURSE_LOAN|UNDO_LOAN|
+      FORECLOSE_LOAN, entity=LOAN) and replayed exactly-once via POST /v1/batches by the offline-sync-engine;
+      maker-checker aware (a queued command lands as PENDING_APPROVAL rather than posting immediately).
+    permission: APPROVE_LOAN
+    error_cases:
+      - action_not_permitted
+      - command_rejected
+      - command_pending_approval
+  - capability: loan_servicing_transaction
+    platform_spec: >-
+      POST /v1/loans/{loanId}/transactions?command=repayment captures a field repayment against the loan; the draft is
+      written to draft_outbox with a DURABLE idempotency key generated at capture and reused on retry so it replays
+      EXACTLY ONCE across connectivity flap / crash / reinstall (zero double-post); the repayment schedule and
+      outstanding balance update on successful sync. A rejected replay routes to needs-attention-inbox, never silently
+      dropped.
+    permission: REPAYMENT_LOAN
+    error_cases:
+      - repayment_post_failed
+      - transaction_offline_queued
+libraries:
+  - capability: loan_aggregate_read
+    library: org.mobilenativefoundation.store.store5
+    version: 5.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: loan_aggregate_read
+    library: androidx.room
+    version: 3.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: loan_aggregate_read
+    library: cmp-network-monitor
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: loan_lifecycle_command
+    library: openMF Fineract Client KMP SDK
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: loan_servicing_transaction
+    library: kotlinx-serialization
+    version: 1.7.x
+    targets:
+      - android
+      - ios
+      - desktop
 vm_actions:
-  - OnLoad
-  - OnTabSelected
-  - OnMakeRepayment
-  - OnApproveLoan
-  - OnDisburseLoan
-  - OnUndoApproval
-  - OnForeclose
-  - OnOpenClient
-  - OnRetry
+  - name: OnLoad
+    signature: 'private fun onLoad(loanId: String)'
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content(loan, schedule, transactions) | Empty | Error
+      - permittedActions=<resolved from PermissionSet ∩ loan status>
+    side_effects:
+      - LoanDetailStore.stream(loanId, CACHE_FIRST_SWR)
+      - PermissionEvaluator.evaluate(loanActions, loan.status)
+    error_handling:
+      LoanNotFound: uiState=Empty; show not-found panel with back affordance
+      NetworkError: uiState=Content from cache if present else Error; offer Retry
+  - name: OnTabSelected
+    signature: 'private fun onTabSelected(tab: LoanDetailTab)'
+    state_mutations:
+      - selectedTab=<Schedule | Transactions | Details>
+    side_effects: []
+    error_handling: {}
+  - name: OnMakeRepayment
+    signature: 'private fun onMakeRepayment(loanId: String, payload: RepaymentPayload)'
+    state_mutations:
+      - uiState=Content (optimistic pending repayment)
+    side_effects:
+      - DraftDao.enqueue(REPAYMENT_LOAN, entity=LOAN, loanId, payload, DURABLE idempotencyKey)
+    error_handling:
+      RepaymentPostFailed: route entry to needs-attention-inbox; keep draft
+      Offline: stays queued; auto-drains on connectivity regain (exactly-once)
+  - name: OnApproveLoan
+    signature: 'private fun onApproveLoan(loanId: String)'
+    state_mutations:
+      - uiState=Content (command submitting)
+      - permittedActions=<recomputed on status change>
+    side_effects:
+      - DraftDao.enqueue(APPROVE_LOAN, entity=LOAN, loanId, payload, DURABLE idempotencyKey)
+    error_handling:
+      CommandRejected: route to needs-attention-inbox
+      Queued: row 'Submitted for approval' (maker-checker → PENDING_APPROVAL)
+  - name: OnDisburseLoan
+    signature: 'private fun onDisburseLoan(loanId: String)'
+    state_mutations:
+      - uiState=Content (command submitting)
+      - permittedActions=<recomputed on status change>
+    side_effects:
+      - DraftDao.enqueue(DISBURSE_LOAN, entity=LOAN, loanId, payload, DURABLE idempotencyKey)
+    error_handling:
+      CommandRejected: route to needs-attention-inbox
+      ActionNotPermitted: hide/disable when status != approved or DISBURSE_LOAN absent
+  - name: OnUndoApproval
+    signature: 'private fun onUndoApproval(loanId: String)'
+    state_mutations:
+      - uiState=Content (command submitting)
+      - permittedActions=<recomputed on status revert>
+    side_effects:
+      - DraftDao.enqueue(UNDO_LOAN, entity=LOAN, loanId, payload, DURABLE idempotencyKey)
+    error_handling:
+      CommandRejected: route to needs-attention-inbox
+      DurableKeyGuard: durable idempotency key prevents a double-reverse on retry
+  - name: OnForeclose
+    signature: 'private fun onForeclose(loanId: String, payload: ForeclosurePayload)'
+    state_mutations:
+      - uiState=Content (command submitting)
+    side_effects:
+      - DraftDao.enqueue(FORECLOSE_LOAN, entity=LOAN, loanId, payload, DURABLE idempotencyKey)
+    error_handling:
+      CommandRejected: route to needs-attention-inbox
+  - name: OnOpenClient
+    signature: 'private fun onOpenClient(clientId: String)'
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToClientDetail360(clientId))
+    error_handling: {}
+  - name: OnRetry
+    signature: 'private fun onRetry(loanId: String)'
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content | Error
+    side_effects:
+      - LoanDetailStore.stream(loanId).refreshFresh()
+    error_handling:
+      NetworkError: uiState=Error; keep last inputs; offer Retry again
 error_cases:
   - loan_not_found
   - loan_load_failed
   - action_not_permitted
+  - command_rejected
+  - command_pending_approval
   - repayment_post_failed
+  - transaction_offline_queued
+test_fixtures:
+  source: screens/loan-detail/tests.yaml
+  scenario_count: 14
+  priority_distribution:
+    high: 7
+    medium: 6
+    low: 1
+scaffolded_at: '2026-07-25T00:00:00Z'
 scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-31T00:00:00Z'
+enriched_by: /idea-feature-enrich
+approved_by: /idea approve
+approve_predicate_version: 1.0.0
+approve_contract_version: 2.0.0
+approve_hash: sha256:4427df9391fb0588b86dbf5a7748712d04d5f03468264f85389b06d81ee70fdf
+approved_at: '2026-07-31T15:50:49Z'
 status_history:
+  - from: approved
+    to: approved
+    at: '2026-07-31T15:50:49Z'
+    by: /idea approve
+    reason: >-
+      Re-approval after /idea-verify heal — schema_version v4.0 stamped on all 32 ui.yaml + product-editor flow.yaml
+      validating/saving transitions added. Fresh approve_hash recomputed over the 7 canonical sibling YAMLs per
+      approve-hash.md §Computation. Status unchanged (approved).
+  - from: designed
+    to: approved
+    at: '2026-07-31T07:34:06Z'
+    by: /idea approve
+    contract_version: 2.0.0
+    reason: >-
+      Autonomous /idea-agent --auto re-approval — DRILL-DOWN feature promoted designed→approved as the pipeline's own
+      gate. impl-ready-clean (impl-ready-validator IR-1..IR-4: 0 violations) and docs.yaml internally consistent. Fresh
+      approve_hash stamped over the 7 canonical sibling YAMLs (approve-hash.md §Computation; RULE-GAP-IDEA-FIRST-001).
   - from: draft
     to: designed
     at: '2026-07-26T05:48:28.922Z'
+    by: /idea-feature-stitch
+  - from: approved
+    to: designed
+    at: '2026-08-03T14:50:29.606Z'
     by: /idea-feature-stitch

@@ -11,22 +11,22 @@
 
 | ID | Method | Endpoint | Auth | Writable |
 |---|---|---|---|---|
-| `get_center_meetings` | GET | `/fineract-provider/api/v1/centers/{centerId}/meetings` | BasicAuth | no |
-| `get_meeting_records_datatable` | GET | `/fineract-provider/api/v1/datatables/dt_meeting_record/{centerId}` | BasicAuth | no |
+| `get_group_meetings` | GET | `/fineract-provider/api/v1/groups/{groupId}/meetings` | BasicAuth | no |
+| `get_meeting_records_datatable` | GET | `/fineract-provider/api/v1/datatables/dt_meeting_record/{groupId}` | BasicAuth | no |
 
 Read-only. No money moves — Fineract is the system of record.
 
 ## Request / Response Details
 
-### GET /centers/{centerId}/meetings
+### GET /groups/{groupId}/meetings
 
-**Path params:** `centerId: Int`. **Query params:** `fromDate: YYYY-MM-DD`, `toDate: YYYY-MM-DD`.
+**Path params:** `groupId: Int`. **Query params:** `fromDate: YYYY-MM-DD`, `toDate: YYYY-MM-DD`.
 **Response:** `MeetingListResponse`.
 **Errors:** 401 → redirect login · 404 → show empty state · 5xx → show error banner, use cached data.
 
-### GET /datatables/dt_meeting_record/{centerId}
+### GET /datatables/dt_meeting_record/{groupId}
 
-**Path params:** `centerId: Int`. **Response:** `MeetingRecordList` (completed meeting records with
+**Path params:** `groupId: Int`. **Response:** `MeetingRecordList` (completed meeting records with
 collected amounts). **Errors:** 404 → no records yet, continue with empty list.
 
 ## DTOs
@@ -43,7 +43,7 @@ totalCollectedKES: Long?
 
 ### MeetingRecordList
 ```
-centerId: Int
+groupId: Int
 records: List<MeetingRecordItem>
 ```
 

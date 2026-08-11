@@ -1,0 +1,319 @@
+schema_version: v4.0
+screen_id: network-config
+feature: network-config
+name: "Network Configuration (Powered by Mifos Initiative)"
+status: enriched
+archetype: form_screen
+cluster: foundation
+module: foundation
+initial_state: idle
+
+# ─────────────────────────────────────────────────────────────────────────
+# The product onboarding connection editor. Any Mifos/Fineract organization
+# installs the app, points it at their own server (scan QR or type), and it
+# becomes their branded back-office. The demo defaults let evaluators start
+# immediately without any configuration.
+#
+# ENTRY POINTS (three):
+#   1. Sign-in screen — Scan config / Configure buttons below the login form
+#   2. M04 Loan Portfolio — "Network settings" tile (visible to all)
+#   3. M17 Sync & Settings — "Network configuration" list row
+#
+# TWO CONNECT PATHS:
+#   A. "Use Mifos community demo" — one tap; fills PRIMARY (mifos-bank-2) defaults
+#   B. "Your organization" — custom base-URL / tenant / username / password + QR scan
+#
+# DEMO DEFAULTS (from research/FINERACT_INSTANCES.md):
+#   base_url: https://mifos-bank-2.mifos.community/fineract-provider/api/v1
+#   tenant:   mifos-bank-2  (NOT "default" — returns 401 if wrong)
+#   username: mifos  |  password: password
+# ─────────────────────────────────────────────────────────────────────────
+
+business_logic:
+  kind: crud
+  processing_kind: on_demand
+  description: >-
+    Manages the Fineract server connection configuration. Reads the currently persisted NetworkConfigState
+    from the encrypted multiplatform-settings store and presents two connect modes: demo (one-tap fills
+    the PRIMARY mifos-bank-2 defaults) or org-specific (user-entered base-URL/tenant/creds). Validates
+    via ServerConfigValidatorUseCase (URL format + non-empty tenant) and a GET /v1/serverinfo probe.
+    On Save, persists to the encrypted store, swaps DynamicBaseUrlPlugin base_url + tenant header, and
+    triggers POST /v1/authentication re-auth. QR decode extracts ServerConfig fields from a Mifos config
+    QR code (organizations distribute these for zero-typing onboarding of field staff).
+  library_refs: []
+  external_library_refs:
+    - "io.ktor.client + DynamicBaseUrlPlugin"
+    - "com.russhwolf.settings.Settings (encrypted variant)"
+    - "org.jetbrains.compose.ui.CameraCapture"
+    - "ServerConfigValidatorUseCase (field-officer app pattern)"
+  required_modules:
+    - core-base/network
+    - core/datastore
+    - core/auth
+
+states:
+  idle:
+    description: "Screen at rest — current NetworkConfigState loaded from the encrypted store. The active base-URL, tenant, and username are displayed (password hidden). The two connect modes ('Mifos demo' / 'Your organization') are selectable tabs."
+    is_default: true
+  scanning:
+    description: "QR camera view is active — a live camera preview with a scan-target overlay. A detected Mifos config QR auto-fills the form fields and transitions back to editing."
+  editing:
+    description: "User is entering or modifying fields in the 'Your organization' mode. Inline validation shows field errors in real time. Save is disabled until all fields are non-empty and the URL is valid."
+  validating:
+    description: "Validate / Save tapped — testing connectivity (GET /v1/serverinfo) with the entered config. A progress indicator is shown; the form is disabled. On success, transitions to saving; on failure, shows the server error."
+  saving:
+    description: "Config validated; persisting to the encrypted store, swapping DynamicBaseUrlPlugin, and triggering re-auth (POST /v1/authentication). A progress indicator is shown."
+  error:
+    description: "Validation or save failed — the error message (unreachable, wrong tenant, auth failure) is shown with a Retry. The entered values are retained for correction."
+
+state_model:
+  fields:
+    - name: connectMode
+      type: ConnectMode
+      notes: "DEMO | ORG — which connection-mode tab is active. Switching to DEMO auto-fills the PRIMARY mifos-bank-2 defaults; switching to ORG restores the last user-entered values."
+    - name: baseUrl
+      type: String
+      notes: "Editable Fineract API base URL (ORG mode only). Validated by ServerConfigValidatorUseCase (non-empty, https:// scheme, valid host). Error surfaced as baseUrlError."
+    - name: tenant
+      type: String
+      notes: "Editable tenant identifier sent as the Fineract-Platform-TenantId header on every API call. For the PRIMARY demo server this is 'mifos-bank-2' (NOT 'default' — that returns 401)."
+    - name: username
+      type: String
+      notes: "Editable username. Non-empty required. Pre-filled to 'mifos' in DEMO mode."
+    - name: password
+      type: String
+      notes: "Editable password — transient, never stored in state beyond the editing session. Written as bcrypt hash on save."
+    - name: baseUrlError
+      type: String?
+      notes: "Inline validation error for the base URL field (null when valid or empty). Shown beneath the field; blocks Save when non-null."
+    - name: tenantError
+      type: String?
+      notes: "Inline validation error for the tenant field ('Tenant identifier is required')."
+    - name: validationResult
+      type: ValidationResult?
+      notes: "Result of the last GET /v1/serverinfo probe: VERIFIED | UNREACHABLE | WRONG_TENANT. Null before the first Validate tap. A VERIFIED result enables the Save button."
+    - name: activeConfig
+      type: NetworkConfigState
+      notes: "The currently persisted config (base_url, tenant, username, env_tag) loaded read-only on mount to pre-fill the form fields."
+    - name: isSubmitting
+      type: Boolean
+      notes: "True while the validation probe or the save+re-auth sequence is in flight. Disables form fields and shows the progress indicator."
+    - name: saveError
+      type: String?
+      notes: "Post-save re-auth failure message (config persisted but sign-in failed). Shown in error state with a Retry option."
+
+shell:
+  bottom_navigation_visible: false
+  top_app_bar_visible: true
+  fab_visible: false
+  snackbar_visible: true
+
+components:
+  - id: header
+    type: header
+    label: "{strings.network_config_title}"
+    testTag: "network-config_header"
+    description: "Headline 'Network Configuration' with a back navigation arrow. Sub-headline: 'Powered by Mifos Initiative'."
+
+  - id: connect_mode_tabs
+    type: tab_row
+    label: "{strings.network_config_mode_tabs}"
+    testTag: "network-config_mode_tabs"
+    tabs:
+      - id: demo
+        label: "{strings.network_config_tab_demo}"
+        description: "Mifos community demo — pre-filled, one-tap connect."
+      - id: org
+        label: "{strings.network_config_tab_org}"
+        description: "Your organization — custom Fineract server."
+    on_click:
+      action: select_connect_mode
+      action_contract:
+        effect: transform_state
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        description: "Switch between the demo tab (auto-fills PRIMARY defaults) and the org tab (user-editable fields). State stays idle; the displayed fields update to match the tab."
+
+  # ── DEMO TAB ──────────────────────────────────────────────────────────
+  - id: demo_banner
+    type: info_banner
+    label: "{strings.network_config_demo_banner}"
+    testTag: "network-config_demo_banner"
+    visible_states: [idle, editing, error]
+    description: "Explains the Mifos community demo: 'Use the Mifos back-office demo — no setup needed. Powered by the Mifos Initiative community server. Username: mifos / Password: password.'"
+
+  - id: demo_server_info
+    type: text
+    label: "{strings.network_config_demo_server}"
+    testTag: "network-config_demo_server"
+    description: "Read-only display of the demo server: mifos-bank-2.mifos.community | tenant: mifos-bank-2 | 15 real Fineract roles."
+
+  - id: use_demo_button
+    type: button
+    label: "{strings.network_config_use_demo}"
+    testTag: "network-config_use_demo"
+    accessibility_label: "Use the Mifos community demo server"
+    variant: primary
+    on_click:
+      action: apply_demo_config
+      action_contract:
+        effect: call_api
+        writes_to:
+          - table: network_config
+          - table: app_settings
+        produces_state: saving
+        description: "Fill the config with PRIMARY demo defaults (mifos-bank-2.mifos.community, tenant mifos-bank-2, mifos/password), persist to the encrypted store, swap DynamicBaseUrlPlugin, and trigger POST /v1/authentication re-auth against the demo server. On success, routes to capability bootstrap."
+    required_permission: null
+    denied_behavior: null
+
+  # ── ORG TAB ───────────────────────────────────────────────────────────
+  - id: base_url_field
+    type: text_field
+    label: "{strings.network_config_base_url}"
+    testTag: "network-config_base_url"
+    hint: "https://your-org.example/fineract-provider/api/v1"
+    visible_states: [idle, editing, error]
+    validation:
+      rules:
+        - mandatory
+        - url_format
+      on_violation: "inline error 'Please enter a valid https:// URL' shown under the field; Save disabled."
+    description: "Fineract API base URL for the organization's server. Validated by ServerConfigValidatorUseCase (non-empty, http/https scheme, valid host)."
+    on_click:
+      action: update_base_url
+      action_contract:
+        effect: transform_state
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        description: "Update state.baseUrl; re-run URL format validation; clear any prior url_invalid error."
+
+  - id: tenant_field
+    type: text_field
+    label: "{strings.network_config_tenant}"
+    testTag: "network-config_tenant"
+    hint: "mifos-bank-2"
+    visible_states: [idle, editing, error]
+    validation:
+      rules:
+        - mandatory
+      on_violation: "inline error 'Tenant identifier is required (Fineract-Platform-TenantId header)'."
+    description: "The Fineract-Platform-TenantId value sent as a header on every API call. For the PRIMARY demo server: 'mifos-bank-2' (NOT 'default' — that returns 401)."
+    on_click:
+      action: update_tenant
+      action_contract:
+        effect: transform_state
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        description: "Update state.tenant; clear tenant_empty error if corrected."
+
+  - id: username_field
+    type: text_field
+    label: "{strings.network_config_username}"
+    testTag: "network-config_username"
+    hint: "mifos"
+    visible_states: [idle, editing, error]
+    validation:
+      rules:
+        - mandatory
+      on_violation: "inline error 'Username is required'."
+    on_click:
+      action: update_username
+      action_contract:
+        effect: transform_state
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        description: "Update state.username."
+
+  - id: password_field
+    type: text_field
+    label: "{strings.network_config_password}"
+    testTag: "network-config_password"
+    hint: "••••••••"
+    input_type: password
+    visible_states: [idle, editing, error]
+    validation:
+      rules:
+        - mandatory
+      on_violation: "inline error 'Password is required'."
+    on_click:
+      action: update_password
+      action_contract:
+        effect: transform_state
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        description: "Update state.password (never echoed or logged). Password is bcrypt-hashed before persistence."
+
+  - id: scan_qr_button
+    type: button
+    label: "{strings.network_config_scan_qr}"
+    testTag: "network-config_scan_qr"
+    accessibility_label: "Scan a Mifos config QR code"
+    variant: outlined
+    visible_states: [idle, editing, error]
+    on_click:
+      action: start_qr_scan
+      action_contract:
+        effect: transform_state
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        produces_state: scanning
+        description: "Open the camera QR scanner. On successful decode of a Mifos config QR payload, auto-fill base_url, tenant, username fields and transition back to editing. On camera permission denied, show a snackbar with instructions to grant camera access."
+
+  - id: validate_button
+    type: button
+    label: "{strings.network_config_validate}"
+    testTag: "network-config_validate"
+    accessibility_label: "Test the connection to the configured server"
+    variant: secondary
+    visible_states: [idle, editing, error]
+    on_click:
+      action: validate_connection
+      action_contract:
+        effect: call_api
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        reads_from:
+          - table: network_config
+        produces_state: validating
+        description: "Run ServerConfigValidatorUseCase (URL format + tenant non-empty) then probe GET /v1/serverinfo with the entered config (Fineract-Platform-TenantId header set to the entered tenant). On success: show a 'Connection verified' success chip and enable Save. On failure: transition to error state with the server error message."
+
+  - id: save_button
+    type: button
+    label: "{strings.network_config_save}"
+    testTag: "network-config_save"
+    accessibility_label: "Save the network configuration and sign in to the new server"
+    variant: primary
+    on_click:
+      action: save_config
+      action_contract:
+        effect: call_api
+        writes_to:
+          - table: network_config
+          - table: app_settings
+        produces_state: saving
+        description: "Encrypt and persist the validated ServerConfig to the encrypted multiplatform-settings store; swap DynamicBaseUrlPlugin base_url + Fineract-Platform-TenantId header; trigger POST /v1/authentication re-auth. On success: route to permission-capability-engine capability bootstrap. On re-auth failure: show save_reauth_failed error (config is persisted, retry offered)."
+    required_permission: null
+    denied_behavior: null
+
+  # ── RESET ─────────────────────────────────────────────────────────────
+  - id: reset_to_demo_row
+    type: list_item
+    label: "{strings.network_config_reset_demo}"
+    testTag: "network-config_reset_demo"
+    description: "Text link at the bottom: 'Reset to Mifos community demo defaults'. Shows a confirm dialog before overwriting any saved org config."
+    on_click:
+      action: reset_to_demo
+      action_contract:
+        effect: call_api
+        writes_to:
+          - table: network_config
+        produces_state: saving
+        description: "After confirm dialog, apply the PRIMARY demo defaults (mifos-bank-2.mifos.community, mifos-bank-2, mifos/password), persist, swap plugin, and trigger re-auth. Replaces any saved org-specific config."
+    required_permission: null
+    denied_behavior: null
+
+  - id: powered_by_footer
+    type: text
+    label: "{strings.network_config_powered_by}"
+    testTag: "network-config_powered_by"
+    description: "Footer text: 'Powered by Mifos Initiative · Apache Fineract'. Shown on the sign-in ingress; may be omitted on the settings ingress."

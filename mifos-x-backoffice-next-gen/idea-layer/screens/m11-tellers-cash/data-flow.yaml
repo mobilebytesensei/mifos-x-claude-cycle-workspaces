@@ -1,20 +1,25 @@
-feature: m11-tellers-cash
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: m11-tellers-cash
+
 # Reads (tellers + cash position, cashiers-per-teller, transaction ledger) ride CACHE_FIRST_SWR
 # Store5 over a Room tellers_cash table: the cached row emits instantly (offline-safe) and a
 # background revalidation replaces it when FreshnessBands mark it Stale. Cash movements (allocate/
-# settle) and management commands (create teller / assign cashier) are command-shaped and
-# money-sensitive: they are assembled as command JsonObjects and written to the durable
+# settle) and management commands (create teller / update teller / assign cashier) are command-shaped
+# and money-sensitive: they are assembled as command JsonObjects and written to the durable
 # framework_submit_drafts outbox (offline-sync-engine) with an idempotency key, then replayed
-# exactly-once via POST /v1/batches — never a direct online call that could double-move cash.
+# exactly-once via POST /v1/batches — never a direct online call that could double-move cash. Every
+# call sends the global Fineract-Platform-TenantId header.
+
 entries:
-  - trigger: on_mount
-    source: api.list_tellers
-    target_state: content
-    loading_state: loading
-    error_state: error
-    on_error:
-      nav_target: null
-      error_code: teller_read_failed
+  # ── 1. On-mount: teller list + vault cash position (CACHE_FIRST_SWR) ───
+  - screen_id: m11-tellers-cash
+    trigger: on_mount
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_tellers
+        transport: rest
     tables:
       - name: tellers_cash
         mutation: upsert
@@ -25,15 +30,36 @@ entries:
           Room tellers_cash cache (teller_id, office_id, vault_cash_balance, status, payload_json,
           fetched_at). CACHE_FIRST_SWR — the teller list renders instantly from cache offline;
           validator.markFresh() follows every successful fetch so TTL starts.
+    dtos:
+      - name: TellerDto
+        role: response
+        api_id: list_tellers
+    cache:
+      strategy: cache_first
+      ttl_seconds: 900
+      key_template: "fineract:tellers:{officeId}"
+      shape: paged
+    privacy_constraint:
+      scope: user_synced
+      notes: "Teller/vault cash positions are scoped to the signed-in user's office hierarchy; encrypted at rest (SQLCipher)."
+    error_paths:
+      - error_code: teller_read_failed
+        behavior: fallback_cache
+        message_key: m11_list_failed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m11_showing_cached
 
-  - trigger: on_select_teller
-    source: api.list_cashiers
-    target_state: content
-    loading_state: loading
-    error_state: error
-    on_error:
-      nav_target: null
-      error_code: cashier_read_failed
+  # ── 2. On-interact: open teller detail — cashiers + transaction ledger ─
+  - screen_id: m11-tellers-cash
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_cashiers
+        transport: rest
+      - api_id: list_teller_transactions
+        transport: rest
     tables:
       - name: tellers_cash
         mutation: upsert
@@ -42,51 +68,90 @@ entries:
           storage_backend: local_db
         persistence_note: >-
           Cashiers assigned to the selected teller for a date range (teller_id, cashier_id, staff_id,
-          allocated_cash, start_date, end_date) upserted under the teller row. Cached per teller_id +
-          date range so the detail renders offline; change_cashier_date_range re-projects over cached
-          rows without a refetch.
+          allocated_cash, start_date, end_date) and the teller-transaction ledger (transaction_id,
+          txn_type, amount, txn_date, running_balance) upserted under the teller row. Cached per
+          teller_id + date range so the detail + ledger render offline; change_cashier_date_range
+          re-projects over cached rows without a refetch.
+    dtos:
+      - name: CashierDto
+        role: response
+        api_id: list_cashiers
+      - name: TellerTransactionDto
+        role: response
+        api_id: list_teller_transactions
+    cache:
+      strategy: cache_first
+      ttl_seconds: 900
+      key_template: "fineract:teller:{tellerId}:cashiers-ledger"
+      shape: flat
+    error_paths:
+      - error_code: cashier_read_failed
+        behavior: fallback_cache
+        message_key: m11_detail_failed
+      - error_code: teller_txn_read_failed
+        behavior: fallback_cache
+        message_key: m11_detail_failed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m11_showing_cached
 
-  - trigger: on_view_ledger
-    source: api.list_teller_transactions
-    target_state: content
-    loading_state: loading
-    error_state: error
-    on_error:
-      nav_target: null
-      error_code: teller_txn_read_failed
+  # ── 3. On-interact: create-teller + assign-cashier form template loads ─
+  - screen_id: m11-tellers-cash
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: get_teller_template
+        transport: rest
+      - api_id: get_cashier_template
+        transport: rest
     tables:
-      - name: tellers_cash
+      - name: teller_templates
+        mutation: read
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Teller + cashier form templates (office option list, eligible-staff option list, field
+          defaults) cached CACHE_FIRST_SWR so dynamic-template-forms can render the create-teller /
+          assign-cashier forms offline. Never hardcode the option lists.
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 3600
+      key_template: "fineract:teller-template:{tellerId}"
+      shape: flat
+    error_paths:
+      - error_code: template_load_failed
+        behavior: fallback_cache
+        message_key: m11_detail_failed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m11_showing_cached
+
+  # ── 4. On-interact: cash movement (allocate/settle) — queued exactly-once ──
+  - screen_id: m11-tellers-cash
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: allocate_cash
+        transport: rest
+      - api_id: settle_cash
+        transport: rest
+    tables:
+      - name: draft_outbox
         mutation: upsert
         persistence_contract:
           is_durable: true
           storage_backend: local_db
         persistence_note: >-
-          Teller-transaction ledger (teller_id, transaction_id, txn_type, amount, txn_date,
-          running_balance) upserted under the teller row. Read-only, CACHE_FIRST_SWR so the ledger
-          renders instantly offline.
-
-  - trigger: on_command
-    source: api.allocate_cash
-    target_state: submitting
-    loading_state: submitting
-    error_state: error
-    on_error:
-      nav_target: needs-attention-inbox
-      error_code: cash_command_rejected
-    tables:
-      - name: draft_outbox
-        mutation: write
-        persistence_contract:
-          is_durable: true
-          storage_backend: local_db
-        persistence_note: >-
           RoomSubmitOutbox over framework_submit_drafts (Room v11). Every cash movement (allocate /
-          settle) and management command (create teller / assign cashier) is serialized as a command
-          JsonObject with a DURABLE idempotency_key + (action, entity) composite key BEFORE it is
-          sent — the local system-of-record until replayed exactly-once via POST /v1/batches. PENDING
-          never pruned; a killed-mid-submit allocation reuses its stored idempotency key on replay so
-          cash never double-moves. A server rejection routes the entry to needs-attention-inbox with
-          the Fineract server_error; the (action, entity) permission is re-checked before replay.
+          settle) is serialized as a command JsonObject with a DURABLE idempotency_key + (action,
+          entity) composite key BEFORE it is sent — the local system-of-record until replayed
+          exactly-once via POST /v1/batches. PENDING never pruned; a killed-mid-submit allocation
+          reuses its stored idempotency key on replay so cash never double-moves. A settle is
+          client-guarded against exceeding the cashier's allocated cash before enqueue; the server
+          stays the final authority.
       - name: tellers_cash
         mutation: upsert
         persistence_contract:
@@ -95,29 +160,101 @@ entries:
         persistence_note: >-
           Optimistic vault/cashier cash-position update marked pending-sync until the outbox replay
           confirms; reconciled against the server on delta-pull.
+    dtos:
+      - name: CommandProcessingResult
+        role: response
+        api_id: allocate_cash
+    privacy_constraint:
+      scope: user_synced
+      notes: "Cash-movement command payloads (amount, currency, date) scoped to the signed-in officer; encrypted at rest."
+    side_effects:
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer drains the queued cash command via offline-sync-engine's POST /v1/batches on reconnect"
+      - kind: invalidate_cache
+        target: "the teller vault + cashier cash positions — revalidated by the follow-on delta-pull"
+    error_paths:
+      - error_code: cash_command_rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: m11_command_rejected
+      - error_code: permission.drift
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: m11_access_changed
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m11_queued_offline
 
-# Reads consumed by the ui.yaml action_contracts (reads_from) + writes (writes_to).
-reads:
-  - name: tellers_cash
-    source: api.list_tellers
-    cache: room
-    note: "The tellers + cashiers + ledger working set keyed by teller_id (and cashier_id / transaction_id); read by every action_contract's reads_from and re-projected by change_cashier_date_range."
-writes:
-  - name: draft_outbox
-    target: api.allocate_cash
-    cache: room
-    note: "The durable command outbox (framework_submit_drafts) that every allocate/settle/create-teller/assign-cashier action_contract writes_to for exactly-once replay."
+  # ── 5. On-interact: teller management (create/update teller, assign cashier) — queued ──
+  - screen_id: m11-tellers-cash
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: create_teller
+        transport: rest
+      - api_id: update_teller
+        transport: rest
+      - api_id: assign_cashier
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Create-teller / update-teller / assign-cashier commands carry their dynamic-template-forms
+          JsonObject payload straight into the outbox with a durable idempotency_key + (action,
+          entity) key and replay exactly-once via POST /v1/batches. A server rejection routes the
+          entry to needs-attention-inbox; the (action, entity) permission is re-checked before replay.
+      - name: tellers_cash
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: "Optimistic teller/cashier row marked pending-sync until the outbox replay confirms; reconciled on delta-pull."
+    dtos:
+      - name: CommandProcessingResult
+        role: response
+        api_id: create_teller
+    side_effects:
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer drain for this outbox entry"
+      - kind: invalidate_cache
+        target: "the tellers list cache for the office — revalidated by the follow-on delta-pull"
+    error_paths:
+      - error_code: management_command_rejected
+        behavior: navigate
+        nav_target: needs-attention-inbox
+        message_key: m11_command_rejected
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: m11_queued_offline
 
-cache:
-  strategy: cache_first
-  ttl_seconds: 900
-  key_template: "fineract:tellers:{officeId}"
-  shape: list
-  note: >-
-    Tellers, cashiers and the transaction ledger are CACHE_FIRST_SWR over the Room tellers_cash table:
-    the cached row emits immediately and a background revalidation refreshes it only when FreshnessBands
-    mark it Stale. validator.markFresh() follows every successful fetch so TTL starts; offline the cached
-    cash position is the source of truth and the offline banner is shown, while any queued allocate/settle
-    command carries an optimistic pending-sync marker until it replays.
+  # ── 6. On-timer: periodic SWR revalidate of the teller working set ────
+  - screen_id: m11-tellers-cash
+    trigger: on_timer
+    interval_seconds: 900
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_tellers
+        transport: rest
+    tables:
+      - name: tellers_cash
+        mutation: read
+    cache:
+      strategy: stale_while_revalidate
+      ttl_seconds: 900
+      key_template: "fineract:tellers:{officeId}"
+      shape: paged
+    error_paths:
+      - error_code: network.offline
+        behavior: silent
+        message_key: m11_showing_cached
 
-# regenerated-provenance: idea-data-flow re-verified 2026-07-26 — entries + persistence_contract consistent with current ui.yaml + api.yaml; mtime re-stamp (isStale enriched-unstick).
+# regenerated-provenance: idea-data-flow refreshed 2026-07-31 — migrated legacy trigger/source shape to
+# v2.2.0 (screen_id/endpoints/dtos/cache/error_paths) and completed endpoint coverage: all 10 api.yaml
+# endpoints now wired across 6 entries (was 4 explicit sources). Grounded in current api.yaml + ui.yaml
+# + demo-data.yaml; DTO refs resolve (TellerDto/CashierDto/TellerTransactionDto/CommandProcessingResult).

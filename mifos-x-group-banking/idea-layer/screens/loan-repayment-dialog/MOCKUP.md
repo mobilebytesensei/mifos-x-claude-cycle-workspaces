@@ -1,7 +1,7 @@
 # Loan Repayment Dialog — Mockup Summary
 
 **Status**: Content-fresh from `ui.yaml` v4.0 + `demo-data.yaml` v2.1.0
-**Project**: mifos-x-group-banking (CommonPurse)
+**Project**: mifos-x-group-banking (MifosSave)
 **Feature ID**: `loan-repayment-dialog`
 **Device**: Mobile (Android — dialog surface, portrait)
 **Regenerated**: 2026-07-18 (rewritten from current sibling YAML to bump mtime)

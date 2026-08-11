@@ -98,7 +98,7 @@ class ClientTypeSelectorScreenTest {
     }
 
     /**
-     * TC-CTS-009: App logo, title 'CommonPurse', and tagline are all visible on screen
+     * TC-CTS-009: App logo, title 'MifosSave', and tagline are all visible on screen
      * Priority: P1
      */
     @Test

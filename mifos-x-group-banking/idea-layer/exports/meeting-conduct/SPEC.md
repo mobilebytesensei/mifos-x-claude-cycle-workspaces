@@ -22,7 +22,7 @@ each step advance. A **corpus gate** blocks loan disbursement when the closing c
 negative. Covers FR-003/FR-004/FR-006/FR-012/FR-017/FR-019/FR-020.
 
 **Route:** `/meetings/{meetingId}/conduct` · **Entry:** `meeting-calendar` (Start Meeting on upcoming card)
-**Nav params:** `meetingId: String (required)`, `meetingNumber: Int (required)`, `centerId: Int (required)`
+**Nav params:** `meetingId: String (required)`, `meetingNumber: Int (required)`, `groupId: Int (required)`
 
 **Acceptance Criteria:**
 
@@ -54,7 +54,7 @@ negative. Covers FR-003/FR-004/FR-006/FR-012/FR-017/FR-019/FR-020.
 | totalSteps | Int | `7` | Total steps |
 | meetingId | String | `""` | From nav_params |
 | meetingNumber | Int | `0` | From nav_params |
-| centerId | Int | `0` | From nav_params |
+| groupId | Int | `0` | From nav_params |
 | previousMeetingSummary | PreviousMeetingSummary? | `null` | Step 0 review data |
 | groupMembers | List<GroupMember> | `emptyList()` | Members for attendance/savings |
 | attendanceMap | Map<String, AttendanceStatus> | `emptyMap()` | Per-member attendance |
@@ -119,8 +119,8 @@ negative. Covers FR-003/FR-004/FR-006/FR-012/FR-017/FR-019/FR-020.
 
 | Event | Payload | Trigger |
 |---|---|---|
-| `NavigateToMeetingSummary` | meetingId, meetingNumber, centerId | Submit success |
-| `NavigateToPreviousMeetingReview` | meetingId, centerId | View Full Report |
+| `NavigateToMeetingSummary` | meetingId, meetingNumber, groupId | Submit success |
+| `NavigateToPreviousMeetingReview` | meetingId, groupId | View Full Report |
 | `NavigateBack` | — | Close / back |
 | `ShowStepError` | message: String | Step validation fail |
 | `ShowSubmitSuccess` | — | Submit success |
@@ -135,8 +135,8 @@ negative. Covers FR-003/FR-004/FR-006/FR-012/FR-017/FR-019/FR-020.
 
 | Condition | Destination | Params |
 |---|---|---|
-| Wizard submitted successfully | `meeting-summary` | meeting_id, meeting_number, center_id |
-| Tap View Full Previous Meeting | `previous-meeting-review` | meeting_id, meeting_number, center_id |
+| Wizard submitted successfully | `meeting-summary` | meeting_id, meeting_number, group_id |
+| Tap View Full Previous Meeting | `previous-meeting-review` | meeting_id, meeting_number, group_id |
 | Back / cancel | `meeting-calendar` | — |
 
 **navigates_to:** `meeting-summary`, `previous-meeting-review`, `meeting-calendar`
@@ -145,9 +145,9 @@ negative. Covers FR-003/FR-004/FR-006/FR-012/FR-017/FR-019/FR-020.
 
 | ID | Method | Endpoint | Writable |
 |---|---|---|---|
-| `get_previous_meeting_record` | GET | `/datatables/dt_meeting_record/{centerId}` | no |
-| `get_group_members` | GET | `/centers/{centerId}` | no |
-| `get_group_corpus` | GET | `/datatables/dt_group_corpus/{centerId}` | no |
+| `get_previous_meeting_record` | GET | `/datatables/dt_meeting_record/{groupId}` | no |
+| `get_group_members` | GET | `/groups/{groupId}` | no |
+| `get_group_corpus` | GET | `/datatables/dt_group_corpus/{groupId}` | no |
 | `get_active_loans` | GET | `/loans` | no |
 | `get_loan_votes` | GET | `/datatables/dt_loan_vote/{loanId}` | no |
 | `post_meeting_record` | POST | `/datatables/dt_meeting_record` | yes (submit #1) |
@@ -155,7 +155,7 @@ negative. Covers FR-003/FR-004/FR-006/FR-012/FR-017/FR-019/FR-020.
 | `post_savings_transaction` | POST | `/savingsaccounts/{savingsId}/transactions` | yes (submit #3, per member per type) |
 | `post_loan_repayment` | POST | `/loans/{loanId}/transactions?command=repayment` | yes (submit #4, per loan) |
 | `post_loan_disbursal` | POST | `/loans/{loanId}/transactions?command=disburse` | yes (submit #5, per approved) |
-| `patch_corpus` | PUT | `/datatables/dt_group_corpus/{centerId}` | yes (submit #6) |
+| `patch_corpus` | PUT | `/datatables/dt_group_corpus/{groupId}` | yes (submit #6) |
 
 See `exports/meeting-conduct/API.md`.
 

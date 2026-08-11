@@ -1,5 +1,5 @@
 # PROMPTS_STITCH — corpus-tracking
-# CommonPurse (mifos-x-group-banking) | Feature FR-018
+# MifosSave (mifos-x-group-banking) | Feature FR-018
 # Generated: 2026-05-06
 # Sections: 6 | Total lines: ≥1,200
 
@@ -9,7 +9,7 @@
 
 ### 1.1 Brand Purpose for Corpus Tracking
 
-The corpus fund is the soul of CommonPurse. For the Mwangaza Women's Group, the corpus (derived from Latin "body") represents the group's collective financial body — the total pooled capital that grows through savings, shrinks through loans, and is distributed at cycle end through share-out. FR-018 mandates that this critical number be visible, accurate, and actionable throughout the app.
+The corpus fund is the soul of MifosSave. For the Mwangaza Women's Group, the corpus (derived from Latin "body") represents the group's collective financial body — the total pooled capital that grows through savings, shrinks through loans, and is distributed at cycle end through share-out. FR-018 mandates that this critical number be visible, accurate, and actionable throughout the app.
 
 Design principles for corpus-tracking:
 - **Prominence:** The KES balance must be the single most visually prominent number on the GroupDashboard — using displaySmall (36sp) in primary green, impossible to miss.
@@ -556,8 +556,8 @@ Column(padding: 16dp):
 **Screen enters composition:**
 1. GroupDashboardViewModel.OnLoad dispatches fetch_all_parallel
 2. 4 API calls fire simultaneously:
-   - get_center → group data
-   - get_center_accounts → accounts data
+   - get_group → group data
+   - get_group_accounts → accounts data
    - get_group_corpus → corpus data (network-first, 60s TTL)
    - get_group_config → config data (stale-while-revalidate, 600s TTL)
 3. ScreenState = Loading → 4 shimmer blocks render
@@ -961,7 +961,7 @@ All user-visible strings for corpus-tracking displayed components:
 GroupDashboardScreen
   ├── GroupDashboardViewModel (Hilt ViewModel)
   │   ├── GroupRepository
-  │   │   ├── FineractCenterDataSource (Retrofit: /centers/{id} + /centers/{id}/accounts)
+  │   │   ├── FineractGroupDataSource (Retrofit: /groups/{id} + /groups/{id}/accounts)
   │   │   └── LocalGroupDao (SQLDelight)
   │   ├── CorpusRepository
   │   │   ├── FineractCorpusDataSource (Retrofit: /datatables/dt_group_corpus/{id})
@@ -1016,7 +1016,7 @@ The corpus update is the final step in the 6-call submission sequence. This orde
 **Call 5:** POST loans/{id}/transactions?command=disburse × 1 → Grace's approved loan
 - Body: LoanDisbursalRequest {actualDisbursementDate, note, locale, dateFormat}
 
-**Call 6 (corpus):** PUT dt_group_corpus/{centerId} → updates corpus to closingCorpus
+**Call 6 (corpus):** PUT dt_group_corpus/{groupId} → updates corpus to closingCorpus
 - Body: UpdateCorpusRequest {corpusBalance: 12450, lastUpdatedMeeting: 4, lastUpdatedDate: "07 May 2026"}
 - This is priority 1 in SyncQueue if offline — corpus integrity is the most critical invariant
 
@@ -1367,7 +1367,7 @@ Critical rule: Corpus KES balance must NEVER truncate or ellipsize. Use sp value
 - [ ] CorpusGateChip updates in real-time as loans approved
 
 **Corpus Update (Meeting Submission):**
-- [ ] PUT /datatables/dt_group_corpus/{centerId} called with closingCorpus from wizard computation
+- [ ] PUT /datatables/dt_group_corpus/{groupId} called with closingCorpus from wizard computation
 - [ ] On 5xx: queued to SyncQueue priority 1 (highest priority)
 - [ ] On success: SQLDelight corpus cache updated immediately
 - [ ] locale="en" and dateFormat="dd MMMM yyyy" always included in PUT body

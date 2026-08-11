@@ -9,7 +9,7 @@
 
 ## Design Language
 
-**System**: CommonPurse-v3 (Material Design 3 · MD3) — dense financial dashboard density (7/10)
+**System**: MifosSave-v3 (Material Design 3 · MD3) — dense financial dashboard density (7/10)
 **Aesthetic**: `minimalist-ui` · variance 3/10 · motion 3/10 · density 7/10 · accessibility-first · regulated-industry
 **Font**: Roboto (Android) / SF Pro (iOS) — system stack · Roboto Mono / SF Mono for KES amounts
 **Primary**: `#2E7D32` (`--primary-700`, VSLA green) — TopAppBar, tab indicator, primary chart bars, cycle progress

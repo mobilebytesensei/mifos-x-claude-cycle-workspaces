@@ -8,7 +8,7 @@
 
 | ID | Method | Endpoint | Auth | Writable | Cache |
 |---|---|---|---|---|---|
-| `get_meeting_record_detail` | GET | `/fineract-provider/api/v1/datatables/dt_meeting_record/{centerId}` | Bearer | no | 300 s SWR (offline show_cached) |
+| `get_meeting_record_detail` | GET | `/fineract-provider/api/v1/datatables/dt_meeting_record/{groupId}` | Bearer | no | 300 s SWR (offline show_cached) |
 | `get_meeting_attendance` | GET | `/fineract-provider/api/v1/datatables/dt_meeting_attendance/{meetingId}` | Bearer | no | 300 s SWR (offline show_cached) |
 | `get_pending_loan_votes` | GET | `/fineract-provider/api/v1/datatables/dt_loan_vote/{loanId}` | Bearer | no | — |
 
@@ -16,8 +16,8 @@ All reads are cache-first via `LocalMeetingDao`; previous-meeting data is immuta
 
 ## Request / Response Details
 
-### GET dt_meeting_record/{centerId} (summary)
-Params `centerId: Int` (nav_params), `meetingNumber: Int` (nav_params). Returns a
+### GET dt_meeting_record/{groupId} (summary)
+Params `groupId: Int` (nav_params), `meetingNumber: Int` (nav_params). Returns a
 `PreviousMeetingDetailResponse` with metrics, savingsBreakdown, attendanceRecords, and loanItems.
 `404` → error state; `5xx` → serve cached data if available.
 

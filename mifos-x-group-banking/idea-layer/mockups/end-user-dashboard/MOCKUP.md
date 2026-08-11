@@ -2,7 +2,7 @@
 
 ## Design Language
 
-CommonPurse uses Material Design 3 with VSLA-specific brand tokens. The end-user surface is warm and encouraging — members see their savings grow and have clear pathways to request loans. All text is large for readability in outdoor rural settings. Touch targets meet 48dp minimum across all interactive elements.
+MifosSave uses Material Design 3 with VSLA-specific brand tokens. The end-user surface is warm and encouraging — members see their savings grow and have clear pathways to request loans. All text is large for readability in outdoor rural settings. Touch targets meet 48dp minimum across all interactive elements.
 
 **Primary brand colours**:
 - Primary: #2E7D32 (VSLA-green — growth, community)

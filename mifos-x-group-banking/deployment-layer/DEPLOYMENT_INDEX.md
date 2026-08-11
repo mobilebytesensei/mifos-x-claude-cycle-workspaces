@@ -1,4 +1,4 @@
-# Release Layer — mifos-x-group-banking (CommonPurse)
+# Release Layer — mifos-x-group-banking (MifosSave)
 
 ## Platform Summary
 

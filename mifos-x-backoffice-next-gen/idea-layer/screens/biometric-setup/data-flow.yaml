@@ -1,0 +1,125 @@
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: biometric-setup
+
+# No API calls. All interactions are with the platform-native BiometricPrompt API and
+# the local encrypted multiplatform-settings store. The ONLY persistent write is
+# biometric_lock_enabled=true + biometric_type on enrollment success. Biometric templates
+# are stored in the OS TEE / Secure Enclave — never in app storage or on the server.
+
+entries:
+  # ── 1. Check biometric availability on mount (prompt | unavailable | not_enrolled_in_os) ──
+  - screen_id: biometric-setup
+    trigger: on_mount
+    produces_state: prompt
+    loading_state: prompt
+    error_state: unavailable
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: biometric_availability
+        mutation: read
+        persistence_contract:
+          is_durable: false
+          storage_backend: in_memory
+        persistence_note: >-
+          BiometricManager.canAuthenticate(BIOMETRIC_STRONG) result — checked on mount and
+          on return from the OS Settings deep-link (not_enrolled_in_os → re-check). Not
+          persisted; re-evaluated every time. Result maps to state:
+            BIOMETRIC_SUCCESS              → prompt
+            BIOMETRIC_ERROR_NO_HARDWARE    → unavailable
+            BIOMETRIC_ERROR_NONE_ENROLLED  → not_enrolled_in_os
+          biometric_type (FINGERPRINT | FACE | IRIS) detected from the platform sensor and
+          used to customize the illustration + headline ('Set up fingerprint' vs 'Set up Face ID').
+    dtos:
+      - name: BiometricAvailability
+        role: derived
+        api_id: null
+        source: "platform — BiometricManager.canAuthenticate(BIOMETRIC_STRONG)"
+      - name: BiometricType
+        role: derived
+        api_id: null
+        source: "platform — detected biometric modality (FINGERPRINT | FACE | IRIS)"
+    cache:
+      strategy: in_memory_only
+      key_template: "biometric:availability"
+      shape: flat
+      ttl_seconds: null
+    error_paths:
+      - error_code: biometric_unavailable
+        behavior: show_unavailable
+        message_key: biometric_not_available
+      - error_code: biometric_none_enrolled
+        behavior: show_not_enrolled
+        message_key: biometric_not_enrolled_in_os
+
+  # ── 2. Enrollment success → write biometric_lock_enabled to encrypted_prefs (enrolling → success) ──
+  - screen_id: biometric-setup
+    trigger: on_event
+    event_name: enrollment_success
+    produces_state: success
+    loading_state: enrolling
+    error_state: error
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: secure_prefs
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: >-
+          On platform BiometricPrompt enrollment success: write biometric_lock_enabled=true
+          and biometric_type (fingerprint | face | iris) to the encrypted multiplatform-settings
+          store. This is the ONLY persistent side effect of enrollment — biometric templates
+          themselves are stored in the OS TEE / Secure Enclave and never touch app storage.
+          The passcode-lock screen will show the fingerprint icon on the next lock event.
+    dtos:
+      - name: BiometricEnrollmentResult
+        role: derived
+        api_id: null
+        source: "platform BiometricPrompt enrollment callback → writes biometric_lock_enabled + biometric_type to encrypted_prefs"
+    privacy_constraint:
+      scope: device_local
+      notes: >-
+        biometric_lock_enabled is a boolean preference flag — NOT a biometric template.
+        Templates are OS-managed (Android TEE / iOS Secure Enclave). The flag is encrypted
+        at rest; never synced to the Fineract server, never included in backups.
+    error_paths:
+      - error_code: enrollment_failed
+        behavior: show_error
+        message_key: biometric_enrollment_failed
+      - error_code: enrollment_cancelled
+        behavior: return_to_prompt
+        message_key: null
+
+  # ── 3. Re-check availability on return from OS settings (not_enrolled_in_os → prompt | unavailable) ──
+  - screen_id: biometric-setup
+    trigger: on_event
+    event_name: returned_from_os_settings
+    produces_state: prompt
+    loading_state: prompt
+    error_state: unavailable
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: biometric_availability
+        mutation: read
+        persistence_contract:
+          is_durable: false
+          storage_backend: in_memory
+        persistence_note: >-
+          Re-run BiometricManager.canAuthenticate() after the user returns from the OS
+          Security/Biometrics settings where they may have enrolled a fingerprint or face.
+          If now BIOMETRIC_SUCCESS → prompt state so they can proceed with in-app enrollment.
+          If still BIOMETRIC_ERROR_NONE_ENROLLED → remain in not_enrolled_in_os.
+    error_paths:
+      - error_code: biometric_still_none_enrolled
+        behavior: show_not_enrolled
+        message_key: biometric_still_not_enrolled
+
+# regenerated-provenance: data-flow enriched to v2.2.0 schema 2026-08-01 — all 6 ui.yaml
+# states covered (prompt/enrolling/success/unavailable/not_enrolled_in_os/error); 3 entries;
+# 0 API endpoints (device-local only per api.yaml); reads: in_memory BiometricManager result
+# (mount + return-from-settings); writes: encrypted_prefs biometric_lock_enabled + biometric_type
+# (enrollment_success only).

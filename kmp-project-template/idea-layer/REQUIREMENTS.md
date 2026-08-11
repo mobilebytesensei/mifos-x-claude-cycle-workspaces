@@ -1,7 +1,7 @@
 # Requirements — Money Toolkit (kmp-project-template)
 
-> **SoT note:** Reverse-engineered from shipped source on 2026-07-25 via `/idea import`.
-> FR = user-visible functional behavior, NFR = per-feature non-functional
+> **SoT note:** Reverse-engineered fresh from shipped source at HEAD on 2026-08-01 via
+> `/idea import`. FR = user-visible functional behavior, NFR = per-feature non-functional
 > (perf/offline/a11y), DR = per-feature data (tables/DTOs/external APIs). The final
 > **Infrastructure / Non-Functional** section folds the infra analysis — those rows are
 > **driven by `/release` · `/ci` · `/secrets`** and **tracked-not-generated** by `/idea-agent`.
@@ -77,7 +77,7 @@
 
 | ID | Description | Feature |
 |:--:|-------------|---------|
-| NFR-001 | Composite dashboard: per-card independent loading/error/retry + worst-of-2 FreshnessIndicator; VM survives bottom-nav tab switches (retainedKoinViewModel) | feat-home |
+| NFR-001 | Composite dashboard: per-card independent loading/error/retry + worst-of FreshnessIndicator; VM survives bottom-nav tab switches (retainedKoinViewModel) | feat-home |
 | NFR-002 | Preference change reflected app-wide within one frame (optimistic StateFlow re-emit) and survives restart | feat-settings |
 | NFR-003 | Profile renders instantly, fully static, zero async/network | feat-profile |
 | NFR-004 | Showcase gated to `!isReleaseBuild()`, zero presence in release builds, cleanly deletable | feat-showcase |
@@ -85,7 +85,7 @@
 | NFR-006 | EMI/affordability/comparison/schedule: time-to-first-result < 1s, synchronous on-device, zero crashes on non-numeric input | feat-emi-calculator, feat-calculators |
 | NFR-007 | Amortization is read-only (only Back interactive); no error state ever emitted (local read + math can't fail) | feat-amortization |
 | NFR-008 | Bill notifications are best-effort + OS-permission-gated; scheduler mockable in tests via BillNotificationGateway seam | feat-bills |
-| NFR-009 | FRED usage stays under 120 calls/min via 24h Store5 TTL; graceful offline stale + key-missing states | feat-rates |
+| NFR-009 | FRED usage stays under limit via 24h Store5 TTL; graceful offline stale + key-missing states | feat-rates |
 | NFR-010 | FX + macro degrade gracefully offline (stale band / NoNetwork with retry); wasmJs glyph-safe icons (ArrowForward, ISO-code badge, em-dash sparkline fallback) | feat-currency-rates, feat-country-macro |
 | NFR-011 | Crypto paging stays under CoinGecko demo rate limit via 2-min TTL; locale-free formatters safe on JS/wasmJs | feat-crypto |
 | NFR-012 | i18n: all user-facing copy via compose-resources string keys (RULE-IMPL-NO-HARDCODED-STRING-001); localized in de/es/fr/hi/ja/zh-rCN | all UI features |
@@ -99,7 +99,7 @@
 | ID | Description | Feature | Storage / Source |
 |:--:|-------------|---------|------------------|
 | DR-001 | Composite: reads `banking_loans` + `banking_bill_reminders` (local Room) + FRED rates + Frankfurter exchange (Store5) | feat-home | Room + Store5 |
-| DR-002 | `UserData` blob (themeBrand, useDynamicColor, darkThemeConfig, appLanguage + secure auth fields not touched here) | feat-settings | multiplatform-settings (plain `user_data_key` + secure) |
+| DR-002 | `UserData` blob (themeBrand, useDynamicColor, darkThemeConfig, appLanguage) | feat-settings | multiplatform-settings (plain `user_data_key` + secure) |
 | DR-003 | `Loan` / `banking_loans` (id, name, kind, principal, principalRemaining, annualRatePercent, tenureMonths, monthsRemaining, monthlyPayment, nextDueDate, totalPaid, timestamps) | feat-loans | Room + OFFLINE_LOCAL_ONLY Store5 |
 | DR-004 | No DTOs/tables — pure-local EMI math (`EmiResult`) | feat-emi-calculator | none |
 | DR-005 | No owned tables; READS `banking_loans` (amortization pre-fill) + WRITES a `Loan` (wizard); `SubmitOutbox<LoanCalcScenario>` draft persistence | feat-calculators | shared Room + framework_submit_drafts outbox |
@@ -110,7 +110,7 @@
 | DR-010 | World Bank indicators [GDP NY.GDP.MKTP.CD, INFLATION_CPI FP.CPI.TOTL.ZG, UNEMPLOYMENT SL.UEM.TOTL.ZS] — in-memory only | feat-country-macro | MEMORY_ONLY Store5 (NO Room, NO SourceOfTruth); **no key** |
 | DR-011 | CoinGecko `/coins/markets` (page-keyed) → `coin_markets` (2-min TTL); `/coins/{id}` → `coin_detail` (5-min TTL, **data-wired UI-pending**) | feat-crypto | NETWORK_WITH_CACHE Store5; **no key** |
 | DR-012 | `WatchlistEntity` / `personal_watchlist` (coinId PK + addedAtMs); `AppDatabase` v5→v6 migration; live values joined from `feat-crypto` CoinMarket | feat-watchlist | raw Room DAO (NO Store5) + invalidation bridge |
-| DR-013 | `PriceAlert` (id, coinId, AlertDirection, targetValue, enabled, createdAtMs) → `AlertEntity` / `alerts` (schema v8→v10) | feat-alerts | OFFLINE_LOCAL_ONLY Store5 + outbox. ⚠ **entity is lossy: drops `enabled` + `PCT_CHANGE` (P1 widen)** |
+| DR-013 | `PriceAlert` (id, coinId, AlertDirection, targetValue, enabled, createdAtMs) → `AlertEntity` / `alerts` | feat-alerts | OFFLINE_LOCAL_ONLY Store5 + outbox. ⚠ **entity is lossy: drops `enabled` + `PCT_CHANGE` (P1 widen)** |
 
 ---
 
@@ -141,7 +141,7 @@
 | NFR-INFRA-CROSS-PLATFORM | Shared logic + Compose UI across **5 targets** (Android, iOS, macOS, Desktop, Web) via expect/actual | /ci, /release |
 | NFR-INFRA-MVI-UNIDIRECTIONAL | All ViewModels extend `BaseViewModel<S, E, A>` — unidirectional MVI | /ci |
 | NFR-INFRA-CI-QUALITY-GATE | Spotless + Detekt + DependencyGuard + Kover + verify-demo-convention; prod stages behind GitHub Environment reviewers | /ci |
-| NFR-INFRA-MULTI-PLATFORM-RELEASE | firebase → internal → beta → production rung ladder; 23 targets / 5 platforms; mifos-x-actionhub v2 | /release |
+| NFR-INFRA-MULTI-PLATFORM-RELEASE | firebase → internal → beta → production rung ladder; multi-target / 5 platforms; mifos-x-actionhub v2 | /release |
 | NFR-INFRA-A11Y-MOTION | MD3 motion duration-symmetry; TalkBack/VoiceOver support | /ci |
 | NFR-INFRA-SECRETS-DUAL-MODE | Manual secrets (`secrets/live`) vs SOPS+age vault — identical canonical paths either mode | /secrets |
 | NFR-INFRA-PERF | JankStats instrumentation; image-cache size caps | /ci |
@@ -154,7 +154,7 @@
 |:--:|-------------|-------|
 | DR-INFRA-ROOM-DB | Room 3 + `RoomChangeBus` wasmJs invalidation bridge (async fan-out workaround) | /ci |
 | DR-INFRA-DATASTORE | multiplatform-settings — plain + secure variants | /ci |
-| DR-INFRA-STORE5 | 8 archetypes: OFFLINE_LOCAL_ONLY / NETWORK_WITH_CACHE / NETWORK_ONLY / CACHE_ONLY / PERIODIC / MEMORY_ONLY / LOAD_ONCE / MUTABLE + SubmitOutbox drafts | /ci |
+| DR-INFRA-STORE5 | Archetypes: OFFLINE_LOCAL_ONLY / NETWORK_WITH_CACHE / NETWORK_ONLY / CACHE_ONLY / PERIODIC / MEMORY_ONLY / LOAD_ONCE / MUTABLE + SubmitOutbox drafts | /ci |
 | DR-INFRA-NETWORK | Ktorfit / Ktor with `Result<T, RemoteError>` typed errors | /ci |
 | DR-INFRA-SECRETS | Android keystore, Firebase/Play SA JSON, Apple `.p8`/Match, macOS `.p12`, Azure/MS-Store/Cloudflare/Netlify/Vercel tokens | /secrets |
 | DR-EXT-FRED | FRED external API (US interest rates) — needs free key | /secrets |

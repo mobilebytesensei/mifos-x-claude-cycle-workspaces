@@ -1,6 +1,6 @@
-# Design System — CommonPurse
+# Design System — MifosSave
 
-> Per-project design reference for **CommonPurse** (mifos-x-group-banking) — an
+> Per-project design reference for **MifosSave** (mifos-x-group-banking) — an
 > offline-first KMP community-banking app digitizing VSLA / ROSCA / ASCA / SHG
 > group savings, lending, and share-out via Mifos Fineract.
 
@@ -14,7 +14,7 @@ consumed by every downstream design skill.
 
 | Field | Value |
 |---|---|
-| Display name | CommonPurse |
+| Display name | MifosSave |
 | Tagline | Save together. Lend together. Grow together. |
 | Logo concept | 5 members ringed around a shared corpus pool — VSLA/ROSCA visual metaphor. Primary green ring + members, amber center = pooled fund. |
 | Voice / tone | Trustworthy, practical, calm — a digital ledger that mirrors the paper one. |

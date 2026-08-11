@@ -1,6 +1,6 @@
 # Companion API — Build & Deploy Spec (mcp-mifosx)
 
-> The **actionable end-to-end plan** for realizing the companion API that CommonPurse consumes.
+> The **actionable end-to-end plan** for realizing the companion API that MifosSave consumes.
 > `/mifos-bridge` produced the **contract** (`API_CONTRACT.yaml` companion section: 20 tools + 6 datatables);
 > this doc is the **runtime**: what to build in `mcp-mifosx`, how to provision the datatables, and how to
 > deploy — so `/device-test` can pass and matrix-green becomes reachable.
@@ -90,7 +90,7 @@ the create-group orchestrator reads the registry and writes the per-group table.
 3. **Deploy the mcp-mifosx server** (Go, SSE transport via `PORT`) with the service credential + tenant header,
    reachable by the app.
 4. **Provision the 6 datatables** (§2) against that Fineract, once.
-5. **Wire the app** — point CommonPurse's companion base URL at the deployed mcp-mifosx.
+5. **Wire the app** — point MifosSave's companion base URL at the deployed mcp-mifosx.
 
 ---
 
@@ -103,7 +103,49 @@ returns the declared `pending-device-verify` (not a failure — the honest exter
 
 ---
 
+## 5. Bridge auto-migrate — runnable migrations closed loop (S10 / FR-029)
+
+`/mifos-bridge` historically emitted only the **contract** (`API_CONTRACT.yaml` + `BRIDGE_AUDIT_LOG.yaml`).
+As of 2026-08-01 the bridge also **emits runnable migrations** so "add a feature → migrate its
+missing API" is a closed loop, not a prose to-do:
+
+```
+/mifos-bridge --auto                         (feature adds a datatable-backed API)
+        │
+        ├─ resolves the gap (TIER 1 / TIER 2)           → API_CONTRACT.yaml   (contract, as before)
+        ├─ appends the register definition               → server-layer/migrations/datatables/datatables.manifest.json
+        └─ logs the emit                                  → BRIDGE_AUDIT_LOG.yaml (_migration_emit)
+```
+
+- The **emit target** is `server-layer/migrations/datatables/datatables.manifest.json` — every
+  TIER-2 datatable the bridge resolves has a corresponding register entry there, applied by
+  `server-layer/migrations/register-datatables.sh`.
+- The **demo seed** (`server-layer/migrations/seed-demo/`) is regenerated from the same
+  `demo-fixture.json` SoT and stays consistent with `idea-layer/PROJECT_DEMO_DATA.yaml`.
+- Re-running the bridge is **idempotent**: an already-present datatable keeps its existing
+  register entry; a new one is appended.
+
+### What is RUNNABLE now vs what remains GATED on the live-server deploy
+
+| Deliverable | State | Where |
+|---|---|---|
+| 21 datatable register definitions | **runnable** (offline `--dry-run` clean) | `migrations/datatables/datatables.manifest.json` + `register-datatables.sh` |
+| Demo-data seed (user, group, savings, meetings, corpus, cycle, invite `DEMO24`) | **runnable** (offline `--dry-run` clean) | `migrations/seed-demo/seed-demo.sh` + `demo-fixture.json` |
+| Offline demo fixture (Demo Explore) | **done** | `idea-layer/PROJECT_DEMO_DATA.yaml` |
+| 4 materialized api group files (clients-members/savings/share-out/field-officer) | **done** | `idea-layer/server/apis/*.yaml` |
+| Meeting-calendar + collection-sheet contract (COMP-CAL) | **done** (contract) | `API_CONTRACT.yaml#companion_api` |
+| `GET /loans` list + advanceCycle/disburse/list_meetings map fixes | **done** | `API_CONTRACT.yaml` + `idea-layer/server/apis/*.yaml` |
+| **Applying** the migrations + seed against a real Fineract | **GATED** — needs live Fineract (self-service enabled) | §3 above (external gate) |
+| Companion `mcp-mifosx` Go service (COMP-AUTH/GRP/CAL/DT/DIST tools) | **GATED** — deferred Go build, not deployed | §1 above (external gate) |
+| Device-green (`/device-test` Maestro over live network) | **GATED** — depends on the two rows above | §4 above |
+
+> Bottom line: everything the drive can author is authored and offline-verified. The single
+> remaining blocker is the **live-server deploy** (§1–§3) — a human-gated infra step. Until it
+> lands, implemented features build-green and device-test returns the honest
+> `pending-device-verify`, never a false green (RULE-IMPL-BEHAVIOR-EXECUTED-001).
+
 ## Reference
+- Migrations (runnable): `server-layer/migrations/` (`README.md` + `register-datatables.sh` + `seed-demo/`)
 - Contract: `server-layer/API_CONTRACT.yaml` (companion section) · `BRIDGE_AUDIT_LOG.yaml` (per-tool resolution + CK1–CK4)
 - Design SoT: `idea-layer/ARCHITECTURE.md` (§3 build-spec + deployment decisions)
 - Vehicle: `/mifos-bridge` (contract generation) · mcp repo: `workspaces/mifos-x/mcp-mifosx`

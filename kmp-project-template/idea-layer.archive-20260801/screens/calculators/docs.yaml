@@ -1,0 +1,125 @@
+schema_version: "1.0"
+screen_id: affordability-calculator
+feature_id: feat-calculators
+archetype: pure-ui
+flow: flow-calculators
+title: Loan Calculators (Affordability · Amortization · Comparison · Wizard)
+purpose: >-
+  A four-screen loan-math toolkit built entirely on-device: work out how much you
+  can afford to borrow (B3 Affordability), see the full month-by-month payment
+  schedule for any loan (B5 Amortization), compare three loan options side-by-side
+  to find the cheapest (B6 Comparison), and walk a guided 5-step wizard that turns
+  a scenario into a saved loan (B6 Wizard). No login, no backend, no network — all
+  four share one pure-Kotlin math core.
+status: implemented
+store_pattern: none                # pure-local; the two persistence touches are local Room / DraftSubmit, not a Store cache
+quality_score: 88
+last_modified: "2026-07-25"
+
+showcase_note: >-
+  feature/calculators is the template's showcase for THREE archetypes at once:
+  (1) "pure local state + derived multi-input math" — Affordability and Comparison
+  are zero-dependency BaseViewModels whose result is a StateFlow derived off input
+  state; (2) "read-side projection of a repository" — Amortization optionally
+  pre-fills from LoanRepository.observeById without ever writing back; (3)
+  "multi-step DraftSubmit wizard state machine" — LoanCalcWizard persists each
+  step to a resume-anywhere outbox and upserts a Loan on completion. It is the
+  sibling of the standalone feat-emi-calculator (single-screen pure-local) — the
+  same computeEmi math, but four richer screens in one feature module.
+
+screens_summary:
+  - id: affordability-calculator
+    composable: AffordabilityCalculatorScreen
+    viewmodel: AffordabilityCalculatorViewModel
+    archetype: pure-ui
+    states_handled: [content]
+    one_liner: "Income × DTI − obligations → maxEmi → maxPrincipal (inverse EMI) + rationale. Graph start destination."
+  - id: amortization
+    composable: AmortizationScreen
+    viewmodel: AmortizationViewModel
+    archetype: pure-ui
+    states_handled: [content]
+    one_liner: "EMI summary HeroCard + full month-by-month reducing-balance schedule (LazyColumn). Optional non-destructive pre-fill from a saved loan (loanId)."
+  - id: comparison
+    composable: LoanComparisonScreen
+    viewmodel: LoanComparisonViewModel
+    archetype: pure-ui
+    states_handled: [content]
+    one_liner: "Three side-by-side scenarios; per-scenario EmiResult; the cheapest by total payable gets a Best badge + savings delta hero."
+  - id: wizard
+    composable: LoanCalcWizardScreen
+    viewmodel: LoanCalcWizardViewModel
+    archetype: input
+    states_handled: [content]
+    one_liner: "5-step state machine (Principal → Tenure → Rate → Review → Name&Save); per-step snapshot persisted for resume-anywhere; Save upserts a real Loan."
+
+user_stories:
+  - "As a borrower, I want to know the maximum loan I can afford given my income and existing debts, so I don't over-borrow."
+  - "As a borrower, I want to see exactly how each monthly payment splits between principal and interest over the life of a loan."
+  - "As a shopper, I want to compare three loan offers side-by-side and instantly see which costs least overall."
+  - "As a planner, I want a guided step-by-step calculator that saves my scenario as a tracked loan, and lets me resume if I get interrupted."
+  - "As a user, I want all of this to work offline with no sign-in, on every platform, with identical math."
+
+success_metrics:
+  - "Time-to-first-result under 1 second on every calculator (synchronous on-device compute)"
+  - "EMI / schedule / affordability math matches the standard reducing-balance + inverse formulas (locked by core/domain calc tests)"
+  - "Comparison correctly flags the cheapest of 3 scenarios excluding incomplete inputs"
+  - "Wizard survives process death: a mid-flow draft resumes at the exact step + inputs"
+  - "Zero crashes on non-numeric input (toDoubleOrNull/toIntOrNull guards drop unparseable text)"
+
+business_logic_summary: >-
+  Shared: EMI = P·r·(1+r)^n / ((1+r)^n − 1), r = APR/12/100; zero-rate → P/n;
+  totalPayment = EMI·n; totalInterest = totalPayment − P (computeEmi).
+  Affordability inverts it: maxEmi = income·clamp(DTI,0..1) − obligations (≥0),
+  maxPrincipal = maxEmi·((1+r)^n − 1)/(r·(1+r)^n) (principalForEmi).
+  Amortization walks the schedule: interestPaid = balance·r, principalPaid = EMI −
+  interest, balance decrements each installment. Comparison computes an EmiResult
+  per scenario and picks min totalPayment > 0. Wizard's Review previews computeEmi;
+  Save builds a Loan(monthlyPayment = EMI) and upserts it.
+
+components:
+  - top_app_bar
+  - card              # AppCard (inputs / scenario) + HeroCard (results)
+  - text_field        # numeric OutlinedTextFields
+  - amount_display
+  - status_chip       # comparison "Best" badge
+  - linear_progress   # wizard step progress
+  - alert_dialog      # wizard resume Continue/Discard
+  - lazy_column       # amortization schedule table
+  - row
+  - text
+  - button            # wizard Back / Next / Save
+
+non_functional:
+  - "Pure commonMain — no platform-specific code, no permissions, no expect/actual"
+  - "No secrets, no API key, no network (unlike the FRED-backed B7/B8)"
+  - "i18n: all copy via compose-resources keys (screens_calc_affordability_* / _amortization_* / _compare_* / _wizard_*) per RULE-IMPL-NO-HARDCODED-STRING-001"
+  - "Accessibility: every back button has contentDescription; numeric/decimal keyboards per field"
+  - "Wizard Save button is disabled (not silently no-op) until validation passes, so the user can see WHY it won't fire"
+  - "Comparison uses a full-width vertical stack (not squeezed 3 columns) to avoid letter-by-letter wrap at 360dp"
+
+data_requirements:
+  - "No DTOs, no tables, no cache owned by this feature."
+  - "Amortization READS the shared banking_loans Room table (LoanRepository.observeById) for optional pre-fill only."
+  - "Wizard persists per-step LoanCalcScenario snapshots to the framework_submit_drafts outbox, and WRITES a Loan into banking_loans on completion — both LOCAL, shared with feat-loans."
+
+dependencies:
+  tier: leaf
+  upstream_features:
+    - "feat-loans (shared banking domain: LoanRepository / banking_loans table / Loan model — amortization reads, wizard writes)"
+  core_modules_used:
+    - "core/domain (computeEmi, amortizationSchedule, AmortizationRow, maxAffordableLoan, AffordabilityResult)"
+    - "core/model (EmiResult, LoanCalcScenario, Loan, LoanKind)"
+    - "core/data (LoanRepository, OutboxQualifiers, SubmitOutbox<LoanCalcScenario>)"
+    - "core/common (formatGrouped)"
+    - "core/designsystem (AmountDisplay, StatusChip, spacing, KptTheme)"
+    - "core-base/designsystem (AppCard, HeroCard)"
+    - "core-base/store (SubmitOutbox draft persistence)"
+    - "core-base/ui (BaseViewModel, BaseDraftMutationViewModel, composableWithPushTransitions, popBackStackSafely)"
+
+overlap_note: >-
+  Distinct from feat-emi-calculator (standalone single-screen module, already
+  reverse-engineered). Both consume the same EMI math, but feat-calculators is a
+  four-screen module with richer archetypes (affordability inversion, amortization
+  projection, comparison, and the DraftSubmit wizard). No screens are duplicated
+  between the two features.

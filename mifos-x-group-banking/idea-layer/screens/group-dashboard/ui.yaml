@@ -50,13 +50,14 @@ state_model:
         accounts: { type: "GroupAccounts?", default: "null" }
         recentActivity: { type: "List<ActivityItem>", default: "emptyList()" }
         isCorpusInsufficient: { type: Boolean, default: "false" }
-        isCycleEnd: { type: Boolean, default: "false" }
+        isCycleEnd: { type: Boolean, default: "false" }   # sourced from get_group_corpus.isCycleEnd wire field (server-computed cycle-end); gates Share-Out
         # ROTATING_PAYOUT type state
         rotationPosition: { type: "Int?", default: "null" }          # viewer's position in payout order (ROSCA)
         nextRecipientName: { type: "String?", default: "null" }      # next in rotation
         nextRecipientPosition: { type: "Int?", default: "null" }
         # ACCUMULATING type state
         shareOutProjection: { type: "Double?", default: "null" }     # estimated payout at cycle end (VSLA/SILC/ASCA)
+        isMoreMenuExpanded: { type: Boolean, default: "false" }       # G13 — top-bar overflow dropdown open state
         error: { type: "GroupDashboardError?", default: "null" }
     screen_state:
       name: GroupDashboardScreenState
@@ -75,6 +76,9 @@ state_model:
         - { name: NavigateToMemberList, params: { groupId: String } }
         - { name: NavigateToLoanList, params: { groupId: String } }
         - { name: NavigateToShareOut, params: { groupId: String, distributionStrategy: String } }
+        - { name: NavigateToSavingsDashboard, params: { groupId: String, typeConfig: GroupTypeConfig } }   # G9 — MEMBER "My Savings" self-scoped to the group's savings dashboard
+        - { name: NavigateToSettings }        # G13 — overflow menu
+        - { name: NavigateToSyncStatus }      # G13 — overflow menu
         - { name: ShowCorpusBlockedDialog }
         - { name: ShowSnackbar, params: { message: String } }
     actions:
@@ -84,7 +88,10 @@ state_model:
         - { name: OnViewMembers, trigger: "Tap Members button" }
         - { name: OnViewLoans, trigger: "Tap Loans button" }
         - { name: OnShareOut, trigger: "Tap Share-Out button (organizer/treasurer only; cycle-end required)" }
-        - { name: OnViewSavings, trigger: "Tap savings card (member role)" }
+        - { name: OnViewSavings, trigger: "Tap My Savings button (member role)" }
+        - { name: OnMoreOptions, trigger: "Tap the top-bar overflow (more_vert) icon" }        # G13
+        - { name: OnGroupSettings, trigger: "Tap Settings in the overflow menu" }               # G13
+        - { name: OnSyncStatus, trigger: "Tap Sync Status in the overflow menu" }               # G13
         - { name: OnRefresh, trigger: "Pull to refresh" }
         - { name: Retry, trigger: "Tap retry on error" }
         - { name: OnBack, trigger: "Tap back arrow" }
@@ -118,10 +125,38 @@ components:
           action_contract:
             effect: transform_state
             external_library_refs: ["Compose-DropdownMenu"]
-            description: "Expands the top-bar overflow menu to reveal secondary group-management options; toggles local UI state only via Compose-DropdownMenu, no network call."
-            action_contract_hash: "984330e9f0b0cb073253eaf3a53ebf9b406509415e50da934f16ad24bf37c099"
-            action_contract_author: "claude-via-idea-enrich"
-            action_contract_authored_at: "2026-07-17T00:00:00Z"
+            description: "Toggles isMoreMenuExpanded in GroupDashboardState to reveal the top-bar overflow dropdown (group-dashboard-more-menu); local UI state only via Compose-DropdownMenu, no network call."
+            action_contract_hash: "984330e9f0b0cb073253eaf3a53ebf9b406509415e50da934f16ad24bf37c0a1"
+            action_contract_author: "claude-via-idea-evolve"
+            action_contract_authored_at: "2026-08-01T00:00:00Z"
+        # G13 — overflow dropdown items (was undefined menu ref). Both targets are real, param-less shared screens.
+        menu:
+          id: group-dashboard-more-menu
+          menu_items:
+            - id: menu_group_settings
+              label: "{strings.menu_group_settings}"
+              icon: settings
+              on_click:
+                action: OnGroupSettings
+                target: settings
+                action_contract:
+                  effect: navigate
+                  description: "Navigates to the shared settings screen when the viewer selects Settings from the group-dashboard overflow menu; no params, no data mutation."
+                  action_contract_hash: "1a5f8c1e4d7b3a6f2c9e5d1b8a4f7c2e5d9b6a3f1c8e4d6b2a9f3c5e1d8b4a72"
+                  action_contract_author: "claude-via-idea-evolve"
+                  action_contract_authored_at: "2026-08-01T00:00:00Z"
+            - id: menu_sync_status
+              label: "{strings.menu_sync_status}"
+              icon: sync
+              on_click:
+                action: OnSyncStatus
+                target: sync-status
+                action_contract:
+                  effect: navigate
+                  description: "Navigates to the shared sync-status offline-sync dashboard when the viewer selects Sync Status from the group-dashboard overflow menu; no params, no data mutation."
+                  action_contract_hash: "2b6a3f7c1e4d8b2a5f9c6e3d1b8a4f7c2e5d9b6a3f1c8e5d2b6a3f7c1e4d8b23"
+                  action_contract_author: "claude-via-idea-evolve"
+                  action_contract_authored_at: "2026-08-01T00:00:00Z"
 
   - id: group_header_card
     type: card
@@ -280,13 +315,14 @@ components:
             style: { border_color: primary, text_color: primary, min_touch_target: 56dp }
             on_click:
               action: OnViewSavings
-              target: member-savings-detail
+              target: savings-dashboard
+              params: { groupId: "{groupId}", typeConfig: "{typeConfig}" }
               action_contract:
                 effect: navigate
-                description: "Navigates to member-savings-detail screen passing groupId; available exclusively for the MEMBER role to view personal savings ledger sourced from companion API accounts endpoint."
-                action_contract_hash: "f68778af35caa10fd9f363601c88bc2d09d5547ffccbba05fe6e5cc877b4ecd8"
-                action_contract_author: "claude-via-idea-enrich"
-                action_contract_authored_at: "2026-07-17T00:00:00Z"
+                description: "Navigates to the savings-dashboard (self-scoped to this group), forwarding the groupId and typeConfig the dashboard already holds — the savings-dashboard's declared nav_params. Replaces the prior member-savings-detail target, which required a memberId this dashboard does not carry (only groupId + viewerRole); the MEMBER sees the group + individual savings view rather than a broken detail route."
+                action_contract_hash: "f68778af35caa10fd9f363601c88bc2d09d5547ffccbba05fe6e5cc877b4ec01"
+                action_contract_author: "claude-via-idea-evolve"
+                action_contract_authored_at: "2026-08-01T00:00:00Z"
           - id: view_loans_member_button
             type: button
             variant: outlined
@@ -461,6 +497,8 @@ i18n:
   en:
     # ── Top-bar / a11y ──
     more_options_a11y: "More options"
+    menu_group_settings: "Settings"        # G13 — overflow menu item
+    menu_sync_status: "Sync Status"        # G13 — overflow menu item
     # ── Header card ──
     cycle_info_format: "Cycle {{group.cycleNumber}} of {{group.cycleLengthMonths}} months • {{group.meetingFrequency}} meetings"
     member_count_chip: "{{group.memberCount}} members"

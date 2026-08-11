@@ -11,7 +11,7 @@
 | `get_organizer_dashboard` | GET | `/companion/organizer/dashboard` | Bearer | no | 300 s SWR (offline show_cached) |
 
 This single companion endpoint replaces three raw Fineract calls
-(`/staff/{id}/summary` + `/centers` + `/journal-entries`). Identity and group membership are
+(`/staff/{id}/summary` + `/groups` + `/journal-entries`). Identity and group membership are
 resolved server-side from the auth token via `dt_member_role` — no `staffId` param is sent.
 
 ## Request / Response Details

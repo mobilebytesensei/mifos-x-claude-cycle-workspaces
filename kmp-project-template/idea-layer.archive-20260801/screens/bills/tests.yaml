@@ -1,0 +1,203 @@
+schema_version: "1.0"
+feature_id: feat-bills
+screen_id: bills-list
+generated_by: "/idea-import (reverse-engineered from feature/bills commonTest + core store/data/database/platform tests)"
+
+# Grounded in the real source test suite:
+#   feature/bills/commonTest:
+#     BillRemindersListViewModelTest, EditBillReminderViewModelTest,
+#     BillRemindersListScreenUiTest, AddOrEditBillReminderScreenUiTest,
+#     domain/BillReminderRecurrenceTest
+#   core/store/.../BillRemindersStoreTest.kt
+#   core/data/.../BillReminderRepositoryTest.kt (+ FakeBillReminderDao)
+#   core/database/.../dao/BillReminderDaoTest.kt (desktopTest)
+#   core/platform/.../notification/bill/BillReminderSchedulerTest.kt (desktopTest)
+
+state_coverage:
+  - screen: bills-list
+    state: loading
+    name: "list starts in Loading before the first stream emission"
+    setup: "BillRemindersListViewModel created; combine() has not emitted yet"
+    assertions:
+      - "screenState initial value is ScreenState.Loading"
+  - screen: bills-list
+    state: empty
+    name: "empty repository produces Empty screen state"
+    setup: "FakeBillReminderRepository with no bills"
+    source_test: "BillRemindersListViewModelTest.emptyRepositoryProducesEmptyScreenState"
+    assertions:
+      - "screenState emits Loading then ScreenState.Empty"
+  - screen: bills-list
+    state: content
+    name: "non-empty repository produces Content with summed upcoming total"
+    setup: "2 bills upserted (a: amount 100 dueDay 5; b: amount 50 dueDay 10)"
+    source_test: "BillRemindersListViewModelTest.nonEmptyRepositoryProducesContentWithSums"
+    assertions:
+      - "content.data.all.size == 2"
+      - "content.data.totalUpcomingAmount == 150.0"
+  - screen: bill-addedit
+    state: content
+    name: "add-mode starts with a blank/default form; edit-mode hydrates from repo"
+    setup: "EditBillReminderViewModel(billId = null) vs (billId = existing) with a saved bill"
+    assertions:
+      - "add-mode formState == BillReminderFormState() defaults (name '', amount 0.0, dueDay 1, MONTHLY, UTILITIES, enabled, remind 1)"
+      - "edit-mode formState is hydrated from repository.getById(billId)"
+  - screen: bill-addedit
+    state: submitted
+    name: "valid submit reaches SubmitState.Submitted terminal state"
+    setup: "name='Rent', amount=1200.0"
+    source_test: "EditBillReminderViewModelTest.successfulSubmitReachesSubmittedTerminalState"
+    assertions:
+      - "vm.uiState.value.submit is SubmitState.Submitted with a non-null result"
+  - screen: bill-addedit
+    state: failed
+    name: "offline (network-categorized) submit auto-saves a PENDING draft"
+    setup: "OfflineFailingRepository throws OfflineIOException on upsert; autoSaveDraft=true"
+    source_test: "EditBillReminderViewModelTest.threeIndependentBillEditsProduceThreeDistinctPendingDrafts"
+    assertions:
+      - "the failed submit is persisted as a PENDING outbox draft (Saved-offline UX)"
+
+interactions:
+  - screen: bills-list
+    component: "New bill FAB (bills_list_fab)"
+    trigger: tap
+    name: "tapping New bill navigates to the add form"
+    expected: "nav: AddOrEditBillReminderRoute(billId = null)"
+    assertions: ["NavController navigates to the add/edit screen in add mode"]
+  - screen: bills-list
+    component: "bill row (bills_list_row_{id})"
+    trigger: short_tap
+    name: "tapping a bill row opens the edit form (no detail screen)"
+    expected: "nav: AddOrEditBillReminderRoute(billId)"
+    assertions: ["NavController navigates to bill-addedit with the tapped bill id"]
+  - screen: bills-list
+    component: "Paid button"
+    trigger: tap
+    name: "mark-paid bumps updatedAtMs and cancels the pending notification"
+    expected: "action: mark_paid → repository.upsert(copy(updatedAtMs=now)) + scheduler.cancel(id)"
+    source_test: "BillRemindersListViewModelTest.onMarkPaidBumpsUpdatedAtAndCancelsNotification"
+    assertions:
+      - "after.updatedAtMs > previous updatedAtMs"
+      - "scheduler.cancelledIds contains the bill id"
+  - screen: bills-list
+    component: "delete action (BillRemindersAction.Delete)"
+    trigger: vm_action
+    name: "delete removes the bill and cancels its notification"
+    expected: "action: delete → repository.delete(id) + scheduler.cancel(id)"
+    source_test: "BillRemindersListViewModelTest.onDeleteRemovesBillAndCancelsNotification"
+    assertions:
+      - "repository.observeAll() is empty"
+      - "scheduler.cancelledIds contains the bill id"
+  - screen: bills-list
+    component: "toggle-enabled action (BillRemindersAction.ToggleEnabled)"
+    trigger: vm_action
+    name: "toggle flips enabled and cancels notification only when disabling"
+    expected: "action: toggle → repository.upsert(copy(enabled=!enabled)); scheduler.cancel only on true→false"
+    source_test: "BillRemindersListViewModelTest.onToggleEnabledFlipsRowAndCancelsWhenDisabling"
+    assertions:
+      - "flipped.enabled == false"
+      - "scheduler.cancelledIds contains the bill id"
+  - screen: bill-addedit
+    component: "Save button (bills_addedit_save_button)"
+    trigger: tap
+    name: "valid submit commits the bill AND schedules a notification when enabled"
+    expected: "write: repository.upsert(payload); platform: scheduler.schedule(BillReminderSchedule)"
+    source_test: "EditBillReminderViewModelTest.successfulSubmitSchedulesNotificationWhenEnabled"
+    assertions:
+      - "uiState.submit is SubmitState.Submitted"
+      - "scheduler.scheduled.size == 1; scheduled.billId == the payload id; title == name; triggerAtMs > 0"
+      - "no PENDING draft remains"
+  - screen: bill-addedit
+    component: "Save button (disabled bill)"
+    trigger: tap
+    name: "submit of a disabled bill persists but cancels the notification"
+    expected: "write: repository.upsert; platform: scheduler.cancel(id), no schedule"
+    source_test: "EditBillReminderViewModelTest.successfulSubmitCancelsNotificationWhenDisabled"
+    assertions:
+      - "scheduler.scheduled.size == 0"
+      - "scheduler.cancelledIds contains the bill id"
+  - screen: bill-addedit
+    component: "Save button (invalid form)"
+    trigger: tap
+    name: "blank name or zero amount submit is a no-op"
+    expected: "no outbox entry, no repo row, no schedule call"
+    source_test: "EditBillReminderViewModelTest.submitIgnoresWhenNameIsBlank + submitIgnoresWhenAmountIsZero"
+    assertions:
+      - "outbox empty; repository empty; scheduler.scheduled empty"
+
+api_integration:
+  - operation: upsert-bill
+    name: "store is constructable with an in-memory DAO"
+    source_test: "BillRemindersStoreTest (provideBillRemindersStore(FakeBillReminderDao()) is non-null)"
+    assertions: ["provideBillRemindersStore builds an OFFLINE_LOCAL_ONLY Store<Unit, List<BillReminderEntity>>"]
+  - operation: observe-upcoming-bills
+    name: "observeUpcoming filters by a day-of-month window (enabled only)"
+    source_test: "BillReminderRepositoryTest / BillReminderDaoTest"
+    assertions:
+      - "only enabled rows whose dueDay is in the computed window are returned"
+      - "the window wraps across the month boundary (day 3 IS upcoming when today is day 30, maxDays >= 4)"
+
+# The multi-formKey DraftSubmitHandler contract — the feature's flagship behavior test.
+draft_outbox_contract:
+  - name: "three concurrent offline bill edits produce three independent PENDING drafts"
+    source_test: "EditBillReminderViewModelTest.threeIndependentBillEditsProduceThreeDistinctPendingDrafts"
+    setup: "3 VMs (billId bill-a/bill-b/bill-c), shared InMemorySubmitOutbox<BillReminder>, OfflineFailingRepository.upsert throws a categorized-Network error"
+    assertions:
+      - "exactly 3 PENDING outbox entries; uniqueKeys == {bill-a, bill-b, bill-c}; all formKey == 'bill'"
+      - "each draft carries its own payload name verbatim (Electricity / Internet / Streaming) — none overwritten"
+  - name: "formKey is 'bill' for every instance (the multi-formKey invariant)"
+    source_test: "EditBillReminderViewModelTest.formKeyIsBillForEveryInstance"
+    assertions: ["EditBillReminderViewModel.FORM_KEY == 'bill'"]
+
+cross_module_tests:
+  - name: "recurrence math — next due-date across MONTHLY/QUARTERLY/ANNUALLY/ONCE + month-end clamp"
+    source_test: "BillReminderRecurrenceTest"
+    assertions:
+      - "MONTHLY: same-day / same-month-upcoming / rolls-to-next-month correctly"
+      - "day-31 MONTHLY clamps to Feb 28 (non-leap) / Feb 29 (leap)"
+      - "QUARTERLY steps +3 months; ANNUALLY steps +12 months"
+      - "ONCE returns null when already passed; the singleton date when still upcoming"
+  - name: "reminderTriggerMs snaps to 09:00 local and lies in the future (else null)"
+    source_test: "BillReminderRecurrenceTest.reminderTriggerSnapsToNineAmAndIsInFuture + reminderTriggerReturnsNullForPastInstant"
+    assertions:
+      - "trigger = (nextDue - reminderDaysBefore) at 09:00 in the supplied TimeZone"
+      - "a past computed instant returns null (scheduler no-ops)"
+  - name: "platform scheduler contract (desktop stub is a safe no-op)"
+    source_test: "BillReminderSchedulerTest (desktopTest)"
+    assertions:
+      - "schedule/cancel/cancelAll complete without error on the desktop no-op actual"
+
+ui_smoke:
+  - name: "list FAB is displayed"
+    source_test: "BillRemindersListScreenUiTest.fabIsDisplayed"
+    assertions: ["onNodeWithTag(bills_list_fab).assertIsDisplayed()"]
+  - name: "add/edit Save button exists"
+    source_test: "AddOrEditBillReminderScreenUiTest.saveButtonExists"
+    assertions: ["onNodeWithTag(bills_addedit_save_button).assertExists()"]
+
+acceptance_criteria:
+  - ref: "AC-BILLS-01"
+    name: "Track recurring bills locally"
+    given: "a user with configured bill reminders"
+    when: "they open the Bill Reminders dashboard"
+    then: "each bill shows name, amount, a colour-coded due-relative status, category, and a Paid action; a summary tile totals the amount due in the next 30 days and counts bills due in the next 7 — all from local Room, no network"
+  - ref: "AC-BILLS-02"
+    name: "Add / edit a bill reminder"
+    given: "the user taps New bill (or a row to edit)"
+    when: "they fill name / amount / due-day / recurrence / category / reminder settings and Save"
+    then: "the bill is upserted to banking_bill_reminders, the Saving…/Saved ✓ status shows, and (when enabled) a notification is scheduled for reminderDaysBefore days before the next due-date"
+  - ref: "AC-BILLS-03"
+    name: "In-app + OS notification scheduling"
+    given: "a saved, enabled bill with a future next-due-date"
+    when: "the form is submitted"
+    then: "BillReminderRecurrence computes the next occurrence + 09:00-local trigger and hands a BillReminderSchedule to the platform scheduler (WorkManager / UNUserNotificationCenter); if the OS rejects it the bill still persists and the upcoming tile is the fallback"
+  - ref: "AC-BILLS-04"
+    name: "Mark paid / delete / disable"
+    given: "an existing bill in the list"
+    when: "the user marks it paid (or deletes / disables it)"
+    then: "the row is upserted/removed and its pending notification is cancelled; the reactive list re-renders"
+  - ref: "AC-BILLS-05"
+    name: "Offline-resilient edits (multi-draft)"
+    given: "the user edits several bills while offline"
+    when: "each save fails as a network error"
+    then: "each edit auto-saves as its own PENDING draft (one per bill, uniqueKey=billId, formKey='bill'), committed serially on reconnect with none lost or overwritten"

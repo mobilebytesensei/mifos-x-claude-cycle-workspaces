@@ -10,7 +10,7 @@ entry_points:
   - source: bottom_nav
     condition: meetings_tab_selected
 nav_params:
-  center_id: Int
+  group_id: Int
 
 screens:
   - id: meeting_calendar_screen
@@ -32,7 +32,14 @@ state_model:
         isRefreshing: { type: Boolean, default: "false" }
         viewMode: { type: ViewMode, default: "ViewMode.LIST" }
         error: { type: "String?", default: "null" }
-        centerId: { type: Int, default: "0" }
+        groupId: { type: Int, default: "0" }
+        hasUpcoming: { type: Boolean, default: "false" }
+        calendarId: { type: "String?", default: "null" }
+        showScheduleEditor: { type: Boolean, default: "false" }
+        scheduleDay: { type: String, default: '""' }
+        scheduleTime: { type: String, default: '""' }
+        scheduleFrequency: { type: MeetingFrequency, default: "MeetingFrequency.WEEKLY" }
+        isRescheduling: { type: Boolean, default: "false" }
     screen_state:
       name: MeetingCalendarScreenState
       members: [Loading, Content, Empty, Error]
@@ -45,6 +52,7 @@ state_model:
         - { name: NavigateToConduct, params: "meetingId: String, meetingNumber: Int" }
         - { name: NavigateToReview, params: "meetingId: String, meetingNumber: Int" }
         - { name: ShowError, params: "message: String" }
+        - { name: ShowScheduleUpdated, params: "message: String" }
     actions:
       name: MeetingCalendarAction
       members:
@@ -53,6 +61,10 @@ state_model:
         - { name: ToggleViewMode, trigger: "User taps calendar/list toggle" }
         - { name: StartMeeting, trigger: "Tap Start Meeting button on upcoming card", params: "meetingId: String, meetingNumber: Int" }
         - { name: OpenPastMeeting, trigger: "Tap completed meeting card", params: "meetingId: String, meetingNumber: Int" }
+        - { name: OpenScheduleEditor, trigger: "Tap Reschedule on the upcoming card OR the Set/Adjust Schedule CTA in the no-upcoming / empty state" }
+        - { name: OnScheduleFieldChange, params: "day: String, time: String, frequency: MeetingFrequency", trigger: "Edit day / time / frequency in the schedule editor sheet" }
+        - { name: RescheduleMeeting, params: "day: String, time: String, frequency: MeetingFrequency", trigger: "Tap Confirm in the schedule editor sheet" }
+        - { name: DismissScheduleEditor, trigger: "Tap Cancel or scrim on the schedule editor sheet" }
     di:
       - MeetingRepository
       - NavigationManager
@@ -60,7 +72,7 @@ state_model:
 
 business_logic:
   kind: crud
-  description: "Reads scheduled meetings for the group center from the Fineract centers/{centerId}/meetings API and the dt_meeting_record datatable, then lists upcoming and past meetings. Offline-first: results are cached via SQLDelight and served stale-while-revalidate, with cmp-network-monitor gating live refresh; no money moves occur here — the app only reads Fineract as the system of record."
+  description: "Reads scheduled meetings for the group from the Fineract /groups/{groupId}/meetings API and the dt_meeting_record datatable, then lists upcoming and past meetings. Offline-first: results are cached via SQLDelight and served stale-while-revalidate, with cmp-network-monitor gating live refresh; no money moves occur here — the app only reads Fineract as the system of record."
   library_refs:
     - cmp-network-monitor
   external_library_refs:
@@ -95,6 +107,7 @@ components:
 
   - id: upcoming_meeting_card
     type: card
+    visible_when: "hasUpcoming"
     style:
       background: primaryContainer
       corner_radius: lg
@@ -105,6 +118,18 @@ components:
       - { type: text, text: "{strings.meeting_number_prefix} #{{meeting.meetingNumber}}", text_style: headlineSmall, color: onPrimaryContainer }
       - { type: text, text: "{{meeting.meetingDate}}", text_style: bodyLarge, color: onPrimaryContainer }  # i18n: skip - pure interpolation
       - { type: chip, text: "{strings.status_upcoming}", background: primary, text_color: onPrimary, corner: full }
+      - id: reschedule_link
+        type: button
+        variant: text
+        label: "{strings.reschedule_btn}"
+        accessibility_label: "{strings.a11y_reschedule_btn}"
+        style: { text_color: onPrimaryContainer, min_height: 44dp }
+        on_click:
+          action: OpenScheduleEditor
+          action_contract:
+            effect: transform_state
+            description: "Opens the schedule-editor bottom sheet (showScheduleEditor=true) prefilled with the group's current recurring meetingDay/meetingTime/frequency so the organizer can adjust the next occurrence or the recurring schedule; a pure VM state flip, no network call until Confirm fires RescheduleMeeting."
+            action_contract_hash: "recompute-mcal-reschedule-link-openeditor-20260801"
     cta:
       id: start_meeting_btn
       type: button
@@ -113,10 +138,10 @@ components:
       on_click:
         action: StartMeeting
         target: meeting-conduct
-        params: { meeting_id: "{{meeting.meetingId}}", meeting_number: "{{meeting.meetingNumber}}", center_id: "{{centerId}}" }
+        params: { meeting_id: "{{meeting.meetingId}}", meeting_number: "{{meeting.meetingNumber}}", group_id: "{{groupId}}" }
         action_contract:
           effect: navigate
-          description: "Navigates to the meeting-conduct screen for the pinned upcoming meeting, passing meeting_id, meeting_number and center_id via NavController; opens the collection-sheet conduct flow without mutating any Fineract state at tap time."
+          description: "Navigates to the meeting-conduct screen for the pinned upcoming meeting, passing meeting_id, meeting_number and group_id via NavController; opens the collection-sheet conduct flow without mutating any Fineract state at tap time."
           action_contract_hash: "30465901d18b93ce13d64d26983734a0d9abed2988d1280568e5742b8326975c"
           action_contract_author: "claude-via-idea-enrich"
           action_contract_authored_at: "2026-07-17T00:00:00Z"
@@ -142,11 +167,11 @@ components:
     on_click:
       action: OpenPastMeeting
       target: previous-meeting-review
-      params: { meeting_id: "{{meeting.meetingId}}", meeting_number: "{{meeting.meetingNumber}}", center_id: "{{centerId}}" }
+      params: { meeting_id: "{{meeting.meetingId}}", meeting_number: "{{meeting.meetingNumber}}", group_id: "{{groupId}}", launched_from: "calendar" }
       action_contract:
         effect: navigate
-        description: "Navigates to the previous-meeting-review screen for a tapped completed or missed meeting row, passing meeting_id, meeting_number and center_id via NavController; a read-only drill-down into the past meeting record, no data is written."
-        action_contract_hash: "7e75b4186c5d4eebc5ade4e09cc94a85ba86af858071151a44697581520c5bdf"
+        description: "Navigates to the previous-meeting-review screen for a tapped completed or missed meeting row, passing meeting_id, meeting_number, group_id and launched_from='calendar' via NavController; launched_from='calendar' makes the review render in read-only completed-context (hides the 'Start Meeting #N' CTA). A read-only drill-down into the past meeting record, no data is written."
+        action_contract_hash: "recompute-mcal-openpast-launchedfrom-20260801"
         action_contract_author: "claude-via-idea-enrich"
         action_contract_authored_at: "2026-07-17T00:00:00Z"
 
@@ -166,16 +191,135 @@ components:
           effect: call_api
           library_refs:
             - cmp-network-monitor
-          description: "Re-fetches meetings from the Fineract centers meetings API network-first, gated by cmp-network-monitor connectivity; on success it replaces the SQLDelight-cached list, and offline it keeps showing cached meetings behind the error banner."
+          description: "Re-fetches meetings from the Fineract groups meetings API network-first, gated by cmp-network-monitor connectivity; on success it replaces the SQLDelight-cached list, and offline it keeps showing cached meetings behind the error banner."
           action_contract_hash: "a892beaa8a4646fea7eb6c47c8d7262624d78bb553eb7c9f188d762439c827c9"
           action_contract_author: "claude-via-idea-enrich"
           action_contract_authored_at: "2026-07-17T00:00:00Z"
+
+  - id: no_upcoming_schedule_card
+    type: card
+    visible_when: "!hasUpcoming"
+    style: { background: surfaceVariant, corner_radius: lg, padding: 20dp, margin: 16dp }
+    content:
+      - { type: icon, icon: calendar_add, tint: onSurfaceVariant, size: 32dp, accessibility_label: "{strings.a11y_no_upcoming_icon}" }
+      - { type: text, text: "{strings.no_upcoming_title}", text_style: titleMedium, color: onSurface }
+      - { type: text, text: "{strings.no_upcoming_body}", text_style: bodyMedium, color: onSurfaceVariant }
+    cta:
+      id: set_schedule_cta
+      type: button
+      variant: filled
+      label: "{strings.set_schedule_btn}"
+      accessibility_label: "{strings.a11y_set_schedule_btn}"
+      style: { background: primary, text_color: onPrimary, min_height: 48dp, full_width: true }
+      on_click:
+        action: OpenScheduleEditor
+        action_contract:
+          effect: transform_state
+          description: "Replaces the former dead 'Next meeting not scheduled' placeholder: opens the schedule-editor bottom sheet (showScheduleEditor=true) so the organizer can SET the group's recurring meeting schedule (meetingDay/meetingTime/frequency) from which future meetings auto-generate. Pure VM state flip; the write happens when Confirm fires RescheduleMeeting."
+          action_contract_hash: "recompute-mcal-no-upcoming-set-schedule-20260801"
 
   - id: empty_state
     type: empty-state
     icon: calendar_empty
     title: "{strings.empty_title}"
     body: "{strings.empty_subtitle}"
+    cta:
+      id: empty_set_schedule_cta
+      type: button
+      variant: filled
+      label: "{strings.set_schedule_btn}"
+      accessibility_label: "{strings.a11y_set_schedule_btn}"
+      style: { background: primary, text_color: onPrimary, min_height: 48dp, full_width: true }
+      on_click:
+        action: OpenScheduleEditor
+        action_contract:
+          effect: transform_state
+          description: "From the fully-empty calendar (no meetings at all), opens the schedule-editor bottom sheet so the organizer can set the group's recurring meeting schedule; future meetings then auto-generate from the group Calendar. Pure VM state flip until Confirm fires RescheduleMeeting."
+          action_contract_hash: "recompute-mcal-empty-set-schedule-20260801"
+
+  - id: schedule_editor_sheet
+    type: bottom-sheet
+    accessibility_label: "{strings.a11y_schedule_editor_sheet}"
+    visible: "{{showScheduleEditor}}"
+    title: "{strings.schedule_editor_title}"
+    content:
+      - id: schedule_day_field
+        type: text-field
+        variant: dropdown
+        label: "{strings.schedule_day_label}"
+        options:
+          - { label: "{strings.day_monday}", value: MONDAY }
+          - { label: "{strings.day_tuesday}", value: TUESDAY }
+          - { label: "{strings.day_wednesday}", value: WEDNESDAY }
+          - { label: "{strings.day_thursday}", value: THURSDAY }
+          - { label: "{strings.day_friday}", value: FRIDAY }
+          - { label: "{strings.day_saturday}", value: SATURDAY }
+          - { label: "{strings.day_sunday}", value: SUNDAY }
+        value: "{{scheduleDay}}"
+        style: { min_touch_target: 56dp }
+        on_change:
+          action: OnScheduleFieldChange
+          param: day
+          action_contract:
+            effect: transform_state
+            description: "Updates the scheduleDay draft field in MeetingCalendarState from the dropdown selection; a pure VM transform_state transition with no side effects."
+            action_contract_hash: "recompute-mcal-schedule-day-change-20260801"
+      - id: schedule_time_field
+        type: time-picker
+        label: "{strings.schedule_time_label}"
+        value: "{{scheduleTime}}"
+        style: { min_touch_target: 56dp }
+        on_change:
+          action: OnScheduleFieldChange
+          param: time
+          action_contract:
+            effect: transform_state
+            description: "Updates the scheduleTime draft field (HH:mm) in MeetingCalendarState from the time picker; a pure VM transform_state transition."
+            action_contract_hash: "recompute-mcal-schedule-time-change-20260801"
+      - id: schedule_frequency_field
+        type: segmented-button
+        label: "{strings.schedule_frequency_label}"
+        options:
+          - { label: "{strings.freq_weekly}", value: WEEKLY }
+          - { label: "{strings.freq_biweekly}", value: BIWEEKLY }
+          - { label: "{strings.freq_monthly}", value: MONTHLY }
+        value: "{{scheduleFrequency}}"
+        on_change:
+          action: OnScheduleFieldChange
+          param: frequency
+          action_contract:
+            effect: transform_state
+            description: "Updates the scheduleFrequency draft enum (WEEKLY/BIWEEKLY/MONTHLY) in MeetingCalendarState from the segmented selector; a pure VM transform_state transition."
+            action_contract_hash: "recompute-mcal-schedule-freq-change-20260801"
+      - id: schedule_confirm_btn
+        type: button
+        variant: filled
+        label: "{strings.schedule_confirm_btn}"
+        accessibility_label: "{strings.a11y_schedule_confirm_btn}"
+        loading: "{{isRescheduling}}"
+        enabled_when: "!isRescheduling && scheduleDay != '' && scheduleTime != ''"
+        style: { background: primary, text_color: onPrimary, min_height: 56dp, full_width: true }
+        on_click:
+          action: RescheduleMeeting
+          action_contract:
+            effect: call_api
+            library_refs: [cmp-network-monitor]
+            external_library_refs: [fineract-rest, SQLDelight]
+            writes_to: "PUT /groups/{groupId}/calendars/{calendarId}?command=updateCalendar (Fineract collection meeting Calendar — the recurrence source of truth) mirrored to PUT /datatables/dt_group_config/{groupId} (meetingDay, meetingTime, frequency)"
+            description: "Adjusts the group's recurring meeting schedule: PUTs the updated startDate (next occurrence), repeatsOnDay, meetingTime and frequency to the Fineract collection meeting Calendar (updateCalendar) and mirrors meetingDay/meetingTime/frequency into the dt_group_config datatable so the schedule stays consistent across both sources. On success it re-reads /groups/{groupId}/meetings (LoadMeetings) so the shifted recurrence renders, emits ShowScheduleUpdated, and dismisses the editor; cmp-network-monitor gates connectivity and offline the PUT is queued to the SQLDelight sync_queue. Meetings are never created ad-hoc here — only the recurring schedule the app reads from is adjusted."
+            action_contract_hash: "recompute-mcal-reschedulemeeting-callapi-20260801"
+      - id: schedule_cancel_btn
+        type: button
+        variant: text
+        label: "{strings.schedule_cancel_btn}"
+        accessibility_label: "{strings.a11y_schedule_cancel_btn}"
+        style: { min_height: 44dp }
+        on_click:
+          action: DismissScheduleEditor
+          action_contract:
+            effect: transform_state
+            description: "Closes the schedule-editor bottom sheet (showScheduleEditor=false) and discards the unsaved schedule draft; a pure VM state flip, no write."
+            action_contract_hash: "recompute-mcal-schedule-dismiss-20260801"
 
 states:
   initial_state: loading
@@ -183,8 +327,8 @@ states:
     description: Skeleton shimmer while API call in flight
     components: [top_app_bar, loading_skeleton]
   content:
-    description: Upcoming card pinned + scrollable past meeting list
-    components: [top_app_bar, upcoming_meeting_card, section_header_past, meeting_list_item]
+    description: "Upcoming card pinned (when hasUpcoming) OR no_upcoming_schedule_card with Set/Adjust Schedule CTA (when !hasUpcoming) + scrollable past meeting list; schedule_editor_sheet overlays when showScheduleEditor"
+    components: [top_app_bar, upcoming_meeting_card, no_upcoming_schedule_card, section_header_past, meeting_list_item, schedule_editor_sheet]
     demo_data:
       meetings:
         - meetingId: "mtg-003"
@@ -199,10 +343,10 @@ states:
           totalCollectedKES: 1850
   content_with_error:
     description: Content visible but error banner shown for stale data
-    components: [top_app_bar, error_banner, upcoming_meeting_card, section_header_past, meeting_list_item]
+    components: [top_app_bar, error_banner, upcoming_meeting_card, no_upcoming_schedule_card, section_header_past, meeting_list_item, schedule_editor_sheet]
   empty:
-    description: No meetings exist
-    components: [top_app_bar, empty_state]
+    description: "No meetings exist — empty_state offers a Set Meeting Schedule CTA (replaces the former dead 'Next meeting not scheduled' dead-end)"
+    components: [top_app_bar, empty_state, schedule_editor_sheet]
   error:
     description: Full-screen error with retry — no cached data available
     components: [top_app_bar, error_banner]
@@ -226,3 +370,30 @@ i18n:
     collected_label: "Collected"
     currency_kes: "KES"
     attendance_out_of_five: "/5 present"
+    reschedule_btn: "Reschedule"
+    no_upcoming_title: "No Upcoming Meeting"
+    no_upcoming_body: "Meetings auto-generate from your group's recurring schedule. Set or adjust the schedule to see the next meeting."
+    set_schedule_btn: "Set / Adjust Schedule"
+    schedule_editor_title: "Meeting Schedule"
+    schedule_day_label: "Meeting Day"
+    schedule_time_label: "Meeting Time"
+    schedule_frequency_label: "Repeats"
+    freq_weekly: "Weekly"
+    freq_biweekly: "Fortnightly"
+    freq_monthly: "Monthly"
+    day_monday: "Monday"
+    day_tuesday: "Tuesday"
+    day_wednesday: "Wednesday"
+    day_thursday: "Thursday"
+    day_friday: "Friday"
+    day_saturday: "Saturday"
+    day_sunday: "Sunday"
+    schedule_confirm_btn: "Save Schedule"
+    schedule_cancel_btn: "Cancel"
+    schedule_updated_toast: "Meeting schedule updated"
+    a11y_reschedule_btn: "Reschedule the next meeting or adjust the recurring schedule"
+    a11y_no_upcoming_icon: "No upcoming meeting"
+    a11y_set_schedule_btn: "Set or adjust the group meeting schedule"
+    a11y_schedule_editor_sheet: "Meeting schedule editor"
+    a11y_schedule_confirm_btn: "Save the meeting schedule"
+    a11y_schedule_cancel_btn: "Cancel and close the schedule editor"

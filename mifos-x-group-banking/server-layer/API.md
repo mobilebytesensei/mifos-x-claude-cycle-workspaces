@@ -1,7 +1,8 @@
-# API — CommonPurse (mifos-x-group-banking)
+# API — MifosSave (mifos-x-group-banking)
 
-> Mifos Fineract REST + Companion API (Go, deferred build) + 116 total MCP tools + 21 custom datatables.
-> Single source of truth: `server-layer/API_CONTRACT.yaml` (bridge runs `bridge-260504-001` + `bridge-260717-002`).
+> Mifos Fineract REST + Companion API (Go, deferred build) + 101 total MCP tools/endpoints + 21 custom datatables.
+> Single source of truth: `server-layer/API_CONTRACT.yaml` (bridge runs `bridge-260504-001` + `bridge-260717-002` + `bridge-260801-003`).
+> Authoritative counts: `API_CONTRACT.yaml#coverage` is SoT — `total_endpoints: 101`, `native_resolved: 56`. "Tools" and "endpoints" are 1:1 in this contract, so 101 is the single MCP-tool total.
 > Bridge audit: `server-layer/BRIDGE_AUDIT_LOG.yaml` (41 items; 21 approved-deployed + 20 design-approved-pending-deployment).
 
 | Field | Value |
@@ -18,14 +19,17 @@
 
 ## Coverage Summary
 
+Counts below are the authoritative values from `API_CONTRACT.yaml#coverage` (SoT). Tier rows are categorical; the **Total endpoints** row is the single reconciled number (also the MCP-tool total).
+
 | Tier | Count | What |
 |------|------:|------|
-| Native (existing MCP) | 54 | Fineract endpoints with ready MCP tools — no work |
+| Native (existing MCP) | 56 | Fineract endpoints with ready MCP tools — no work (+2 list/calendar fixes, bridge-260801-003) |
 | Tier 1 — generated tools | 6 | Fineract endpoint wrappers generated (bridge-260504-001) |
 | Tier 2 — datatables + tools | 15 | Custom datatables + 30 wrapper tools (bridge-260504-001) |
 | Companion Tier 1 | 12 | `/companion/*` façades over Fineract orchestration (bridge-260717-002) |
 | Companion Tier 2 | 8 | Companion datatable-CRUD tools: invitations + group_type_config + corpus/rotation aggregators (bridge-260717-002) |
-| **Total endpoints** | **96** | — |
+| Companion Cal (COMP-CAL) | 3 | meeting-calendar + collection-sheet tools (bridge-260801-003) |
+| **Total endpoints** | **101** | per `API_CONTRACT.yaml#coverage` (SoT) — `total_endpoints: 101`, `native_resolved: 56` |
 | Features / screens covered | 23/23 | 100% (no uncovered features) |
 | Companion datatables | 6 | dt_group_type_config · dt_companion_invitations · dt_rosca_rotation · dt_rosca_auction · dt_vsla_cycle · dt_welfare_fund |
 
@@ -44,9 +48,9 @@
 - Transactions: `GET /clients/{id}/transactions`
 - Self-service auth: `mcp__mifos__self_authenticate` (FR-014 end-user)
 
-### Groups & Centers (Group management — FR-001, FR-019)
-- Centers (group container): `GET /centers`, `GET /centers/{id}`, `POST /centers`
-- Groups (lending units within centers): `GET /groups`, `GET /groups/{id}`, `POST /groups`, `POST /groups/{id}?command=activate`
+### Groups (Group management — FR-001, FR-019)
+> The savings group **is** a Fineract Group (m_group), keyed by `groupId`. Center is out of scope — MifosSave has no multi-group federation. See `idea-layer/server/ENTITY_MODEL.yaml`.
+- Groups: `GET /groups`, `GET /groups/{id}`, `POST /groups`, `POST /groups/{id}?command=activate`
 - Group config: `mcp__mifos__get_group_config`, `mcp__mifos__upsert_group_config`
 - Group members: `mcp__mifos__add_member_to_group`, `mcp__mifos__assign_member_role`
 - Meetings (Tier 2 datatable): `mcp__mifos__list_meetings`, `mcp__mifos__record_meeting`
@@ -78,7 +82,7 @@
 
 ### Group Corpus / Fund Balance (FR-018 — real-time corpus)
 - `mcp__mifos__get_group_corpus`, `mcp__mifos__update_group_corpus`
-- Backed by dt_group_corpus datatable on m_center
+- Backed by dt_group_corpus datatable on m_group
 
 ### Social Fund (FR-011)
 - `mcp__mifos__get_social_fund`, `mcp__mifos__update_social_fund`
@@ -113,7 +117,7 @@
 - Per entry: `mcp__mifos__create_datatable_entry`, `mcp__mifos__get_datatable_entries`, `mcp__mifos__update_datatable_entry`, `mcp__mifos__delete_datatable_entry`
 
 ### Invitations (FR-016 end-user invites)
-- Pre-pivot (m_client): `mcp__mifos__list_invitations`, `mcp__mifos__create_invitation`
+- Pre-pivot (m_client, `dt_member_invitation` — DEPRECATED, superseded by `dt_companion_invitations`): `mcp__mifos__list_invitations`, `mcp__mifos__create_invitation`
 - Companion (m_group, bridge-260717-002): `mcp__mifos__companion_create_invitation`, `mcp__mifos__companion_list_pending_invites`, `mcp__mifos__companion_validate_invite_token`, `mcp__mifos__companion_mark_invitation_accepted`, `mcp__mifos__companion_revoke_invite`
 
 ---
@@ -147,7 +151,7 @@ between the KMP app and Fineract. All `/companion/*` paths go through this layer
 | `mcp__mifos__companion_get_group` | GET | `/companion/groups/{groupId}` | Group details + merged group_type_config |
 | `mcp__mifos__companion_list_my_groups` | GET | `/companion/groups/mine` | Paginated list with groupType + viewerRole |
 | `mcp__mifos__companion_get_viewer_role` | GET | `/companion/groups/{groupId}/my-role` | Authenticated user's role in a group |
-| `mcp__mifos__companion_get_group_corpus` | GET | `/companion/groups/{groupId}/corpus` | Corpus/rotation state, resolves groupId→centerId |
+| `mcp__mifos__companion_get_group_corpus` | GET | `/companion/groups/{groupId}/corpus` | Corpus/rotation state (by groupId) |
 | `mcp__mifos__companion_get_group_accounts` | GET | `/companion/groups/{groupId}/accounts` | Savings + loan summary |
 | `mcp__mifos__companion_associate_clients` | POST | `/companion/groups/{groupId}/associate-clients` | Associate invitee with role (post token validation) |
 
@@ -175,7 +179,7 @@ between the KMP app and Fineract. All `/companion/*` paths go through this layer
 | Tool | Method | Path | Screen |
 |------|--------|------|--------|
 | `mcp__mifos__companion_get_member_dashboard` | GET | `/companion/member/dashboard` | personal-dashboard |
-| `mcp__mifos__companion_get_organizer_dashboard` | GET | `/companion/organizer/dashboard` | admin-dashboard |
+| `mcp__mifos__companion_get_organizer_dashboard` | GET | `/companion/organizer/dashboard` | organizer-dashboard |
 | `mcp__mifos__companion_get_group_savings_summary` | GET | `/companion/groups/{groupId}/savings` | savings-dashboard (Group tab) |
 | `mcp__mifos__companion_get_individual_savings_summary` | GET | `/companion/groups/{groupId}/savings/individual` | savings-dashboard (Individual tab) |
 | `mcp__mifos__companion_get_member_savings_detail` | GET | `/companion/groups/{groupId}/members/{memberId}/savings` | member-savings-detail |
@@ -198,23 +202,27 @@ between the KMP app and Fineract. All `/companion/*` paths go through this layer
 
 21 total custom datatables (15 from bridge-260504-001 + 6 new from bridge-260717-002). Full schemas in `API_CONTRACT.yaml`.
 
-### Original Datatables (bridge-260504-001 — m_center + m_client + m_loan)
+### Original Datatables (bridge-260504-001 — m_group + m_client + m_loan)
 
-- `dt_group_config` on m_center — group rules: cycle length, contribution min/max, loan multiplier, interest rate, meeting frequency
-- `dt_member_role` on m_client — chairperson / treasurer / secretary / member / field_officer / program_manager
-- `dt_meeting_record` on m_center — meeting_number, scheduled_date, status, attendance_count
+Parents per `idea-layer/server/DATATABLE_REGISTRY.yaml` (SoT): m_group 8 · m_client 5 · m_loan 2 = 15.
+
+- `dt_group_config` on m_group — group rules: cycle length, contribution min/max, loan multiplier, interest rate, meeting frequency
+- `dt_group_corpus` on m_group — running fund balance for FR-018
+- `dt_meeting_record` on m_group — per-meeting summary: meeting_number, meeting_date, balances, attendance_count
+- `dt_meeting_schedule` on m_group — forward meeting schedule (cadence, next meeting date) — companion-served (AL-RULE)
+- `dt_share_out` on m_group — end-of-cycle distribution records
+- `dt_social_fund` on m_group — emergency fund balance + disbursements
+- `dt_group_loan_policy` on m_group — group-level policy overrides
+- `dt_sync_metadata` on m_group — offline sync state tracker
+- `dt_member_role` on m_client — chairperson / treasurer / secretary / member / field_officer / program_manager (keyed by member + group_id)
 - `dt_meeting_attendance` on m_client — per-meeting member presence + late + auto-fine
-- `dt_group_corpus` on m_center — running fund balance for FR-018
-- `dt_loan_vote` on m_loan — chairperson + member majority votes
-- `dt_group_loan_policy` on m_center — group-level policy overrides
 - `dt_member_ceiling_override` on m_client — per-member loan cap
-- `dt_share_out` on m_center — end-of-cycle distribution records
-- `dt_social_fund` on m_center — emergency fund balance + disbursements
-- `dt_member_invitation` on m_client — pending end-user invites with token
 - `dt_loan_request` on m_client — loan application queue
-- `dt_loan_guarantor` on m_loan — guarantor list per loan
 - `dt_notification` on m_client — push notification records
-- `dt_sync_metadata` on m_center — offline sync state tracker
+- `dt_loan_vote` on m_loan — chairperson + member majority votes
+- `dt_loan_guarantor` on m_loan — guarantor list per loan
+
+> `dt_member_invitation` (was m_client) is **deprecated** — superseded by `dt_companion_invitations` on m_group (invites belong to the group). See DATATABLE_REGISTRY `deprecated:`.
 
 ### Companion Datatables (bridge-260717-002 — all on m_group)
 
@@ -234,7 +242,7 @@ between the KMP app and Fineract. All `/companion/*` paths go through this layer
 - All write operations enqueue to `SyncQueue` (local SQLDelight)
 - Background sync via `mcp__mifos__send_batch` for bulk replay
 - Conflict resolution: server-wins for create/update, except member-attributable transactions (timestamp-precedence)
-- Sync state per entity tracked via `dt_sync_state` (Tier 2)
+- Sync state per group tracked via `dt_sync_metadata` on m_group (Tier 2)
 
 ---
 

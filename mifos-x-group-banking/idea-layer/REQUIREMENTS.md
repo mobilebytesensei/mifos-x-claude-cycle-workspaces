@@ -1,14 +1,15 @@
-# Requirements — CommonPurse (mifos-x-group-banking)
+# Requirements — MifosSave (mifos-x-group-banking)
 
-> 26 functional requirements · 8 data entities · 2 third-party services
+> 31 functional requirements (FR-026 is a v1 non-goal/constraint) · 8 data entities · 2 third-party services
 > **Global self-signup pivot (2026-07-17):** FR-013/014/015 revised, FR-021..FR-026 added, FR-009 demoted. See `ARCHITECTURE.md` for the backend contract + 9-type group registry.
+> **Production sign-up + server-migration evolve (2026-08-01):** FR-027..FR-031 added (demo-explore, server demo-seed, idea→server auto-migrate, first-class accept-invitation, user-facing notifications); FR-026 re-tagged must → non-goal/constraint. See `evolve-plans/20260801-production-signup-server-migration.md`.
 > Generated from `idea-plan.yaml` §requirements (quality 95%, approved 2026-05-03).
 > Source of truth: `idea-layer/idea-plan.yaml` — do not hand-edit acceptance criteria here; edit the plan.
 
 | Field | Value |
 |-------|-------|
 | Project | mifos-x-group-banking |
-| Display name | CommonPurse |
+| Display name | MifosSave |
 | Workspace | mifos-x |
 | Type | kmp |
 | Backend | Mifos Fineract (REST + MCP) |
@@ -18,7 +19,7 @@
 
 ## Functional Requirements
 
-### Must (12)
+### Must (24)
 
 | ID | Description |
 |----|-------------|
@@ -37,11 +38,15 @@
 | FR-022 | **Config-driven group_type** (2-axis GroupTypeConfig); 9 seeded types (ROSCA/ASCA/VSLA/SILC/SHG/SACCO/CBO/Burial/JLG); new types = config rows |
 | FR-023 | **Pluggable distribution** — pro-rata share-out · ROSCA rotation · auction/bid, selected by group_type |
 | FR-024 | Members join a group via **invite link/code** (invitee self-registers, is associated to the group) |
-| FR-025 | Group-type state as Fineract **datatables** via the companion API (group_type_config, rosca_rotation, rosca_auction, vsla_cycle, welfare_fund) |
-| FR-026 | **Non-goals**: no standalone DDD service, no YAPE/PLIN, no group-level GL, no deployment-time group-type trapdoor |
+| FR-025 | Group-type state as Fineract **datatables** via the companion API (group_type_config, rosca_rotation, rosca_auction, vsla_cycle, welfare_fund) — satisfied by the `group-type-config` feature |
 | FR-017 | Dual savings: mandatory group savings (meeting-collected) and voluntary individual savings (anytime) — CR-003 |
 | FR-018 | Real-time fund balance (corpus) for the group; blocks loan disbursement when insufficient — CR-003 |
 | FR-019 | Enhanced meeting flow: review previous, separate cash inflows/outflows, fund balance throughout, opening/closing reconciliation — CR-003 |
+| FR-027 | **Demo-explore mode** — 'Demo Explore' on login-signup → confirm dialog → guest offline-seeded demo session, explore without registering (works with NO live server) — evolve 2026-08-01 |
+| FR-028 | **Server demo-data seed** — runnable migrations seed a demo user's data (clients + group activation, savings, meeting records, corpus, one live invite code) — externally gated on companion-api-backend — evolve 2026-08-01 |
+| FR-029 | **Idea→server auto-migrate / server-ready** — re-run + extend `/mifos-bridge` to emit runnable datatable migrations so adding a feature migrates its missing API/table — evolve 2026-08-01 |
+| FR-030 | **First-class accept-invitation auth path** — login / accept-invitation / sign-up as first-class pre-auth entries; cold-launched invitee resumes join via pendingInviteCode — evolve 2026-08-01 |
+| FR-031 | **User-facing notifications & activity feed** — push + in-app notifications (loan approvals, reminders, meeting invites, share-out previews) with read/unread + per-type opt-in — satisfied by the `notifications` feature — evolve 2026-08-01 |
 
 ### Should (5)
 
@@ -59,6 +64,12 @@
 |----|-------------|
 | FR-011 | Social fund collection and emergency disbursement tracking |
 
+### Constraints / Non-goals (1)
+
+| ID | Description |
+|----|-------------|
+| FR-026 | **Non-goals (v1 constraint, re-tagged 2026-08-01 must → non-goal):** no standalone DDD service, no YAPE/PLIN, no group-level GL, no deployment-time group-type trapdoor. Records what v1 will NOT do — has no satisfying feature by design and must not read as an orphan MUST FR. |
+
 > **Acceptance criteria** for each FR live in `idea-plan.yaml` §requirements.functional_requirements[].acceptance_criteria — read those before implementing the feature.
 
 ---
@@ -67,13 +78,13 @@
 
 | Entity | Key Fields | Relationships | Fineract Mapping |
 |--------|-----------|--------------|------------------|
-| Group | id, name, cycle_number, cycle_length_months, meeting_frequency, contribution_min/max, loan_multiplier, interest_rate, currency, fineract_center_id, status | has_many Members · has_many Meetings · has_one SavingsPool | m_center (+ dt_group_config datatable) |
+| Group | id, name, cycle_number, cycle_length_months, meeting_frequency, contribution_min/max, loan_multiplier, interest_rate, currency, status | has_many Members · has_many Meetings · has_one SavingsPool | m_group (+ dt_group_config datatable) |
 | Member | id, name, phone, photo_uri, role, joined_date, fineract_client_id, status | belongs_to Group · has_many SavingsTransactions · has_many Loans | m_client (+ dt_member_role datatable) |
-| Meeting | id, meeting_number, scheduled_date, actual_date, status, attendance_count, total_collected, notes | belongs_to Group · has_many AttendanceRecords · has_many SavingsTransactions | dt_meeting datatable on m_center |
+| Meeting | id, meeting_number, scheduled_date, actual_date, status, attendance_count, total_collected, notes | belongs_to Group · has_many AttendanceRecords · has_many SavingsTransactions | dt_meeting datatable on m_group |
 | SavingsTransaction | id, member_id, meeting_id, amount, type (contribution/withdrawal/fine/social_fund), fineract_transaction_id, sync_status | belongs_to Member · belongs_to Meeting | m_savings_account_transaction |
 | Loan | id, member_id, amount, interest_rate, duration_weeks, status (requested/approved/disbursed/repaying/closed/defaulted), approved_by, disbursed_date, fineract_loan_id, sync_status | belongs_to Member · has_many LoanRepayments | m_loan |
 | LoanRepayment | id, loan_id, amount, meeting_id, paid_date, fineract_transaction_id, sync_status | belongs_to Loan | m_loan_transaction |
-| AttendanceRecord | id, meeting_id, member_id, present, late, fine_amount | belongs_to Meeting · belongs_to Member | dt_attendance datatable on m_center |
+| AttendanceRecord | id, meeting_id, member_id, present, late, fine_amount | belongs_to Meeting · belongs_to Member | dt_attendance datatable on m_group |
 | SyncQueue | id, entity_type, entity_id, operation (create/update/delete), payload_json, created_at, retry_count, last_error, status (pending/in_progress/synced/failed) | polymorphic to any entity | local-only (offline-first) |
 
 ---
@@ -82,7 +93,7 @@
 
 | Service | Purpose | Integration |
 |---------|---------|-------------|
-| Mifos Fineract | Core banking backend — groups (Centers), members (Clients), savings accounts, loan products, transactions | REST API + MCP server |
+| Mifos Fineract | Core banking backend — groups, members (Clients), savings accounts, loan products, transactions | REST API + MCP server |
 | SQLDelight | Local offline database for all entities | SDK (compile-time SQL → Kotlin) |
 
 ---
@@ -100,11 +111,11 @@
 | IR-003 | **Companion API — TIER-2 datatable-CRUD tools (7)**: COMP-DT-001..005 (register, create-row, read-row, update-row, delete-row) + COMP-DIST-001/002 (share-out execute, rotation execute) — registered in `go/tools/datatables.go` |
 | IR-004 | **Self-service-enabled Fineract instance**: a Fineract deployment with the self-service module enabled (the community sandbox does NOT qualify); tenant/office strategy configured for global "anyone in the world" onboarding |
 | IR-005 | **6 companion datatables provisioned** against deployed Fineract (once, via COMP-DT-001): `dt_group_type_config`, `dt_companion_invitations`, `dt_rosca_rotation`, `dt_rosca_auction`, `dt_vsla_cycle`, `dt_welfare_fund` (all attached to `m_group`) |
-| IR-006 | **App wired to companion backend**: CommonPurse companion base URL points at deployed mcp-mifosx; end-to-end flow (signup → create group → invite → savings/loan → share-out) verified via Maestro on device |
+| IR-006 | **App wired to companion backend**: MifosSave companion base URL points at deployed mcp-mifosx; end-to-end flow (signup → create group → invite → savings/loan → share-out) verified via Maestro on device |
 
 ## Cross-References
 
-- **Features**: see `idea-layer/FEATURES.md` (20 features → these FRs)
+- **Features**: see `idea-layer/FEATURES.md` (21 features → these FRs)
 - **API Contract**: see `server-layer/API_CONTRACT.yaml` (Fineract endpoints + 36 MCP tools generated by /mifos-bridge; companion section: 20 tools + 6 datatables)
 - **Companion API Build Spec**: see `server-layer/COMPANION_API_BUILD_DEPLOY.md`
 - **Bridge Audit**: see `server-layer/BRIDGE_AUDIT_LOG.yaml` (21-item Tier-1/Tier-2 resolution record)

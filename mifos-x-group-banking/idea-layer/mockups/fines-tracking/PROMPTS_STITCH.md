@@ -1,7 +1,7 @@
 # Fines Tracking — Stitch Prompt Specification
 **Feature**: fines-tracking | **Screens**: meeting-conduct Step 1 (Attendance) + Step 4 (Loan Review)
 **Requirements**: FR-012, FR-020
-**Stitch project**: CommonPurse / mifos-x-group-banking
+**Stitch project**: MifosSave / mifos-x-group-banking
 **Total sections**: 6
 
 ---
@@ -9,7 +9,7 @@
 # SECTION 1: DESIGN SYSTEM CONTEXT
 
 ## Application Identity
-CommonPurse is a VSLA group banking app for rural communities. Fines tracking is embedded in the meeting wizard — the treasurer and chairperson record attendance (with automatic fine calculation) and loan repayments with optional penalty fines. The design must be firm but not punitive: fines are community-agreed policies that strengthen group discipline. Use warning amber for soft signals (late) and error red for hard signals (absent, overdue).
+MifosSave is a VSLA group banking app for rural communities. Fines tracking is embedded in the meeting wizard — the treasurer and chairperson record attendance (with automatic fine calculation) and loan repayments with optional penalty fines. The design must be firm but not punitive: fines are community-agreed policies that strengthen group discipline. Use warning amber for soft signals (late) and error red for hard signals (absent, overdue).
 
 ## Material Design 3 Token System
 
@@ -580,7 +580,7 @@ All 2xx → NavigateToMeetingSummary
 
 ## Meeting Context
 **Group**: Mwangaza Women's Group
-**centerId**: 7
+**groupId**: 7
 **meetingId**: "meeting-7-4"
 **meetingNumber**: 4
 **meetingDate**: 06 May 2026
@@ -649,7 +649,7 @@ closingCorpus = 12_400 + 1_000 + 1_125 + 250 - 0 = 14_775L
 
 ```json
 {
-  "centerId": 7,
+  "groupId": 7,
   "meetingNumber": 4,
   "actualDate": "06 May 2026",
   "openingCorpus": 12400,
@@ -797,7 +797,7 @@ Stitch designers: keep the chip text dynamic (no hardcoded KES values in chip la
 
 ## Component State Matrix
 
-Full state definitions for every interactive component in fines-tracking. CommonPurse tokens: primary #2E7D32 (PRESENT), secondary #FF8F00 (LATE), error #D32F2F (ABSENT/overdue).
+Full state definitions for every interactive component in fines-tracking. MifosSave tokens: primary #2E7D32 (PRESENT), secondary #FF8F00 (LATE), error #D32F2F (ABSENT/overdue).
 
 ### AttendanceToggle — per-member row in Step 1 (PRESENT / LATE / ABSENT)
 

@@ -32,20 +32,168 @@ summary: >-
   the due), then saves the whole sheet via ?command=saveCollectionSheet in a single transactional batch enqueued to the
   offline outbox with a durable idempotency key, so an entire route captured with no signal replays exactly-once. Dues
   read cache-first through Store5 so the sheet is fully usable offline.
+metadata:
+  category: back-office-domain
+  implementation_ready: true
+  impl_ready_at: '2026-07-31T00:00:00Z'
+  impl_ready_schema: v2
+contracts:
+  - capability: collection_sheet_read
+    platform_spec: >-
+      POST /v1/collectionsheet?command=generateCollectionSheet (a read despite the POST verb, Fineract command style)
+      scoped by office + staffId + meeting/transaction date, streamed cache-first through a Store5 SourceOfTruth over
+      Room (collection_sheet_cache, keyed office_id/staff_id/meeting_date/center_id/group_id/client_id/loan_id) so the
+      grouped route — centers → groups → clients with per-loan installment dues and per-savings deposit dues — hydrates
+      from Room and is fully capturable with no signal under CACHE_FIRST_SWR; a stale entry renders immediately while
+      SWR revalidates in the background per FreshnessBands.
+    permission: READ_COLLECTIONSHEET
+    error_cases:
+      - generate_failed
+      - permission_denied
+  - capability: collection_sheet_bulk_save
+    platform_spec: >-
+      POST /v1/collectionsheet?command=saveCollectionSheet — the whole captured route (per-row actual amounts +
+      attendance) is assembled as ONE command and written to the draft_outbox Room table with a fresh DURABLE
+      idempotency key generated at capture and reused on retry (action=SAVECOLLECTIONSHEET, entity=COLLECTIONSHEET); the
+      offline-sync-engine replays it via POST /v1/batches?enclosingTransaction=true as one all-or-nothing atomic batch
+      so a whole route captured with no signal posts EXACTLY ONCE across connectivity flap / crash / reinstall (zero
+      double-post). A rejected replay routes to needs-attention-inbox, never silently dropped.
+    permission: SAVECOLLECTIONSHEET
+    error_cases:
+      - validation_failed
+      - save_failed
+      - command_rejected
+      - sheet_queued_offline
+libraries:
+  - capability: collection_sheet_read
+    library: org.mobilenativefoundation.store.store5
+    version: 5.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: collection_sheet_read
+    library: androidx.room
+    version: 3.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: collection_sheet_read
+    library: cmp-network-monitor
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: collection_sheet_bulk_save
+    library: openMF Fineract Client KMP SDK
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: collection_sheet_bulk_save
+    library: kotlinx-serialization
+    version: 1.7.x
+    targets:
+      - android
+      - ios
+      - desktop
 vm_actions:
-  - OnGenerate
-  - OnAmountChange
-  - OnToggleAttendance
-  - OnSaveSheet
-  - OnRetry
+  - name: OnGenerate
+    signature: 'private fun onGenerate(office: OfficeStaffDate)'
+    state_mutations:
+      - uiState=Loading
+      - sheet=<generated route> | uiState=Content | uiState=Empty | uiState=Error
+    side_effects:
+      - CollectionSheetStore.stream(office, CACHE_FIRST_SWR)
+      - PermissionEvaluator.evaluate(READ_COLLECTIONSHEET)
+    error_handling:
+      NetworkError: uiState=Content from collection_sheet_cache if present else uiState=Error; offer Retry
+      GenerateFailed: uiState=Error (generate_failed) with Retry when no cache is available
+      Empty: uiState=Empty; show the 'nothing due today' panel when no dues for the chosen date
+  - name: OnAmountChange
+    signature: 'private fun onAmountChange(rowKey: String, amount: Money)'
+    state_mutations:
+      - captured[rowKey]=amount
+      - uiState=Content (running per-group and sheet totals recomputed)
+    side_effects: []
+    error_handling: {}
+  - name: OnToggleAttendance
+    signature: 'private fun onToggleAttendance(clientId: Long, type: AttendanceType)'
+    state_mutations:
+      - attendance[clientId]=type
+      - uiState=Content
+    side_effects: []
+    error_handling: {}
+  - name: OnSaveSheet
+    signature: private fun onSaveSheet()
+    state_mutations:
+      - uiState=Content (batch enqueued; optimistic 'queued' chip)
+    side_effects:
+      - >-
+        DraftDao.enqueue(SAVECOLLECTIONSHEET, entity=COLLECTIONSHEET, payload=<captured + attendance>, DURABLE
+        idempotencyKey)
+    error_handling:
+      ValidationFailed: uiState=Content; surface the invalid rows inline (validation_failed); no enqueue
+      CommandRejected: route the rejected rows to needs-attention-inbox; accepted rows stay posted
+      Offline: stays queued in draft_outbox; auto-drains on connectivity regain (exactly-once, all-or-nothing)
+  - name: OnRetry
+    signature: private fun onRetry()
+    state_mutations:
+      - uiState=Loading
+      - sheet=<re-generated route, captured amounts preserved> | uiState=Content | uiState=Error
+    side_effects:
+      - CollectionSheetStore.stream(office).refreshFresh()
+    error_handling:
+      NetworkError: uiState=Error; keep captured amounts in local state; offer Retry again
 error_cases:
   - generate_failed
+  - permission_denied
   - validation_failed
   - save_failed
-  - permission_denied
+  - command_rejected
+  - sheet_queued_offline
+test_fixtures:
+  source: screens/collection-sheet/tests.yaml
+  scenario_count: 8
+  priority_distribution:
+    high: 3
+    medium: 4
+    low: 1
+scaffolded_at: '2026-07-25T00:00:00Z'
 scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-31T00:00:00Z'
+enriched_by: /idea-feature-enrich
+approved_by: /idea approve
+approve_predicate_version: 1.0.0
+approve_contract_version: 2.0.0
+approve_hash: sha256:333defc40833cb2c6cced132fe4c73ed169207b997cd99710308f7ef7da2ec67
+approved_at: '2026-07-31T15:50:49Z'
 status_history:
+  - from: approved
+    to: approved
+    at: '2026-07-31T15:50:49Z'
+    by: /idea approve
+    reason: >-
+      Re-approval after /idea-verify heal — schema_version v4.0 stamped on all 32 ui.yaml + product-editor flow.yaml
+      validating/saving transitions added. Fresh approve_hash recomputed over the 7 canonical sibling YAMLs per
+      approve-hash.md §Computation. Status unchanged (approved).
+  - from: designed
+    to: approved
+    at: '2026-07-31T07:34:06Z'
+    by: /idea approve
+    contract_version: 2.0.0
+    reason: >-
+      Autonomous /idea-agent --auto re-approval — DRILL-DOWN feature promoted designed→approved as the pipeline's own
+      gate. impl-ready-clean (impl-ready-validator IR-1..IR-4: 0 violations) and docs.yaml internally consistent. Fresh
+      approve_hash stamped over the 7 canonical sibling YAMLs (approve-hash.md §Computation; RULE-GAP-IDEA-FIRST-001).
   - from: draft
     to: designed
     at: '2026-07-26T05:36:36.751Z'
+    by: /idea-feature-stitch
+  - from: approved
+    to: designed
+    at: '2026-08-03T14:50:29.404Z'
     by: /idea-feature-stitch

@@ -1,5 +1,5 @@
 # Share-Out — Prompts Stitch
-**Feature**: share-out | **Project**: CommonPurse (mifos-x-group-banking)
+**Feature**: share-out | **Project**: MifosSave (mifos-x-group-banking)
 **Screens**: share-out-preview, share-out-execute
 
 ---
@@ -7,7 +7,7 @@
 ## 1. Design System Context
 
 ### Brand Identity and Color Philosophy
-CommonPurse is designed for VSLA groups in East/West Africa and South Asia. Share-out is the most celebratory financial event — distributing the year's accumulated savings and profits back to members. The visual language for this feature must balance celebration (completion banner uses primary green) with caution (execute button uses error red to signal irreversibility).
+MifosSave is designed for VSLA groups in East/West Africa and South Asia. Share-out is the most celebratory financial event — distributing the year's accumulated savings and profits back to members. The visual language for this feature must balance celebration (completion banner uses primary green) with caution (execute button uses error red to signal irreversibility).
 
 ### Full Color Token Reference
 
@@ -472,7 +472,7 @@ Scaffold
    - Confirmation section hides (AnimatedVisibility collapse, 250ms)
    - Progress indicator appears (AnimatedVisibility expand, 250ms)
 3. **Step 1 — Create share-out record**:
-   - POST /datatables/dt_share_out/{centerId}
+   - POST /datatables/dt_share_out/{groupId}
    - On success: proceed to per-member payouts
    - On 403: navigate back, show "Chairperson role required" snackbar
    - On 500: queue everything to SyncQueue (fall through to offline path)
@@ -513,7 +513,7 @@ Scaffold
 ## 5. Content Data
 
 ### Group: Mwangaza Women's Group
-- Center ID: 7 (Fineract centerId)
+- Group ID: 7 (Fineract groupId)
 - Cycle: 1
 - Cycle length: 12 months
 - Meetings conducted: 12 (cycle complete)
@@ -603,7 +603,7 @@ Scaffold
 
 ## Component State Matrix
 
-Full state definitions for every interactive component in the share-out feature. CommonPurse design tokens: primary #2E7D32, error #D32F2F, Noto Sans.
+Full state definitions for every interactive component in the share-out feature. MifosSave design tokens: primary #2E7D32, error #D32F2F, Noto Sans.
 
 ### SummaryCard (share-out-preview screen — fund summary)
 
@@ -1149,10 +1149,10 @@ Not in current scope but referenced in this spec for completeness:
 
 | Event | Title | Body | Deep Link |
 |---|---|---|---|
-| Cycle enters PREVIEW_READY | "Share-out ready for Mwangaza Women's Group" | "Cycle 1 is complete — KES 21,600 ready to distribute" | `commonpurse://share-out/preview/{cycleId}` |
-| Execute succeeds | "Share-out complete!" | "KES 21,600 distributed to 5 members of Mwangaza Women's Group" | `commonpurse://share-out/complete/{cycleId}` |
-| Partial failure | "Share-out partially failed" | "2 payouts need attention for Mwangaza Women's Group" | `commonpurse://share-out/partial/{cycleId}` |
-| Payout sync retry succeeds | "Pending payouts synced" | "All member payouts now recorded successfully" | `commonpurse://share-out/complete/{cycleId}` |
+| Cycle enters PREVIEW_READY | "Share-out ready for Mwangaza Women's Group" | "Cycle 1 is complete — KES 21,600 ready to distribute" | `mifossave://share-out/preview/{cycleId}` |
+| Execute succeeds | "Share-out complete!" | "KES 21,600 distributed to 5 members of Mwangaza Women's Group" | `mifossave://share-out/complete/{cycleId}` |
+| Partial failure | "Share-out partially failed" | "2 payouts need attention for Mwangaza Women's Group" | `mifossave://share-out/partial/{cycleId}` |
+| Payout sync retry succeeds | "Pending payouts synced" | "All member payouts now recorded successfully" | `mifossave://share-out/complete/{cycleId}` |
 
 Notification channel: `share_out_events` — priority HIGH, vibration on, lockscreen visibility PRIVATE (financial data).
 

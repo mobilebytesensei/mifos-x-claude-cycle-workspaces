@@ -1,9 +1,9 @@
-schema_version: "1.0"
+schema_version: v4.0
 screen_id: checker-inbox
 feature: checker-inbox
 name: "Maker-Checker Inbox (self-scoped approvals queue)"
-archetype: list
-status: draft
+archetype: list_screen
+status: designed
 module: m15-approvals-makerchecker
 initial_state: loading
 
@@ -19,7 +19,7 @@ consumes_capabilities:
   - requires_auth
 
 business_logic:
-  kind: list
+  kind: crud
   processing_kind: on_demand
   library_refs:
     - cmp-network-monitor
@@ -35,10 +35,11 @@ business_logic:
     - core/network
   description: >-
     Loads the self-scoped maker-checker queue (GET /v1/makercheckers) cache-first through Store5, filters in-VM
-    by entity and action, gates the approve/reject/delete controls per-row on canCheck(action,entity), and posts
-    each decision through the offline outbox with a durable idempotency key.
-  description_author: claude-via-idea-plan-add
-  description_authored_at: "2026-07-25T00:00:00Z"
+    by entity and by action, gates the approve/reject/delete controls per-row on canCheck(action,entity), opens a
+    row into its command detail, and posts each decision (approve|reject|delete) through the offline outbox with a
+    durable idempotency key replayed via POST /v1/batches so an offline decision commits exactly-once.
+  description_author: claude-via-idea-enrich
+  description_authored_at: "2026-07-31T00:00:00Z"
 
 state_model:
   fields:
@@ -50,13 +51,13 @@ state_model:
       description: "Active entity filter chip (Loan | Client | Savings | GLAccount | …); null = All."
     - name: actionFilter
       type: "String?"
-      description: "Active action filter chip (CREATE | APPROVE | DISBURSE | …); null = All."
+      description: "Active action filter chip (CREATE | APPROVE | DISBURSE | WITHDRAWAL | …); null = All."
     - name: resolvingId
       type: "Long?"
-      description: "auditId of the entry a decision is currently applied to (drives the resolving row indicator)."
+      description: "auditId of the entry a decision (approve/reject/delete) is currently applied to; drives the resolving row indicator and disables that row's controls while the outbox write is in flight."
     - name: uiState
       type: "CheckerInboxScreenState"
-      description: "Loading | Content | Empty | Error."
+      description: "Loading | Content | Empty | Resolving | Error."
 
 states:
   loading:
@@ -64,8 +65,13 @@ states:
   content:
     description: >-
       A filterable list of queued commands (entity + action chips at top), each row showing action, entity,
-      maker, made-on and a command summary, with inline Approve / Reject / Delete controls shown only where the
-      user canCheck(action,entity). Fully browsable offline; decisions queue offline.
+      maker, made-on and a command summary, tappable to open the command detail, with inline Approve / Reject /
+      Delete controls shown only where the user canCheck(action,entity). Fully browsable offline; decisions queue offline.
+  resolving:
+    description: >-
+      A decision (approve/reject/delete) is in flight for the row at resolvingId — the entry's controls are disabled
+      and a per-row progress indicator shows while the outbox write commits; the rest of the list stays interactive.
+      On enqueue-success the row leaves the queue and the state returns to content (or empty when it was the last row).
   empty:
     description: "No queued commands await this checker; shows an 'all clear' panel with a last-checked timestamp."
   error:
@@ -75,6 +81,7 @@ components:
   - id: ci_entity_filter
     type: filter_chip_row
     label: "{strings.chkinbox_entity_filter}"
+    accessibility_label: "Filter the approvals queue by entity"
     testTag: "checker-inbox_entity_filter"
     on_click:
       action: filter_entity
@@ -89,8 +96,47 @@ components:
         invalidates:
           - entries
         action_contract_hash: "sha256:ci-filter-entity"
-        action_contract_author: "claude-via-idea-plan-add"
-        action_contract_authored_at: "2026-07-25T00:00:00Z"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: ci_action_filter
+    type: filter_chip_row
+    label: "{strings.chkinbox_action_filter}"
+    accessibility_label: "Filter the approvals queue by action"
+    testTag: "checker-inbox_action_filter"
+    on_click:
+      action: filter_action
+      target: checker-inbox
+      state: content
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        external_library_refs: ["androidx.compose.runtime"]
+        description: "Narrow the approvals queue to the tapped action (CREATE | APPROVE | DISBURSE | WITHDRAWAL | …) or clear back to All; a pure in-VM filter over the loaded entries, composed with the active entity filter, no refetch."
+        produces_state: content
+        invalidates:
+          - entries
+        action_contract_hash: "sha256:ci-filter-action"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: ci_row
+    type: list_item
+    label: "{strings.chkinbox_row_desc}"
+    accessibility_label: "Open this queued command's detail"
+    testTag: "checker-inbox_row"
+    description: "A queued-command row: action, entity, maker, made-on and the command summary; tap to open the full command detail."
+    on_click:
+      action: open_entry
+      target: checker-inbox
+      state: content
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Open the tapped queued command's detail (expanded command JSON, maker, made-on and the per-row canCheck-gated Approve/Reject/Delete actions) so the checker can review the full command before deciding; drills into the M15 checker detail for that auditId."
+        action_contract_hash: "sha256:ci-open-entry"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
 
   - id: ci_approve
     type: button
@@ -103,7 +149,7 @@ components:
     on_click:
       action: approve_entry
       target: checker-inbox
-      state: content
+      state: resolving
       action_contract:
         effect: call_api
         library_refs:
@@ -115,8 +161,8 @@ components:
         writes_to:
           - table: draft_outbox
         action_contract_hash: "sha256:ci-approve-entry"
-        action_contract_author: "claude-via-idea-plan-add"
-        action_contract_authored_at: "2026-07-25T00:00:00Z"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
 
   - id: ci_reject
     type: button
@@ -129,7 +175,7 @@ components:
     on_click:
       action: reject_entry
       target: checker-inbox
-      state: content
+      state: resolving
       action_contract:
         effect: call_api
         library_refs:
@@ -141,8 +187,34 @@ components:
         writes_to:
           - table: draft_outbox
         action_contract_hash: "sha256:ci-reject-entry"
-        action_contract_author: "claude-via-idea-plan-add"
-        action_contract_authored_at: "2026-07-25T00:00:00Z"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+  - id: ci_delete
+    type: button
+    label: "{strings.chkinbox_delete}"
+    accessibility_label: "Delete the selected maker-checker entry"
+    testTag: "checker-inbox_delete"
+    variant: destructive
+    gated_permission: CHECKER_SUPER_USER
+    description: "Shown only on rows the user canCheck(action,entity); removes a withdrawn/stale queued command after a confirm."
+    on_click:
+      action: delete_entry
+      target: checker-inbox
+      state: resolving
+      action_contract:
+        effect: delete
+        library_refs:
+          - cmp-network-monitor
+        external_library_refs:
+          - "core/database.DraftDao"
+        description: "Delete a stale/withdrawn queued command via POST /v1/makercheckers/{auditId}?command=delete after a confirm, enqueued to the offline outbox with a durable idempotency key; on commit the queued maker command is discarded and the row leaves the queue with an audit note, never silently dropped."
+        produces_state: content
+        writes_to:
+          - table: draft_outbox
+        action_contract_hash: "sha256:ci-delete-entry"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
 
   - id: ci_error_retry
     type: button
@@ -157,10 +229,20 @@ components:
       state: loading
       action_contract:
         effect: call_api
+        reads_from:
+          - maker_checker_cache
         library_refs:
           - cmp-network-monitor
         description: "Re-read GET /v1/makercheckers after a hard load failure; resets to loading and repopulates the self-scoped approvals queue."
         produces_state: loading
         action_contract_hash: "sha256:ci-retry"
-        action_contract_author: "claude-via-idea-plan-add"
-        action_contract_authored_at: "2026-07-25T00:00:00Z"
+        action_contract_author: "claude-via-idea-enrich"
+        action_contract_authored_at: "2026-07-31T00:00:00Z"
+
+# enriched-provenance: /idea-feature-enrich 2026-07-31 — status draft→designed; added the resolving state
+# (in-flight approve/reject/delete row indicator) + uiState enum value + actionFilter field; added the three
+# missing coherence components: ci_action_filter (filter_action, transform_state), ci_row (open_entry, navigate)
+# and ci_delete (delete_entry, effect: delete, writes_to draft_outbox); re-stamped EVERY action_contract to
+# claude-via-idea-enrich @ 2026-07-31 and added accessibility_label to every interactive component
+# (entity/action filter rows, row-open, approve/reject/delete, retry). Mutating decisions route through the
+# offline outbox (draft_outbox) exactly-once; KES money in demo-data. Ready for /idea-approve.

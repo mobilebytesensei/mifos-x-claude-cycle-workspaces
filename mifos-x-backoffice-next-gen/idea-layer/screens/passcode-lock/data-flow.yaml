@@ -1,0 +1,183 @@
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: passcode-lock
+
+# No API calls. All state (PIN hash, enabled flag, failed attempts, lockout timer)
+# stored in the encrypted multiplatform-settings store. PIN is bcrypt-hashed (cost 12)
+# before any storage — plaintext never touches network or disk. Biometric authentication
+# uses the platform-native BiometricPrompt (OS TEE / Secure Enclave).
+
+entries:
+  # ── 1. Read passcode config on mount → determines mode (setup | locked | locked_out) ──
+  - screen_id: passcode-lock
+    trigger: on_mount
+    produces_state: locked
+    loading_state: locked
+    error_state: error
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: secure_prefs
+        mutation: read
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: >-
+          Encrypted multiplatform-settings read on every cold start + foreground resume.
+          Keys read: passcode_hash, passcode_enabled, biometric_lock_enabled, biometric_type,
+          failed_attempts, locked_until (epoch ms), background_lock_timeout_secs.
+          Mode determination logic:
+            passcode_enabled=false → setup state
+            passcode_enabled=true AND locked_until > now → locked_out state
+            passcode_enabled=true AND biometric_lock_enabled=true → locked_biometric (auto-prompt)
+            passcode_enabled=true → locked state
+    dtos:
+      - name: PasscodeConfig
+        role: derived
+        api_id: null
+        source: "local encrypted_prefs — passcode_hash, passcode_enabled, biometric_lock_enabled, failed_attempts, locked_until"
+    cache:
+      strategy: read_through
+      key_template: "prefs:passcode"
+      shape: flat
+      ttl_seconds: null
+    privacy_constraint:
+      scope: device_local
+      notes: >-
+        Passcode hash is user-specific PII. Encrypted with AES-256 via the encrypted settings
+        variant. Never logged, never synced to server, never included in bug reports or
+        backups (excluded from cloud backup manifest).
+    error_paths:
+      - error_code: config_read_failed
+        behavior: show_error
+        message_key: passcode_config_read_failed
+
+  # ── 2. Setup complete — PIN confirmed → write hash to encrypted_prefs ──────────
+  # Covers both: setup state (enter PIN) → confirm state (re-enter) → locked state (done)
+  - screen_id: passcode-lock
+    trigger: on_event
+    event_name: pin_confirmed
+    produces_state: locked
+    loading_state: confirm
+    error_state: error
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: secure_prefs
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: >-
+          On PIN match in CONFIRM mode: bcrypt-hash the PIN (cost factor 12) and write
+          passcode_hash + passcode_enabled=true + failed_attempts=0 to the encrypted store.
+          The plaintext PIN string is zeroed from memory immediately after hashing. The
+          confirm_digits field is also cleared. Transitions to locked state.
+    dtos:
+      - name: PasscodeSetupResult
+        role: derived
+        api_id: null
+        source: "local — bcrypt(pin) persisted to encrypted_prefs"
+    error_paths:
+      - error_code: pin_mismatch
+        behavior: show_error
+        message_key: passcode_pins_dont_match
+        note: "Dots shake; both entries cleared; user re-enters from setup state."
+      - error_code: hash_write_failed
+        behavior: show_error
+        message_key: passcode_setup_failed
+
+  # ── 3. Successful unlock — reset failed_attempts (locked → navigate app shell) ─
+  - screen_id: passcode-lock
+    trigger: on_event
+    event_name: pin_matched
+    produces_state: locked
+    loading_state: locked
+    error_state: error
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: secure_prefs
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: "Reset failed_attempts=0 on successful unlock. locked_until cleared if it was set."
+    side_effects:
+      - kind: navigate
+        target: "nav-shell-assembler — assembled app shell"
+    error_paths:
+      - error_code: unlock_navigate_failed
+        behavior: show_error
+        message_key: passcode_unlock_error
+
+  # ── 4. Wrong PIN — increment failed_attempts, lockout after 5 (locked → error | locked_out) ──
+  - screen_id: passcode-lock
+    trigger: on_event
+    event_name: pin_failed
+    produces_state: error
+    loading_state: locked
+    error_state: locked_out
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: secure_prefs
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: >-
+          Increment failed_attempts. If failed_attempts >= 5: set locked_until = now +
+          exponential_backoff (30s first lockout, 2min second, 10min third+). Both
+          failed_attempts and locked_until persisted to survive process kill — the lockout
+          timer remains active even if the app is force-stopped. On configurable max
+          consecutive lockouts (default 10): clear session + navigate to fineract-auth-session.
+    dtos:
+      - name: LockoutConfig
+        role: derived
+        api_id: null
+        source: "local — failed_attempts incremented + locked_until computed and written to encrypted_prefs"
+    error_paths:
+      - error_code: locked_out
+        behavior: show_locked_out
+        message_key: passcode_locked_out
+        note: "Countdown chip shown; PIN pad disabled until locked_until expires."
+
+  # ── 5. Biometric authentication (locked → locked_biometric → navigate | locked) ─
+  - screen_id: passcode-lock
+    trigger: on_interact
+    produces_state: locked_biometric
+    loading_state: locked_biometric
+    error_state: locked
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: secure_prefs
+        mutation: read
+        persistence_contract:
+          is_durable: false
+          storage_backend: in_memory
+        persistence_note: >-
+          biometric_lock_enabled flag already loaded on mount (entry 1). BiometricPrompt uses
+          the OS TEE / Secure Enclave — no biometric template data read from or written to
+          app storage. On success: emit UnlockSuccess, navigate to nav-shell-assembler.
+          On failure or cancel: return to locked state; PIN entry remains available.
+          failed_attempts is NOT incremented on biometric failure (only on PIN failure).
+    side_effects:
+      - kind: emit_event
+        target: "platform BiometricPrompt — OS system biometric dialog"
+      - kind: navigate
+        target: "nav-shell-assembler on authentication success"
+    error_paths:
+      - error_code: biometric_auth_failed
+        behavior: fallback_to_pin
+        message_key: passcode_biometric_failed
+      - error_code: biometric_cancelled
+        behavior: return_to_locked
+        message_key: null
+
+# regenerated-provenance: data-flow enriched to v2.2.0 schema 2026-08-01 — all 6 ui.yaml
+# states covered (setup/confirm/locked/locked_biometric/locked_out/error); 5 entries;
+# 0 API endpoints (device-local only per api.yaml); reads: encrypted_prefs (mount);
+# writes: encrypted_prefs (confirm→passcode_hash, pin_failed→failed_attempts+locked_until,
+# pin_matched→failed_attempts reset).

@@ -1,16 +1,17 @@
 # Roadmap — Money Toolkit (kmp-project-template)
 
-> **SoT note:** Reverse-engineered from shipped source on 2026-07-25 via `/idea import`.
-> Phases reflect the ACTUAL shipped state: P0 is the shipped core (12 features), P1 is
-> the half-built crypto cluster + two shipped-code gaps (the natural first `/idea-agent`
-> drive target), P2 is forward-looking enhancement.
+> **SoT note:** Reverse-engineered fresh from shipped source at HEAD on 2026-08-01 via
+> `/idea import`. Phases reflect the ACTUAL shipped state: P0 is the shipped core (12
+> features with in-tree UI + the crypto markets list), P1 is the half-built crypto cluster
+> + two shipped-code gaps (the natural first `/idea-agent` drive target), P2 is
+> forward-looking enhancement.
 
 ---
 
 ## P0 — Shipped Core ✅ (reverse-engineered as complete)
 
 The demo showcase already ships and runs on all 5 platforms. Twelve features are fully
-implemented (feature + UI in-tree).
+implemented with UI in-tree, plus the crypto coin-markets list.
 
 ### App shell
 | Feature | feature_id | Status |
@@ -43,7 +44,7 @@ implemented (feature + UI in-tree).
 
 ### Infrastructure (shipped, `/release`·`/ci`·`/secrets`-owned)
 - 5-platform build + expect/actual · offline-first `core-base/store` DecisionEngine
-- 8 Store5 archetypes · Room 3 + wasmJs invalidation bridge · multiplatform-settings
+- Store5 archetypes · Room 3 + wasmJs invalidation bridge · multiplatform-settings
 - CI quality gate (Spotless/Detekt/DependencyGuard/Kover) · multi-platform release ladder
 - Dual-mode secrets (manual / SOPS+age vault) · `core-base/security` · fork-syncability
 
@@ -90,7 +91,7 @@ matrix-green.
 ## Phase Summary
 
 ```
-P0  ✅  12 features shipped + full infrastructure (reverse-engineered as complete)
+P0  ✅  12 features + crypto-markets list shipped + full infrastructure (reverse-engineered as complete)
 P1  ⏳  Complete crypto cluster (crypto-detail, watchlist, alerts UI)
         + fix alerts persistence bug + surface bills delete/toggle
         →→ the first /idea-agent drive target →→ all 15 features matrix-green

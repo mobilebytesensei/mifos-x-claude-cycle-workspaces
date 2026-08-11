@@ -1,0 +1,204 @@
+schema_version: "1.0"
+feature_id: feat-country-macro
+screen_id: macro
+generated_by: "/idea-import (reverse-engineered from feature/macro commonTest + core/store commonTest)"
+# Derived 1:1 from the shipped tests:
+#   CountryMacroViewModelTest, MacroIndicatorDetailViewModelTest,
+#   CountryPickerViewModelTest, CountryMacroScreenUiTest,
+#   CountryPickerScreenUiTest, MacroIndicatorDetailScreenUiTest,
+#   FakeMacroIndicatorsRepository, and core/store EconomicMemoryOnlyTest.
+
+state_coverage:
+  - state: loading
+    screen: macro
+    name: "all three indicator cells start in Loading, dashboard exposes the provided country"
+    setup: "CountryMacroViewModel(initialCountryCode='IN', KeyedFakeMacroIndicatorsRepository) before any stream emits"
+    assertions:
+      - "state.countryCode == 'IN'"
+      - "state.gdp is ScreenState.Loading"
+      - "state.inflation is ScreenState.Loading"
+      - "state.unemployment is ScreenState.Loading"
+      - "country_macro_screen root Scaffold is displayed (three card placeholders render immediately)"
+  - state: content
+    screen: macro
+    name: "each stream updates independently of the others"
+    setup: "emit GDP=Content, INFLATION_CPI=Error, leave UNEMPLOYMENT Loading (fakeRepository per-key bus)"
+    assertions:
+      - "state.gdp is ScreenState.Content<MacroIndicator>"
+      - "state.inflation is ScreenState.Error"
+      - "state.unemployment stays ScreenState.Loading (cells evolve independently — one failure never blanks the screen)"
+      - "content card renders displayName + headlineValue + latest-year + Sparkline"
+  - state: error
+    screen: macro
+    name: "a stream Error surfaces per-card without blanking the screen"
+    setup: "emit INFLATION_CPI = Error(RuntimeException('CPI down')) while GDP is Content"
+    assertions:
+      - "state.inflation is ScreenState.Error"
+      - "state.gdp stays Content; unemployment stays Loading"
+      - "IndicatorCard InlineMessage shows error.message + a Retry button"
+  - state: empty
+    screen: macro
+    name: "an indicator with no observations renders the empty inline message"
+    setup: "World Bank resolves the pair with observations = []"
+    assertions:
+      - "that card shows 'No data published for this indicator.' + Retry; siblings unaffected"
+  - state: loading
+    screen: macroIndicatorDetail
+    name: "detail initial screenState is Loading"
+    setup: "MacroIndicatorDetailViewModel(countryCode='US', GDP, SingleKeyFakeRepository)"
+    assertions:
+      - "screenState initial == ScreenState.Loading"
+      - "macro_indicator_detail_screen root Scaffold is in the composition tree"
+  - state: content
+    screen: macroIndicatorDetail
+    name: "detail state mirrors the underlying stream (no extra transform)"
+    setup: "repo.bus.emit(Content(MacroIndicator with 2 observations))"
+    assertions:
+      - "screenState is ScreenState.Content holding the series"
+      - "asContent.data.observations.size == 2"
+      - "HeroCard shows headlineValue + 'Source: World Bank Open Data'; full-range Sparkline + reverse-chron year/value table render"
+  - state: content
+    screen: countryPicker
+    name: "picker initial state exposes empty query and the full curated list"
+    setup: "CountryPickerViewModel() (pure-local, no Store)"
+    assertions:
+      - "state.searchQuery == ''"
+      - "state.results == SupportedCountries.list (all 31)"
+      - "country_picker_screen root Scaffold is displayed"
+
+interactions:
+  - screen: macro
+    component: "indicator card (e.g. GDP)"
+    trigger: tap
+    name: "tapping an indicator card navigates to its detail"
+    expected: "nav: macroIndicatorDetail (countryCode, indicatorKindName)"
+    assertions:
+      - "onOpenIndicator(GDP) → navigate IndicatorDetailRoute(countryCode, 'GDP')"
+  - screen: macro
+    component: "country chip (TopAppBar)"
+    trigger: tap
+    name: "tapping the country chip opens the picker"
+    expected: "nav: countryPicker (CountryPickerRoute)"
+    assertions: ["onPickCountry() → navigate CountryPickerRoute"]
+  - screen: macro
+    component: "refresh-all icon"
+    trigger: tap
+    name: "RefreshAll is a recognised action handled without crashing"
+    expected: "action: MacroAction.RefreshAll (fans out refresh() to all 3 streams)"
+    assertions:
+      - "trySendAction(RefreshAll) drains without exception (smoke — action API surface locked)"
+  - screen: macro
+    component: "per-card retry"
+    trigger: tap
+    name: "each retry variant is a valid input to handleAction"
+    expected: "action: MacroAction.Retry{Gdp|Inflation|Unemployment}"
+    assertions:
+      - "RetryGdp / RetryInflation / RetryUnemployment / RefreshAll all handled without crashing"
+  - screen: macro
+    component: "country change (post-pick)"
+    trigger: "ChangeCountry action"
+    name: "ChangeCountry updates the state code AND re-keys all three streams"
+    expected: "action: MacroAction.ChangeCountry(code)"
+    assertions:
+      - "after ChangeCountry('IN'): state.countryCode == 'IN'"
+      - "all 3 IN keys requested: {(IN,GDP),(IN,INFLATION_CPI),(IN,UNEMPLOYMENT)}"
+      - "after re-key only IN content surfaces — stale US emissions on old streams do NOT reach the VM"
+      - "ChangeCountry to the SAME code is a no-op (early return)"
+  - screen: macro
+    component: "back button"
+    trigger: tap
+    name: "back pops the stack"
+    expected: "navigate_back (popBackStackSafely)"
+    assertions: ["returns to the caller"]
+  - screen: countryPicker
+    component: "search field"
+    trigger: text_input
+    name: "search filters via SupportedCountries.search and is reactive"
+    expected: "action: CountryPickerAction.Search(query)"
+    assertions:
+      - "Search('ind') → results contain IN, exclude US"
+      - "clearing the query restores the full SupportedCountries.list"
+  - screen: countryPicker
+    component: "country row"
+    trigger: tap
+    name: "selecting a country reports its code and rebuilds the dashboard"
+    expected: "onCountryPicked(code) → navigate CountryMacroRoute(code) popUpTo inclusive"
+    assertions: ["dashboard re-binds a fresh VM on the picked country"]
+  - screen: macroIndicatorDetail
+    component: "refresh / retry (ScreenContent)"
+    trigger: tap
+    name: "onRetry / Refresh both refresh the single-indicator stream"
+    expected: "action: MacroDetailAction.Retry / Refresh → stream.retry()/refresh()"
+    assertions: ["the single (country, indicator) stream re-fetches"]
+
+detail_and_picker_semantics:
+  - name: "detail subscribes to the supplied (country, indicator) pair"
+    assertions:
+      - "MacroIndicatorDetailViewModel('DE', UNEMPLOYMENT) requests MacroIndicatorKey('DE', UNEMPLOYMENT)"
+  - name: "TRACKED_INDICATORS is exactly [GDP, INFLATION_CPI, UNEMPLOYMENT]"
+    assertions:
+      - "the dashboard opens one stream per TRACKED_INDICATORS entry (3 streams)"
+      - "GDP_PER_CAPITA + GINI exist in IndicatorKind but are NOT surfaced on the dashboard"
+  - name: "SupportedCountries lookup + search"
+    assertions:
+      - "findByCode is case-insensitive (trim + uppercase)"
+      - "search matches ISO-code prefix OR localised-name substring; empty query → full list"
+
+api_integration:
+  - operation: worldbank-country-indicator
+    name: "successful World Bank fetch renders Content (in-memory, no Room)"
+    setup: "WorldBankApi.indicator returns [metadata, observations]; MemoryStore caches in memory only"
+    assertions:
+      - "WorldBankResponseDto.toDomain maps rows → IndicatorObservation(year, value), drops year<=0, sorts ascending"
+      - "MacroIndicator.headlineValue() picks the most-recent NON-null observation"
+      - "card transitions Loading → Content"
+  - operation: worldbank-country-indicator
+    name: "wire-format quirk — 2-element array [metadata, observations[]] deserializes"
+    setup: "WorldBankResponseSerializer destructures the array"
+    assertions:
+      - "a non-array root (e.g. {\"message\":[...]} on 404/rate-limit) maps to an empty domain object → Empty slot, no crash"
+      - "null observation values are preserved (rendered '—', not 0)"
+  - operation: worldbank-country-indicator
+    name: "cold start re-fetches (MEMORY_ONLY, no persistence)"
+    setup: "process death clears the in-memory Store; screen re-opened"
+    assertions:
+      - "no cached rows survive → Fetcher re-hits World Bank (contrast NETWORK_WITH_CACHE which would serve Room cache)"
+
+archetype_contract:
+  - name: "MacroIndicatorStore is MEMORY_ONLY (createMemoryStore, no DAO)"
+    source_test: "core/store/.../EconomicMemoryOnlyTest.macroIndicatorStore_usesMemoryStore_noDAO"
+    assertions:
+      - "provideMacroIndicatorStore takes only (api, networkMonitor) — no DAO/SourceOfTruth parameter"
+      - "adding a DAO parameter would break the archetype contract — macro data is cheap public data, refetch-on-cold-start is intentional"
+
+acceptance_criteria:
+  - ref: "AC-MACRO-01"
+    name: "Three indicators at a glance"
+    given: "a country (US by default)"
+    when: "the user opens Country Macro"
+    then: "GDP, Inflation (CPI) and Unemployment each show a headline value, latest year, and a trend sparkline in their own card"
+  - ref: "AC-MACRO-02"
+    name: "Independent card resilience"
+    given: "one World Bank indicator fails while others succeed"
+    when: "the dashboard renders"
+    then: "only the failed card shows an error/offline message + Retry; the other two still show their data"
+  - ref: "AC-MACRO-03"
+    name: "Country switching"
+    given: "the dashboard is showing one country"
+    when: "the user picks another via the country chip → picker"
+    then: "all three cards re-key to the new country and stale-country data never bleeds through"
+  - ref: "AC-MACRO-04"
+    name: "Sparse-data grace"
+    given: "an indicator with null/missing years (common for small economies)"
+    when: "the card renders"
+    then: "missing years show '—' (not 0), the sparkline skips gaps, and the headline uses the most-recent non-null value"
+  - ref: "AC-MACRO-05"
+    name: "Per-indicator drill-down"
+    given: "the dashboard is shown"
+    when: "a card is tapped"
+    then: "the detail screen opens with a full 25-year sparkline + year-by-year table sourced from the same in-memory Store"
+  - ref: "AC-MACRO-06"
+    name: "No-key-required openness"
+    given: "a fresh fork with no secrets configured"
+    when: "the macro screen loads (World Bank is fully open — no API key)"
+    then: "indicators fetch and render with zero setup (contrast FRED/B7 which needs a key)"

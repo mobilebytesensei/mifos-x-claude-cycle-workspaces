@@ -154,13 +154,13 @@ All other data reads (queue items, settings, sync timestamps) are sourced exclus
 
 | EntityType | Operation | Relative URL Pattern |
 |------------|-----------|----------------------|
-| MEETING | CREATE | `datatables/dt_meeting_record/{centerId}` |
-| MEETING | UPDATE | `datatables/dt_meeting_record/{centerId}/{rowId}` |
+| MEETING | CREATE | `datatables/dt_meeting_record/{groupId}` |
+| MEETING | UPDATE | `datatables/dt_meeting_record/{groupId}/{rowId}` |
 | ATTENDANCE | CREATE | `datatables/dt_meeting_attendance/{clientId}` |
 | SAVINGS | CREATE | `savingsaccounts/{savingsAccountId}/transactions` |
 | LOAN | CREATE | `loans` |
 | LOAN | UPDATE | `loans/{loanId}` |
-| SHARE_OUT | CREATE | `datatables/dt_share_out/{centerId}` |
+| SHARE_OUT | CREATE | `datatables/dt_share_out/{groupId}` |
 | MEMBER | CREATE | `clients` |
 | MEMBER | UPDATE | `clients/{clientId}` |
 

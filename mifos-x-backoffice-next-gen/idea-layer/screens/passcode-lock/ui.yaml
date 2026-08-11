@@ -1,0 +1,149 @@
+schema_version: v4.0
+screen_id: passcode-lock
+feature: passcode-lock
+name: "Passcode Lock (set/enter numeric PIN · 15s background re-lock)"
+status: enriched
+archetype: form_screen
+cluster: foundation
+module: foundation
+initial_state: locked
+
+# ─────────────────────────────────────────────────────────────────────────
+# Device-local PIN lock screen — shown on cold start (if passcode enabled)
+# and after 15s in the background. Numeric PIN pad (6 digits default, 4 allowed).
+# The SETUP mode is entered from m17-sync-settings biometric/passcode toggle;
+# the LOCK mode is entered automatically on background-timeout or cold start.
+# ─────────────────────────────────────────────────────────────────────────
+
+business_logic:
+  kind: crud
+  processing_kind: on_demand
+  description: >-
+    Manages device-local passcode state from the encrypted multiplatform-settings store.
+    Setup mode (first use): user enters and confirms a PIN; it is bcrypt-hashed and persisted.
+    Lock mode (post-background): user enters the PIN; it is hashed and compared. Biometric
+    prompt offered if biometric_lock_enabled = true. Lockout after 5 failed attempts.
+  library_refs: []
+  external_library_refs:
+    - "com.russhwolf.settings.Settings (encrypted variant)"
+    - "kotlinx.coroutines (background-timeout timer, CountDownTimer)"
+    - "BiometricPrompt (platform native)"
+  required_modules:
+    - core/datastore
+
+states:
+  setup:
+    description: "First-time PIN setup — 'Set your passcode' header, digit entry pad, a 6-dot progress indicator (one dot per entered digit). After 6 digits, transitions to confirm state."
+  confirm:
+    description: "PIN confirmation — 'Confirm your passcode' header; user re-enters the PIN. If it matches, the hash is persisted and the setup is complete."
+  locked:
+    description: "App locked — 'Enter passcode' header with the user's name and office (from the session), a 6-dot progress indicator, the numeric PIN pad (0-9 + delete), and optionally a biometric icon if biometric lock is enrolled."
+    is_default: true
+  locked_biometric:
+    description: "Lock screen with biometric prompt active — the platform system biometric dialog is shown. User may dismiss and fall back to PIN."
+  locked_out:
+    description: "Too many failed attempts — PIN pad disabled; a countdown chip shows the remaining lockout duration. After expiry, the pad re-enables."
+  error:
+    description: "PIN mismatch (during setup) or wrong PIN (during unlock) — a shake animation on the dot row and an error label below; dots reset."
+
+state_model:
+  fields:
+    - name: mode
+      type: PasscodeMode
+      notes: "SETUP | CONFIRM | LOCKED — determines header label ('Set your passcode' / 'Confirm your passcode' / 'Enter your passcode') and the submit behavior (hash+persist vs compare)."
+    - name: currentDigits
+      type: String
+      notes: "In-progress digit entry string (0–6 chars). Drives the dot indicator fill count. Cleared after submit or on error reset. Never persisted."
+    - name: confirmDigits
+      type: String
+      notes: "Confirmation digit entry (CONFIRM mode only). Compared against currentDigits on submit; both cleared after match check."
+    - name: failedAttempts
+      type: Int
+      notes: "Count of consecutive wrong PINs in the current lock session. Reset to 0 on successful unlock. After 5 failures, triggers the locked_out state."
+    - name: lockedUntil
+      type: Long?
+      notes: "Unix epoch (ms) until which PIN entry is disabled. Null when not in lockout. Drives the countdown chip in locked_out state."
+    - name: biometricAvailable
+      type: Boolean
+      notes: "True when biometric_lock_enabled=true AND a biometric is enrolled in the OS. Controls the fingerprint/face icon button visibility on the lock screen."
+    - name: sessionUserName
+      type: String
+      notes: "Signed-in user's displayName shown below the header in locked mode (e.g. 'Ana García')."
+    - name: sessionOfficeName
+      type: String
+      notes: "Signed-in user's officeName shown below the user name in locked mode (e.g. 'Oficina Central')."
+
+shell:
+  bottom_navigation_visible: false
+  top_app_bar_visible: false
+  fab_visible: false
+  snackbar_visible: false
+
+components:
+  - id: lock_header
+    type: header
+    label: "{strings.passcode_header}"
+    testTag: "passcode-lock_header"
+    description: "Contextual: 'Set your passcode' (setup) / 'Confirm your passcode' (confirm) / 'Enter your passcode' (locked). In locked state, also shows the signed-in user's name + office below the title."
+
+  - id: pin_dots
+    type: indicator_row
+    label: "{strings.passcode_dots}"
+    testTag: "passcode-lock_dots"
+    description: "A row of 6 filled/empty dots tracking PIN entry progress. Animates a shake on wrong PIN. All dots fill on complete entry."
+
+  - id: digit_pad
+    type: keypad
+    testTag: "passcode-lock_keypad"
+    description: "Numeric pad 1-9, 0, delete. Each tap appends a digit (OnDigitTap); the dot row updates. Auto-submits at 6 digits."
+    accessibility_label: "Enter passcode digit"
+    on_click:
+      action: enter_digit
+      action_contract:
+        effect: transform_state
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        description: "Append the tapped digit to the in-progress PIN string; update the dot indicator. At 6 digits, auto-submit (compare hash in locked mode, advance to confirm in setup mode)."
+
+  - id: delete_key
+    type: button
+    label: "{strings.passcode_delete}"
+    testTag: "passcode-lock_delete"
+    accessibility_label: "Delete last entered passcode digit"
+    on_click:
+      action: delete_last_digit
+      action_contract:
+        effect: transform_state
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        description: "Remove the last digit from the current PIN entry; decrement the dot indicator."
+
+  - id: biometric_button
+    type: icon_button
+    label: "{strings.passcode_biometric}"
+    testTag: "passcode-lock_biometric"
+    icon: "fingerprint"
+    visible_states: [locked]
+    description: "Shown only when biometric lock is enrolled. Tapping shows the platform BiometricPrompt. On authentication success, unlocks the app; on failure or cancel, returns to PIN entry."
+    accessibility_label: "Unlock with biometric authentication"
+    on_click:
+      action: trigger_biometric
+      action_contract:
+        effect: emit_event
+        description: "Trigger the platform BiometricPrompt. On success: emit UnlockSuccess, route to the assembled app shell. On failure/cancel: return to locked state (PIN entry remains available)."
+        required_permission: null
+        denied_behavior: null
+
+  - id: lockout_countdown
+    type: chip
+    label: "{strings.passcode_lockout_countdown}"
+    testTag: "passcode-lock_lockout"
+    visible_states: [locked_out]
+    description: "Countdown chip: 'Try again in {duration}'. Decrements every second using a CountDownTimer coroutine. When it reaches zero, transitions back to locked (PIN entry re-enabled)."
+
+  - id: error_label
+    type: text
+    label: "{strings.passcode_error}"
+    testTag: "passcode-lock_error"
+    visible_states: [error]
+    description: "In setup/confirm mode: 'PINs don't match'. In locked mode: 'Incorrect PIN · {remaining} attempts remaining'."

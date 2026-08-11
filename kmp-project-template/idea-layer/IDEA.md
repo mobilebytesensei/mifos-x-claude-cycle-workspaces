@@ -1,22 +1,23 @@
 # Product Vision: Money Toolkit (kmp-project-template)
 
-> **SoT note:** Reverse-engineered from shipped source on 2026-07-25 via `/idea import`.
-> These foundation docs are a faithful read-only synthesis of 15 feature sibling-sets
-> plus an infrastructure analysis — the running source is the ground truth, and the
-> idea-layer mirrors it. No features are invented here; every entry traces to a shipped
-> module (or a shipped data layer with a documented UI intent).
+> **SoT note:** Reverse-engineered fresh from shipped source at HEAD on 2026-08-01 via
+> `/idea import`. These foundation docs are a faithful read-only synthesis of the 15
+> feature modules (13 with shipped UI + 2 data-layer-shipped/UI-pending) plus an
+> infrastructure analysis — the running source is the ground truth and the idea-layer
+> mirrors it. No features are invented here; every entry traces to a shipped module (or a
+> shipped data layer with a documented UI intent). `core/auth` has been removed from the
+> template — there is deliberately **no auth feature**.
 
 ---
 
 ## Vision Statement
 
 **Money Toolkit** is a white-label Kotlin Multiplatform finance-utility template — a
-production-ready starting point that ships as a runnable demo showcase of 15 feature
-modules and doubles as the **reference implementation of every `core-base/store`
-persistence archetype**. It runs shared business logic and Compose Multiplatform UI
-across **five targets — Android, iOS, macOS, Desktop (JVM), and Web (Kotlin/JS + WASM)** —
-with **no login and no backend of its own** (the app consumes only public, mostly
-keyless APIs).
+production-ready starting point that ships as a runnable demo showcase of feature modules
+and doubles as the **reference implementation of every `core-base/store` persistence
+archetype**. It runs shared business logic and Compose Multiplatform UI across **five
+targets — Android, iOS, macOS, Desktop (JVM), and Web (Kotlin/JS + WASM)** — with **no
+login and no backend of its own** (the app consumes only public, mostly keyless APIs).
 
 ## Problem
 
@@ -28,31 +29,31 @@ Two distinct audiences are underserved by existing KMP starters:
    templates don't demonstrate the hard parts (offline caching, Store5 archetypes,
    expect/actual platform bridges, multi-platform release).
 2. **End users of forks** want small, private, offline-first finance utilities
-   (loan math, bill reminders, rate tracking, crypto watchlists) that work on any
-   device without an account, a sign-in, or a server holding their data.
+   (loan math, bill reminders, rate tracking, crypto watchlists) that work on any device
+   without an account, a sign-in, or a server holding their data.
 
 ## Solution
 
 A comprehensive, multi-module KMP template that:
 
-- Ships **15 working feature modules** grouped into four domains (banking/local,
-  economic/network, crypto, app-shell) — every one a live, on-device demo.
-- Is a **living catalogue of the 8 `core-base/store` Store5 archetypes**
+- Ships **15 feature modules** grouped into four domains (app-shell, banking/local,
+  economic/network, crypto) — 13 are live on-device demos; the crypto watchlist/alerts
+  modules ship their full data layer with UI pending.
+- Is a **living catalogue of the `core-base/store` Store5 archetypes**
   (OFFLINE_LOCAL_ONLY, NETWORK_WITH_CACHE, NETWORK_ONLY, CACHE_ONLY, PERIODIC,
   MEMORY_ONLY, LOAD_ONCE, MUTABLE) — each feature is chosen to demonstrate one.
 - Is **offline-first by default** — a shared `core-base/store` DecisionEngine drives
   loading/error/empty/content per screen with **zero per-screen state code**.
 - Is **fork-and-brand ready** — `customizer.sh` renames namespaces and, **by default,
-  REMOVES the entire demo showcase** (a fork opts back in with `--keep-demo`), leaving
-  a clean, production-wired shell (nav, DI, design system, CI, release ladder) for the
-  fork to fill.
+  REMOVES the demo showcase** (a fork opts back in with `--keep-demo`), leaving a clean,
+  production-wired shell (nav, DI, design system, CI, release ladder) for the fork to fill.
 
 ## Target Users
 
 | Audience | What they get |
 |---|---|
 | **Fork authors / KMP teams** | A production-wired 5-platform shell + a reference implementation of every store archetype, offline-first pattern, and release rung. Delete the demo, keep the machinery. |
-| **End users of forks** | Small, private, offline-first finance utilities — loan tracking/math, bill reminders, interest-rate & FX & macro dashboards, crypto markets/watchlist/alerts — with no account and no server. |
+| **End users of forks** | Small, private, offline-first finance utilities — loan tracking/math, bill reminders, interest-rate & FX & macro dashboards, crypto markets — with no account and no server. |
 | **OSS contributors (Mifos/openMF)** | A canonical, well-tested example codebase to learn Compose Multiplatform, MVI, Koin, Store5, and the multi-platform release pipeline from. |
 
 ## Value Propositions
@@ -64,10 +65,10 @@ A comprehensive, multi-module KMP template that:
 3. **Fork-and-brand in minutes** — `customizer.sh` renames + strips the demo by default;
    a fork keeps the infrastructure and adds its own features.
 4. **Reference-grade patterns** — real MVI (`BaseViewModel<S,E,A>`), Koin DI, Ktorfit/Ktor
-   networking, all 8 store archetypes, offline draft outbox, and a full CI + multi-platform
+   networking, the store archetypes, offline draft outbox, and a full CI + multi-platform
    release ladder — not toy code.
-5. **No account, no server, private by default** — the app itself has no backend; user data
-   (loans, bills, watchlist, alerts) lives only on-device.
+5. **No account, no server, private by default** — the app itself has no backend; user
+   data (loans, bills) lives only on-device.
 
 ---
 
@@ -102,7 +103,7 @@ key), CoinGecko (crypto markets, no key). Missing keys degrade gracefully to an 
 | DI | Koin |
 | Navigation | Compose Navigation (type-safe `@Serializable` routes) |
 | Networking | Ktorfit / Ktor — `Result<T, RemoteError>` |
-| Offline / cache | `core-base/store` Store5 (8 archetypes) + Room 3 (`RoomChangeBus` wasmJs invalidation bridge) |
+| Offline / cache | `core-base/store` Store5 archetypes + Room 3 (`RoomChangeBus` wasmJs invalidation bridge) |
 | Preferences | multiplatform-settings (plain + secure) |
 | CI/CD | GitHub Actions + Fastlane; multi-platform release ladder (mifos-x-actionhub v2) |
 | Platforms | Android, iOS, macOS, Desktop (JVM), Web (Kotlin/JS + WASM) |
@@ -146,7 +147,8 @@ key), CoinGecko (crypto markets, no key). Missing keys degrade gracefully to an 
 ## Constraints
 
 - Requires Kotlin 2.x with Compose Multiplatform; iOS/macOS need Xcode; Web WASM target.
-- The app has **no backend** — no auth, no sync; user data is device-local only.
+- The app has **no backend** — no auth, no sync; `core/auth` has been removed. User data
+  (loans, bills) lives only on-device.
 - FRED-backed features need a free developer key; all other external sources are keyless.
 
 ## Assumptions

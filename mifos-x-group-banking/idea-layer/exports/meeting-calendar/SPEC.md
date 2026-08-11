@@ -11,22 +11,22 @@
 
 ## Overview
 
-Calendar and list view of all meetings for the group center. Each meeting card shows meeting
+Calendar and list view of all meetings for the group. Each meeting card shows meeting
 number, scheduled date, status (upcoming/completed/missed), attendance count, and total KES
 collected. The upcoming meeting is pinned at the top with a prominent "Start Meeting" CTA;
 past meetings scroll below. Reads scheduled meetings from the Fineract
-`centers/{centerId}/meetings` API and the `dt_meeting_record` datatable, then lists upcoming and
+`groups/{groupId}/meetings` API and the `dt_meeting_record` datatable, then lists upcoming and
 past meetings. Offline-first: results are cached via SQLDelight and served stale-while-revalidate,
 with `cmp-network-monitor` gating live refresh. No money moves occur here — the app only reads
 Fineract as the system of record. Admin (treasurer/chairperson) can conduct a new meeting or
 review a past one.
 
 **Route:** `/meetings` · **Entry:** `home-dashboard` (Meetings nav), bottom_nav (meetings tab)
-**Nav params:** `center_id: Int`
+**Nav params:** `group_id: Int`
 
 **Acceptance Criteria:**
 
-- AC1: On mount, load meetings for the center; cached data renders immediately then refreshes.
+- AC1: On mount, load meetings for the group; cached data renders immediately then refreshes.
 - AC2: The upcoming meeting is pinned at top with an enabled "Start Meeting" CTA; if none, show
        a "Next meeting not scheduled" placeholder.
 - AC3: `ToggleViewMode` is a pure transform flipping LIST/CALENDAR (no network, no persistence).
@@ -54,7 +54,7 @@ review a past one.
 | isRefreshing | Boolean | `false` | Pull-to-refresh in flight |
 | viewMode | ViewMode | `ViewMode.LIST` | LIST or CALENDAR |
 | error | String? | `null` | Error message |
-| centerId | Int | `0` | Group center id |
+| groupId | Int | `0` | Group id |
 
 **Screen States — `MeetingCalendarScreenState`**: `Loading`, `Content`, `Empty`, `Error`
 
@@ -77,7 +77,7 @@ review a past one.
 
 | Action | Params | Trigger | Effect |
 |---|---|---|---|
-| `LoadMeetings` | — | Screen enters composition | call_api — get_center_meetings + records |
+| `LoadMeetings` | — | Screen enters composition | call_api — get_group_meetings + records |
 | `RefreshMeetings` | — | Pull-to-refresh / error retry | call_api — network-first refresh |
 | `ToggleViewMode` | — | Tap calendar/list toggle | transform_state — flip viewMode |
 | `StartMeeting` | meetingId, meetingNumber | Tap Start Meeting on upcoming card | navigate — to meeting-conduct |
@@ -102,8 +102,8 @@ review a past one.
 
 | Condition | Destination | Params |
 |---|---|---|
-| Tap Start Meeting (upcoming) | `meeting-conduct` | meeting_id, meeting_number, center_id |
-| Tap completed/missed row | `previous-meeting-review` | meeting_id, meeting_number, center_id |
+| Tap Start Meeting (upcoming) | `meeting-conduct` | meeting_id, meeting_number, group_id |
+| Tap completed/missed row | `previous-meeting-review` | meeting_id, meeting_number, group_id |
 
 **navigates_to:** `meeting-conduct` (user_taps_start_meeting), `previous-meeting-review` (user_taps_completed_meeting)
 
@@ -111,8 +111,8 @@ review a past one.
 
 | ID | Method | Endpoint | Cache | Writable |
 |---|---|---|---|---|
-| `get_center_meetings` | GET | `/fineract-provider/api/v1/centers/{centerId}/meetings` | stale-while-revalidate, offline show_cached | no |
-| `get_meeting_records_datatable` | GET | `/fineract-provider/api/v1/datatables/dt_meeting_record/{centerId}` | stale-while-revalidate | no |
+| `get_group_meetings` | GET | `/fineract-provider/api/v1/groups/{groupId}/meetings` | stale-while-revalidate, offline show_cached | no |
+| `get_meeting_records_datatable` | GET | `/fineract-provider/api/v1/datatables/dt_meeting_record/{groupId}` | stale-while-revalidate | no |
 
 See `exports/meeting-calendar/API.md`.
 
@@ -140,7 +140,7 @@ See `exports/meeting-calendar/API.md`. Key types: `MeetingListItem`, `MeetingLis
 
 | ID | Priority | Scenario |
 |---|---|---|
-| TC-MC-001 | P0 | On mount, meetings load for the center and populate the calendar |
+| TC-MC-001 | P0 | On mount, meetings load for the group and populate the calendar |
 | TC-MC-002 | P0 | Calendar view shows meeting dots on scheduled dates |
 | TC-MC-003 | P1 | Toggle to LIST shows chronological meetings list |
 | TC-MC-004 | P0 | Tapping a calendar date shows that date's meetings |

@@ -60,13 +60,12 @@
 | Field | Type | Description |
 |---|---|---|
 | groupId | String | Companion group ID |
-| fineractCenterId | String | Fineract center ID |
 | inviteCode | String | Auto-generated first invite code |
 
 **Server orchestration steps (atomic in companion):**
-1. `POST /fineract/centers` — creates Fineract center
-2. `POST /fineract/centers/{id}?command=activate` — activates center
-3. `POST /fineract/centers/{id}/groupmembers` — associates creator
+1. `POST /fineract/groups` — creates Fineract group
+2. `POST /fineract/groups/{id}?command=activate` — activates group
+3. `POST /fineract/groups/{id}/groupmembers` — associates creator
 4. `POST /companion/datatables/dt_member_role/{groupId}` — assigns ORGANIZER role
 5. `POST /companion/datatables/dt_group_type_config/{groupId}` — provisions group config
 
@@ -115,7 +114,6 @@ max_members: Int
 ### CreateGroupOrchestrationResponse
 ```
 groupId: String
-fineractCenterId: String
 inviteCode: String
 ```
 

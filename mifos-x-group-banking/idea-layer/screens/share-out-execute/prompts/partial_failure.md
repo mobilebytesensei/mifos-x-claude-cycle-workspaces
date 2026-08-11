@@ -25,7 +25,7 @@ craft_rules_version: v1.0.0
 # share-out-execute — partial_failure state
 
 > Bindings resolved to demo values: 3 of 5 succeeded, 2 failed (Peter Otieno, Mary Akinyi)
-> Stitch DesignSystem: CommonPurse forest green #2E7D32 / amber #FF8F00, minimalist-ui
+> Stitch DesignSystem: MifosSave forest green #2E7D32 / amber #FF8F00, minimalist-ui
 > DO NOT redeclare colors / fonts / spacing — they live in DESIGN.md.
 
 ↓↓↓ MOCKUP PROMPT
@@ -39,7 +39,7 @@ craft_rules_version: v1.0.0
 - padding: default
 - alignment: start
 
-## Palette (CommonPurse)
+## Palette (MifosSave)
 - Primary: #2E7D32 (forest green) — top bar, DONE status icons, avatar circles
 - Accent: #FF8F00 (amber) — warning banner border, retry button background
 - Warning Container: #FFF8E1 — warning banner card background

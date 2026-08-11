@@ -1,10 +1,10 @@
 # Loan Mark Defaulted Dialog — Stitch Mockup
 
 **Status**: Generated
-**Project**: CommonPurse (mifos-x-group-banking)
+**Project**: MifosSave (mifos-x-group-banking)
 **Stitch Project ID**: `2628966868931366090`
 **Screen ID**: `82e538c1f29f418b8791477120067b9d`
-**Design System**: CommonPurse-v3 (`assets/17261554270924114992`)
+**Design System**: MifosSave-v3 (`assets/17261554270924114992`)
 **Device**: Mobile (Android)
 **Generated**: 2026-07-18
 **Sources**: `ui.yaml` (2026-07-17), `demo-data.yaml` (2026-07-18)
@@ -41,7 +41,7 @@ View in Stitch: `projects/2628966868931366090/screens/82e538c1f29f418b8791477120
 ## Interactions
 
 - **Cancel** — `OnDismiss`; effect `none` — pure UI dismissal, no persistence.
-- **Mark Defaulted** — `OnConfirm` → `write_off_loan`; effect `call_api`; guarded by `cmp-network-monitor`.
+- **Mark Defaulted** — `OnConfirm` → `mark_loan_defaulted`; effect `call_api`; guarded by `cmp-network-monitor`.
   On success: emits `LoanMarkedDefaulted(loanId)` and refreshes loan cache. On failure: sets `submitError`.
 
 ## Idle-state demo binding

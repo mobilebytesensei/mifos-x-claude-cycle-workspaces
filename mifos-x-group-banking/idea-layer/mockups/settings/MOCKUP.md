@@ -9,7 +9,7 @@
 
 ## Design Language
 
-**System**: CommonPurse-v3 (Material Design 3 · MD3) — comfortable density
+**System**: MifosSave-v3 (Material Design 3 · MD3) — comfortable density
 **Aesthetic**: `minimalist-ui` · variance 3/10 · motion 3/10 · density 7/10 · accessibility-first
 **Font**: Roboto (Android) / SF Pro (iOS) — system stack · Roboto Mono / SF Mono for version strings
 **Primary**: `#2E7D32` (`--primary-700`, VSLA green) — TopAppBar fill, section-header labels, radio selected dot, switch track (on), primary CTA styling
@@ -28,8 +28,8 @@
 ## Screen: Settings
 
 ### Entry
-- From **bottom_nav** "Settings" tab (`trigger: settings_tab_selected`); no nav-params
-- Back navigation is handled by the bottom-nav host (no explicit back arrow on the TopAppBar)
+- From the **personal-dashboard profile overflow menu** → Settings (`trigger: profile_overflow_menu_settings_selected`); no nav-params
+- Back navigation returns to personal-dashboard (pushed screen — TopAppBar back affordance)
 - Deep-link `/settings` supported
 
 ### Layout (state: `content`)
@@ -94,8 +94,8 @@
 │  └─────────────────────────────────────┘│  → on_click OnLogoutTapped
 │                                          │     effect: emit_event ShowLogoutDialog
 ├─────────────────────────────────────────┤
-│  [ 🏠 Home ] [ 👥 Groups ] [ ⚙ Settings*]│  bottom_nav — "Settings" tab active (primary tint)
-└─────────────────────────────────────────┘
+│              ↕ scroll                    │  pushed screen (from personal-dashboard overflow
+└─────────────────────────────────────────┘  menu); back returns to the member dashboard
 ```
 
 ### Demo Data (state: `content`, from `demo-data.yaml`)

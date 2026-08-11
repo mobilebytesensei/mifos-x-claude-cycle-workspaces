@@ -9,7 +9,7 @@
 
 ## Design Language
 
-**System**: CommonPurse-v3 (Material Design 3 · MD3) — comfortable density
+**System**: MifosSave-v3 (Material Design 3 · MD3) — comfortable density
 **Aesthetic**: `minimalist-ui` · variance 3/10 · motion 3/10 · density 7/10 · accessibility-first
 **Font**: Roboto (Android) / SF Pro (iOS) — system stack · Roboto Mono / SF Mono for KES amounts
 **Primary**: `#2E7D32` (`--primary-700`, VSLA green) — TopAppBar fill, GREEN health chip, active filter chip fill, KPI Groups card
@@ -208,7 +208,7 @@ The ui.yaml declares 4 `screen_state` members driving the dashboard shell. Each 
 
 ### `loading`
 
-Shimmer skeleton mirroring the content layout — parallel fetch of `groups`, `staff`, `kpis` from SQLDelight cache + Fineract API (`GET /centers?staffId=1001&fields=groups`).
+Shimmer skeleton mirroring the content layout — parallel fetch of `groups`, `staff`, `kpis` from SQLDelight cache + Fineract API (`GET /groups?staffId=1001&fields=groups`).
 
 ```
 ┌ Field Officer Dashboard  [ ⬇ ]  ────────┐  top_bar visible with title (no shimmer)
@@ -360,7 +360,7 @@ Error taxonomy (typed via `FieldOfficerDashboardError`):
 Read paths (offline-first, parallel):
 - `groups[]` ← `GroupRepository.getStaffPortfolio(staffId)` via Store5 stream
   - Source of truth: SQLDelight `group_health_summary` cache (TTL 300s)
-  - Fetcher: Fineract `GET /centers?staffId={staffId}&fields=groups,activeClientCount,totalSavingsBalance,totalLoansOutstanding,overdueRate` (gated by `cmp-network-monitor`)
+  - Fetcher: Fineract `GET /groups?staffId={staffId}&fields=groups,activeClientCount,totalSavingsBalance,totalLoansOutstanding,overdueRate` (gated by `cmp-network-monitor`)
   - `OnRetry` triggers `fresh=true`, `OnRefresh` triggers cache invalidation
 - `staff` (session context) ← `StaffRepository.getCurrent()` from `SessionManager` (already resolved at app_launch; drives `canExport`)
 - `filteredGroups[]` — derived state: `groups.filter { selectedRegionFilter/Status/Overdue matches }` (client-side, no network)

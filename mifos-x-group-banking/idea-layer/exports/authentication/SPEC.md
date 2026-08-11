@@ -2,7 +2,7 @@
 
 ## Overview
 
-Authentication is the entry point for all CommonPurse users. It presents a client-type selection screen (admin/staff or end-user/member), then routes to a contextual login form supporting Fineract username+password credentials, a 4-digit offline PIN, and optional biometric unlock.
+Authentication is the entry point for all MifosSave users. It presents a client-type selection screen (admin/staff or end-user/member), then routes to a contextual login form supporting Fineract username+password credentials, a 4-digit offline PIN, and optional biometric unlock.
 
 **Acceptance Criteria**
 - FR-013: Authenticate users via Fineract credentials with local PIN and optional biometric for offline access

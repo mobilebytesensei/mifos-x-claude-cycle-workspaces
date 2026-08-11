@@ -1,0 +1,151 @@
+schema_version: v4.0
+screen_id: biometric-setup
+feature: biometric-setup
+name: "Biometric Setup (first-time fingerprint/face enrollment)"
+status: enriched
+archetype: form_screen
+cluster: foundation
+module: foundation
+initial_state: prompt
+
+business_logic:
+  kind: crud
+  processing_kind: on_demand
+  description: "Checks platform biometric availability on mount (BiometricManager.canAuthenticate). If available, shows enrollment prompt. On enroll, opens native biometric setup dialog; on success persists biometric_lock_enabled=true."
+  library_refs: []
+  external_library_refs:
+    - "BiometricPrompt (Android / iOS)"
+    - "com.russhwolf.settings.Settings (encrypted)"
+  required_modules:
+    - core/datastore
+
+states:
+  prompt:
+    description: "Ready to enroll — illustration of fingerprint/face icon, a headline 'Set up biometric unlock', a description explaining the benefit (unlock with fingerprint or face; falls back to passcode if biometric fails), and an Enroll button + Skip link."
+    is_default: true
+  enrolling:
+    description: "Platform biometric enrollment dialog is active — the system UI is shown (user places finger or looks at camera). The in-app screen shows a 'Waiting for biometric...' spinner."
+  success:
+    description: "Enrollment complete — a success illustration, 'Biometric set up!' headline, and a 'Done' button that routes back to M17 settings or the previous entry point."
+  unavailable:
+    description: "Device does not support biometrics — 'Not available on this device. You can still use your passcode.' message with a back/close button."
+  not_enrolled_in_os:
+    description: "Device supports biometrics but the user has not enrolled any in the OS settings — 'No biometrics enrolled. Go to your device Settings → Security to add a fingerprint or face.' with an 'Open Settings' deep-link button."
+  error:
+    description: "Enrollment failed — error message with Retry and Skip options."
+
+state_model:
+  fields:
+    - name: biometricAvailability
+      type: BiometricAvailability
+      notes: "AVAILABLE | UNAVAILABLE | NOT_ENROLLED — result of BiometricManager.canAuthenticate(BIOMETRIC_STRONG) checked on mount. Drives which state is displayed: AVAILABLE → prompt, UNAVAILABLE → unavailable, NOT_ENROLLED → not_enrolled_in_os."
+    - name: biometricType
+      type: BiometricType?
+      notes: "FINGERPRINT | FACE | IRIS | null — the detected biometric modality. Available after canAuthenticate returns AVAILABLE. Used to customize the illustration and headline ('Set up fingerprint' vs 'Set up Face ID')."
+    - name: isEnrolling
+      type: Boolean
+      notes: "True while the platform enrollment dialog is active (the OS system UI is shown). The in-app screen shows a 'Waiting for biometric...' spinner."
+
+shell:
+  bottom_navigation_visible: false
+  top_app_bar_visible: true
+  fab_visible: false
+  snackbar_visible: true
+
+components:
+  - id: header
+    type: header
+    label: "{strings.biometric_setup_title}"
+    testTag: "biometric-setup_header"
+
+  - id: illustration
+    type: image
+    label: "{strings.biometric_setup_illustration}"
+    testTag: "biometric-setup_illustration"
+    visible_states: [prompt, success]
+
+  - id: description_text
+    type: text
+    label: "{strings.biometric_setup_description}"
+    testTag: "biometric-setup_description"
+    visible_states: [prompt]
+    description: "Explains: 'Use your fingerprint or face to unlock the app instantly — your passcode is always the fallback.' Security note: biometric data never leaves the device."
+
+  - id: enroll_button
+    type: button
+    label: "{strings.biometric_setup_enroll}"
+    testTag: "biometric-setup_enroll"
+    variant: primary
+    visible_states: [prompt]
+    accessibility_label: "Set up biometric unlock for this device"
+    on_click:
+      action: start_enrollment
+      action_contract:
+        effect: emit_event
+        writes_to:
+          - table: secure_prefs
+        produces_state: enrolling
+        description: "Check BiometricManager.canAuthenticate(BIOMETRIC_STRONG). If OK, open the platform biometric enrollment dialog. On success: write biometric_lock_enabled=true and biometric_type; transition to success. On failure: transition to error."
+        required_permission: null
+        denied_behavior: null
+
+  - id: skip_button
+    type: button
+    label: "{strings.biometric_setup_skip}"
+    testTag: "biometric-setup_skip"
+    variant: text
+    visible_states: [prompt, error]
+    accessibility_label: "Skip biometric setup and continue with passcode"
+    on_click:
+      action: skip_enrollment
+      action_contract:
+        effect: navigate
+        description: "User skips biometric setup — biometric_lock_enabled remains false; navigate back to the previous screen (M17 settings or post-passcode-setup). Passcode lock still active."
+        required_permission: null
+        denied_behavior: null
+
+  - id: open_os_settings_button
+    type: button
+    label: "{strings.biometric_setup_open_settings}"
+    testTag: "biometric-setup_open_settings"
+    variant: outlined
+    visible_states: [not_enrolled_in_os]
+    accessibility_label: "Open device security settings to enroll a fingerprint or face"
+    on_click:
+      action: open_device_security_settings
+      action_contract:
+        effect: emit_event
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        description: "Deep-link to the device's Security/Biometrics settings so the user can enroll a fingerprint or face. After returning to the app, the setup screen re-checks availability."
+
+  - id: done_button
+    type: button
+    label: "{strings.biometric_setup_done}"
+    testTag: "biometric-setup_done"
+    variant: primary
+    visible_states: [success]
+    accessibility_label: "Finish biometric setup and return to settings"
+    on_click:
+      action: finish_setup
+      action_contract:
+        effect: navigate
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        description: "Navigate back to M17 settings or the previous entry point. The biometric toggle in M17 now reflects biometric_lock_enabled=true."
+
+  - id: retry_button
+    type: button
+    label: "{strings.biometric_setup_retry}"
+    testTag: "biometric-setup_retry"
+    variant: secondary
+    visible_states: [error]
+    accessibility_label: "Retry biometric enrollment"
+    on_click:
+      action: start_enrollment
+      action_contract:
+        effect: emit_event
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        produces_state: enrolling
+        description: "Retry the biometric enrollment dialog."

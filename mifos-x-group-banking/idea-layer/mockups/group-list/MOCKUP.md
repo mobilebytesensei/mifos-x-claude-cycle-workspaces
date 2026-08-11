@@ -9,7 +9,7 @@
 
 ---
 
-## Design Language (CommonPurse-v3)
+## Design Language (MifosSave-v3)
 
 **System**: Material Design 3, comfortable density
 **Font**: Noto Sans — scaled up for low-vision rural users
@@ -232,7 +232,7 @@ Stitch rendering summary (from `mockups/group-list/FIGMA_LINKS.md`, project `638
 ## Accessibility
 
 - **Touch targets** — 48dp minimum for search bar, chips, badges, icon actions; 56dp for FAB, Create Group / Retry primary CTAs.
-- **Color contrast** (WCAG check on the CommonPurse palette):
+- **Color contrast** (WCAG check on the MifosSave palette):
   - onPrimary #FFFFFF on Primary #2E7D32 — 8.10:1 (AAA)
   - Text primary #212121 on canvas #FFFFFF — 16.10:1 (AAA)
   - Text secondary #616161 on canvas — 5.74:1 (AA)

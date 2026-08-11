@@ -25,7 +25,7 @@ craft_rules_version: v1.0.0
 # group-create — success state
 
 > Bindings resolved to demo values: group "Mwangaza Women's Group", VSLA type
-> Stitch DesignSystem: CommonPurse forest green #2E7D32 / amber #FF8F00, minimalist-ui
+> Stitch DesignSystem: MifosSave forest green #2E7D32 / amber #FF8F00, minimalist-ui
 > DO NOT redeclare colors / fonts / spacing — they live in DESIGN.md.
 
 ↓↓↓ MOCKUP PROMPT
@@ -39,7 +39,7 @@ craft_rules_version: v1.0.0
 - padding: default
 - alignment: center
 
-## Palette (CommonPurse)
+## Palette (MifosSave)
 - Primary: #2E7D32 (forest green) — success icon, top bar, CTA
 - Accent: #FF8F00 (amber) — group type chip accent
 - Surface: #FFFFFF — cards

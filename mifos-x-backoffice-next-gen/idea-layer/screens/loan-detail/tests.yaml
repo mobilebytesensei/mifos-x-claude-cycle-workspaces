@@ -1,54 +1,191 @@
 schema_version: v1.0.0
 feature: loan-detail
-# Regenerated 2026-07-25 (/idea-test-generate) against the enriched ui.yaml —
-# coverage verified: one scenario per ui.yaml state (loading/content/empty/error)
-# + per api operation (get_loan, post_repayment, loan_lifecycle_command).
+# Regenerated 2026-07-31 (/idea-test-generate) against the enriched ui.yaml/api.yaml/data-flow.yaml —
+# coverage: ui.yaml states (loading · content · empty · error)
+#           + ui.yaml on_click actions (select_tab · open_client · make_repayment · approve_loan · disburse_loan · retry)
+#           + api operations (get_loan · post_repayment · loan_lifecycle_command)
+#           + docs.yaml acceptance_refs[0] smoke scenario.
+# Demo data grounded in demo-data.yaml: loan 55231 · Grace Wanjiru Mwangi · Group Business Loan ·
+# KSh 60,000 principal · KSh 42,500 outstanding · period 3 overdue KSh 6,000 due 2024-06-06.
 scenarios:
   # ── state coverage ──
   - id: loading_shows_summary_schedule_shimmer
-    preconditions: ["a loanId is opened", "the loan aggregate has not resolved yet"]
-    actions: ["open a loan from the M04 list"]
-    assertions: ["the loading state shows a summary + schedule shimmer", "no error is shown"]
-    priority: medium
-  - id: content_shows_summary_tabs_and_actions
-    preconditions: ["the loan aggregate resolves with associations", "the user holds READ_LOAN"]
-    actions: ["open the loan"]
+    preconditions:
+      - "loan 55231 (Grace Wanjiru Mwangi / Group Business Loan) is navigated to"
+      - "the Store5 CACHE_FIRST_SWR read has not yet completed"
+    actions:
+      - "open loan account 000055231 from the M04 loan-portfolio list"
     assertions:
-      - "the summary header shows client, product, status chip, outstanding, arrears and next due"
-      - "the body offers Schedule / Transactions / Details tabs"
-      - "only lifecycle actions permitted for the status AND held by the PermissionSet are shown"
+      - "the screen is in the loading state (uiState = Loading)"
+      - "a summary + schedule shimmer skeleton is displayed"
+      - "no KSh amounts, client name, or tab content are rendered during the shimmer"
+      - "no error state or empty state is shown"
+    priority: medium
+
+  - id: content_shows_kes_summary_header_and_tabs
+    preconditions:
+      - "the loan aggregate for loan 55231 resolves successfully with associations=all"
+      - "the authenticated user holds READ_LOAN"
+    actions:
+      - "open loan account 000055231"
+    assertions:
+      - "the summary header shows client 'Grace Wanjiru Mwangi', product 'Group Business Loan', status chip 'Active'"
+      - "outstanding balance displays as KSh 42,500 and approved principal as KSh 60,000"
+      - "the next-due indicator surfaces the overdue period 3 entry (KSh 6,000 due 2024-06-06)"
+      - "Schedule, Transactions, and Details tabs are all visible and selectable"
+      - "the screen is in the content state (uiState = Content)"
+      - "only lifecycle actions permitted for the Active status AND held by the PermissionSet are visible in the action bar"
     priority: high
+
   - id: empty_when_loan_not_found
-    preconditions: ["the loanId resolves to no account (deleted / wrong id)"]
-    actions: ["open the loan"]
-    assertions: ["a not-found panel is shown with a back affordance"]
-    priority: low
-  - id: error_when_load_fails_no_cache
-    preconditions: ["the loan failed to load and no cache is available"]
-    actions: ["open the loan"]
-    assertions: ["the error state is shown", "Retry re-reads the aggregate"]
-    priority: medium
-  # ── endpoint / behavior coverage ──
-  - id: get_loan_reads_cache_first
-    preconditions: ["the device is offline", "the loan was previously viewed"]
-    actions: ["open the loan offline"]
-    assertions: ["the loan renders from cache (CACHE_FIRST_SWR)", "a background-refreshing badge is shown when stale"]
-    priority: high
-  - id: repayment_enqueues_durable_idempotency
-    preconditions: ["an active loan is open", "the user holds REPAYMENT_LOAN"]
-    actions: ["tap Make repayment", "enter an amount", "confirm"]
+    preconditions:
+      - "the loanId provided does not correspond to any account (deleted or wrong id)"
+    actions:
+      - "open a loan with an unknown loanId"
     assertions:
-      - "the repayment is enqueued to the offline outbox with a FRESH durable idempotency key"
-      - "the next sync replays it via POST /v1/loans/{loanId}/transactions?command=repayment through POST /v1/batches"
-      - "the schedule and outstanding update on success"
-    priority: high
-  - id: approve_disburse_gated_by_status_and_permission
-    preconditions: ["a pending-approval loan is open"]
-    actions: ["inspect the action bar"]
-    assertions: ["Approve is shown only when APPROVE_LOAN is held", "Disburse appears only after the loan is approved and DISBURSE_LOAN is held"]
-    priority: high
-  - id: client_link_drills_to_360
-    preconditions: ["a loan is open"]
-    actions: ["tap the client link in the summary header"]
-    assertions: ["navigation goes to client-detail-360 for the owning client"]
+      - "the screen is in the empty state (uiState = Empty)"
+      - "a not-found panel is displayed"
+      - "a back affordance is shown for the user to return to the previous screen"
+      - "no shimmer, no error retry button, and no content are rendered"
+    priority: low
+
+  - id: error_when_load_fails_no_cache
+    preconditions:
+      - "the loan aggregate fetch fails with a network error (error_code: loan_load_failed)"
+      - "no cached loan entry exists in the loan_cache Room table for the loanId"
+    actions:
+      - "open a loan while offline with no prior cache entry"
+    assertions:
+      - "the screen is in the error state (uiState = Error)"
+      - "an error message reflecting loan_load_failed is displayed"
+      - "a Retry button (ld_error_retry) is visible"
+      - "no partial data or shimmer is rendered"
     priority: medium
+
+  # ── interaction coverage ──
+  - id: tab_switch_transactions_shows_ledger_no_refetch
+    preconditions:
+      - "loan 55231 is in the content state with associations=all already loaded"
+      - "the Schedule tab is currently selected"
+    actions:
+      - "tap the Transactions tab (ld_tabs select_tab action)"
+    assertions:
+      - "selectedTab transitions to Transactions (pure in-VM state transform, no API call)"
+      - "the ledger shows disbursement of KSh 60,000 on 2024-03-06 (id 990112)"
+      - "the ledger shows repayment of KSh 6,200 on 2024-04-05 (id 990455)"
+      - "the ledger shows repayment of KSh 6,100 on 2024-05-06 (id 990781)"
+      - "no network request is triggered during the tab switch"
+    priority: high
+
+  - id: tab_switch_schedule_shows_period_data
+    preconditions:
+      - "loan 55231 is in the content state"
+    actions:
+      - "tap the Schedule tab (ld_tabs select_tab action)"
+    assertions:
+      - "period 1 (due 2024-04-06) shows principalDue KSh 5,000, interestDue KSh 1,200, totalDue KSh 6,200, complete=true"
+      - "period 2 (due 2024-05-06) shows principalDue KSh 5,000, interestDue KSh 1,100, totalDue KSh 6,100, complete=true"
+      - "period 3 (due 2024-06-06) shows totalDue KSh 6,000, complete=false with an overdue indicator"
+      - "no network request is triggered; data renders from the cached repaymentSchedule"
+    priority: medium
+
+  - id: client_link_navigates_to_client_360
+    preconditions:
+      - "loan 55231 is in the content state"
+    actions:
+      - "tap the client link 'Grace Wanjiru Mwangi' in the summary header (ld_client_link open_client action)"
+    assertions:
+      - "navigation goes to the client-detail-360 screen for clientId 10241"
+      - "the loan detail screen is retained in the back-stack for return navigation"
+    priority: medium
+
+  - id: make_repayment_button_gated_and_enqueues_to_outbox
+    preconditions:
+      - "loan 55231 is active (status Active, loanBalanceOutstanding KSh 42,500)"
+      - "the authenticated user holds REPAYMENT_LOAN"
+    actions:
+      - "tap the Make repayment button (ld_repayment)"
+      - "confirm the repayment amount"
+    assertions:
+      - "the repayment is written to the draft_outbox Room table with a fresh durable idempotency_key, action=REPAYMENT_LOAN, entity=LOAN, loan_id=55231"
+      - "on next sync the outbox entry replays exactly-once via POST /v1/loans/55231/transactions?command=repayment through POST /v1/batches"
+      - "the repayment schedule and outstanding balance update on successful sync"
+      - "Make repayment button is NOT visible when the user lacks REPAYMENT_LOAN"
+    priority: high
+
+  - id: approve_loan_enqueues_lifecycle_command_to_outbox
+    preconditions:
+      - "a loan is in pending-approval status"
+      - "the authenticated user holds APPROVE_LOAN"
+    actions:
+      - "tap the Approve button (ld_approve approve_loan action)"
+    assertions:
+      - "the approve command is written to draft_outbox with action=APPROVE_LOAN, entity=LOAN, and a fresh durable idempotency_key"
+      - "on next sync the entry replays via POST /v1/loans/{loanId}?command=approve through POST /v1/batches exactly-once"
+      - "the Approve button is NOT shown when the user lacks APPROVE_LOAN or the loan is not in pending-approval status"
+    priority: high
+
+  - id: disburse_loan_enqueues_lifecycle_command_to_outbox
+    preconditions:
+      - "a loan is in approved status"
+      - "the authenticated user holds DISBURSE_LOAN"
+    actions:
+      - "tap the Disburse button (ld_disburse disburse_loan action)"
+    assertions:
+      - "the disburse command is written to draft_outbox with action=DISBURSE_LOAN, entity=LOAN, and a fresh durable idempotency_key"
+      - "on next sync the entry replays via POST /v1/loans/{loanId}?command=disburse through POST /v1/batches exactly-once"
+      - "after a successful sync the transactions ledger gains a new disbursement entry and the repayment schedule activates"
+      - "the Disburse button is NOT shown when the user lacks DISBURSE_LOAN or the loan is not in approved status"
+    priority: high
+
+  - id: error_retry_transitions_back_to_loading
+    preconditions:
+      - "the screen is in the error state (error_code: loan_load_failed)"
+    actions:
+      - "tap the Retry button (ld_error_retry retry action)"
+    assertions:
+      - "the screen transitions immediately to the loading state"
+      - "GET /v1/loans/{loanId}?associations=all is re-issued"
+      - "on success the screen enters the content state with the loan aggregate fully populated"
+    priority: medium
+
+  # ── endpoint / behavior coverage ──
+  - id: get_loan_cache_first_opens_offline
+    preconditions:
+      - "loan 55231 was previously viewed and is stored in the loan_cache Room table (keys: loan_id=55231, client_id=10241, status=Active, total_outstanding=42500, in_arrears=true)"
+      - "the device is offline (no network connectivity)"
+    actions:
+      - "open loan account 000055231 while offline"
+    assertions:
+      - "the loan renders immediately from the Room cache under the CACHE_FIRST_SWR strategy"
+      - "the summary shows KSh 42,500 outstanding and client 'Grace Wanjiru Mwangi' sourced from cached data"
+      - "the screen enters the content state without a network error"
+    priority: high
+
+  - id: get_loan_stale_badge_shown_during_background_refresh
+    preconditions:
+      - "a cached but stale entry for loan 55231 is present in loan_cache"
+      - "the device is online"
+    actions:
+      - "open loan account 000055231"
+    assertions:
+      - "the screen enters the content state immediately using the stale cache (no blank/loading flicker)"
+      - "a background-refreshing badge is displayed while the SWR revalidation is in flight"
+      - "once revalidation completes the badge disappears and any updated values (e.g. revised outstanding) refresh in-place"
+    priority: medium
+
+  - id: acceptance_ref_full_feature_smoke
+    preconditions:
+      - "loan 55231 (Grace Wanjiru Mwangi / Group Business Loan, Active) is opened"
+      - "the user holds READ_LOAN and REPAYMENT_LOAN"
+    actions:
+      - "open loan 000055231 and observe the summary header"
+      - "switch through the Schedule, Transactions, and Details tabs"
+      - "tap Make repayment and confirm"
+    assertions:
+      - "GIVEN the loan is active: summary shows status 'Active', outstanding KSh 42,500, and the overdue period 3 as next-due"
+      - "WHEN switching to Schedule: all periods including the overdue period 3 (KSh 6,000 due 2024-06-06) are listed"
+      - "WHEN switching to Transactions: disbursement (KSh 60,000) and both repayments (KSh 6,200 + KSh 6,100) appear"
+      - "THEN permission-gated actions appear only for the applicable loan status AND held permissions (approve, disburse, make repayment, undo, foreclose)"
+      - "THEN the Make repayment action posts to the draft_outbox with a durable idempotency key replayed exactly-once (acceptance_ref: docs.yaml#acceptance_refs[0])"
+    priority: high

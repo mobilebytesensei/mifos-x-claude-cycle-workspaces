@@ -1,12 +1,12 @@
 # MOCKUP — corpus-tracking
-# CommonPurse (mifos-x-group-banking) | Feature FR-018
+# MifosSave (mifos-x-group-banking) | Feature FR-018
 # Generated: 2026-05-06
 
 ---
 
 ## Design Language
 
-**Brand:** CommonPurse by Mwangaza Women's Group
+**Brand:** MifosSave by Mwangaza Women's Group
 **System:** Material Design 3
 **Primary:** #2E7D32 (VSLA-green) — corpus balance display, sufficient-corpus state
 **Error:** #D32F2F — corpus block state, insufficient balance warning
@@ -14,7 +14,7 @@
 **Font:** Noto Sans; displaySmall 36sp bold for corpus KES amount
 **Density:** Comfortable — 48dp minimum touch target; quick action buttons 56dp
 
-The corpus is the most financially critical number in CommonPurse. Its visual design must:
+The corpus is the most financially critical number in MifosSave. Its visual design must:
 - Make the balance unmissable (displaySmall 36sp, primary green, prominently centered)
 - Communicate sufficiency vs insufficiency instantly (border color: transparent when OK; error #D32F2F when blocked)
 - Persist during meetings (CorpusBand always visible during financial entry steps)
@@ -161,7 +161,7 @@ Amina (Chairperson) taps "Chairperson Approve":
 ## Interaction Patterns
 
 **GroupDashboard — parallel API load:**
-1. Screen enters: all 4 API calls fired simultaneously (get_center, get_center_accounts, get_group_corpus, get_group_config)
+1. Screen enters: all 4 API calls fired simultaneously (get_group, get_group_accounts, get_group_corpus, get_group_config)
 2. While loading: 4 shimmer blocks, 120dp each, surface_variant with shimmer gradient
 3. As each call resolves: state partially updates (corpus card may appear before activity feed)
 4. isCorpusInsufficient computed: corpus.currentBalance < config.minimumDisbursementThreshold

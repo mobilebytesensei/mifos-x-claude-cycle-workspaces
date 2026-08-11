@@ -1,0 +1,103 @@
+# data-flow.yaml — per-screen local data flows for feature/loans (B1 Loan Tracker).
+# OFFLINE_LOCAL_ONLY: every entry is a Room read/write on banking_loans — NO network,
+# NO remote endpoint, NO auth. Source: LoansStore (Store5 offline store) → LoanRepository.
+sibling: data-flow
+schema_version: "2.2.0"
+feature_id: feat-loans
+
+store:
+  name: LoansStore
+  archetype: OFFLINE_LOCAL_ONLY
+  key: Unit
+  value: "List<LoanEntity>"
+  source_of_truth: "Room banking_loans (LoanDao)"
+  remote_fetcher: none
+  invalidation: "core-base/database daoFlow{} + notifyingWrite{} (absorbs Room 3 alpha05 wasmJs async-fan-out gap)"
+
+entries:
+  # ── loans-list: reactive read of the full portfolio + aggregates ──
+  - screen_id: loans-list
+    trigger: on_mount
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: banking_loans
+        mutation: read
+        columns: [id, name, kind, principal, principalRemaining, annualRatePercent, tenureMonths, monthsRemaining, monthlyPayment, nextDueDate, totalPaid, createdAtMs, updatedAtMs]
+        order: "nextDueDate ASC, createdAtMs ASC"
+    dtos:
+      - { name: Loan, role: response, api_id: observe-all-loans }
+    derived:
+      - { name: totalMonthlyEmi, from: "sum(monthlyPayment)", api_id: observe-total-monthly-emi }
+      - { name: totalPrincipalRemaining, from: "sum(principalRemaining)", api_id: observe-total-principal-remaining }
+    produces_state: content            # empty list → empty state
+    cache:
+      strategy: source_of_truth_only   # Store5 offline — Room IS the SoT, no TTL, always FRESH
+      ttl_seconds: 0
+      key_template: "loans:all"
+    error_paths: []                    # local read — no network error class
+    notes: "Empty portfolio → ScreenState.Empty. DataFreshness.FRESH unconditionally (no network to be STALE about)."
+
+  # ── loan-detail: reactive read of one loan by id (LOAD_ONCE variant available) ──
+  - screen_id: loan-detail
+    trigger: on_mount
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: banking_loans
+        mutation: read
+        filter: { id: "{loanId}" }
+        columns: ["*"]
+    dtos:
+      - { name: Loan, role: response, api_id: observe-loan-by-id }
+    produces_state: content            # null (deleted / unknown id) → empty
+    cache: { strategy: source_of_truth_only, ttl_seconds: 0, key_template: "loans:{loanId}" }
+    error_paths: []
+    notes: >-
+      Continuous stream via observeById; LOAD_ONCE variant (loadOnceScreenState) terminates
+      after first Content so background Room writes never overwrite in-progress edits.
+
+  # ── loan-addedit: hydrate (edit mode) then local write (upsert) ──
+  - screen_id: loan-addedit
+    trigger: on_mount_edit_mode         # only when loanId != null
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: banking_loans
+        mutation: read
+        filter: { id: "{loanId}" }
+        columns: ["*"]
+    dtos:
+      - { name: Loan, role: response, api_id: get-loan-by-id }
+    produces_state: content
+    cache: { strategy: none }
+    error_paths: []
+    notes: "One-shot getById → hydrateFromExisting; skipped entirely in add-mode (loanId == null)."
+
+  - screen_id: loan-addedit
+    trigger: on_submit
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: banking_loans
+        mutation: upsert
+        columns: ["*"]
+    dtos:
+      - { name: Loan, role: request, api_id: upsert-loan }
+    produces_state: submitted
+    write_pipeline:
+      handler: DraftSubmitHandler       # BaseDraftMutationViewModel, multi-formKey
+      form_key: loan
+      unique_key: "{loanId} ?: new"
+      auto_save_draft: true
+      draft_table: framework_submit_drafts
+      submit_target: "repository.upsert(payload)  # local Room commit — no network"
+      states: [Idle, Submitting, Submitted, Failed]
+    error_paths:
+      - error_code: categorized.Network   # simulated in tests via an IOException-like throw
+        behavior: auto_save_draft         # silent draft → 'Saved offline — will sync when online.'
+        retry: OfflineSubmitSyncer         # commits pending drafts serially on reconnect
+    notes: >-
+      The 'offline' path is a framework showcase — the real submit is a local commit that
+      does not fail on a real device. Forks swapping in a remote API get the offline-resilient
+      UX for free with zero ViewModel changes.

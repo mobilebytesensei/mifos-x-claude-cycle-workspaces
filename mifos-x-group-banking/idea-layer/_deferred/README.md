@@ -1,6 +1,6 @@
 # _deferred — Planned Future Screens
 
-This directory holds candidate screens that are planned for CommonPurse but have not yet been enriched or scaffolded into `screens/`. They represent the product roadmap beyond the current MVP cycle.
+This directory holds candidate screens that are planned for MifosSave but have not yet been enriched or scaffolded into `screens/`. They represent the product roadmap beyond the current MVP cycle.
 
 ## How to Promote a Deferred Screen
 

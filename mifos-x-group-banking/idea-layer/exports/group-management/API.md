@@ -27,24 +27,24 @@
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
-| GET | /centers | List all Fineract Centers managed by the logged-in staff member | Bearer token (staffId param from session) |
-| GET | /centers/{centerId} | Fetch a single Center (group) by ID | Bearer token |
-| GET | /centers/{centerId}/accounts | Fetch savings and loan accounts linked to the group | Bearer token |
-| GET | /datatables/dt_group_corpus/{centerId} | Fetch real-time corpus fund balance from custom datatable | Bearer token |
-| GET | /datatables/dt_group_config/{centerId} | Fetch group configuration rules | Bearer token |
+| GET | /groups | List all Fineract Groups managed by the logged-in staff member | Bearer token (staffId param from session) |
+| GET | /groups/{groupId} | Fetch a single group by ID | Bearer token |
+| GET | /groups/{groupId}/accounts | Fetch savings and loan accounts linked to the group | Bearer token |
+| GET | /datatables/dt_group_corpus/{groupId} | Fetch real-time corpus fund balance from custom datatable | Bearer token |
+| GET | /datatables/dt_group_config/{groupId} | Fetch group configuration rules | Bearer token |
 | GET | /offices | Fetch list of offices for the office dropdown during group creation | Bearer token |
-| POST | /centers | Create a new Fineract Center (savings group) | Bearer token |
-| POST | /datatables/dt_group_config/{centerId} | Write group rules to the dt_group_config custom datatable | Bearer token |
+| POST | /groups | Create a new Fineract Group (savings group) | Bearer token |
+| POST | /datatables/dt_group_config/{groupId} | Write group rules to the dt_group_config custom datatable | Bearer token |
 
 ---
 
 ## Request / Response Details
 
-### get_centers
+### get_groups
 
 **Request**
 ```
-GET /centers
+GET /groups
 Query params:
   staffId: Long (optional, sourced from session)
   paged: Boolean = true
@@ -79,13 +79,13 @@ Query params:
 
 ---
 
-### get_center
+### get_group
 
 **Request**
 ```
-GET /centers/{centerId}
+GET /groups/{groupId}
 Path params:
-  centerId: Long (required, from nav params)
+  groupId: Long (required, from nav params)
 ```
 
 **Response**
@@ -107,13 +107,13 @@ Path params:
 
 ---
 
-### get_center_accounts
+### get_group_accounts
 
 **Request**
 ```
-GET /centers/{centerId}/accounts
+GET /groups/{groupId}/accounts
 Path params:
-  centerId: Long (required)
+  groupId: Long (required)
 ```
 
 **Response**
@@ -148,9 +148,9 @@ Path params:
 
 **Request**
 ```
-GET /datatables/dt_group_corpus/{centerId}
+GET /datatables/dt_group_corpus/{groupId}
 Path params:
-  centerId: Long (required)
+  groupId: Long (required)
 ```
 
 **Response**
@@ -174,9 +174,9 @@ Path params:
 
 **Request**
 ```
-GET /datatables/dt_group_config/{centerId}
+GET /datatables/dt_group_config/{groupId}
 Path params:
-  centerId: Long (required)
+  groupId: Long (required)
 ```
 
 **Response**
@@ -220,11 +220,11 @@ Query params:
 
 ---
 
-### create_center
+### create_group
 
 **Request**
 ```
-POST /centers
+POST /groups
 Body (application/json):
 {
   "name": "Mwangaza Women's Group",
@@ -258,9 +258,9 @@ Body (application/json):
 
 **Request**
 ```
-POST /datatables/dt_group_config/{centerId}
+POST /datatables/dt_group_config/{groupId}
 Path params:
-  centerId: Long (from create_center response.resourceId)
+  groupId: Long (from create_group response.resourceId)
 Body (application/json):
 {
   "contribution_min": 100.00,
@@ -289,7 +289,7 @@ Body (application/json):
 | Field | Type | Notes |
 |-------|------|-------|
 | id | String | Internal app ID |
-| fineractCenterId | Long | Maps to Fineract Center.id |
+| fineractGroupId | Long | Maps to Fineract Group.id |
 | name | String | Display name |
 | cycleNumber | Int | Current cycle (1-based) |
 | cycleLengthMonths | Int | From dt_group_config |

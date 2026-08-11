@@ -19,7 +19,7 @@ state_coverage:
     name: "list starts in Loading before the first stream emission"
     setup: "BillRemindersListViewModel created; combine() has not emitted yet"
     assertions:
-      - "screenState initial value is ScreenState.Loading"
+      - "screenState initial value is ScreenState.Loading (stateIn seed)"
   - screen: bills-list
     state: empty
     name: "empty repository produces Empty screen state"
@@ -41,7 +41,7 @@ state_coverage:
     setup: "EditBillReminderViewModel(billId = null) vs (billId = existing) with a saved bill"
     assertions:
       - "add-mode formState == BillReminderFormState() defaults (name '', amount 0.0, dueDay 1, MONTHLY, UTILITIES, enabled, remind 1)"
-      - "edit-mode formState is hydrated from repository.getById(billId)"
+      - "edit-mode: init getById(billId) hydrates _formState, then mutableScreenState = Content(snapshot)"
   - screen: bill-addedit
     state: submitted
     name: "valid submit reaches SubmitState.Submitted terminal state"
@@ -65,13 +65,13 @@ interactions:
     expected: "nav: AddOrEditBillReminderRoute(billId = null)"
     assertions: ["NavController navigates to the add/edit screen in add mode"]
   - screen: bills-list
-    component: "bill row (bills_list_row_{id})"
+    component: "bill row (untagged clickable AppCard — no per-row testTag in source)"
     trigger: short_tap
     name: "tapping a bill row opens the edit form (no detail screen)"
     expected: "nav: AddOrEditBillReminderRoute(billId)"
-    assertions: ["NavController navigates to bill-addedit with the tapped bill id"]
+    assertions: ["onEditBillClick(bill.id) → NavController navigates to bill-addedit with the tapped bill id"]
   - screen: bills-list
-    component: "Paid button"
+    component: "Paid button (TextButton — untagged; only FAB + Save carry testTags)"
     trigger: tap
     name: "mark-paid bumps updatedAtMs and cancels the pending notification"
     expected: "action: mark_paid → repository.upsert(copy(updatedAtMs=now)) + scheduler.cancel(id)"
@@ -80,20 +80,22 @@ interactions:
       - "after.updatedAtMs > previous updatedAtMs"
       - "scheduler.cancelledIds contains the bill id"
   - screen: bills-list
-    component: "delete action (BillRemindersAction.Delete)"
+    component: "delete action (BillRemindersAction.Delete / onDelete)"
     trigger: vm_action
     name: "delete removes the bill and cancels its notification"
     expected: "action: delete → repository.delete(id) + scheduler.cancel(id)"
     source_test: "BillRemindersListViewModelTest.onDeleteRemovesBillAndCancelsNotification"
+    note: "ViewModel-level API only — NOT surfaced as a list row control in source (F-009); exercised via viewModel.onDelete in the test, never from the screen."
     assertions:
       - "repository.observeAll() is empty"
       - "scheduler.cancelledIds contains the bill id"
   - screen: bills-list
-    component: "toggle-enabled action (BillRemindersAction.ToggleEnabled)"
+    component: "toggle-enabled action (BillRemindersAction.ToggleEnabled / onToggleEnabled)"
     trigger: vm_action
     name: "toggle flips enabled and cancels notification only when disabling"
     expected: "action: toggle → repository.upsert(copy(enabled=!enabled)); scheduler.cancel only on true→false"
     source_test: "BillRemindersListViewModelTest.onToggleEnabledFlipsRowAndCancelsWhenDisabling"
+    note: "ViewModel-level API only — NOT surfaced as a list row control in source (F-009); exercised via viewModel.onToggleEnabled in the test, never from the screen."
     assertions:
       - "flipped.enabled == false"
       - "scheduler.cancelledIds contains the bill id"
@@ -134,7 +136,7 @@ api_integration:
     name: "observeUpcoming filters by a day-of-month window (enabled only)"
     source_test: "BillReminderRepositoryTest / BillReminderDaoTest"
     assertions:
-      - "only enabled rows whose dueDay is in the computed window are returned"
+      - "only enabled rows whose dueDay is in the computed window are returned (WHERE enabled = 1 AND dueDay IN (:dueDays))"
       - "the window wraps across the month boundary (day 3 IS upcoming when today is day 30, maxDays >= 4)"
 
 # The multi-formKey DraftSubmitHandler contract — the feature's flagship behavior test.
@@ -157,6 +159,7 @@ cross_module_tests:
       - "day-31 MONTHLY clamps to Feb 28 (non-leap) / Feb 29 (leap)"
       - "QUARTERLY steps +3 months; ANNUALLY steps +12 months"
       - "ONCE returns null when already passed; the singleton date when still upcoming"
+      - "daysInMonth handles every month incl. leap Feb"
   - name: "reminderTriggerMs snaps to 09:00 local and lies in the future (else null)"
     source_test: "BillReminderRecurrenceTest.reminderTriggerSnapsToNineAmAndIsInFuture + reminderTriggerReturnsNullForPastInstant"
     assertions:
@@ -192,10 +195,10 @@ acceptance_criteria:
     when: "the form is submitted"
     then: "BillReminderRecurrence computes the next occurrence + 09:00-local trigger and hands a BillReminderSchedule to the platform scheduler (WorkManager / UNUserNotificationCenter); if the OS rejects it the bill still persists and the upcoming tile is the fallback"
   - ref: "AC-BILLS-04"
-    name: "Mark paid / delete / disable"
-    given: "an existing bill in the list"
-    when: "the user marks it paid (or deletes / disables it)"
-    then: "the row is upserted/removed and its pending notification is cancelled; the reactive list re-renders"
+    name: "Mark paid (list) / enable-disable (form)"
+    given: "an existing bill"
+    when: "the user marks it paid from the list, or edits it and toggles the Enabled switch in the form"
+    then: "mark-paid bumps updatedAtMs + cancels the pending notification; the form's Enabled switch persists the flag and schedules-or-cancels accordingly; the reactive list re-renders. NOTE (F-009): Delete + a per-row ToggleEnabled are tested ViewModel APIs but are NOT surfaced as list row controls in the shipped UI."
   - ref: "AC-BILLS-05"
     name: "Offline-resilient edits (multi-draft)"
     given: "the user edits several bills while offline"

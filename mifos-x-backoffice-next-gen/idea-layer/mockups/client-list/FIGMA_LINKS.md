@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — client-list
 
-<!-- schema: v3.2 | generated: 2026-07-26T05:33:13.876Z -->
+<!-- schema: v3.2 | generated: 2026-08-03T14:50:29.354Z -->
 
 ## Stitch Project
 
@@ -8,17 +8,17 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-26T05:33:13.797Z |
+| Generated | 2026-08-03T14:50:29.354Z |
 | Success | 4/4 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| loading | c25613827b7f48318036248fde832f68 | 01-client-list-loading | PNG ✅ | HTML ✅ | ✅ generated |
-| content | 3d110a7f782a4483809b16a2e757ecf4 | 02-client-list-content | PNG ✅ | HTML ✅ | ✅ generated |
-| empty | 1c8192754f8c4c06bbc2115586e20c06 | 03-client-list-empty | PNG ✅ | HTML ✅ | ✅ generated |
-| error | bacf45a50f854beaad1459482333890d | 04-client-list-error | PNG ✅ | HTML ✅ | ✅ generated |
+| loading | c25613827b7f48318036248fde832f68 | 01-client-list-loading | PNG ✅ | HTML ✅ | ♻ resumed |
+| content | 3d110a7f782a4483809b16a2e757ecf4 | 02-client-list-content | PNG ✅ | HTML ✅ | ♻ resumed |
+| empty | 1c8192754f8c4c06bbc2115586e20c06 | 03-client-list-empty | PNG ✅ | HTML ✅ | ♻ resumed |
+| error | bacf45a50f854beaad1459482333890d | 04-client-list-error | PNG ✅ | HTML ✅ | ♻ resumed |
 
 ## Open in Figma / Stitch
 

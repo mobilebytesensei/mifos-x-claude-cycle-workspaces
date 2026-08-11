@@ -1,0 +1,138 @@
+schema_version: "1.0"
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/add-to-watchlist — the WRITE side of the Personal Crypto Watchlist.
+# Scaffolded from screens/watchlist (the AddToWatchlistStar embedded screen, #2).
+#
+# A single EMBEDDED composable: a star icon-button hosted on feature/crypto's coin
+# surfaces (CoinMarkets rows + Coin Detail), NOT a navigable destination. Backed by
+# AddToWatchlistViewModel. It observes WatchlistRepository.contains(coinId) to render
+# the star filled (tracked) vs outline (not tracked); tapping toggles membership via
+# the framework SubmitHandler ('input simple' — single-formKey simple mutation).
+#
+# Membership is persisted LOCALLY ONLY on Room `personal_watchlist` (coinId + addedAtMs)
+# through a RAW WatchlistDao wrapped in the core-base/database invalidation bridge —
+# NO Store5, NO remote sync. Shares the shipped WatchlistRepository with feat-watchlist;
+# nothing new is persisted here.
+#
+# GROUNDED: only the coinId/addedAtMs surface, the add/remove/contains repository API,
+# and the AddToWatchlistViewModel named verbatim in WatchlistRepository KDoc.
+# ─────────────────────────────────────────────────────────────────────────────
+screen_id: add-to-watchlist
+feature: feat-add-to-watchlist
+archetype: settings     # bootstrapped by /idea-render-mockup Phase 1
+feature_profile:
+  combo_id: submit_offline_write
+  facets: [input, offline]
+  archetype: input
+  store_archetype: OFFLINE_LOCAL_ONLY
+  recipe_ref: CORE_BASE_STORE.md
+  heal: auto
+platforms: [android, ios, desktop, web]
+states: [content, submitting, submitted, failed]
+initial_state: content            # the star always renders (filled/outline) from contains(coinId); no loading/empty arm
+
+business_logic:
+  kind: crud
+  processing_kind: simple_mutation
+  library_refs: [room, store5]
+  external_library_refs: [store5]
+  description: >-
+    The canonical "input simple" SubmitHandler showcase. Given a coinId, it observes
+    WatchlistRepository.contains(coinId) (reactive Flow<Boolean>) to render the star filled
+    (tracked) vs outline (not tracked). Tapping toggles membership: not-tracked →
+    SubmitHandler.submit { repository.add(coinId) }; tracked →
+    SubmitHandler.submit { repository.remove(coinId) }. add() is idempotent (re-add bumps
+    addedAtMs to now, REPLACE on conflict); remove() no-ops if absent. Both direct-DAO
+    writes are wrapped in core-base/database notifyingWrite{} so wasmJs long-lived
+    contains() collectors re-emit after the toggle (absorbs the Room 3 alpha05 async
+    InvalidationTracker fan-out gap; a no-op on Android/Desktop/iOS). SubmitState surfaces
+    Idle/Submitting/Submitted/Failed — but because the submit is a local Room commit it
+    effectively never fails on-device (the Failed arm is the framework showcase).
+
+# The persisted watch-list membership — LOCAL ONLY, raw Room DAO (no Store5).
+data_source:
+  primary:
+    kind: local_room
+    store: none                        # NOT a Store5 store — direct DAO + invalidation bridge
+    store_archetype: OFFLINE_LOCAL_ONLY
+    repository: WatchlistRepository     # core/data/demo/watchlist/WatchlistRepository.kt (SHARED with feat-watchlist)
+    impl: WatchlistRepositoryImpl       # core/data/demo/watchlist/impl/WatchlistRepositoryImpl.kt
+    dao: WatchlistDao                   # core/database/demo/watchlist/dao/WatchlistDao.kt
+    table: personal_watchlist           # core/database/demo/watchlist/entity/WatchlistEntity.kt
+    dto: WatchlistItem                  # {coinId: String, addedAtMs: Long}
+    remote: none
+    invalidation: "core-base/database daoFlow{} + notifyingWrite{} (wasmJs Room3-alpha05 fan-out bridge)"
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SCREENS
+# ═════════════════════════════════════════════════════════════════════════════
+screens:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # add-to-watchlist — the star toggle (input simple, write side, SubmitHandler)
+  #   EMBEDDED surface: rendered on feature/crypto CoinMarkets rows + Coin Detail,
+  #   not a standalone navigable destination. Backed by AddToWatchlistViewModel.
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: add-to-watchlist
+    composable: AddToWatchlistStar        # embedded composable (star toggle), no own Scaffold
+    viewmodel: AddToWatchlistViewModel
+    route: none                           # not navigable — hosted inside crypto coin surfaces
+    is_embedded: true
+    archetype: input
+    states: [content, submitting, submitted, failed]
+    status: pending                       # documented in WatchlistRepository KDoc; UI not yet in-tree
+    business_logic:
+      kind: crud
+      processing_kind: simple_mutation
+      library_refs: [room, store5]
+      external_library_refs: [store5]
+      description: >-
+        Observes repository.contains(coinId) to render the star filled/outline, and toggles
+        membership through SubmitHandler on tap. add() idempotent (REPLACE, addedAtMs=now);
+        remove() no-ops if absent. SubmitState Idle/Submitting/Submitted/Failed.
+    shell:
+      top_app_bar: { enabled: false }     # embedded — hosted by the crypto screen's Scaffold
+      test_tag: add_to_watchlist_star
+    components:
+      - id: star_toggle
+        type: icon_button
+        icon_when_tracked: star_filled
+        icon_when_untracked: star_outline
+        test_tag: "watchlist_star_{coinId}"
+        aria_label_tracked: "Remove from watchlist"     # screens_watchlist_star_remove_cd
+        aria_label_untracked: "Add to watchlist"        # screens_watchlist_star_add_cd
+        binds:
+          - { field: isTracked, from: "repository.contains(coinId)" }
+        on_click:
+          action: "toggle_watchlist"
+          params: { coinId: "{coinId}" }
+          action_contract:
+            effect: persist_db
+            external_library_refs: [room]
+            writes_to:
+              - { table: personal_watchlist, dto: WatchlistItem, op: upsert_or_delete }
+            description: "viewModel.onToggle(coinId): if tracked, repository.remove(coinId) → WatchlistDao.delete; else repository.add(coinId) → WatchlistDao.insert REPLACE (addedAtMs=now). Both wrapped in notifyingWrite; contains() re-emits and the star flips."
+    state_model:
+      viewmodel_base: "BaseViewModel<Unit, Nothing, AddToWatchlistAction>  (SubmitHandler<Unit> seam)"
+      coinId_injection: "Koin parametersOf(coinId); koinViewModel(key = coinId)"
+      initial: content
+      states:
+        content:
+          when: "contains(coinId) has emitted; no submit in flight"
+          render: "star icon-button — star_filled when isTracked, star_outline otherwise"
+        submitting:
+          when: "SubmitHandler.state == Submitting (toggle commit in flight)"
+          render: "star shows an in-progress affordance (optimistic; local commit is near-instant)"
+        submitted:
+          when: "SubmitHandler.state == Submitted"
+          render: "contains() re-emits; star settles to the new filled/outline state"
+        failed:
+          when: "SubmitHandler.state == Failed (framework arm; local Room commit does not fail on-device)"
+          render: "star reverts to prior state; framework SubmitHandler error affordance"
+      streams:
+        - { name: isTracked, type: "StateFlow<Boolean>", note: "repository.contains(coinId) — drives filled/outline" }
+        - { name: submit, type: "StateFlow<SubmitState<Unit>>", note: "SubmitHandler.state — Idle/Submitting/Submitted/Failed" }
+      submit_state: "SubmitState { Idle | Submitting | Submitted | Failed }"
+      submit_target: "repository.add(coinId) | repository.remove(coinId)  # local Room commit — no network"
+      actions:
+        - { name: "AddToWatchlistAction.Toggle", params: { coinId: String }, effect: "add or remove via SubmitHandler based on current isTracked" }

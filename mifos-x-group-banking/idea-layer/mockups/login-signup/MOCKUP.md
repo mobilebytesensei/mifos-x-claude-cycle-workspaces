@@ -2,7 +2,7 @@
 
 ## Design Language
 
-CommonPurse uses Material Design 3 with a VSLA-inspired brand palette designed for low-literacy rural users in East Africa. All touch targets are minimum 48dp. Typography uses the system stack (Roboto on Android / SF Pro on iOS) at comfortable density with an emphasis on clarity for outdoor viewing. Login/Signup follows the app's `minimalist-ui` family (variance 3/10, motion 3/10, density 7/10) — grid-aligned, predictable, subtle transitions. As the app's entry surface it also carries the brand mark, so it renders with slightly more vertical breathing room than in-app screens.
+MifosSave uses Material Design 3 with a VSLA-inspired brand palette designed for low-literacy rural users in East Africa. All touch targets are minimum 48dp. Typography uses the system stack (Roboto on Android / SF Pro on iOS) at comfortable density with an emphasis on clarity for outdoor viewing. Login/Signup follows the app's `minimalist-ui` family (variance 3/10, motion 3/10, density 7/10) — grid-aligned, predictable, subtle transitions. As the app's entry surface it also carries the brand mark, so it renders with slightly more vertical breathing room than in-app screens.
 
 **Brand colours (from `design-system/DESIGN.md`)**:
 - Primary 700: #2E7D32 (base VSLA-green — Sign In / Create Account CTAs, tab indicator)
@@ -23,7 +23,7 @@ CommonPurse uses Material Design 3 with a VSLA-inspired brand palette designed f
 - Text secondary: #616161 (labels, helper text)
 - Text disabled: #9E9E9E (unselected tab label, forgot-password link at rest)
 
-**Typography**: Roboto / SF Pro. displaySmall=36sp, headlineMedium=28sp, headlineSmall=24sp, titleLarge=22sp, titleMedium=18sp, bodyLarge=16sp, bodyMedium=14sp, labelLarge=14sp, labelMedium=12sp. Auth title "Welcome to MifosX" renders in headlineMedium (28sp) centered; tab labels are labelLarge semibold; helper / validation text is bodyMedium.
+**Typography**: Roboto / SF Pro. displaySmall=36sp, headlineMedium=28sp, headlineSmall=24sp, titleLarge=22sp, titleMedium=18sp, bodyLarge=16sp, bodyMedium=14sp, labelLarge=14sp, labelMedium=12sp. Auth title "Welcome to MifosSave" renders in headlineMedium (28sp) centered; tab labels are labelLarge semibold; helper / validation text is bodyMedium.
 
 **Shapes**: cornerRadius sm=8dp (chips, small buttons, error banner), md=12dp (input fields, cards), lg=16dp (biometric icon-button surround, illustration frame), full=9999dp (filled Sign In / Create Account CTAs, tab pills).
 
@@ -40,7 +40,7 @@ CommonPurse uses Material Design 3 with a VSLA-inspired brand palette designed f
 Route: `/auth` — mounted at the app root, reached from `app_launch:unauthenticated_start` and `any_screen:session_expired`.
 
 **States** (mapped 1:1 to `ui.yaml#states`):
-- `content` (initial_state, mode-adaptive) — form visible; Login mode renders email/password + biometric affordance + Forgot Password link + Sign In CTA; Signup mode renders name/email/password + Create Account CTA
+- `content` (initial_state, mode-adaptive) — form visible; Login mode renders email/password + biometric affordance + Forgot Password link + Sign In CTA; Signup mode renders name/email/password + Create Account CTA. **In BOTH modes**, below the primary CTA the content state now renders the first-class secondary auth entries: an `alt_actions_divider` ("New here?"), the **`accept_invitation_button`** (outlined, mail icon — pre-auth invite-code path) and the **`demo_explore_button`** (text, play-circle icon). When `showDemoDialog == true`, the **`demo_confirm_dialog`** overlays the form.
 - `loading` (`isSubmitting == true`) — form fields disabled at 40% opacity; the mode's CTA (Sign In or Create Account) shows a centered spinner in place of its label; tab toggle disabled; biometric icon-button hidden
 - `error` (`error != null`) — `error_banner` visible above the form; form re-enabled and prefilled for retry; validation errors additionally surface as inline field helpers for `WeakPassword` / field-level errors
 - `zero_groups` (post-success, `groupMemberships.isEmpty()`) — auth chrome swapped for onboarding: illustration + "You're all set!" + primary "Create Your First Group" and outlined "Join with Invite Code" CTAs; no mode toggle or form fields visible in this state
@@ -49,11 +49,11 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 
 | Component | Type | Style Summary | Interaction |
 |-----------|------|---------------|-------------|
-| auth_header_logo | Image | Asset `ic_mifos_logo` 72dp × 72dp, alignment center, top_padding 32dp. Accessibility label "Mifos X logo". | Non-interactive |
-| auth_title | Text | "Welcome to MifosX" — headlineMedium (28sp), color onSurface (#212121), alignment center, top_padding 16dp. | Non-interactive |
+| auth_header_logo | Image | Asset `ic_mifos_logo` 72dp × 72dp, alignment center, top_padding 32dp. Accessibility label "MifosSave logo". | Non-interactive |
+| auth_title | Text | "Welcome to MifosSave" — headlineMedium (28sp), color onSurface (#212121), alignment center, top_padding 16dp. | Non-interactive |
 | mode_toggle_tabs | TabRow | Two pills [Sign In, Sign Up] full-width row 48dp, background surface (#FFFFFF), corner_radius md (12dp), border_subtle divider under row. Selected label color primary (#2E7D32), unselected onSurfaceVariant (#616161). Indicator 3dp bar primary (#2E7D32) under the active tab. Selected reflects `state.mode` (AuthMode.Login default). | Tap → OnModeToggle(mode) — flips `state.mode`, clears name/emailPhone/password + validationErrors + error so the newly-shown tab renders clean (per `action_contract.effect: transform_state`) |
 | signup_name_field | OutlinedTextField | Visible when `mode == AuthMode.Signup`. Label "Full Name", placeholder "e.g. Grace Wanjiku", value bound to `state.name`, keyboard text, IME next, max_length 80, corner_radius md (12dp), min_height 56dp, margin_horizontal 24dp, top_padding 16dp. Validation `{min_length: 2, required: true, error_key: error_name_required}`; error border 2dp danger (#C62828) + helper text "Full name is required." bodyMedium danger. | Type → OnNameChange(value) — updates `state.name` and clears its validationErrors entry; focus-out runs min-length-2 check |
-| email_phone_field | OutlinedTextField | Shared across login/signup forms. Label "Email or Phone", placeholder "email@example.com or +254700000000", value bound to `state.emailPhone`, keyboard email, IME next, max_length 100, corner_radius md (12dp), min_height 56dp, margin_horizontal 24dp, top_padding 8dp. Validation `{required: true, pattern: email_or_e164_phone, error_key: error_email_phone_invalid}`; error border + helper "Enter a valid email address or phone number." | Type → OnEmailPhoneChange(value) — updates `state.emailPhone`; focus-out validates pattern |
+| email_phone_field | OutlinedTextField | Shared across login/signup forms — MODE-DEPENDENT. **LOGIN mode**: label "Email, Phone or Username", placeholder "username, email or +254700000000", text keyboard; validation `{pattern: email_phone_or_username, error_key: error_identifier_invalid}` (accepts email, E.164 phone, OR username 3–30 chars); helper "Enter a valid email, phone number, or username." **SIGNUP mode**: label "Email or Phone", placeholder "email@example.com or +254700000000", email keyboard; validation `{pattern: email_or_e164_phone, error_key: error_email_phone_invalid}` (account contact still requires email/phone). Common: value bound to `state.emailPhone`, IME next, max_length 100, corner_radius md (12dp), min_height 56dp, margin_horizontal 24dp, top_padding 8dp; error border on invalid. | Type → OnEmailPhoneChange(value) — updates `state.emailPhone`; focus-out validates the mode-appropriate pattern |
 | password_field | OutlinedTextField (variant: password) | Shared. Label "Password", placeholder adapts by mode ("Your password" login / "Minimum 8 characters" signup), value bound to `state.password`, masked with trailing eye toggle, max_length 64, corner_radius md (12dp), min_height 56dp, margin_horizontal 24dp, top_padding 8dp. Validation `{required: true, min_length: 8, error_key: error_password_weak}`; error border + helper "Password must be at least 8 characters." Value held in memory only — never logged, never cached. | Type → OnPasswordChange(value) — updates `state.password`; signup-mode focus-out runs 8-char strength check |
 | forgot_password_link | TextButton | Visible when `mode == AuthMode.Login`. Label "Forgot password?" labelMedium (12sp), text_color primary (#2E7D32), alignment end, top_padding 4dp, margin_horizontal 24dp. Min touch target 48dp with 12dp side padding. | Tap → OnForgotPassword — emits `ShowSnackbar("Reset your password via the web portal or your group organizer.")`; no state mutation, no network call (MVP has no in-app reset endpoint) |
 | login_button | FilledButton | Visible when `mode == AuthMode.Login`. Label "Sign In", full_width (minus 24dp horizontal margin), min_height 56dp, corner_radius full (9999dp), background primary (#2E7D32), text_color onPrimary (#FFFFFF), top_padding 24dp. Loading state (`isSubmitting == true`): 24dp CircularProgressIndicator onPrimary replaces label; button disabled. Disabled state (offline + `error.type == BiometricFailed` transient): background primary at 40% opacity. | Tap → OnLoginTap → POST `/companion/auth/login` via core/network; on success persists sessionToken to encrypted core/session SessionStore and routes on groupMemberships (non-empty → personal-dashboard / group-list, empty → ZeroGroups); 401 sets `state.error = InvalidCredentials` |
@@ -61,6 +61,10 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 | biometric_unlock_button | IconButton | Visible when `isBiometricAvailable == true && mode == AuthMode.Login`. Icon `fingerprint` 48dp, icon_tint primary (#2E7D32), alignment center, top_padding 12dp, wrapped in a 64dp circular tap surface with primaryContainer (#C8E6C9) hover fill. Accessibility label "Sign in with biometrics". | Tap → OnBiometricUnlock → platform biometric prompt via core/biometric → on hardware success calls GET `/companion/auth/me` via core/network → refreshes profile + groupMemberships → routes on membership count (non-empty → personal-dashboard, empty → ZeroGroups). Offline biometric surfaces `error_biometric_failed`. |
 | divider_or | LabeledDivider | Visible when `isBiometricAvailable == true && mode == AuthMode.Login`. Horizontal 1dp line border_subtle (#EEEEEE) with centered "or" chip — labelSmall (12sp) onSurfaceVariant (#616161) on background surface pill. margin_horizontal 24dp, top_padding 16dp. Sits between login_button and biometric_unlock_button. | Non-interactive |
 | error_banner | Banner | Visible when `error != null`. Icon `error_outline` 20dp onErrorContainer, message `{{error.localizedMessage}}` bodyMedium onErrorContainer, background errorContainer (danger-tinted #FFDAD6), corner_radius 8dp, padding 12dp, margin_horizontal 24dp, top_padding 16dp. live_region assertive so it's announced immediately. Trailing "Retry" TextButton labelLarge onErrorContainer bold — only rendered when `error.retry == true` (InvalidCredentials, Network, Server, BiometricFailed). | "Retry" tap → re-fires the last submit action (OnLoginTap / OnSignupTap / OnBiometricUnlock) based on `state.mode` + `isBiometricAvailable` |
+| alt_actions_divider | LabeledDivider | **Content state, both modes.** Horizontal 1dp line border_subtle (#EEEEEE) with a centered "New here?" chip — labelSmall (12sp) onSurfaceVariant (#616161) on background surface pill. margin_horizontal 24dp, top_padding 24dp. Separates the primary auth CTA from the first-class secondary entries below. | Non-interactive |
+| accept_invitation_button | OutlinedButton | **Content state, both modes** (F2/B4/G2 — peer of Sign In / Sign Up, not zero-groups-only). Leading icon `mail` 20dp primary, label "Accept an Invitation", full_width (minus 24dp margin), min_height 56dp, corner_radius full (9999dp), border 1dp primary (#2E7D32), text_color primary, background surface (#FFFFFF), top_padding 16dp. Accessibility label "Accept a group invitation using an invite code". | Tap → OnAcceptInvitationTap → NavController navigates to `join-with-code` **pre-auth** (carries no pre-filled code); join-with-code routes back carrying `pendingInviteCode` so on_login/on_signup on_success resumes the join (satisfies TC-LS-010). Pure navigation — the membership write happens on that screen's confirm-join. |
+| demo_explore_button | TextButton | **Content state, both modes** (F1/B1/G1). Leading icon `play_circle_outline` 20dp primary, label "Demo Explore" labelLarge (14sp) text_color primary (#2E7D32), full_width, min_height 56dp, top_padding 12dp. Accessibility label "Explore the app as a demo user without an account". | Tap → OnDemoExplore → sets `state.showDemoDialog = true` (pure transform_state — no seeding, no navigation yet); the `demo_confirm_dialog` overlays. |
+| demo_confirm_dialog | AlertDialog | Overlays the form when `showDemoDialog == true`. Icon `play_circle_outline` primary, title "Explore as a demo user" (titleLarge onSurface), body "This is a demo user logging in to explore the application." (bodyMedium onSurfaceVariant), secondary note "No real account is created and nothing is saved to a server. You can sign up or accept an invitation any time." (bodySmall onSurfaceVariant, top_padding 8dp). Two actions: **Cancel** (text, onSurfaceVariant) and **Continue** (filled primary). Scrim (#000000 @ 32%) behind. Accessibility label "Demo Explore confirmation dialog". | **Cancel** → OnDemoCancel → `showDemoDialog = false`, returns to the form (pure transform_state, nothing seeded). **Continue** → OnDemoConfirm → sets `isSeedingDemo = true`, DemoSessionManager hydrates the bundled PROJECT_DEMO_DATA fixture (Mwangaza Women's Group VSLA — members, savings, meetings, corpus, active loan, live invite code) into the local SQLDelight demo cache under a synthetic demo session token (core/session) — **NO network, NO companion API, NO Fineract write** — then emits `NavigateToOrganizerDashboard` (demo user Amina, treasurer/organizer of demo-group-001). Any write inside demo mode is a local-only no-op. |
 | zero_groups_illustration | Image | Zero-groups state only. Asset `ic_empty_groups` 120dp × 120dp, alignment center, top_padding 48dp. Accessibility label "Empty groups illustration". | Non-interactive |
 | zero_groups_title | Text | Zero-groups state only. "You're all set!" headlineSmall (24sp) onSurface (#212121), alignment center, top_padding 16dp. | Non-interactive |
 | zero_groups_body | Text | Zero-groups state only. "You don't belong to any savings group yet. Create your first group or join one with an invite code." bodyMedium onSurfaceVariant (#616161), alignment center, horizontal_padding 24dp, top_padding 8dp. | Non-interactive |
@@ -74,11 +78,11 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 [32dp top safe padding]
 [ic_mifos_logo — 72dp × 72dp, centered]
 [16dp gap]
-["Welcome to MifosX" — headlineMedium onSurface, centered]
+["Welcome to MifosSave" — headlineMedium onSurface, centered]
 [32dp gap]
 [mode_toggle_tabs — [ Sign In · Sign Up ], Sign In active, 48dp row]
 [24dp gap]
-[email_phone_field — "grace.wanjiku@example.com" prefilled from demo]
+[email_phone_field — label "Email, Phone or Username", placeholder "username, email or +254700000000", "grace.wanjiku@example.com" prefilled from demo (LOGIN accepts email/phone/username)]
 [8dp gap]
 [password_field — masked "•••••••••••••", trailing eye]
 [4dp gap]
@@ -89,6 +93,12 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 [divider_or — "─── or ───"]
 [12dp gap]
 [biometric_unlock_button — fingerprint 48dp centered, primary tint]
+[24dp gap]
+[alt_actions_divider — "─── New here? ───"]
+[16dp gap]
+[accept_invitation_button — ✉ "Accept an Invitation" full-width outlined primary pill]
+[12dp gap]
+[demo_explore_button — ▶ "Demo Explore" full-width text primary]
 [bottom safe area]
 ```
 
@@ -98,7 +108,7 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 [32dp top safe padding]
 [ic_mifos_logo]
 [16dp gap]
-["Welcome to MifosX"]
+["Welcome to MifosSave"]
 [32dp gap]
 [mode_toggle_tabs — Sign Up active]
 [24dp gap]
@@ -109,7 +119,34 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 [password_field — placeholder "Minimum 8 characters"]
 [24dp gap]
 [signup_button — "Create Account" full-width filled primary pill]
+[24dp gap]
+[alt_actions_divider — "─── New here? ───"]
+[16dp gap]
+[accept_invitation_button — ✉ "Accept an Invitation" full-width outlined primary pill]
+[12dp gap]
+[demo_explore_button — ▶ "Demo Explore" full-width text primary]
 [bottom safe area]
+```
+
+**Layout structure (Demo Explore confirm dialog — overlays either mode when `showDemoDialog == true`)**:
+
+```
+[scrim #000000 @ 32%]
+┌─────────────────────────────────────────┐
+│ ▶ (play_circle_outline, primary)         │
+│ Explore as a demo user        (titleLarge)│
+│                                           │
+│ This is a demo user logging in to explore │
+│ the application.              (bodyMedium) │
+│                                           │
+│ No real account is created and nothing is │
+│ saved to a server. You can sign up or     │
+│ accept an invitation any time. (bodySmall)│
+│                                           │
+│                    [ Cancel ]  [ Continue ]│
+└─────────────────────────────────────────┘
+Cancel → dismiss (showDemoDialog=false)
+Continue → seed PROJECT_DEMO_DATA locally → NavigateToOrganizerDashboard
 ```
 
 **Layout structure (ZeroGroups)**:
@@ -183,6 +220,18 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 2. Tap `create_group_button` → OnCreateGroupTap → NavController navigates to `group-type-picker` carrying session identity via the SessionStore.
 3. Tap `join_with_code_button` → OnJoinWithCodeTap → NavController navigates to `join-with-code`. The membership write happens on the submit action in that screen, not here.
 
+**Accept an Invitation (pre-auth, `accept_invitation_button`)**:
+1. In the `content` state (either mode), the user taps `accept_invitation_button` (the first-class "Accept an Invitation" entry below the divider).
+2. OnAcceptInvitationTap dispatched → NavController navigates to `join-with-code` **before** authenticating, carrying no pre-filled code (the invitee types their organizer-issued 6-char code there).
+3. join-with-code routes back to `login-signup` with `pendingInviteCode` set; on the next successful Sign In / Create Account, `on_success` resumes the join (routes to join-with-code) instead of the default landing (satisfies TC-LS-010). The membership write happens on join-with-code's confirm — this action is pure navigation.
+
+**Demo Explore (`demo_explore_button` → `demo_confirm_dialog`)**:
+1. In the `content` state (either mode), the user taps `demo_explore_button` ("Demo Explore").
+2. OnDemoExplore dispatched → `state.showDemoDialog = true` (pure transform_state — nothing is seeded or navigated yet). The `demo_confirm_dialog` fades in over a 32% scrim.
+3. The dialog reads: title "Explore as a demo user", body "This is a demo user logging in to explore the application.", note "No real account is created and nothing is saved to a server…". Two actions:
+   - **Cancel** → OnDemoCancel → `showDemoDialog = false`; the user returns to the auth form. Nothing seeded or persisted.
+   - **Continue** → OnDemoConfirm → `isSeedingDemo = true`; DemoSessionManager hydrates the bundled PROJECT_DEMO_DATA fixture (Mwangaza Women's Group VSLA — members, savings, meetings, corpus, one active loan, one live invite code) into the local SQLDelight demo cache under a synthetic demo session token in core/session. **No network call, no companion API, no Fineract write.** The demo user resolves to Amina (treasurer/organizer of demo-group-001); the dialog closes and `NavigateToOrganizerDashboard` is emitted so the session lands on the same organizer-dashboard a real organizer sees (demo-explore-flow exit). Any write inside the demo session is a local-only no-op.
+
 **Session-expired re-entry**:
 1. When any in-app screen dispatches a request that returns 401, the app pops the back stack to `/auth` and remounts LoginSignupScreen with `mode = AuthMode.Login`, `state.emailPhone` prefilled from the last-known session, and a one-shot snackbar "Your session has expired. Please sign in again."
 2. If `isBiometricAvailable == true`, PromptBiometric fires automatically to enable a one-tap resume.
@@ -202,7 +251,7 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 **Touch targets**: All interactive elements minimum 48dp. Filled CTAs (login_button, signup_button, create_group_button, join_with_code_button) are 56dp for confidence. `forgot_password_link` is a labelMedium TextButton with 12dp side padding so the labelled tap area meets 48dp. `biometric_unlock_button` uses a 48dp icon inside a 64dp tap surface for high-frequency use.
 
 **Content descriptions & live regions**:
-- `auth_header_logo` accessibility_label: "Mifos X logo".
+- `auth_header_logo` accessibility_label: "MifosSave logo".
 - `auth_title` announced as a heading (Compose semantics `heading()`).
 - `mode_toggle_tabs`: each tab announced as "Sign In tab" / "Sign Up tab", selection state "selected" / "not selected".
 - Every text field: label read as the accessibility label; validation errors read as a live_region assertive on populate; character counter announced as label state change, not each keystroke.
@@ -212,9 +261,9 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 - `error_banner`: live_region assertive; announced immediately on error. Message text is the resolved localizedMessage; Retry button announced as "Retry, button" following the message.
 - ZeroGroups state: `zero_groups_illustration` accessibility_label "Empty groups illustration"; title announced as heading; body announced as bodyMedium; CTAs announced sequentially.
 
-**Focus order (Content — Login mode, biometric available)**: auth_title → mode_toggle_tabs (Sign In) → mode_toggle_tabs (Sign Up) → email_phone_field → password_field → forgot_password_link → login_button → biometric_unlock_button. `divider_or` skipped by TalkBack (`hideFromAccessibility = true`).
+**Focus order (Content — Login mode, biometric available)**: auth_title → mode_toggle_tabs (Sign In) → mode_toggle_tabs (Sign Up) → email_phone_field → password_field → forgot_password_link → login_button → biometric_unlock_button → accept_invitation_button → demo_explore_button. `divider_or` + `alt_actions_divider` skipped by TalkBack (`hideFromAccessibility = true`). When `demo_confirm_dialog` is open it traps focus: dialog title → body → note → Cancel → Continue, and returns focus to `demo_explore_button` on dismiss.
 
-**Focus order (Content — Signup mode)**: auth_title → mode_toggle_tabs (Sign In) → mode_toggle_tabs (Sign Up) → signup_name_field → email_phone_field → password_field → signup_button.
+**Focus order (Content — Signup mode)**: auth_title → mode_toggle_tabs (Sign In) → mode_toggle_tabs (Sign Up) → signup_name_field → email_phone_field → password_field → signup_button → accept_invitation_button → demo_explore_button.
 
 **Focus order (Error state)**: error_banner (announced first, then focusable) → Retry (if visible) → back to the field/CTA sequence for the current mode.
 
@@ -228,7 +277,7 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 
 ## Empty / Error / Loading States
 
-**Empty (first mount, Login mode default)**: All form fields render at their `default` values from `state_model` — name/emailPhone/password all empty. The Sign In CTA is enabled at all times — validation runs on tap; empty required fields produce inline errors rather than a globally-disabled CTA. This mirrors CommonPurse's "trust the user, guide with errors" pattern used across the app. `isBiometricAvailable` starts false; the ViewModel probes hardware + stored-session on mount and, if both hit, sets it true and the biometric affordance + divider_or animate in (fade+height, 150ms).
+**Empty (first mount, Login mode default)**: All form fields render at their `default` values from `state_model` — name/emailPhone/password all empty. The Sign In CTA is enabled at all times — validation runs on tap; empty required fields produce inline errors rather than a globally-disabled CTA. This mirrors MifosSave's "trust the user, guide with errors" pattern used across the app. `isBiometricAvailable` starts false; the ViewModel probes hardware + stored-session on mount and, if both hit, sets it true and the biometric affordance + divider_or animate in (fade+height, 150ms).
 
 **Loading (submitting state)**: The mode's CTA (Sign In or Create Account) shows a 24dp CircularProgressIndicator onPrimary in place of its label; button disabled. All form fields disabled at 40% opacity — they remain visible so the user can see what's being sent but cannot mutate. Tab toggle disabled. `biometric_unlock_button` hides (not just disables) to prevent a double-submit path. No overlaid scrim. Duration expectation: <2s online, <500ms local biometric round-trip. If the request takes >4s (arbitrary threshold from RESEARCH.md low-bandwidth budget), a bodyMedium helper "Still working… we'll retry automatically if this fails." fades in below the CTA (does not spawn a new banner).
 
@@ -273,5 +322,6 @@ Route: `/auth` — mounted at the app root, reached from `app_launch:unauthentic
 - **personal-dashboard** — Success destination when `groupMemberships.size == 1` (single-group happy path).
 - **group-list** — Success destination when `groupMemberships.size > 1`.
 - **group-type-picker** — ZeroGroups → OnCreateGroupTap destination.
-- **join-with-code** — ZeroGroups → OnJoinWithCodeTap destination.
+- **join-with-code** — ZeroGroups → OnJoinWithCodeTap destination, AND the pre-auth `accept_invitation_button` (OnAcceptInvitationTap) destination — the latter routes back carrying `pendingInviteCode` to resume the join after auth.
+- **organizer-dashboard** — Demo Explore landing: `demo_confirm_dialog` → Continue (OnDemoConfirm) seeds the offline demo fixture and emits `NavigateToOrganizerDashboard`, so the guest demo session lands on the organizer dashboard.
 - **member-onboarding** — Downstream of ZeroGroups → group-type-picker → group-create; this is where the first-group organizer completes the onboarding sequence.

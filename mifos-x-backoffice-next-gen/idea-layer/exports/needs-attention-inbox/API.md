@@ -1,6 +1,6 @@
 <!-- source: screens/needs-attention-inbox/api.yaml -->
-<!-- source_hash: api=2b4b2eb5e28e -->
-<!-- generated: 2026-07-21T18:29:49Z -->
+<!-- source_hash: api=2efa3baeeff4 -->
+<!-- generated: 2026-07-31T03:23:26Z -->
 <!-- generated_from_feature_version: 2.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 
@@ -14,26 +14,28 @@
 
 | Function | Method | Table | Auth | Params | Response | Cache |
 |----------|--------|-------|------|--------|----------|-------|
-| list_pending_approvals | GET | maker_checker_cache | Yes | makerDateTimeFrom(string), entityName(string), actionName(string), offset(int), limit(int) | MakerCheckerEntryDto[]: auditId, actionName, entityName, maker, madeOnDate | CACHE_FIRST_SWR |
+| list_pending_approvals | GET | maker_checker_cache | Yes | makerDateTimeFrom(string), entityName(string), actionName(string), offset(integer), limit(integer) | MakerCheckerEntryDto[]: auditId, actionName, entityName, maker, madeOnDate, processingResult | CACHE_FIRST_SWR |
 | approve_or_reject_entry | POST | maker_checker_cache | Yes | auditId(path), command(string) | CommandProcessingResultDto: commandId, resourceId | -- |
-| replay_failed_command | POST | draft_outbox | Yes | enclosingTransaction(boolean) | BatchResponseDto[]: statusCode, body per step | durable-outbox |
+| replay_failed_command | POST | draft_outbox | Yes | enclosingTransaction(boolean) | BatchResponseDto[]: requestId, statusCode, body (per enclosed step) | -- |
 | list_overdue_collections | POST | collection_task_cache | Yes | command(string) | CollectionSheetDto: clients, loanDues, savingsDues | CACHE_FIRST_SWR |
-| list_notifications | GET | notification_cache | Yes | isRead(boolean), offset(int), limit(int) | NotificationDto[]: id, objectType, objectId, action, content | CACHE_FIRST_SWR |
+| list_notifications | GET | notification_cache | Yes | isRead(boolean), offset(integer), limit(integer) | NotificationDto[]: id, objectType, objectId, action, content, isRead, createdDate | CACHE_FIRST_SWR |
 | mark_notification_read | PUT | notification_cache | Yes | (body) | CommandProcessingResultDto: commandId | -- |
 
 ## Error Handling
 
 All endpoints follow standard error mapping:
 - 401 -> Auth error (redirect to signin)
-- 403 -> NoAuthorization -> permission-capability-engine drift refresh (per-category strip, not a crash)
+- 403 -> NoAuthorization -> `permission-capability-engine` drift refresh (per-category strip, not a crash)
 - 404 -> NotFound error
 - 422 -> Validation error
 - 500 -> Server error (retryable; error state + Retry)
 
 Notes:
-- The failed-command ROWS are read from `DraftDao.observeAllFailed()` (local Room `draft_outbox`), NOT an HTTP GET — `replay_failed_command` (POST /v1/batches) is only fired on Retry, with a FRESH durable idempotency key so a crash between retry and replay cannot double-post.
-- `list_pending_approvals` is self-scoped by the server to the checker; the client further gates each row by `canCheck(action,entity)` (or `CHECKER_SUPER_USER`) before rendering the Approve control.
-- All three remote sources read CACHE_FIRST_SWR so the inbox renders fully offline; a single source erroring degrades to a per-group strip — the inbox is never blanked.
+- The failed-command ROWS are read from `DraftDao.observeAllFailed()` (local Room `draft_outbox`), NOT an HTTP GET — `replay_failed_command` (POST /v1/batches, `enclosingTransaction`) fires only on Retry, minting a FRESH durable idempotency key so a crash between retry and replay cannot double-post.
+- `list_pending_approvals` is self-scoped by the server to the checker; the client further gates each row by `canCheck(action,entity)` (or `CHECKER_SUPER_USER`) before rendering the Approve/Reject control.
+- `list_overdue_collections` is staffId-scoped (`READ_COLLECTIONSHEET`); a user without that permission never sees the endpoint called and the Overdue tasks group is omitted client-side.
+- All three remote sources (`list_pending_approvals`, `list_overdue_collections`, `list_notifications`) read CACHE_FIRST_SWR so the inbox renders fully offline; a single source erroring (`approvals_source_failed` / `tasks_source_failed` / `alerts_source_failed`) degrades to a per-group retry strip via `fallback_cache` — the inbox is never blanked.
+- `mark_notification_read` fires when an alert row's deep-link is opened (silent on failure, `mark_read_failed` — reconciled on the next notifications revalidate).
 
 ## Full Contracts
 

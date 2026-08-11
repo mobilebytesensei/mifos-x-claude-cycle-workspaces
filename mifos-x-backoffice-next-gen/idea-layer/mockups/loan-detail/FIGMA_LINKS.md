@@ -1,6 +1,6 @@
 # FIGMA_LINKS.md — loan-detail
 
-<!-- schema: v3.2 | generated: 2026-07-26T05:48:28.921Z -->
+<!-- schema: v3.2 | generated: 2026-08-03T14:50:29.604Z -->
 
 ## Stitch Project
 
@@ -8,17 +8,17 @@
 |-------|-------|
 | Project URL | [10243803383444073820](https://stitch.google.com/projects/10243803383444073820) |
 | Design System ID | 312064780206383264 |
-| Generated | 2026-07-26T05:48:28.857Z |
+| Generated | 2026-08-03T14:50:29.604Z |
 | Success | 4/4 states |
 
 ## Screen Status
 
 | State | Screen ID | Folder | PNG | HTML | Status |
 |-------|-----------|--------|-----|------|--------|
-| loading | bb6c527d252542ddb02473281106c7a1 | 01-loan-detail-loading | PNG ✅ | HTML ✅ | ✅ generated |
-| content | ad804ab475854ce0ae37557fc630df37 | 02-loan-detail-content | PNG ✅ | HTML ✅ | ✅ generated |
-| empty | 8306fe8a97e1489186698a3b6e446760 | 03-loan-detail-empty | PNG ✅ | HTML ✅ | ✅ generated |
-| error | 973c26f4844c4a1db2fc6d5329d545f4 | 04-loan-detail-error | PNG ✅ | HTML ✅ | ✅ generated |
+| loading | bb6c527d252542ddb02473281106c7a1 | 01-loan-detail-loading | PNG ✅ | HTML ✅ | ♻ resumed |
+| content | ad804ab475854ce0ae37557fc630df37 | 02-loan-detail-content | PNG ✅ | HTML ✅ | ♻ resumed |
+| empty | 8306fe8a97e1489186698a3b6e446760 | 03-loan-detail-empty | PNG ✅ | HTML ✅ | ♻ resumed |
+| error | 973c26f4844c4a1db2fc6d5329d545f4 | 04-loan-detail-error | PNG ✅ | HTML ✅ | ♻ resumed |
 
 ## Open in Figma / Stitch
 

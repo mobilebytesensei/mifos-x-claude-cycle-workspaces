@@ -1,0 +1,320 @@
+schema_version: v4.0
+screen_id: nav-shell-assembler
+feature: nav-shell-assembler
+name: "Nav Shell Assembler (role-adaptive app chrome)"
+status: enriched
+archetype: shell_host
+cluster: foundation
+module: foundation
+initial_state: resolving
+
+# ─────────────────────────────────────────────────────────────────────────
+# The authenticated app-shell — the chrome every module renders inside.
+# It is NOT a standalone screen; it is the navigation host that wraps all
+# 17 module entry-points. After sign-in the assembler reads the resolved
+# PermissionSet from PermissionStateHolder and builds a NavRoster of only
+# the roots the user is permitted to see.
+#
+# THREE-TIER GATING (§4.7):
+#   Tier 1 — nav root: HIDDEN when the user holds zero codes in the module
+#             family (fail-closed). This assembler enforces Tier 1 only.
+#   Tier 2 — feature within a module: handled inside each module screen.
+#   Tier 3 — action within a feature: each on_click action_contract.
+#
+# ADAPTIVE FORM FACTORS:
+#   Phone    → bottom bar (≤5 priority roots; all 17 reachable via drawer menu)
+#   Tablet   → navigation rail (all permitted roots visible, labels collapsed)
+#   Desktop  → permanent navigation drawer (all permitted roots + labels)
+#
+# ALL_FUNCTIONS umbrella (Super user) → all 17 roots visible, no evaluation.
+# ─────────────────────────────────────────────────────────────────────────
+
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  description: >-
+    Reads PermissionSet from PermissionStateHolder (bootstrapped by permission-capability-engine at login).
+    For each of the 17 module roots, evaluates hasAnyFamily(moduleId) against the CapabilityMap; builds a
+    NavRoster ordered by role-priority. Emits the roster to the adaptive shell (bottom bar / rail / drawer).
+    Re-assembles automatically on PermissionSet refresh (403-drift, re-auth). Does NOT make API calls — reads
+    from in-memory PermissionStateHolder only.
+  library_refs: []
+  external_library_refs:
+    - "core/permissions PermissionEvaluator + CapabilityMap"
+    - "androidx.compose.material3.adaptive NavigationSuiteScaffold"
+  required_modules:
+    - core/permissions
+    - core/datastore
+
+states:
+  resolving:
+    description: "Assembler is reading the PermissionStateHolder and computing the NavRoster. Shown for <100ms on cold start while the in-memory state is loaded; the last-known roster from the previous session is shown as a shimmer placeholder."
+    is_default: true
+  assembled:
+    description: "NavRoster computed — the bottom bar (phone), rail (tablet), or permanent drawer (desktop) renders the permitted module roots. The dashboard or last-visited module is loaded in the content pane. Every root shown is confirmed by PermissionEvaluator; admin/config roots are absent for field-officer personas."
+  empty:
+    description: "The resolved NavRoster is empty — the user holds zero codes across all 17 module families. Renders a full-screen empty state: 'No modules are available for your access level. Please contact your administrator.' with a Logout option."
+  error:
+    description: "PermissionStateHolder could not be read or the CapabilityMap is unavailable. Renders an error card: 'Could not assemble your workspace.' with a Retry that re-reads the state. The last encrypted PermissionSet is kept in memory to avoid a full logout."
+
+state_model:
+  fields:
+    - name: permissionSet
+      type: PermissionSet
+      notes: "The resolved set of Fineract permission codes for the signed-in user. ALL_FUNCTIONS short-circuits to all 17 roots visible; an empty set drives the empty state."
+    - name: navRoster
+      type: NavRoster
+      notes: "Ordered list of permitted NavRoot items built by evaluating each module's permission_family against the PermissionSet + CapabilityMap. Rebuilt on every PermissionSet emission (403-drift, re-auth, server switch)."
+    - name: activeModuleId
+      type: String?
+      notes: "The screen_id of the module root currently loaded in the content pane (null while resolving). Drives the active/selected highlight on the bottom bar / rail / drawer."
+    - name: isDrawerOpen
+      type: Boolean
+      notes: "Desktop/tablet only — whether the permanent navigation drawer is expanded. Phone bottom-bar ignores this field."
+    - name: currentUser
+      type: UserDisplayInfo
+      notes: "Signed-in user's displayName + officeName shown in the drawer header chip and the profile deep-link. Loaded from the session store at assembly time."
+    - name: lastAssemblyHash
+      type: String?
+      notes: "SHA-256 of the last resolved NavRoster — used to detect roster changes on permission refresh and skip unnecessary recomposition when the roster has not changed."
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  fab_visible: false
+  snackbar_visible: true
+
+# ── Module root definitions — the 17 roots the assembler evaluates ─────
+# Each root carries its permission_family (≥1 code = visible),
+# required_permission (the representative family code), denied_behavior: hide-root
+# (Tier 1 = hidden, NOT gray-out — gray-out is only Tier 3 actions).
+# Bottom bar priority: lower order = higher priority for phone bottom-bar slots.
+module_roots:
+  - id: m01-dashboard
+    label: "{strings.nav_dashboard}"
+    icon: "dashboard"
+    target: m01-dashboard
+    order: 1
+    permission_family: []
+    required_permission: null
+    note: "Always visible post-login — the home surface for every role."
+    denied_behavior: never_hidden
+
+  - id: m02-clients
+    label: "{strings.nav_clients}"
+    icon: "group"
+    target: m02-clients
+    order: 2
+    permission_family: ["READ_CLIENT", "CREATE_CLIENT", "UPDATE_CLIENT", "DELETE_CLIENT"]
+    required_permission: "READ_CLIENT"
+    denied_behavior: hide-root
+
+  - id: m03-groups-centers
+    label: "{strings.nav_groups}"
+    icon: "groups"
+    target: m03-groups-centers
+    order: 3
+    permission_family: ["READ_GROUP", "CREATE_GROUP", "READ_CENTER", "CREATE_CENTER", "READ_MEETING"]
+    required_permission: "READ_GROUP"
+    denied_behavior: hide-root
+
+  - id: m04-loan-portfolio
+    label: "{strings.nav_loans}"
+    icon: "account_balance"
+    target: m04-loan-portfolio
+    order: 4
+    permission_family: ["READ_LOAN", "CREATE_LOAN", "APPROVE_LOAN", "DISBURSE_LOAN", "REPAYMENT_LOAN"]
+    required_permission: "READ_LOAN"
+    denied_behavior: hide-root
+
+  - id: m05-savings-deposits-shares
+    label: "{strings.nav_savings}"
+    icon: "savings"
+    target: m05-savings-deposits-shares
+    order: 5
+    permission_family: ["READ_SAVINGSACCOUNT", "DEPOSIT_SAVINGSACCOUNT", "WITHDRAWAL_SAVINGSACCOUNT", "CREATE_FIXEDDEPOSITACCOUNT", "READ_SHAREACCOUNT"]
+    required_permission: "READ_SAVINGSACCOUNT"
+    denied_behavior: hide-root
+
+  - id: m06-collections
+    label: "{strings.nav_collections}"
+    icon: "receipt_long"
+    target: m06-collections
+    order: 6
+    permission_family: ["READ_COLLECTIONSHEET", "SAVECOLLECTIONSHEET_CENTER", "SAVECOLLECTIONSHEET_GROUP"]
+    required_permission: "READ_COLLECTIONSHEET"
+    denied_behavior: hide-root
+
+  - id: m07-accounting
+    label: "{strings.nav_accounting}"
+    icon: "account_tree"
+    target: m07-accounting
+    order: 10
+    permission_family: ["READ_GLACCOUNT", "CREATE_JOURNALENTRY", "REVERSE_JOURNALENTRY", "READ_GLCLOSURE"]
+    required_permission: "READ_GLACCOUNT"
+    denied_behavior: hide-root
+
+  - id: m08-products-charges
+    label: "{strings.nav_products}"
+    icon: "inventory_2"
+    target: m08-products-charges
+    order: 11
+    permission_family: ["READ_LOANPRODUCT", "CREATE_LOANPRODUCT", "READ_SAVINGSPRODUCT", "CREATE_CHARGE"]
+    required_permission: "READ_LOANPRODUCT"
+    denied_behavior: hide-root
+
+  - id: m09-organization
+    label: "{strings.nav_organization}"
+    icon: "corporate_fare"
+    target: m09-organization
+    order: 12
+    permission_family: ["READ_OFFICE", "CREATE_OFFICE", "READ_STAFF", "CREATE_STAFF", "READ_HOLIDAY"]
+    required_permission: "READ_OFFICE"
+    denied_behavior: hide-root
+
+  - id: m10-users-roles-permissions
+    label: "{strings.nav_users}"
+    icon: "manage_accounts"
+    target: m10-users-roles-permissions
+    order: 13
+    permission_family: ["READ_USER", "CREATE_USER", "READ_ROLE", "PERMISSIONS_ROLE", "UPDATE_PERMISSION"]
+    required_permission: "READ_USER"
+    denied_behavior: hide-root
+
+  - id: m11-tellers-cash
+    label: "{strings.nav_tellers}"
+    icon: "point_of_sale"
+    target: m11-tellers-cash
+    order: 8
+    permission_family: ["READ_TELLER", "CREATE_TELLER", "ALLOCATECASHIER_TELLER", "ALLOCATECASHTOCASHIER_TELLER"]
+    required_permission: "READ_TELLER"
+    denied_behavior: hide-root
+
+  - id: m12-datatables-config
+    label: "{strings.nav_datatables}"
+    icon: "table_chart"
+    target: m12-datatables-config
+    order: 14
+    permission_family: ["READ_DATATABLE", "CREATE_DATATABLE", "REGISTER_DATATABLE", "READ_CONFIGURATION"]
+    required_permission: "READ_DATATABLE"
+    denied_behavior: hide-root
+
+  - id: m13-scheduler-jobs
+    label: "{strings.nav_scheduler}"
+    icon: "schedule"
+    target: m13-scheduler-jobs
+    order: 15
+    permission_family: ["READ_SCHEDULER", "UPDATE_SCHEDULER", "EXECUTEJOB_SCHEDULER"]
+    required_permission: "READ_SCHEDULER"
+    denied_behavior: hide-root
+
+  - id: m14-reports-search-audit
+    label: "{strings.nav_reports}"
+    icon: "bar_chart"
+    target: m14-reports-search-audit
+    order: 7
+    permission_family: ["READ_REPORT", "REPORTING_SUPER_USER", "READ_AUDIT"]
+    required_permission: "READ_REPORT"
+    denied_behavior: hide-root
+
+  - id: m15-approvals-makerchecker
+    label: "{strings.nav_approvals}"
+    icon: "approval"
+    target: m15-approvals-makerchecker
+    order: 9
+    permission_family: ["CHECKER_SUPER_USER", "CREATE_CLIENT_CHECKER", "APPROVE_LOAN_CHECKER", "REPAYMENT_LOAN_CHECKER"]
+    required_permission: "CHECKER_SUPER_USER"
+    denied_behavior: hide-root
+    note: "Any *_CHECKER code qualifies; the family list is a representative sample."
+
+  - id: m16-communications
+    label: "{strings.nav_communications}"
+    icon: "campaign"
+    target: m16-communications
+    order: 16
+    permission_family: ["READ_SMSCAMPAIGN", "CREATE_SMSCAMPAIGN", "READ_REPORTMAILINGJOB"]
+    required_permission: "READ_SMSCAMPAIGN"
+    denied_behavior: hide-root
+
+  - id: m17-sync-settings
+    label: "{strings.nav_settings}"
+    icon: "settings"
+    target: m17-sync-settings
+    order: 17
+    permission_family: []
+    required_permission: null
+    note: "Always visible — sync console + settings are available to every authenticated persona."
+    denied_behavior: never_hidden
+
+# ── Interactive components ──────────────────────────────────────────────
+components:
+  - id: nav_shell_host
+    type: adaptive_nav_host
+    testTag: "nav-shell-assembler_host"
+    description: "Material3 NavigationSuiteScaffold — renders bottom bar (phone), rail (tablet), permanent drawer (desktop) from the resolved NavRoster."
+    state_bindings:
+      resolving: "shimmer placeholder with last-known roots"
+      assembled: "resolved NavRoster rendered adaptive"
+      empty: "empty state card"
+      error: "error card + Retry"
+
+  - id: nav_root_item
+    type: nav_item
+    testTag: "nav-shell-assembler_root_{moduleId}"
+    description: "One permitted module root. Hidden entirely when the user has zero codes in the module's permission_family (fail-closed). Never grayed-out (Tier 1 = hide, not disable)."
+    accessibility_label: "Navigate to {moduleLabel} module"
+    on_click:
+      action: navigate_to_module
+      action_contract:
+        effect: navigate
+        required_permission: ""
+        denied_behavior: hide-root
+        description: "Navigate to the module root screen. The item is already hidden when the user lacks the module family — this click fires only when the root is visible. The module's own screens enforce Tier 2 (feature reachability) and Tier 3 (action gating) from their own permission checks."
+
+  - id: user_profile_chip
+    type: chip
+    label: "{currentUserName} · {officeName}"
+    testTag: "nav-shell-assembler_profile_chip"
+    description: "Shown in the drawer header (desktop/tablet) — displays the signed-in user's name and office. Tapping opens the resolved PermissionSet detail."
+    accessibility_label: "View your permission set and session profile"
+    on_click:
+      action: open_session_profile
+      target: permission-set-detail
+      action_contract:
+        effect: navigate
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        description: "Navigate to the read-only resolved PermissionSet detail screen, which lists every held permission code grouped by Fineract entity, plus the capability map fingerprint. Available to all authenticated users."
+
+  - id: network_config_drawer_item
+    type: nav_item
+    label: "{strings.nav_network_config}"
+    icon: "wifi"
+    testTag: "nav-shell-assembler_network_config"
+    description: "Quick-access Network configuration entry in the drawer footer — opens network-config without requiring a nav root slot."
+    accessibility_label: "Open network configuration settings"
+    on_click:
+      action: open_network_config
+      target: network-config
+      action_contract:
+        effect: navigate
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        description: "Open the network-config screen (server URL + tenant + credential editor). Available to all authenticated users — not permission-gated."
+
+  - id: retry_button
+    type: button
+    label: "{strings.nav_shell_retry}"
+    testTag: "nav-shell-assembler_retry"
+    variant: primary
+    visible_states: [error]
+    accessibility_label: "Retry assembling your workspace navigation"
+    on_click:
+      action: retry_assembly
+      action_contract:
+        effect: call_api
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        reads_from:
+          - table: permission_state
+        description: "Re-read the PermissionStateHolder and re-run the NavRoster assembly. Does not trigger a new login — uses the in-memory PermissionSet (or the last encrypted backup if memory was cleared). Available to all authenticated users."

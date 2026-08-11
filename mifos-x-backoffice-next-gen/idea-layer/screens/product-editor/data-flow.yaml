@@ -40,18 +40,28 @@ entries:
     on_error:
       nav_target: null
       error_code: save_failed
+    mutation: write
     persistence_contract:
+      is_durable: true
+      storage_backend: local_db
       store: room
-      table: draft_outbox
-      mutation: write
+      table: framework_submit_drafts
+      idempotency_key: durable-uuid-v4
+      action: [CREATE_LOANPRODUCT, UPDATE_LOANPRODUCT]
+      entity: LOANPRODUCT
+      replay: exactly-once-on-submit
+      offline: online-only
       keys: [idempotency_key, action, entity, payload_json, status, product_id]
       note: >-
-        Save is enqueued here with a durable idempotency_key, action=(CREATE_LOANPRODUCT|UPDATE_LOANPRODUCT),
-        entity=LOANPRODUCT; the offline-sync-engine replays it via POST /v1/batches. A rejected replay routes to
-        needs-attention-inbox, never silently dropped.
+        Save is written to the durable draft outbox with a UUIDv4 idempotency_key reused on a maker-checker
+        resubmit (exactly-once, zero double-create), action=(CREATE_LOANPRODUCT|UPDATE_LOANPRODUCT), entity=LOANPRODUCT.
+        BUT product/config edits are ONLINE-ONLY per offline_policy (admin/config = online-only + maker-checker): the
+        draft SUBMITS only with connectivity — it is NOT drained silently on later reconnect like a field transaction.
+        Offline attempt → blocked with a connect banner. A rejected/FAILED submit surfaces in needs-attention-inbox.
 
 cache:
   strategy: cache_first_swr
   note: "Product + template revalidate in the background per FreshnessBands; the outbox is authoritative for the in-flight save and never revalidated."
 
-# regenerated-provenance: idea-data-flow re-verified 2026-07-26 — entries + persistence_contract consistent with current ui.yaml + api.yaml; mtime re-stamp (isStale enriched-unstick).
+# regenerated-provenance: idea-data-flow re-run 2026-07-31 (--auto enrichment drain) — re-verified against current api.yaml (get_product · get_product_template · save_product, all /v1/loanproducts); two cached reads + one draft_outbox write (CREATE/UPDATE_LOANPRODUCT, exactly-once via POST /v1/batches); F1–F5 pass. Savings-product path (/v1/savingsproducts) NOT declared in api.yaml — no savings data-flow entry added.
+# re-verified 2026-07-31 (post-21:09 ui.yaml enrich): reads + durable-outbox save (validating/saving states) unchanged vs current ui+api; mtime re-stamp to clear content-hash staleness.

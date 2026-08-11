@@ -11,20 +11,20 @@
 
 | ID | Method | Endpoint | Auth | Writable |
 |---|---|---|---|---|
-| `get_meeting_record` | GET | `/fineract-provider/api/v1/datatables/dt_meeting_record/{centerId}` | BasicAuth | no |
+| `get_meeting_record` | GET | `/fineract-provider/api/v1/datatables/dt_meeting_record/{groupId}` | BasicAuth | no |
 
 Read-only. Totals + corpus were reconciled at close by the collection-sheet companion; this screen
 never moves money.
 
 ## Request / Response Details
 
-### GET /datatables/dt_meeting_record/{centerId}
+### GET /datatables/dt_meeting_record/{groupId}
 
-**Path params:** `centerId: Int`. **Query params:** `meetingNumber: Int`.
+**Path params:** `groupId: Int`. **Query params:** `meetingNumber: Int`.
 **Response:** `MeetingRecordDetail`.
 **Errors:** 404 → show cached data or error state · 5xx → show error banner.
 
-**Cache:** Store5 stale-while-revalidate over SQLDelight, keyed by center/meeting.
+**Cache:** Store5 stale-while-revalidate over SQLDelight, keyed by group/meeting.
 
 ## DTOs
 

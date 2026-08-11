@@ -9,7 +9,7 @@
 
 ## Design Language
 
-**System**: CommonPurse-v3 (Material Design 3 · MD3) — comfortable density
+**System**: MifosSave-v3 (Material Design 3 · MD3) — comfortable density
 **Aesthetic**: `minimalist-ui` · variance 3/10 · motion 3/10 · density 7/10 · accessibility-first · regulated-industry
 **Font**: Roboto (Android) / SF Pro (iOS) — system stack
 **Primary**: `#2E7D32` (`--primary-700`, VSLA green) — Cancel button text color
@@ -239,5 +239,5 @@ Failure surfaces (from `SettingsLogoutDialogState.errors`):
     .claude-runtime/scripts/stitch-generate.ts \
     --workspace mifos-x/mifos-x-group-banking --features settings-logout-dialog
   ```
-- Destructive-action safeguard: initial focus on Cancel, danger-tinted destructive CTA, generic body copy (no username echoed), and inline error surface (no auto-dismiss) — all consistent with the `regulated-industry` taste dial and the CommonPurse "calm digital ledger" voice.
+- Destructive-action safeguard: initial focus on Cancel, danger-tinted destructive CTA, generic body copy (no username echoed), and inline error surface (no auto-dismiss) — all consistent with the `regulated-industry` taste dial and the MifosSave "calm digital ledger" voice.
 - Design conformance verifier: preview HTML mirrors the layouts above; any hand-edit to `ui.yaml#components` / `states` triggers `needs_generate_mockup` on the next `/idea-sync` cascade.

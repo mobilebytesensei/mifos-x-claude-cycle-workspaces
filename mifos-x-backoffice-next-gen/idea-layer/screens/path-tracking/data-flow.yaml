@@ -1,0 +1,237 @@
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: path-tracking
+
+# No Fineract API calls — entirely device-local GPS + Room. GPS acquisition via
+# core/platform LocationProvider (KMP expect/actual — Android LocationManager /
+# iOS CLLocationManager). Route data stored in Room (path_tracking_sessions +
+# path_tracking_points). Active session ID persisted to encrypted_prefs so the
+# recording survives process kill and resumes correctly on cold start.
+
+entries:
+  # ── 1. Load session history on mount (idle) ───────────────────────────────────
+  - screen_id: path-tracking
+    trigger: on_mount
+    produces_state: idle
+    loading_state: idle
+    error_state: error
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: path_tracking_sessions
+        mutation: read
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Flow<List<PathTrackingSession>> from Room ordered by started_at DESC.
+          Each row: session_id (UUID), started_at, ended_at (nullable), status
+          (recording|paused|completed), distance_km (computed Haversine), duration_secs,
+          waypoints_count. Live Flow — idle list refreshes automatically when a recording
+          session completes. Also detects any interrupted active session (status=recording)
+          on cold start and surfaces a resume prompt.
+      - name: app_settings
+        mutation: read
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: >-
+          tracking_active_session_id — read on mount to detect a recording session that
+          survived a process kill. If non-null and the matching Room session has
+          status=recording, the app offers to resume or stop that session.
+    dtos:
+      - name: PathTrackingSession
+        role: derived
+        api_id: null
+        source: "local Room — path_tracking_sessions Flow"
+    cache:
+      strategy: room_flow
+      key_template: "room:path_tracking_sessions:{userId}"
+      shape: list
+      ttl_seconds: null
+    error_paths:
+      - error_code: storage_read_failed
+        behavior: show_error
+        message_key: path_tracking_history_failed
+
+  # ── 2. Start tracking (idle → recording) ─────────────────────────────────────
+  - screen_id: path-tracking
+    trigger: on_interact
+    produces_state: recording
+    loading_state: recording
+    error_state: error
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: path_tracking_sessions
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          New PathTrackingSession row inserted: session_id=UUID, started_at=now,
+          status=recording, distance_km=0.0, waypoints_count=0. The session stays open
+          until stop_tracking. Distance and count updated incrementally as points arrive.
+      - name: path_tracking_points
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          One PathTrackingPoint row appended per GPS fix (~5s interval):
+          session_id (FK), lat (Double), lng (Double), accuracy_m (Float),
+          speed_kmh (Float), timestamp (Long epoch ms). Survives process kill — all
+          points are durable and loaded for polyline rendering in the viewing state.
+      - name: app_settings
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: "tracking_active_session_id = new session UUID — persisted for process-kill recovery."
+    side_effects:
+      - kind: emit_event
+        target: "platform LocationProvider — start background GPS acquisition at ~5s interval"
+      - kind: notification
+        target: "persistent foreground notification 'Recording route · {elapsed}' (required on Android for background location)"
+    error_paths:
+      - error_code: permission_denied
+        behavior: show_permission_required
+        message_key: path_tracking_permission_required
+      - error_code: gps_signal_lost
+        behavior: pause_and_show_error
+        message_key: path_tracking_gps_error
+
+  # ── 3. Pause tracking (recording → paused) ───────────────────────────────────
+  - screen_id: path-tracking
+    trigger: on_interact
+    produces_state: paused
+    loading_state: paused
+    error_state: recording
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: path_tracking_sessions
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Update active session: status=paused, paused_at=now. LocationProvider stopped;
+          waypoint appending halted. The session_id row remains open in Room; distance and
+          duration accumulated so far are preserved. Points from the paused interval are
+          excluded from the total duration calculation on resume.
+    side_effects:
+      - kind: emit_event
+        target: "platform LocationProvider — stop GPS acquisition"
+    error_paths:
+      - error_code: storage_write_failed
+        behavior: show_snackbar
+        message_key: path_tracking_pause_failed
+
+  # ── 4. Resume tracking (paused → recording) ──────────────────────────────────
+  - screen_id: path-tracking
+    trigger: on_interact
+    produces_state: recording
+    loading_state: recording
+    error_state: error
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: path_tracking_sessions
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Update active session: status=recording, resumed_at=now. Total active duration
+          excludes the paused interval (duration = sum of recording intervals).
+          LocationProvider restarted; waypoint appending resumed.
+    side_effects:
+      - kind: emit_event
+        target: "platform LocationProvider — resume background GPS acquisition"
+    error_paths:
+      - error_code: gps_signal_lost
+        behavior: show_error
+        message_key: path_tracking_gps_error
+
+  # ── 5. Stop tracking (recording | paused → idle) ──────────────────────────────
+  - screen_id: path-tracking
+    trigger: on_interact
+    produces_state: idle
+    loading_state: idle
+    error_state: idle
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: path_tracking_sessions
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Close the session: status=completed, ended_at=now. Final distance_km computed
+          from all PathTrackingPoints for this session_id using the Haversine formula.
+          Final waypoints_count set. The session row now appears in the history list.
+      - name: app_settings
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: encrypted_prefs
+        persistence_note: "Clear tracking_active_session_id (set to null)."
+    side_effects:
+      - kind: emit_event
+        target: "platform LocationProvider — stop GPS acquisition"
+      - kind: notification
+        target: "dismiss foreground recording notification"
+    error_paths:
+      - error_code: storage_write_failed
+        behavior: show_snackbar
+        message_key: path_tracking_stop_failed
+
+  # ── 6. View historical session (idle → viewing) ───────────────────────────────
+  - screen_id: path-tracking
+    trigger: on_interact
+    produces_state: viewing
+    loading_state: viewing
+    error_state: error
+    auth_required: false
+    endpoints: []
+    tables:
+      - name: path_tracking_points
+        mutation: read
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          All PathTrackingPoints for the selected session_id loaded from Room as
+          List<LatLng>. Rendered as a static full-route polyline in the map view.
+          The map bounds are computed from the min/max lat/lng of the point set.
+      - name: path_tracking_sessions
+        mutation: read
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Selected session metadata loaded for the stats header: started_at, ended_at,
+          distance_km, duration_secs, waypoints_count. Also renders the 'Delete route'
+          option which deletes both the session row and all its associated points.
+    dtos:
+      - name: PathTrackingPoint
+        role: derived
+        api_id: null
+        source: "local Room — path_tracking_points WHERE session_id = {selectedSessionId}"
+      - name: PathTrackingSession
+        role: derived
+        api_id: null
+        source: "local Room — path_tracking_sessions WHERE session_id = {selectedSessionId}"
+    error_paths:
+      - error_code: storage_read_failed
+        behavior: show_error
+        message_key: path_tracking_session_load_failed
+
+# regenerated-provenance: data-flow enriched to v2.2.0 schema 2026-08-01 — all 6 ui.yaml
+# states covered (idle/recording/paused/viewing/permission_required/error); 6 entries;
+# 0 API endpoints (device-local only per api.yaml); reads: Room path_tracking_sessions
+# (idle/viewing), Room path_tracking_points (viewing), encrypted_prefs app_settings (mount/stop);
+# writes: Room path_tracking_sessions (start/pause/resume/stop), Room path_tracking_points
+# (recording), encrypted_prefs tracking_active_session_id (start/stop).

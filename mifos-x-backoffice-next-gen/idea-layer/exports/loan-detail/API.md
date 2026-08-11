@@ -1,6 +1,6 @@
 <!-- source: screens/loan-detail/api.yaml -->
-<!-- source_hash: api=99b44c2ebf36 -->
-<!-- generated: 2026-07-26T04:07:02Z -->
+<!-- source_hash: api=a45edbaf4e9b -->
+<!-- generated: 2026-07-31T03:22:43Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 
@@ -14,9 +14,9 @@
 
 | Function | Method | Table | Auth | Params | Response | Cache |
 |----------|--------|-------|------|--------|----------|-------|
-| get_loan | GET | cached_loans | Yes | loanId(Long), associations(String)?, exclude(String)? | LoanAccountDto: status, principal, summary{outstanding, arrears}, repaymentSchedule{periods[]}, transactions[] | CACHE_FIRST_SWR |
+| get_loan | GET | loan_cache | Yes | loanId(Long), associations(String)?, exclude(String)? | LoanAccountDto: status, principal, loanBalanceOutstanding, repaymentSchedule.periods[], transactions[] | cache_first_swr |
 | post_repayment | POST | draft_outbox | Yes | loanId(Long), command(String: repayment\|waiveinterest\|foreclosure) | CommandProcessingResultDto: resourceId, commandId, changes{} | durable-outbox |
-| loan_lifecycle_command | POST | draft_outbox | Yes | loanId(Long), command(String: approve\|disburse\|undoapproval\|reject\|writeoff\|foreclosure) | CommandProcessingResultDto: resourceId, commandId, changes{} | durable-outbox |
+| loan_lifecycle_command | POST | draft_outbox | Yes | loanId(Long), command(String: approve\|disburse\|undoapproval\|reject\|withdrawnByApplicant\|writeoff\|foreclosure) | CommandProcessingResultDto: resourceId, commandId, changes{} | durable-outbox |
 
 ## Error Handling
 
@@ -28,8 +28,8 @@ All endpoints follow standard error mapping:
 - 500 -> Server error (retryable; error state + Retry)
 
 Notes:
-- `get_loan` is a read — CACHE_FIRST_SWR: the loan opens instantly from cache and a background revalidate refreshes it (stale badge), so it works offline.
-- `post_repayment` + `loan_lifecycle_command` are enqueued through the offline outbox with a FRESH durable UUIDv4 Idempotency-Key per action and replayed all-or-nothing via `POST /v1/batches` — a field-captured repayment replays exactly-once, zero double-post. Only the `?command=` members valid for the current status AND held by the PermissionSet are exposed; an approve under maker-checker lands as a queued checker entry rather than posting immediately.
+- `get_loan` is a read — CACHE_FIRST_SWR against the `loan_cache` Room table: the loan opens instantly from cache and a background revalidate refreshes it (stale badge), so it works offline.
+- `post_repayment` + `loan_lifecycle_command` are enqueued through the offline outbox (`draft_outbox`) with a FRESH durable idempotency key per action and replayed all-or-nothing via `POST /v1/batches` — a field-captured repayment replays exactly-once, zero double-post. Only the `?command=` members valid for the current status AND held by the PermissionSet are exposed; an approve under maker-checker lands as a queued checker entry rather than posting immediately.
 
 ## Full Contracts
 

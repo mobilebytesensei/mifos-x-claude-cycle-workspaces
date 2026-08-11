@@ -6,11 +6,11 @@
 
 ### Overview
 
-CommonPurse is a Kotlin Multiplatform group-banking app for VSLA (Village Savings and Loan Associations) in rural East Africa. The design system is Material Design 3 (M3) with a VSLA-specific brand palette and typography scale optimised for outdoor readability and low-literacy users.
+MifosSave is a Kotlin Multiplatform group-banking app for VSLA (Village Savings and Loan Associations) in rural East Africa. The design system is Material Design 3 (M3) with a VSLA-specific brand palette and typography scale optimised for outdoor readability and low-literacy users.
 
 ### Brand Identity
 
-The app name is CommonPurse. The logo is a leaf-and-coin SVG mark representing community growth and shared savings. The visual language conveys trust, community, and financial empowerment. All copy is warm and supportive, not corporate.
+The app name is MifosSave. The logo is a leaf-and-coin SVG mark representing community growth and shared savings. The visual language conveys trust, community, and financial empowerment. All copy is warm and supportive, not corporate.
 
 ### Full Color Palette — Light Mode
 
@@ -186,11 +186,11 @@ Screen (360dp × 800dp)
     ├── Spacer(height = 64dp)                          [spacing_4xl]
     ├── AppLogo
     │     width = 80dp, height = 80dp
-    │     contentDescription = "CommonPurse logo"
+    │     contentDescription = "MifosSave logo"
     │
     ├── Spacer(height = 12dp)                          [spacing_md]
     ├── AppTitle
-    │     text = "CommonPurse"
+    │     text = "MifosSave"
     │     style = headlineLarge (32sp, weight 400, Noto Sans)
     │     color = on_surface (#1A1C19)
     │     textAlign = Center
@@ -993,7 +993,7 @@ Scenario 4 — PIN not set (member tries PIN before first password login):
 - PinPad digit buttons: 80dp × 80dp (more room, better UX for reading-glasses users)
 - BiometricButton: 72dp (slightly larger)
 - LoginButton: max-width 480dp, centred
-- Top bar: same height, wider → show organisation name "CommonPurse" as centred title
+- Top bar: same height, wider → show organisation name "MifosSave" as centred title
 
 ---
 

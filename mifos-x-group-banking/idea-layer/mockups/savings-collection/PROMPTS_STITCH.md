@@ -1,5 +1,5 @@
 # PROMPTS_STITCH — savings-collection
-# CommonPurse (mifos-x-group-banking) | Feature FR-004 / FR-017
+# MifosSave (mifos-x-group-banking) | Feature FR-004 / FR-017
 # Generated: 2026-05-06
 # Sections: 6 | Total lines: ≥1,200
 
@@ -9,7 +9,7 @@
 
 ### 1.1 Brand Purpose for Savings Collection
 
-The savings-collection feature is the financial heart of CommonPurse. For VSLA groups like the Mwangaza Women's Group, weekly savings are the engine of shared prosperity. The UI communicates:
+The savings-collection feature is the financial heart of MifosSave. For VSLA groups like the Mwangaza Women's Group, weekly savings are the engine of shared prosperity. The UI communicates:
 - Group solidarity: mandatory savings viewed collectively (group savings = shared wealth in green)
 - Individual autonomy: optional personal savings in amber (personal money, personal choice)
 - Progress and growth: cycle progress bars animate on entry, visually celebrating collective advancement toward the year-end share-out
@@ -1189,7 +1189,7 @@ Demo: 6/52 weeks = 11.5% → secondary #FF8F00 linear progress indicator.
 1. ViewModel catches NetworkException
 2. Checks SQLDelight cache: if cached data exists → fallback to cache, show amber chip "Showing cached savings"
 3. If no cache: SavingsMemberRow shows skeleton with retry button per member
-4. Log event: `savings_fetch_failed` with centerId + memberId + error_code
+4. Log event: `savings_fetch_failed` with groupId + memberId + error_code
 
 ### Scenario 2: POST savings transaction fails (step 3 submit)
 
@@ -1204,17 +1204,17 @@ Demo: 6/52 weeks = 11.5% → secondary #FF8F00 linear progress indicator.
 
 ### Scenario 3: dt_group_corpus fetch fails (GroupDashboard load)
 
-**Trigger:** 404 from /datatables/dt_group_corpus/{centerId}
+**Trigger:** 404 from /datatables/dt_group_corpus/{groupId}
 **Behaviour:**
 1. corpus field stays null in ViewModel
 2. CorpusCard renders with KES — (em-dash) and chip: "Corpus data unavailable"
 3. isCorpusInsufficient defaults to false (safe: no false block)
 4. Retry button inside CorpusCard (16dp padding, outlined button)
-5. Log: `corpus_fetch_404` with centerId (investigate missing datatable row)
+5. Log: `corpus_fetch_404` with groupId (investigate missing datatable row)
 
 ### Scenario 4: PUT corpus update fails (meeting submission)
 
-**Trigger:** 500 from /datatables/dt_group_corpus/{centerId}
+**Trigger:** 500 from /datatables/dt_group_corpus/{groupId}
 **Behaviour:**
 1. UpdateCorpusRequest queued in SyncQueue at priority 1 (highest)
 2. Meeting record still saved locally via SQLDelight
@@ -1292,7 +1292,7 @@ All interactive elements: minimum 48×48dp touch target. Error states use BOTH c
 
 **API Integration:**
 - [ ] GET /clients/{clientId}/savingsaccounts/{savingsId}/transactions uses stale-while-revalidate TTL 180s
-- [ ] GET /centers/{centerId}/accounts uses stale-while-revalidate TTL 180s
+- [ ] GET /groups/{groupId}/accounts uses stale-while-revalidate TTL 180s
 - [ ] POST savings transaction body includes locale + dateFormat fields
 - [ ] SyncQueue entries for failed POSTs use priority 2 (not default 5)
 - [ ] Offline writes to SQLDelight savings_transaction table use correct schema

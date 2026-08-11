@@ -1,0 +1,117 @@
+schema_version: "1.0"
+screen_id: currency-rates
+# ─────────────────────────────────────────────────
+# Currency Rates — open-source Frankfurter FX API (NO auth, NO API key).
+# Reverse-engineered from core/network/demo/currency/api/FrankfurterApi.kt (Ktorfit).
+# TWO physical endpoints:
+#   - GET v1/latest            → latest rates for a base (list screen + spot converter)
+#   - GET v1/{start}..{end}    → historical rate series for a from/to pair (history screen)
+# Consumed through Store5 caches (Room source-of-truth). NOT Supabase.
+# ─────────────────────────────────────────────────
+external_source:
+  name: Frankfurter
+  full_name: "Frankfurter — open-source exchange-rates API (ECB reference rates)"
+  base_url: "https://api.frankfurter.dev/"     # FrankfurterApi.BASE_URL / FrankfurterApiConfig.DEFAULT_BASE_URL (overridable)
+  transport: rest
+  client: ktorfit                              # de.jensklingenberg.ktorfit
+  auth:
+    type: none
+    note: >-
+      Frankfurter is fully open — no API key, no token, no user auth. The only
+      configurable surface is baseUrl (FrankfurterApiConfig) which forks override
+      for a local MockWebServer or a self-hosted Frankfurter instance.
+  host_note: >-
+    The older api.frankfurter.app returns HTTP 301 with a BROKEN redirect target
+    (duplicated /v1/v1/ path) — source pins the new canonical host
+    api.frankfurter.dev directly. See FrankfurterApi companion comment.
+  rate_limit: "Unpublished soft limit; Store5 TTL (EXCHANGE_RATES / RATE_HISTORY) keeps call volume low via cache reuse."
+  docs: "https://frankfurter.dev/"
+
+api:
+  - operation: latest-rates
+    method: GET
+    path: "v1/latest"
+    source: frankfurter
+    request:
+      query:
+        from: "<base currency code>"           # e.g. USD (list VM hard-codes "USD" at v1)
+    response:
+      dto: ExchangeRatesDto
+      shape: object
+      body:
+        amount: "Double (base amount, typically 1.0)"
+        base: "String — echoed base currency"
+        date: "String — rate date (YYYY-MM-DD)"
+        rates: "Map<String, Double> — target code → rate"
+        note: "ExchangeRatesDto.toDomain() drops amount, keeps base/date/rates → ExchangeRates."
+    consumed_by:
+      - { screen: currency-rates-list, base: USD, via: ExchangeRatesStore,  fetch_policy: NETWORK_WITH_CACHE }
+      - { screen: currency-spot-converter, base: USD, via: SpotRateLookupStore, fetch_policy: "NETWORK_ONLY (online) | CACHE_ONLY (offline)" }
+    cache:
+      strategy: stale_while_revalidate         # Store5 NETWORK_WITH_CACHE (list); policy-routed for the spot converter
+      ttl: "AppStoreRegistry.Ttl.EXCHANGE_RATES (list) — SpotRateLookupStore has NO validator/TTL"
+      source_of_truth: "ExchangeRatesDao (Room table exchange_rates, PK baseCurrency)"
+      key_template: "currency:exchangeRates:{base}  |  currency:spotRate:{base}"
+      store: "ExchangeRatesStore (list) · SpotRateLookupStore (converter facet)"
+      retry: "NetworkMonitor.executeWithRetry(RetryPolicy{ maxAttempts = 1 })"
+    demo_source: exchange_rates                # see demo-data.yaml
+    notes: >-
+      SAME endpoint backs both the main list (ExchangeRatesStore, TTL-validated,
+      stale-while-revalidate) and the embedded spot converter
+      (SpotRateLookupStore, NO validator — the consumer picks NETWORK_ONLY when
+      online for an always-fresh point-in-time rate, CACHE_ONLY when offline to
+      avoid an error-state flicker). Both write through the same exchange_rates
+      Room table.
+
+  - operation: historical-rates
+    method: GET
+    path: "v1/{startDate}..{endDate}"          # date-range path segment; e.g. v1/2026-04-25..2026-05-25
+    source: frankfurter
+    request:
+      path_params:
+        startDate: "today - key.days (YYYY-MM-DD, UTC)"
+        endDate: "today (YYYY-MM-DD, UTC)"
+      query:
+        from: "<base currency code>"           # "USD" (RateHistoryKey.from)
+        to: "<target currency code>"           # INR | EUR | GBP | JPY | AUD (RateHistoryKey.to)
+    response:
+      dto: RateHistoryDto
+      shape: object
+      body:
+        amount: "Double"
+        base: "String — echoed base (from)"
+        start_date: "String (SerialName start_date)"
+        end_date: "String (SerialName end_date)"
+        rates: "Map<String, Map<String, Double>> — date → { targetCode → rate }"
+        note: >-
+          RateHistoryDto.toDomain(targetCurrency) sorts by date and projects each
+          day's targetCode value into RatePoint(date, value) → RateHistory{from,
+          to, startDate, endDate, rates: List<RatePoint>}. Frankfurter may return
+          an end_date earlier than requested (last business day with data); the
+          Store WRITER overrides start/end with the KEY-derived dates so the SOT
+          reader (which queries by key dates) matches.
+    consumed_by:
+      - { screen: rate-history, from: USD, to: "<currency chip>", days: "<period chip 7|14|30|90>", via: RateHistoryStore, fetch_policy: NETWORK_WITH_CACHE }
+    cache:
+      strategy: stale_while_revalidate
+      ttl: "AppStoreRegistry.Ttl.RATE_HISTORY"
+      source_of_truth: "RateHistoryDao (Room table rate_history, PK [fromCurrency, toCurrency, startDate, endDate])"
+      key_template: "currency:rateHistory:{from}-{to}-{days}d"
+      store: RateHistoryStore                   # StoreFactory.createStore(fetcher=FrankfurterApi, sourceOfTruth=RateHistoryDao), dynamic RateHistoryKey
+      retry: "NetworkMonitor.executeWithRetry(RetryPolicy{ maxAttempts = 1 })"
+    demo_source: rate_history                   # see demo-data.yaml
+    notes: >-
+      Dynamic-key store: RateHistoryKey(from, to, days). Every currency/period
+      chip selection produces a new key (VM distinctUntilChanged) that re-drives
+      this fetch. On a failed new key the previous selection's data carries forward
+      as a stale fallback (inline OfflineDataBanner) rather than blanking the screen.
+
+# Forced-refresh seam (not a UI-triggered endpoint) — CurrencyRepository is Syncable.
+sync:
+  syncable: true
+  operation: "CurrencyRepositoryImpl.syncWith(synchronizer)"
+  behavior: >-
+    Fans out Store5 stream(StoreReadRequest.fresh(base)) across the pinned base
+    currencies [USD, EUR, INR] in parallel (the DataSyncWorker forced-refresh seam);
+    fresh() bypasses cache, hits Frankfurter v1/latest, and writes through the
+    exchange_rates SourceOfTruth. Rate history is NOT part of syncWith at v1.

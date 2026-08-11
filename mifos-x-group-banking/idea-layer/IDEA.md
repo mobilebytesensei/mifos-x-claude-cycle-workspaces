@@ -1,4 +1,4 @@
-# CommonPurse - Mifos X Group Banking
+# MifosSave - Mifos X Group Banking
 
 > Offline-first KMP community banking app digitizing VSLA/ROSCA group savings, lending & share-out via Mifos Fineract
 
@@ -15,7 +15,7 @@
 
 ## Elevator Pitch
 
-CommonPurse digitizes the full lifecycle of self-funded community banking groups — meetings, savings, lending, and share-out — with offline-first KMP and Mifos Fineract backend.
+MifosSave digitizes the full lifecycle of self-funded community banking groups — meetings, savings, lending, and share-out — with offline-first KMP and Mifos Fineract backend.
 
 ## Problem Statement
 
@@ -23,7 +23,7 @@ Millions of people in emerging markets organize into community savings groups (V
 
 ## Solution
 
-CommonPurse provides a Kotlin Multiplatform mobile app that digitizes every step of the community banking lifecycle — from group creation and member onboarding, through meeting-driven savings collection and loan disbursement, to periodic share-out — all working offline-first with automatic sync to Mifos Fineract when connectivity is available.
+MifosSave provides a Kotlin Multiplatform mobile app that digitizes every step of the community banking lifecycle — from group creation and member onboarding, through meeting-driven savings collection and loan disbursement, to periodic share-out — all working offline-first with automatic sync to Mifos Fineract when connectivity is available.
 
 ## Core Value Propositions
 
@@ -138,7 +138,7 @@ Until the companion API is built and deployed:
 
 | Element | Value |
 |---------|-------|
-| Display Name | CommonPurse |
+| Display Name | MifosSave |
 | Primary Color | #2E7D32 (Forest Green) |
 | Accent Color | #FF8F00 (Amber) |
 | Typography | Noto Sans (large scale) |

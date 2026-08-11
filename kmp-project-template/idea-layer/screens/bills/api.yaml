@@ -28,6 +28,7 @@ api:
     request: { key: Unit, order: "dueDay ASC, createdAtMs ASC" }
     response: { dto: BillReminder, shape: list }
     dao: "BillReminderDao.observeAll()"
+    contract: "BillReminderRepository.observeAll() → billRemindersStore.stream(cached Unit) → List<BillReminder>"
     demo_source: bills
     used_by: [bills-list]
 
@@ -38,7 +39,7 @@ api:
     request: { key: "maxDays (7)", filter: "enabled = 1 AND dueDay IN (:dueDays)" }
     response: { dto: BillReminder, shape: list }
     dao: "BillReminderDao.observeUpcoming(dueDays)"
-    note: "Repository computes the dueDays set from today + maxDays (calendar math lives in the repo, not the DAO)."
+    note: "Repository computes the dueDays set from today + maxDays (calendar math lives in BillReminderRepositoryImpl.upcomingDayWindow, not the DAO). UPCOMING_WINDOW_DAYS = 7."
     demo_source: bills
     used_by: [bills-list]
 
@@ -49,6 +50,7 @@ api:
     request: { key: "maxDays (30)", aggregate: "sum(amount) over upcoming window" }
     response: { dto: Double, shape: scalar }
     dao: "BillReminderDao.observeUpcoming(...) → sumOf { amount }"
+    note: "TOTAL_WINDOW_DAYS = 30. Drives the summary HeroCard total."
     demo_source: bills
     used_by: [bills-list]
 
@@ -59,6 +61,7 @@ api:
     request: { key: billId }
     response: { dto: BillReminder, shape: single, nullable: true }
     dao: "BillReminderDao.observeById(id)"
+    note: "Exposed by the repository; not currently collected by either screen (edit-mode hydration uses the one-shot get-bill-by-id instead)."
     demo_source: bills
 
   - operation: get-bill-by-id
@@ -69,7 +72,7 @@ api:
     response: { dto: BillReminder, shape: single, nullable: true }
     dao: "BillReminderDao.getById(id)"
     demo_source: bills
-    used_by: [bill-addedit]        # edit-mode form hydration + mark-paid read-modify-write
+    used_by: [bill-addedit, bills-list]   # edit-mode form hydration (init) + mark-paid read-modify-write
 
   - operation: observe-bill-count
     method: local-read
@@ -88,7 +91,11 @@ api:
     request: { dto: BillReminder }
     response: { dto: BillReminder, shape: single }
     dao: "BillReminderDao.upsert(entity)"   # @Upsert — insert-or-replace by primary key id
-    used_by: [bill-addedit, bills-list]     # bills-list uses it for mark-paid / toggle-enabled
+    used_by: [bill-addedit, bills-list]
+    note: >-
+      bill-addedit: EditBillReminderViewModel.performSubmit. bills-list: BillRemindersListViewModel.markPaid
+      (copy(updatedAtMs=now)) AND toggle (copy(enabled=!enabled)) — but toggle is a ViewModel-only API,
+      NOT surfaced as a row control in the shipped list UI (see F-009 in docs.yaml).
 
   - operation: delete-bill
     method: local-write
@@ -98,6 +105,9 @@ api:
     response: { shape: none }
     dao: "BillReminderDao.deleteById(id)"
     used_by: [bills-list]
+    note: >-
+      BillRemindersListViewModel.delete (BillRemindersAction.Delete). Fully implemented + unit-tested,
+      but NOT surfaced as a row control in the shipped list UI — ViewModel API only (see F-009 in docs.yaml).
 
   # ── Platform side-effect (NOT Room; expect/actual notification scheduler) ──
   - operation: schedule-bill-notification
@@ -112,6 +122,7 @@ api:
       Best-effort. triggerAtMs is computed by BillReminderRecurrence.nextDueDate +
       reminderTriggerMs (09:00 local, reminderDaysBefore days before next due-date).
       Past instant OR permission-denied → silent no-op; the bill still persists.
+      body text = "Due in {reminderDaysBefore} day(s)".
     used_by: [bill-addedit]
 
   - operation: cancel-bill-notification
@@ -122,4 +133,7 @@ api:
     contract: "BillNotificationGateway.cancel(billId) → BillReminderScheduler.cancel(billId)"
     request: { key: billId }
     response: { shape: none }
-    used_by: [bills-list, bill-addedit]   # delete / mark-paid / toggle-disable / submit-when-disabled
+    used_by: [bills-list, bill-addedit]
+    note: >-
+      bill-addedit: submit-when-disabled. bills-list: mark-paid (wired UI) + delete/toggle-disable
+      (ViewModel APIs, not UI-surfaced — F-009).

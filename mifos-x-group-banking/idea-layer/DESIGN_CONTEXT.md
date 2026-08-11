@@ -1,13 +1,13 @@
-# Design Context — CommonPurse (mifos-x-group-banking)
+# Design Context — MifosSave (mifos-x-group-banking)
 
-> Authoritative design brief for all CommonPurse screens, enrichment, and mockup generation.
+> Authoritative design brief for all MifosSave screens, enrichment, and mockup generation.
 > Source of truth: `idea-layer/design-tokens.yaml` + `idea-layer/training/TRAINING_MASTER.yaml`
 
 ---
 
 ## App Identity
 
-**CommonPurse** is a community savings group management app built on Apache Fineract (Mifos X).
+**MifosSave** is a community savings group management app built on Apache Fineract (Mifos X).
 Its tagline — *"Your community savings group"* — reflects the mission: bring transparent,
 trustworthy financial tooling to VSLA (Village Savings and Loan Association) groups, rotating
 savings groups, and field-officer-managed microfinance clusters in emerging markets.

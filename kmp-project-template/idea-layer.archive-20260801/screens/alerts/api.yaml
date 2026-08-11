@@ -1,0 +1,69 @@
+schema_version: "1.0"
+screen_id: alerts-list
+feature_id: feat-alerts
+
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/alerts is OFFLINE_LOCAL_ONLY — there are NO remote/RPC endpoints.
+# Every "operation" is a LOCAL Room read or write against the `alerts` table,
+# surfaced through AlertsRepository (backed by AlertsStore, a Store5 offline store
+# built via StoreFactory.createOfflineStore). The concrete transport/table wiring
+# lives in data-flow.yaml; this file records the operation surface so cross-layer
+# tooling can resolve on_click action_contracts.
+#
+# ⚠ Mapper is LOSSY (see ui.yaml): AlertEntity has no `enabled` and no PCT_CHANGE —
+# domain PriceAlert.direction collapses to AlertEntity.conditionAbove (ABOVE→true,
+# BELOW/PCT_CHANGE→false) and `enabled` is not persisted (read-back always true).
+# ─────────────────────────────────────────────────────────────────────────────
+remote_endpoints: none
+source: local_room
+store: AlertsStore                 # core/store/demo/alerts/impl/AlertsStore.kt (OFFLINE_LOCAL_ONLY)
+store_factory: StoreFactory.createOfflineStore
+repository: AlertsRepository       # core/data/demo/alerts/AlertsRepository.kt
+table: alerts                      # core/database/demo/alerts/AlertEntity.kt
+entity: AlertEntity                # {id, symbol, targetPrice, conditionAbove, createdAt}
+dto: PriceAlert                    # core/model/demo/alerts/PriceAlert.kt {id, coinId, direction, targetValue, enabled, createdAtMs}
+
+# Local data operations (all on-device — no network round-trip).
+api:
+  # ── Reads (reactive Flow from Room via Store5) ──
+  - operation: observe-all-alerts
+    method: local-read
+    source: room
+    kind: reactive
+    request: { key: Unit, order: "createdAt DESC" }
+    response: { dto: PriceAlert, shape: list }
+    dao: "AlertDao.observeAll()"
+    store_read: "alertsStore.stream(StoreReadRequest.cached(Unit, refresh = false))"
+    repository_fn: "AlertsRepository.alertsStream(): Flow<List<PriceAlert>>"
+    demo_source: alerts
+    used_by: [alerts-list]
+
+  # ── Writes (suspend, local commit; UI wraps in DraftSubmitHandler) ──
+  - operation: submit-alert
+    method: local-write
+    source: room
+    kind: suspend
+    request: { dto: PriceAlert }
+    response: { dto: PriceAlert, shape: single }
+    dao: "AlertDao.upsert(entity)"          # @Insert(onConflict = REPLACE) — insert-or-replace by primary key id
+    wrapped_in: "notifyingWrite(\"alerts\") { ... }"
+    repository_fn: "AlertsRepository.submitAlert(alert): PriceAlert"
+    write_pipeline: "DraftSubmitHandler (formKey=\"price_alert\") → OfflineSubmitSyncer(OutboxQualifiers.PriceAlert) → RoomSubmitOutbox → framework_submit_drafts on failure"
+    used_by: [alert-addedit]
+
+  - operation: delete-alert
+    method: local-write
+    source: room
+    kind: suspend
+    request: { key: alertId }
+    response: { shape: none }
+    dao: "AlertDao.deleteById(id)"
+    wrapped_in: "notifyingWrite(\"alerts\") { ... }"
+    repository_fn: "AlertsRepository.deleteAlert(id)"
+    used_by: [alerts-list]
+
+# DAO surface present in source but not currently exposed through AlertsRepository.
+# Recorded for completeness (available to a faithful implementation).
+dao_only_operations:
+  - { dao: "AlertDao.upsertAll(alerts)", note: "batch upsert — used as the Store5 SourceOfTruth writer in provideAlertsStore" }
+  - { dao: "AlertDao.deleteAll()", note: "clear-all — used as the Store5 SoT delete/deleteAll; also the logout-clear path" }

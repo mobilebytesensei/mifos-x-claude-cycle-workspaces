@@ -1,0 +1,111 @@
+schema_version: "1.0"
+feature: crypto
+screen_id: coinMarkets
+spec_source: screens/crypto/api.yaml + screens/crypto/data-flow.yaml
+
+# External API spec — mirrors screens/crypto/api.yaml faithfully.
+# NOT an owned backend (PROJECT_CONFIG server.backends: []). Catalogs the PUBLIC
+# CoinGecko API v3 integration consumed through Store5 caches.
+# The coin-detail endpoint is DATA-WIRED but its UI is NOT shipped — flagged below.
+
+external_source:
+  name: CoinGecko
+  full_name: "CoinGecko Public API v3"
+  base_url: "https://api.coingecko.com/"
+  transport: rest
+  client: ktorfit                        # CoinGeckoApi
+  auth:
+    type: none
+    required: false
+    note: >-
+      No api key — the free public tier is unauthenticated. (The Ktor Auth
+      interceptor still handles a transparent 401 refresh-and-retry once at the
+      client layer, but CoinGecko public endpoints require no token.)
+  rate_limit: >-
+    ~5-15 calls/min (shared demo-tier limits; HTTP 429 on breach). Per-page Store5
+    caches (2-min markets, 5-min detail) keep round-trips well under the ceiling.
+  docs: "https://docs.coingecko.com/reference/introduction"
+
+endpoints:
+  - operation: coingecko-coins-markets
+    method: GET
+    path: "api/v3/coins/markets"
+    source: coingecko
+    status: shipped
+    consumed_by_screen: coinMarkets
+    request:
+      query:
+        vs_currency: "usd (default — quote currency)"
+        order: "market_cap_desc (default — top coins by market cap)"
+        per_page: "PageKey.pageSize (20; CoinMarketsViewModel.DEFAULT_PAGE_SIZE)"
+        page: "PageKey.page + 1 (wire is 1-indexed; PageKey.page is 0-indexed)"
+    response:
+      dto: "List<CoinMarketDto>"
+      shape: array
+      body:
+        item: >-
+          CoinMarketDto { id, symbol, name, image, current_price, market_cap,
+          market_cap_rank, price_change_percentage_24h?, high_24h?, low_24h? }
+        note: >-
+          toDomain() → CoinMarket { id, symbol, name, imageUrl, currentPrice, marketCap,
+          marketCapRank, priceChangePercent24h, high24h, low24h }. Nullable defaults:
+          priceChangePercentage24h ?: 0.0; high_24h/low_24h ?: currentPrice.
+    pagination:
+      kind: offset_page
+      page_size: 20
+      wire_page_base: 1                     # requested page = PageKey.page + 1
+      room_offset: "page * pageSize"
+      order: "market_cap_desc (server) / marketCapRank ASC (Room reader)"
+      load_more: "PagingScreenContent footer requests next page on tail-scroll; end-of-list when a page returns < pageSize rows"
+    cache:
+      strategy: stale_while_revalidate      # Store5 NETWORK_WITH_CACHE, paged
+      ttl: "2m (AppStoreRegistry.Ttl.COIN_MARKETS)"
+      store: CoinMarketsStore
+      room_table: coin_markets              # PK id, ordered by marketCapRank; page column tags fetch page
+      source_of_truth: CoinMarketDao
+      key_template: "crypto:coinMarkets"    # per-page PageKey(page, pageSize)
+      retry: "NetworkMonitor.executeWithRetry(RetryPolicy{ maxAttempts = 1 })"
+    demo_source: coin_markets
+    notes: >-
+      List screen's ONLY endpoint. Each scroll page is an independent Store5 fetch keyed
+      by PageKey; pages persist to Room so deep-scroll survives process-death.
+
+  - operation: coingecko-coin-detail
+    method: GET
+    path: "api/v3/coins/{id}"
+    source: coingecko
+    status: planned                         # DATA-WIRED at HEAD; CoinDetailScreen UI NOT shipped
+    ui_pending: true
+    consumed_by_screen: coinDetail          # PLANNED — CryptoNavigation passes intentional-noop onCoinClick
+    request:
+      path_params:
+        id: "coin id (e.g. bitcoin, ethereum) — CoinMarket.id from the tapped row"
+      query:
+        localization: false                 # forced — drop i18n description blob
+        tickers: false
+        community_data: false
+        developer_data: false
+    response:
+      dto: CoinDetailDto
+      shape: object
+      body:
+        fields: >-
+          CoinDetailDto { id, name, symbol, image{large?}, market_data{ current_price{usd},
+          market_cap{usd}, market_cap_rank, price_change_percentage_24h, high_24h{usd},
+          low_24h{usd}, circulating_supply, max_supply? }, description{en?} }
+        note: >-
+          toDomain() → CoinDetail (adds circulatingSupply, maxSupply?, description over
+          CoinMarket). USD values pulled from per-currency maps; absent fields default 0.0/0L/"".
+    cache:
+      strategy: stale_while_revalidate
+      ttl: "5m (AppStoreRegistry.Ttl.COIN_DETAIL)"
+      store: CoinDetailStore
+      room_table: coin_detail               # PK id
+      source_of_truth: CoinDetailDao
+      key_template: "crypto:coinDetail:{coinId}"
+      retry: "NetworkMonitor.executeWithRetry(RetryPolicy{ maxAttempts = 1 })"
+    demo_source: coin_detail
+    notes: >-
+      Wired end-to-end in the data layers at HEAD (Store + repository ScreenDataStream +
+      DTO + DAO + entity) but the CoinDetailScreen UI is NOT shipped. Modelled here so the
+      idea-layer reflects the full reverse-engineered API surface.

@@ -96,7 +96,7 @@ no outbound navigation. Localized (en/sw/fr/hi).
 ## Navigation
 
 - **Route**: `/sync-status` (no nav_params; terminal — `navigates_to: []`)
-- **From**: `bottom_nav` (Sync tab), `sync_indicator_tap` (when pending/failed ops exist)
+- **From**: `personal-dashboard` (profile overflow menu → `profile_overflow_menu_sync_status_selected`), `sync_indicator_tap` (when pending/failed ops exist)
 - **To**: none (terminal screen)
 
 ## API Endpoints (1)

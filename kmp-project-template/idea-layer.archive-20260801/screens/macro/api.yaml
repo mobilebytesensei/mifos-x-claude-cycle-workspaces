@@ -1,0 +1,97 @@
+schema_version: "1.0"
+screen_id: macro
+# ─────────────────────────────────────────────────
+# B8 Country Macro Snapshot — external World Bank Open Data API.
+# Reverse-engineered from core/network/demo/economic/api/WorldBankApi.kt (Ktorfit).
+# ONE physical endpoint (v2/country/{c}/indicator/{i}) is called once per
+# (country, indicator) pair; the dashboard fans it out to three indicators for
+# one country, the detail screen calls it for one pair.
+# NOT Supabase — this is a public REST API consumed through a Store5 MEMORY_ONLY
+# cache. World Bank is fully OPEN — no API key (contrast FRED / feat-rates/B7).
+# ─────────────────────────────────────────────────
+external_source:
+  name: "World Bank Open Data"
+  full_name: "World Bank Open Data — World Development Indicators API v2"
+  base_url: "https://api.worldbank.org/"     # WorldBankApi.BASE_URL / WorldBankApiConfig.DEFAULT_BASE_URL (overridable)
+  transport: rest
+  client: ktorfit                             # de.jensklingenberg.ktorfit
+  auth:
+    type: none
+    note: >-
+      World Bank Open Data requires NO authentication and NO API key — fully open.
+      The only configurable surface is the base URL (WorldBankApiConfig.baseUrl),
+      overridden via Koin for a MockWebServer or internal mirror. There is NO
+      key-missing failure mode (unlike FRED).
+  rate_limit: "Generous public quota; the Store5 in-memory cache + 7-day TTL keep real calls to ≤ ~1/week per (country, indicator)."
+  wire_quirk: >-
+    Every response is a TWO-element JSON array [metadata, observations[]] — NOT a
+    normal object. WorldBankResponseSerializer (custom KSerializer) destructures
+    both halves into a regular data class. On 404 / rate-limit / missing data the
+    API returns a single-element object {"message":[...]}; the serializer
+    defensively maps a non-array root to an empty domain object so the repository
+    surfaces "no data" through its normal channel (Empty slot).
+  docs: "https://datatopics.worldbank.org/world-development-indicators/"
+
+api:
+  - operation: worldbank-country-indicator
+    method: GET
+    path: "v2/country/{countryCode}/indicator/{indicator}"
+    source: worldbank
+    request:
+      path_params:
+        countryCode: "ISO 3166-1 alpha-2 (e.g. US) — alpha-3 (USA) also accepted; toolkit standardises on alpha-2"
+        indicator: "World Bank indicator code — from IndicatorKind.worldBankCode"
+      query:
+        format: "json"                        # forced — World Bank defaults to XML which kotlinx.serialization can't parse
+        per_page: 50                          # default; enough for ~50 years of annual data
+        date: "{startYear}:{endYear}"         # YYYY:YYYY inclusive; MacroIndicatorStore computes today.year-key.years .. today.year (years default 25)
+    indicator_codes:
+      # From core/model/demo/economic/MacroIndicator.kt IndicatorKind enum
+      - { kind: GDP,            code: "NY.GDP.MKTP.CD", label: "GDP (current US$)",                     surfaced_on_dashboard: true }
+      - { kind: INFLATION_CPI,  code: "FP.CPI.TOTL.ZG", label: "Inflation, consumer prices (annual %)", surfaced_on_dashboard: true }
+      - { kind: UNEMPLOYMENT,   code: "SL.UEM.TOTL.ZS", label: "Unemployment, total (% labor force)",   surfaced_on_dashboard: true }
+      - { kind: GDP_PER_CAPITA, code: "NY.GDP.PCAP.CD", label: "GDP per capita (current US$)",          surfaced_on_dashboard: false }
+      - { kind: GINI,           code: "SI.POV.GINI",    label: "GINI index (income inequality)",        surfaced_on_dashboard: false }
+    response:
+      dto: WorldBankResponseDto
+      shape: array_2_element                   # [metadata, observations[]]
+      body:
+        metadata: "WorldBankMetadataDto { page, pages, per_page, total, sourceid, lastupdated } — only `total` used (was there any data?)"
+        observations: "List<WorldBankObservationDto> { indicator{id,value}, country{id,value}, countryiso3code, date, value: Double?, unit, obs_status, decimal }"
+        note: >-
+          `value` is nullable — many (country, indicator, year) triples have no
+          reported data; World Bank emits explicit JSON null. `date` is always a
+          4-digit year string (annual data only). WorldBankResponseDto.toDomain
+          maps rows → IndicatorObservation(year=date.toInt, value), drops year<=0,
+          sorts ascending, and threads countryName from the first observation's
+          country.value (falls back to the request code). Result: MacroIndicator
+          { countryCode, countryName, indicator, observations[], source="World
+          Bank Open Data" }.
+    consumed_by:
+      - { screen: macro,                indicators: [GDP, INFLATION_CPI, UNEMPLOYMENT], fan_out: 3, note: "one country, three indicators" }
+      - { screen: macroIndicatorDetail, indicators: ["<route indicatorKind>"],          fan_out: 1 }
+    cache:
+      strategy: memory_only                    # Store5 MEMORY_ONLY archetype — createMemoryStore(fetcher)
+      persistence: in_memory                   # NO Room, NO SourceOfTruth, NO on-device table
+      ttl: "7d"
+      key_template: "economic:macro:{countryCode}:{indicator}:{years}y"
+      store: MacroIndicatorStore                # StoreFactory.createMemoryStore(fetcher = WorldBankApi)
+      retry: "NetworkMonitor.executeWithRetry(RetryPolicy{ maxAttempts = 1 })"
+    demo_source: macro_indicators              # see demo-data.yaml
+    notes: >-
+      The SAME endpoint + MemoryStore backs both the dashboard cards and the
+      detail screen; the only difference is how many (country, indicator) pairs
+      are requested. FRED (feat-rates / B7) is a sibling economic feature sharing
+      the core/*/economic packages but is a DIFFERENT API (requires a key,
+      persists to Room) and out of scope here.
+
+  # Country list is NOT an API — bundled at compile time.
+  - operation: supported-countries-static
+    method: none
+    source: bundled
+    note: >-
+      The country picker reads SupportedCountries.list (a curated G20-plus list of
+      31 ISO-3166-1-alpha-2 countries hardcoded in
+      core/data/.../SupportedCountries.kt) — no /v2/country World Bank call.
+      Dynamic country loading is explicitly out of scope for the template (keeps
+      the picker snappy with zero extra request).

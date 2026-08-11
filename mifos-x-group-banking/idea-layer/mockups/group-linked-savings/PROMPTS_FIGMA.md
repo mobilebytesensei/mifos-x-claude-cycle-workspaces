@@ -1,14 +1,14 @@
 # Group-Linked Savings — Figma Prompts (Auto-Complete Style)
 
 > Generated from v3.1 YAML siblings via /idea-migration reference.
-> Short Figma-optimized per-state prompts for CommonPurse (group-linked-savings).
+> Short Figma-optimized per-state prompts for MifosSave (group-linked-savings).
 > Design tokens: primary #2E7D32 (green) · secondary #FF8F00 (amber) · tertiary #1565C0 (blue)
 
 ---
 
 ## Global Context
 
-- Feature: Group-Linked Savings · CommonPurse banking app · 5 components · 3 states
+- Feature: Group-Linked Savings · MifosSave banking app · 5 components · 3 states
 - Brand: `#2E7D32` primary · `#FF8F00` amber warnings · `#1565C0` blue info
 - Typography: Noto Sans — titleLarge (screen titles) · bodyLarge (list items) · labelSmall (chips/badges)
 - Touch targets: 48dp minimum · 56dp for financial inputs · outdoor WCAG AAA contrast

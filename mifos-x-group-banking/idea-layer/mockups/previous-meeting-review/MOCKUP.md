@@ -9,7 +9,7 @@
 
 ## Design Language
 
-**System**: CommonPurse-v3 (Material Design 3 · MD3) — comfortable density (7/10)
+**System**: MifosSave-v3 (Material Design 3 · MD3) — comfortable density (7/10)
 **Aesthetic**: `minimalist-ui` · variance 3/10 · motion 3/10 · density 7/10 · accessibility-first · regulated-industry
 **Font**: Roboto (Android) / SF Pro (iOS) — system stack · Roboto Mono / SF Mono for KES amounts
 **Primary**: `#2E7D32` (`--primary-700`, VSLA green) — Start Meeting CTA, chip fills, KES amount emphasis, primary text on primaryContainer
@@ -31,7 +31,7 @@
 ### Entry
 - From **meeting-conduct** (Step 0 — user taps "View Full Report") with `launched_from: "conduct"` — nextMeetingId + nextMeetingNumber populated → CTA visible.
 - From **meeting-calendar** (user taps a completed meeting card) with `launched_from: "calendar"` — nextMeetingId null → CTA hidden.
-- Nav-params: `meeting_id: String`, `meeting_number: Int`, `center_id: Int`, `launched_from: String` (enum `conduct`/`calendar`).
+- Nav-params: `meeting_id: String`, `meeting_number: Int`, `group_id: Int`, `launched_from: String` (enum `conduct`/`calendar`).
 - Back navigation pops the route and returns to caller (`meeting-conduct` or `meeting-calendar`); no state persisted.
 
 ### Layout (state: `content`, launched_from = `calendar` — unresolved item present)
@@ -234,7 +234,7 @@ Error source: `LoadFailed` from `PreviousMeetingReviewViewModel.errors` — "Cou
 ## Interaction Patterns
 
 1. **Back tap (top_app_bar `arrow_left_24_regular`)** → `NavigateBack` (effect: `navigate`) → NavController `popBackStack` returns to `meeting-conduct` (when `launchedFrom == 'conduct'`) or `meeting-calendar` (when `launchedFrom == 'calendar'`). Read-only screen — no state persisted on exit.
-2. **Start Meeting tap (bottom filled button)** → `StartNewMeeting` (effect: `navigate`) → NavController push `meeting-conduct` with `{ meeting_id: nextMeetingId, meeting_number: nextMeetingNumber, center_id: centerId }`. Emits analytics `start_meeting_from_review { previous_meeting_number: 15, next_meeting_number: 16 }`. Visible only when `launchedFrom == 'conduct'`.
+2. **Start Meeting tap (bottom filled button)** → `StartNewMeeting` (effect: `navigate`) → NavController push `meeting-conduct` with `{ meeting_id: nextMeetingId, meeting_number: nextMeetingNumber, group_id: groupId }`. Emits analytics `start_meeting_from_review { previous_meeting_number: 15, next_meeting_number: 16 }`. Visible only when `launchedFrom == 'conduct'`.
 3. **Screen enter composition** → `LoadPreviousMeeting` (effect: `call_api` via Store5) → cache-first render, background refresh through Fineract; error surfaces bind to `error` state field. Emits `screen_viewed { screen_id: previous-meeting-review, flow: meeting-lifecycle-flow, launched_from: <String> }`.
 4. **Retry tap (error state)** → re-invokes `LoadPreviousMeeting` with `fresh=true` (Store5 bust).
 5. **Attendance/Savings/Loan rows** — read-only; no ripple, no tap target. Dividers between rows.
@@ -280,7 +280,7 @@ Read paths (offline-first, stale-while-revalidate):
   - Fetcher: Fineract `GET /meetings/{meetingId}?expand=attendance,savings,loans,unresolved` (gated by `cmp-network-monitor`)
   - `Retry` triggers `fresh=true`, re-hits Fineract
 - `unresolvedItems` — derived from `meetingDetail.unresolvedItems` OR sourced from `MeetingRepository.getUnresolvedItems(meetingId)` when detail response is partial
-- `launchedFrom` / `meetingNumber` / `centerId` / `nextMeetingId` / `nextMeetingNumber` — all from nav-params (immutable per screen instance)
+- `launchedFrom` / `meetingNumber` / `groupId` / `nextMeetingId` / `nextMeetingNumber` — all from nav-params (immutable per screen instance)
 
 Write path: **none** — previous-meeting data is immutable after closing (FR-019 read-only invariant).
 

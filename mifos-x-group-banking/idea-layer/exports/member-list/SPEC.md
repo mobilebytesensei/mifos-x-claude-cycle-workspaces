@@ -14,7 +14,8 @@ revalidating in the background. Each row renders the member's avatar (photo or i
 fallback), name, savings balance, a color-coded role chip (Chairperson / Treasurer /
 Secretary / Member), and a loan-status badge (Active / None / Overdue). Tap or
 swipe-to-start navigates to `member-profile`; a FAB (and the empty-state CTA) navigates
-to `member-add`.
+to `member-add`; a top-bar Invite action navigates to `member-invite` (organizer issues a
+single-use invite code). Covers FR-002.
 
 **Acceptance Criteria:**
 
@@ -29,6 +30,8 @@ to `member-add`.
 - AC6: Offline (`cmp-network-monitor`) serves cached members with a "Showing cached
        members" message; auth 401 redirects to login.
 - AC7: Empty state (zero members) shows the group_add illustration + Add Member CTA.
+- AC8: Top-bar Invite action (`OnInviteMember`) navigates to `member-invite` with
+       `groupId` (member-onboarding-flow invite path).
 
 ## Screens (1)
 
@@ -77,6 +80,7 @@ to `member-add`.
 |---|---|
 | `OnMemberClick(memberId)` | Tap member row or swipe-to-start |
 | `OnAddMember` | Tap FAB / empty-state CTA |
+| `OnInviteMember` | Tap top-bar Invite action |
 | `OnLoadMore` | Scroll to end of list |
 | `OnRefresh` | Pull-to-refresh |
 | `Retry` | Tap retry on error |
@@ -86,8 +90,9 @@ to `member-add`.
 
 | Event | Payload | Trigger |
 |---|---|---|
-| `NavigateToMemberProfile` | memberId: String, groupId: String | `OnMemberClick` / `OnSwipe` |
+| `NavigateToMemberProfile` | memberId: String, groupId: String | `OnMemberClick` / swipe |
 | `NavigateToAddMember` | groupId: String | `OnAddMember` |
+| `NavigateToMemberInvite` | groupId: String | `OnInviteMember` |
 | `ShowSnackbar` | message: String | Offline / transient info |
 
 **DI Dependencies**
@@ -100,12 +105,13 @@ to `member-add`.
 
 - **Route**: `/groups/{groupId}/members` (nav_param `groupId: String` required)
 - **From**: `group-dashboard` (view_members_button)
-- **To**: `member-profile`, `member-add`
+- **To**: `member-profile`, `member-add`, `member-invite`
 
 | Action | Destination | Params |
 |---|---|---|
 | `OnMemberClick` / swipe | `member-profile` | `memberId`, `groupId` |
 | `OnAddMember` (FAB / empty CTA) | `member-add` | `groupId` |
+| `OnInviteMember` (top-bar action) | `member-invite` | `groupId` |
 | `OnBack` | `group-dashboard` | — |
 
 ## API Endpoints (1)
@@ -113,6 +119,8 @@ to `member-add`.
 | Function | Method | Endpoint | Params | Response | Errors | Cache |
 |---|---|---|---|---|---|---|
 | `get_group_members` | GET | `/groups/{groupId}/clients` | groupId(Long), limit(Int=20), offset(Int=0) | object{totalFilteredRecords, pageItems[]} | 401, 403, 404, 500 | 120 s SWR, offline show_cached |
+
+See `exports/member-list/API.md` for full schemas.
 
 ## Flow Logic
 
@@ -145,19 +153,20 @@ Key types: `Member` (id, fineractClientId, displayName, photoUri?, role, savings
 loanStatus), `MemberRole` {CHAIRPERSON, TREASURER, SECRETARY, MEMBER},
 `LoanStatus` {ACTIVE, NONE, OVERDUE}.
 
-## Testing (9 scenarios)
+## Testing (10 scenarios)
 
-| ID | Scenario | Priority |
-|---|---|---|
-| TC-ML-001 | On mount, members load for groupId with offset pagination | P0 |
-| TC-ML-002 | Member row shows avatar, name, role badge, and savings balance | P0 |
-| TC-ML-003 | Tapping member row navigates to member-profile with memberId and groupId | P0 |
-| TC-ML-004 | Scroll to end triggers OnLoadMore and appends next page | P1 |
-| TC-ML-005 | hasMorePages=false prevents further pagination | P1 |
-| TC-ML-006 | Empty state shown when group has no members | P1 |
-| TC-ML-007 | Pull-to-refresh resets offset and reloads from page 0 | P1 |
-| TC-ML-008 | Error state shows retry on network failure | P1 |
-| TC-ML-009 | Auth 401 redirects to login-signup | P0 |
+| ID | Scenario | Type | Priority |
+|---|---|---|---|
+| TC-ML-001 | On mount, members load for groupId with offset pagination | ViewModel | P0 |
+| TC-ML-002 | Member row shows avatar, name, role badge, and savings balance | Screen | P0 |
+| TC-ML-003 | Tapping member row navigates to member-profile with memberId and groupId | Screen | P0 |
+| TC-ML-004 | Scroll to end triggers OnLoadMore and appends next page | ViewModel | P1 |
+| TC-ML-005 | hasMorePages=false prevents further pagination | ViewModel | P1 |
+| TC-ML-006 | Empty state shown when group has no members | Screen | P1 |
+| TC-ML-007 | Pull-to-refresh resets offset and reloads from page 0 | ViewModel | P1 |
+| TC-ML-008 | Error state shows retry on network failure | Screen | P1 |
+| TC-ML-009 | Auth 401 redirects to login-signup | ViewModel | P0 |
+| TC-ML-010 | Top-bar Invite action navigates to member-invite with groupId | Screen | P0 |
 
 ## Designed UX Reference
 
@@ -166,6 +175,6 @@ loanStatus), `MemberRole` {CHAIRPERSON, TREASURER, SECRETARY, MEMBER},
 - **Design conformance:** Each row is a 72 dp list item with a 48 dp leading avatar
   (secondaryContainer background, initials fallback), the display name in bodyLarge, a
   "Savings: KES {amount}" supporting line, and a trailing column holding the color-coded
-  role chip above the loan-status badge. A `person_add` FAB labelled "Add Member" sits
-  bottom-end. Empty state uses a `group_add` icon with title, body, and CTA. Error state
-  uses a `cloud_off` icon with retry.
+  role chip above the loan-status badge. The top bar carries a `person_add_alt` Invite
+  action. A `person_add` FAB labelled "Add Member" sits bottom-end. Empty state uses a
+  `group_add` icon with title, body, and CTA. Error state uses a `cloud_off` icon with retry.

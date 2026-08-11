@@ -1,0 +1,208 @@
+schema_version: "1.0"
+screen_id: emiCalculator
+feature: feat-emi-calculator
+archetype: pure-ui
+platforms: [android, ios, desktop, web]
+# Pure-local calculator — ZERO backend, no Store, no repository, no network.
+# The scaffold + input card always render (content); the result HeroCard is a
+# conditional sub-region of content, shown only when all three inputs are
+# positive. There is no loading/empty/error state — nothing can fail or be async.
+states: [content]
+# Data-free calculator — the input card renders on first frame with no async load,
+# so the screen opens directly in `content` (there is no loading/empty/error state).
+initial_state: content
+
+# ─────────────────────────────────────────────────
+# i18n — the screen's raw UI copy extracted to compose-resources string keys
+# (screens_emicalculator_*) per RULE-IMPL-NO-HARDCODED-STRING-001. The literal
+# values are the `en` defaults; each rendering component references its key via
+# i18n_key (label/title/content literals preserved as the fallback default).
+# ─────────────────────────────────────────────────
+i18n:
+  screens_emicalculator_title: "EMI Calculator"
+  screens_emicalculator_principal_label: "Principal Amount"
+  screens_emicalculator_rate_label: "Annual Rate (%)"
+  screens_emicalculator_tenure_label: "Tenure (months)"
+  screens_emicalculator_emi_label: "Monthly EMI"
+  screens_emicalculator_total_payment_label: "Total payment"
+  screens_emicalculator_total_interest_label: "Total interest"
+
+# ─────────────────────────────────────────────────
+# Feature business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-3)
+# ─────────────────────────────────────────────────
+business_logic:
+  kind: calculator
+  processing_kind: on_demand
+  library_refs: []
+  external_library_refs: []
+  description: >-
+    Pure-local reducing-balance EMI computation. On every input change the
+    ViewModel recomputes a derived EmiResult via core/domain calculateEmi using
+    the standard formula EMI = P × r × (1+r)^n / ((1+r)^n − 1), where the
+    monthly rate r = annualRatePercent / 12 / 100 and n = tenureMonths. From the
+    monthly EMI it derives totalPayment (emi × tenureMonths) and totalInterest
+    (totalPayment − principal). When the annual rate is 0 it falls back to
+    principal / tenureMonths (no interest). The derived result is null (result
+    card hidden) whenever principal, ratePercent, or tenureMonths is non-positive.
+    No repository, no Store, no api, no persistence — state is transient local
+    UI state only, held in the BaseViewModel<EmiState, Nothing, EmiAction>.
+  processing_location: on_device
+  library_note: "calculateEmi lives in core/domain/demo/emi; EmiResult in core/model/demo/emi. Both pure Kotlin (kotlin.math.pow only)."
+
+# ─────────────────────────────────────────────────
+# State model — mirrors EmiCalculatorViewModel.kt (pure local, no Store)
+# ─────────────────────────────────────────────────
+state_model:
+  viewmodel: EmiCalculatorViewModel
+  base: "BaseViewModel<EmiState, Nothing, EmiAction>"
+  event_type: Nothing   # no one-shot events — screen has no navigation/toast/snackbar effects
+  state:
+    name: EmiState
+    fields:
+      - { name: principal, type: Double, default: 100000.0, note: "Loan amount in rupees; edited via the Principal field." }
+      - { name: ratePercent, type: Double, default: 8.5, note: "Annual interest rate in percent; edited via the Annual Rate field." }
+      - { name: tenureMonths, type: Int, default: 12, note: "Loan tenure in months; edited via the Tenure field." }
+  derived:
+    - name: emiResult
+      type: "StateFlow<EmiResult?>"
+      note: >-
+        Derived off stateFlow via map + stateIn(WhileSubscribed(5000)). Non-null
+        EmiResult{emi, totalPayment, totalInterest} when principal>0 && ratePercent>0
+        && tenureMonths>0; null otherwise (UI hides the result card).
+  actions:
+    name: EmiAction
+    variants:
+      - { action: UpdatePrincipal, payload: "value: Double", effect: "copy(principal = value)" }
+      - { action: UpdateRate, payload: "value: Double", effect: "copy(ratePercent = value)" }
+      - { action: UpdateTenure, payload: "value: Int", effect: "copy(tenureMonths = value)" }
+
+# ─────────────────────────────────────────────────
+# Shell — plain TopAppBar with a back button; no bottom nav (pushed destination)
+# ─────────────────────────────────────────────────
+shell:
+  bottom_nav:
+    enabled: false
+  top_app_bar:
+    enabled: true
+    title: "EMI Calculator"
+    i18n_key: screens_emicalculator_title
+    leading:
+      - type: icon_button
+        icon: arrow_back
+        aria_label: "Back"
+        on_click:
+          action: "navigate_back"
+          action_contract:
+            effect: navigate
+            description: "Pop the back stack (popBackStackSafely) to return to the caller that launched the EMI calculator (home / calculators hub)."
+
+# ─────────────────────────────────────────────────
+# CONTENT state — input card + conditional result HeroCard
+# ─────────────────────────────────────────────────
+state_components:
+  content:
+    - type: stack
+      direction: column
+      scroll: vertical
+      padding: "{spacing.lg}"
+      gap: "{spacing.md}"
+      children:
+
+        # ── Input card: three numeric OutlinedTextFields ──
+        - type: card
+          variant: app_card
+          children:
+            - type: stack
+              direction: column
+              padding: "{spacing.md}"
+              gap: "{spacing.md}"
+              children:
+                - type: text_field
+                  id: principal_field
+                  variant: outlined
+                  label: "Principal Amount"
+                  i18n_key: screens_emicalculator_principal_label
+                  keyboard_type: number
+                  binds_to: "state.principal"
+                  value_source: "state.principal.toLong().toString()"
+                  aria_label: "Principal Amount"
+                  on_change:
+                    action: "update_principal"
+                    action_contract:
+                      effect: local_compute
+                      writes_to:
+                        - { state_field: "EmiState.principal" }
+                      description: "Parse the entered text as a Double (ignored if unparseable) and dispatch EmiAction.UpdatePrincipal(value); the ViewModel copies it into EmiState.principal, which re-derives emiResult via calculateEmi."
+                - type: text_field
+                  id: rate_field
+                  variant: outlined
+                  label: "Annual Rate (%)"
+                  i18n_key: screens_emicalculator_rate_label
+                  keyboard_type: decimal
+                  binds_to: "state.ratePercent"
+                  value_source: "state.ratePercent.toString()"
+                  aria_label: "Annual Rate (%)"
+                  on_change:
+                    action: "update_rate"
+                    action_contract:
+                      effect: local_compute
+                      writes_to:
+                        - { state_field: "EmiState.ratePercent" }
+                      description: "Parse the entered text as a Double (ignored if unparseable) and dispatch EmiAction.UpdateRate(value); the ViewModel copies it into EmiState.ratePercent, which re-derives emiResult via calculateEmi."
+                - type: text_field
+                  id: tenure_field
+                  variant: outlined
+                  label: "Tenure (months)"
+                  i18n_key: screens_emicalculator_tenure_label
+                  keyboard_type: number
+                  binds_to: "state.tenureMonths"
+                  value_source: "state.tenureMonths.toString()"
+                  aria_label: "Tenure (months)"
+                  on_change:
+                    action: "update_tenure"
+                    action_contract:
+                      effect: local_compute
+                      writes_to:
+                        - { state_field: "EmiState.tenureMonths" }
+                      description: "Parse the entered text as an Int (ignored if unparseable) and dispatch EmiAction.UpdateTenure(value); the ViewModel copies it into EmiState.tenureMonths, which re-derives emiResult via calculateEmi."
+
+        # ── Result card: rendered only when emiResult != null (all inputs > 0) ──
+        - type: card
+          variant: hero_card
+          id: emi_result_card
+          visible_when: "emiResult != null"
+          aria_label: "EMI result"
+          children:
+            - type: amount_display
+              amount_source: "emiResult.emi (formatGrouped 2dp)"
+              label: "Monthly EMI"
+              i18n_key: screens_emicalculator_emi_label
+              supporting:
+                - type: row
+                  justify: space_between
+                  children:
+                    - { type: text, variant: body_medium, content: "Total payment", i18n_key: screens_emicalculator_total_payment_label }
+                    - { type: text, variant: body_medium, content_source: "emiResult.totalPayment (formatGrouped 2dp)" }
+                - type: row
+                  justify: space_between
+                  children:
+                    - { type: text, variant: body_medium, content: "Total interest", i18n_key: screens_emicalculator_total_interest_label }
+                    - { type: text, variant: body_medium, content_source: "emiResult.totalInterest (formatGrouped 2dp)" }
+
+# ─────────────────────────────────────────────────
+# Test tags present in source (feature/emi-calculator/.../TestTags.kt)
+# ─────────────────────────────────────────────────
+test_tags:
+  - { id: "emi_calculator_screen", note: "Root scaffold — always rendered regardless of input state." }
+
+# ─────────────────────────────────────────────────
+# Source provenance (reverse-engineered, read-only)
+# ─────────────────────────────────────────────────
+source_refs:
+  screen: "feature/emi-calculator/src/commonMain/kotlin/kpt/feature/emicalculator/ui/EmiCalculatorScreen.kt"
+  viewmodel: "feature/emi-calculator/src/commonMain/kotlin/kpt/feature/emicalculator/ui/EmiCalculatorViewModel.kt"
+  navigation: "feature/emi-calculator/src/commonMain/kotlin/kpt/feature/emicalculator/navigation/EmiCalculatorNavigation.kt"
+  di: "feature/emi-calculator/src/commonMain/kotlin/kpt/feature/emicalculator/di/EmiCalculatorModule.kt"
+  domain: "core/domain/src/commonMain/kotlin/kpt/core/domain/demo/emi/CalculateEmiUseCase.kt (calculateEmi)"
+  model: "core/model/src/commonMain/kotlin/kpt/core/model/demo/emi/EmiResult.kt"
+  design_system: ["core-base/designsystem AppCard + HeroCard", "core/designsystem AmountDisplay", "core/common formatGrouped"]

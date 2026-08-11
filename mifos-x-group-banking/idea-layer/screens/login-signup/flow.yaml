@@ -8,6 +8,7 @@ navigates_to:
   - group-create
   - group-type-picker
   - join-with-code
+  - organizer-dashboard   # demo-explore landing (F1/B1) — seeded demo user is the group organizer
 
 flow_logic:
   on_load:
@@ -38,13 +39,21 @@ flow_logic:
           on_success:
             - action: store_session
               store: SessionStore.saveToken(response.sessionToken, response.tokenExpiresAt)
-            - action: inspect_group_memberships
-              check: "response.groupMemberships.isNotEmpty()"
-              non_empty:
-                - emit: NavigateToPersonalDashboard
-              empty:
-                - action: set_screen_state
-                  state: ZeroGroups
+            - action: resume_pending_invite
+              comment: "F3/F4 — invite resume handoff (satisfies TC-LS-010)"
+              check: "navParams.pendingInviteCode != null && navParams.pendingInviteCode.length == 6"
+              on_match:
+                - emit: NavigateToJoinWithCode
+                  params:
+                    inviteCode: "{{navParams.pendingInviteCode}}"
+              on_no_match:
+                - action: inspect_group_memberships
+                  check: "response.groupMemberships.isNotEmpty()"
+                  non_empty:
+                    - emit: NavigateToPersonalDashboard
+                  empty:
+                    - action: set_screen_state
+                      state: ZeroGroups
           on_error:
             - action: set_error
               field: error
@@ -65,9 +74,17 @@ flow_logic:
           on_success:
             - action: store_session
               store: SessionStore.saveToken(response.sessionToken, response.tokenExpiresAt)
-            - action: set_screen_state
-              state: ZeroGroups
-              comment: "New registrations always have empty group list"
+            - action: resume_pending_invite
+              comment: "F3/F4 — a self-registering invitee resumes the join instead of landing in ZeroGroups (satisfies TC-LS-010)"
+              check: "navParams.pendingInviteCode != null && navParams.pendingInviteCode.length == 6"
+              on_match:
+                - emit: NavigateToJoinWithCode
+                  params:
+                    inviteCode: "{{navParams.pendingInviteCode}}"
+              on_no_match:
+                - action: set_screen_state
+                  state: ZeroGroups
+                  comment: "New registrations with no pending invite always have empty group list"
           on_error:
             - action: set_error
               field: error
@@ -105,6 +122,46 @@ flow_logic:
   on_join_with_code_tap:
     - emit: NavigateToJoinWithCode
 
+  on_accept_invitation_tap:
+    # F2/B4/G2 — first-class PRE-AUTH accept-invitation entry on the content state (both modes).
+    # Navigates to join-with-code with NO pre-filled code; the invitee types the code there and
+    # join-with-code routes back with pendingInviteCode, which on_login/on_signup resumes.
+    - emit: NavigateToJoinWithCode
+      params:
+        inviteCode: null
+
+  on_demo_explore:
+    # F1/B1/G1 — open the Demo Explore confirm dialog (pure state; no seeding yet).
+    - action: set_state
+      field: showDemoDialog
+      value: true
+
+  on_demo_cancel:
+    - action: set_state
+      field: showDemoDialog
+      value: false
+
+  on_demo_confirm:
+    # F1/B1/G1 — enter the offline guest demo session, 100% offline (no companion API / Fineract).
+    - action: set_state
+      field: showDemoDialog
+      value: false
+    - action: set_state
+      field: isSeedingDemo
+      value: true
+    - action: seed_demo_session
+      description: >
+        DemoSessionManager hydrates the bundled PROJECT_DEMO_DATA fixture (Mwangaza Women's Group
+        VSLA: members, savings, meetings, corpus, active loan, live invite code DEMO24) into the
+        local SQLDelight cache under a synthetic demo session token, and resolves the demo user
+        (Amina, treasurer/organizer of demo-group-001). No network call.
+      manager: DemoSessionManager.startDemoSession()
+      on_success:
+        - action: set_state
+          field: isSeedingDemo
+          value: false
+        - emit: NavigateToOrganizerDashboard   # land on the organizer dashboard for the seeded demo group
+
   on_forgot_password:
     - emit: ShowSnackbar
       message_key: forgot_password_snackbar
@@ -131,4 +188,12 @@ dependencies:
         - "hasValidToken(): Boolean"
         - "saveToken(token: String, expiresAt: String): Unit"
         - "refreshFromProfile(profile: UserProfile): Unit"
+    - name: DemoSessionManager
+      methods:
+        # Hydrates the bundled PROJECT_DEMO_DATA fixture into the local SQLDelight cache under a
+        # synthetic demo session token and resolves the demo user as the organizer of demo-group-001.
+        # Fully offline — no companion API / Fineract calls; writes inside demo mode are local no-ops.
+        - "startDemoSession(): Result<DemoSession>"
+        - "isDemoSession(): Boolean"
+        - "clearDemoSession(): Unit"
     - NetworkMonitor

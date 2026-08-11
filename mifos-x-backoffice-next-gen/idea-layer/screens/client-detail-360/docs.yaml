@@ -33,23 +33,210 @@ summary: >-
   (?command=activate|assignStaff|close|reject|withdraw|proposeTransfer). Each account row drills into loan-detail (or
   the savings/shares detail). Reads are cache-first so the client opens offline; lifecycle mutations route through the
   offline outbox with a durable idempotency key.
+metadata:
+  category: back-office-domain
+  implementation_ready: true
+  impl_ready_at: '2026-07-31T00:00:00Z'
+  impl_ready_schema: v2
+contracts:
+  - capability: client_aggregate_read
+    platform_spec: >-
+      GET /v1/clients/{clientId}?associations=all read cache-first through a Store5 SourceOfTruth over Room
+      (client_cache; keys client_id, account_no, external_id, display_name, status, office_id, staff_id, legal_form) —
+      the identity/KYC header (display name, account no, external id, status chip, office, assigned staff, legal form)
+      and the General tab hydrate from this one association-rich call and persist so the client opens offline under
+      CACHE_FIRST_SWR; a stale entry renders immediately with a background-refreshing badge while SWR revalidates.
+    permission: READ_CLIENT
+    error_cases:
+      - client_not_found
+      - client_load_failed
+  - capability: client_accounts_read
+    platform_spec: >-
+      GET /v1/clients/{clientId}/accounts read cache-first through a Store5 SourceOfTruth over Room
+      (client_account_cache; keys client_id, account_type, account_id, account_no, product_name, status, balance) — the
+      Accounts tab lists the client's loans, savings and share accounts with status + balance. A failed accounts fetch
+      degrades ONLY the Accounts tab to an inline retry strip (error_state=content); the identity header still renders
+      and the whole-screen error is never shown.
+    permission: READ_CLIENT
+    error_cases:
+      - accounts_load_failed
+  - capability: client_lifecycle_command
+    platform_spec: >-
+      POST /v1/clients/{clientId}?command=activate|assignStaff|unassignStaff|close|reject|withdraw|proposeTransfer — the
+      action bar exposes only the commands permitted for the current client status AND held in the PermissionSet; each
+      command is written to the draft_outbox Room table with a fresh DURABLE idempotency key (action=ACTIVATE_CLIENT|
+      ASSIGNSTAFF_CLIENT|CLOSE_CLIENT|UNASSIGNSTAFF_CLIENT, entity=CLIENT) and replayed EXACTLY ONCE via POST
+      /v1/batches by the offline-sync-engine; a rejected replay routes to needs-attention-inbox, never silently dropped.
+    permission: ACTIVATE_CLIENT
+    error_cases:
+      - action_not_permitted
+      - command_rejected
+libraries:
+  - capability: client_aggregate_read
+    library: org.mobilenativefoundation.store.store5
+    version: 5.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: client_aggregate_read
+    library: androidx.room
+    version: 3.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: client_aggregate_read
+    library: cmp-network-monitor
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: client_accounts_read
+    library: org.mobilenativefoundation.store.store5
+    version: 5.x
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: client_lifecycle_command
+    library: openMF Fineract Client KMP SDK
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: client_lifecycle_command
+    library: kotlinx-serialization
+    version: 1.7.x
+    targets:
+      - android
+      - ios
+      - desktop
 vm_actions:
-  - OnLoad
-  - OnTabSelected
-  - OnOpenLoan
-  - OnActivateClient
-  - OnAssignStaff
-  - OnCloseClient
-  - OnAddNote
-  - OnRetry
+  - name: OnLoad
+    signature: 'private fun onLoad(clientId: String)'
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content(client, accounts) | Empty | Error
+      - permittedActions=<resolved from PermissionSet ∩ client status>
+    side_effects:
+      - ClientDetailStore.stream(clientId, CACHE_FIRST_SWR)
+      - ClientAccountsStore.stream(clientId, CACHE_FIRST_SWR)
+      - PermissionEvaluator.evaluate(clientActions, client.status)
+    error_handling:
+      ClientNotFound: uiState=Empty; show not-found panel with a back affordance
+      NetworkError: uiState=Content from client_cache if present else Error; offer Retry
+      AccountsLoadFailed: keep identity header; Accounts tab degrades to an inline retry strip (uiState stays Content)
+  - name: OnTabSelected
+    signature: 'private fun onTabSelected(tab: ClientDetailTab)'
+    state_mutations:
+      - selectedTab=<General | Accounts | Notes>
+    side_effects: []
+    error_handling: {}
+  - name: OnOpenLoan
+    signature: 'private fun onOpenAccount(account: ClientAccount)'
+    state_mutations: []
+    side_effects:
+      - sendEvent(NavigateToLoanDetail(account.id)) for a loan row (savings/shares rows open their own detail)
+    error_handling: {}
+  - name: OnActivateClient
+    signature: 'private fun onActivateClient(clientId: String)'
+    state_mutations:
+      - uiState=Content (command submitting)
+      - permittedActions=<recomputed on status change to Active>
+    side_effects:
+      - DraftDao.enqueue(ACTIVATE_CLIENT, entity=CLIENT, clientId, payload, DURABLE idempotencyKey)
+    error_handling:
+      ActionNotPermitted: hide/disable unless status == pending AND ACTIVATE_CLIENT held
+      CommandRejected: route entry to needs-attention-inbox
+      Offline: stays queued in draft_outbox; auto-drains on connectivity regain (exactly-once via POST /v1/batches)
+  - name: OnAssignStaff
+    signature: 'private fun onAssignStaff(clientId: String, staffId: String)'
+    state_mutations:
+      - uiState=Content (command submitting)
+      - client=<assigned-staff field updated on success>
+    side_effects:
+      - DraftDao.enqueue(ASSIGNSTAFF_CLIENT, entity=CLIENT, clientId, payload, DURABLE idempotencyKey)
+    error_handling:
+      ActionNotPermitted: hide/disable when ASSIGNSTAFF_CLIENT absent
+      CommandRejected: route to needs-attention-inbox
+      Offline: stays queued; exactly-once on retry (durable idempotency key)
+  - name: OnCloseClient
+    signature: 'private fun onCloseClient(clientId: String, payload: CloseClientPayload)'
+    state_mutations:
+      - uiState=Content (command submitting)
+      - permittedActions=<recomputed on status change to Closed>
+    side_effects:
+      - DraftDao.enqueue(CLOSE_CLIENT, entity=CLIENT, clientId, payload, DURABLE idempotencyKey)
+    error_handling:
+      ActionNotPermitted: hide/disable when CLOSE_CLIENT absent
+      CommandRejected: route to needs-attention-inbox
+      Offline: stays queued; exactly-once on retry
+  - name: OnAddNote
+    signature: 'private fun onAddNote(clientId: String, note: String)'
+    state_mutations:
+      - uiState=Content (note optimistically appended on the Notes tab)
+    side_effects:
+      - DraftDao.enqueue(CREATE_CLIENTNOTE, entity=CLIENT, clientId, payload, DURABLE idempotencyKey)
+    error_handling:
+      CommandRejected: route to needs-attention-inbox; keep draft
+      Offline: stays queued; auto-drains on connectivity regain
+  - name: OnRetry
+    signature: 'private fun onRetry(clientId: String)'
+    state_mutations:
+      - uiState=Loading
+      - uiState=Content | Error
+    side_effects:
+      - ClientDetailStore.stream(clientId).refreshFresh()
+      - ClientAccountsStore.stream(clientId).refreshFresh()
+    error_handling:
+      NetworkError: uiState=Error; keep last inputs; offer Retry again
 error_cases:
   - client_not_found
   - client_load_failed
   - accounts_load_failed
   - action_not_permitted
+  - command_rejected
+test_fixtures:
+  source: screens/client-detail-360/tests.yaml
+  scenario_count: 9
+  priority_distribution:
+    high: 4
+    medium: 4
+    low: 1
 scaffolded_by: /idea-plan-add
+enriched_at: '2026-07-31T00:00:00Z'
+enriched_by: /idea-feature-enrich
+approved_by: /idea approve
+approve_predicate_version: 1.0.0
+approve_contract_version: 2.0.0
+approve_hash: sha256:ad787fa3636530f5d2252f8608e078bb28300152bdb0c1881b9b34a86cefffdc
+approved_at: '2026-07-31T15:50:49Z'
 status_history:
+  - from: approved
+    to: approved
+    at: '2026-07-31T15:50:49Z'
+    by: /idea approve
+    reason: >-
+      Re-approval after /idea-verify heal — schema_version v4.0 stamped on all 32 ui.yaml + product-editor flow.yaml
+      validating/saving transitions added. Fresh approve_hash recomputed over the 7 canonical sibling YAMLs per
+      approve-hash.md §Computation. Status unchanged (approved).
+  - from: designed
+    to: approved
+    at: '2026-07-31T07:34:06Z'
+    by: /idea approve
+    contract_version: 2.0.0
+    reason: >-
+      Autonomous /idea-agent --auto re-approval — DRILL-DOWN feature promoted designed→approved as the pipeline's own
+      gate. impl-ready-clean (impl-ready-validator IR-1..IR-4: 0 violations) and docs.yaml internally consistent. Fresh
+      approve_hash stamped over the 7 canonical sibling YAMLs (approve-hash.md §Computation; RULE-GAP-IDEA-FIRST-001).
   - from: draft
     to: designed
     at: '2026-07-26T05:29:13.797Z'
+    by: /idea-feature-stitch
+  - from: approved
+    to: designed
+    at: '2026-08-03T14:50:29.311Z'
     by: /idea-feature-stitch

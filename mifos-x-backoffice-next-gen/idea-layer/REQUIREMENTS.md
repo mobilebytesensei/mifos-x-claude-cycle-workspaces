@@ -49,13 +49,17 @@
 | ID | Requirement | Priority | Feature | Acceptance Criteria | Status |
 |----|-------------|:--------:|---------|---------------------|:------:|
 | FR-1 | Login `POST /authentication` + tenant header; persist permissions[]+fingerprint (encrypted); build CapabilityMap | must | F01 | Login flips the 17 module roots + actions by permissions vs sandbox | planned |
-| FR-2 | Permission-gated nav/actions across ALL 17 modules — hide roots/creates, disable+reason for workflow stages; domain double-enforce | must | F01, M01–M17 | Same binary renders admin vs teller vs field-officer surface from permissions alone | planned |
+| FR-2 | Permission-gated **3-tier** assembly across ALL 17 modules — Tier1 nav root HIDDEN when zero family codes (fail-closed); Tier2 feature opens on ≥1 family code; Tier3 lacked actions GRAYED-OUT + on-tap "You don't have permission, contact your manager" dialog; every control `action_contract{required_permission, denied_behavior:gray-out-info-dialog}`; effective set = union of roles' codes (ALL_FUNCTIONS=all); domain double-enforce | must | F01, F22, M01–M17 | Same binary renders admin vs teller vs field-officer from permissions alone; lacked actions grayed with a reason | planned |
 | FR-3 | Offline outbox — every mutating command persisted w/ durable idempotency key + (action,entity); replay via `POST /batches` | must | F02 | Exactly-once replay; zero double-post; outbox survives crash + reinstall-restore | planned |
 | FR-4 | Delta-pull sync scoped to the user's office/portfolio; CACHE_FIRST_SWR reads everywhere | must | F02, M01–M17 | Any role gets a complete read-only back-office offline | planned |
 | FR-5 | Dynamic forms rendered from `GET /{entity}/template` + `/datatables` (cached offline) | must | F03 | A back-office config change appears next sync, no release | planned |
 | FR-6 | Maker-checker aware; checker inbox for authorized users | should | M15 | Self-scoped checker inbox; approve/reject queued commands | planned |
 | FR-7 | 403 drift protocol — refresh permissions, re-resolve, prune, notify once; replay revalidates permission | must | F01 | 403 never crashes; UI pruned + notified once | planned |
 | FR-8 | Multi-platform (Android/iOS/Desktop) single codebase; tenant + server switch | must | M17 | Tenant/server switch (dev/sandbox/prod) works on all platforms | planned |
+| FR-9 | Role-adaptive **nav shell** — bottom-bar (phone) + NavigationRail/drawer (desktop) roots data-bound to the resolved permission module roster; roots with zero family permission hidden | must | F22 | A super-user, admin and loan-officer open the same binary and see different nav rosters | planned |
+| FR-10 | **Network-config product onboarding** (powered by Mifos Initiative) — sign-in has professional username+password + [Scan config]/[Configure]; config page offers Mifos community demo OR own-org Fineract (base-URL/tenant/user/pass) + Scan-QR + Reset-to-demo; save re-points + forces re-auth; demo default seeded in core/network | must | F23 | Any MFI points the app at their own instance (scan or type) or uses the demo; usable out-of-box | planned |
+| FR-11 | **Per-role dashboard assembly** + first-run role walkthrough — the home assembles My Field Day / Operations / Platform Admin from the resolved permission set | must | M01, F22 | Loan-officer, admin and super-user each get a distinct assembled home | planned |
+| FR-12 | **App lock** — numeric passcode (set/enter) + biometric enrollment + 15s background re-lock | should | F24, F25 | App re-locks after background timeout; biometric unlock with passcode fallback | planned |
 
 ---
 

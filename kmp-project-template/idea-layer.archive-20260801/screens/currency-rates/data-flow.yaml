@@ -1,0 +1,130 @@
+# data-flow.yaml — Currency Rates per-screen data flows.
+# One entry per Store5 stream: the FX list (ExchangeRatesStore), the embedded spot
+# converter (SpotRateLookupStore, policy-routed), and rate history (RateHistoryStore,
+# dynamic key). Source of truth for each Frankfurter endpoint, Room cache table,
+# DTO/domain model, and per-stream error paths.
+# Reverse-engineered from feature/currency-rates + core/{network,store,data,database}/demo/currency.
+sibling: data-flow
+schema_version: "2.2.0"
+feature_id: feat-currency-rates
+
+# Store5 pipeline (shared shape):
+#   Ktorfit FrankfurterApi ── Fetcher ──▶ *Dto.toDomain
+#        │                                     │
+#   NetworkMonitor.executeWithRetry(maxAttempts=1)
+#        │                                     ▼
+#        ▼                              ExchangeRates / RateHistory (domain)
+#   StoreFactory.createStore ── SourceOfTruth ──▶ ExchangeRatesDao / RateHistoryDao (Room)
+#        │
+#        ▼
+#   CurrencyRepository.{exchangeRatesStream,rateHistoryStream} → ScreenDataStream<T>
+#        │  (asScreenStream: Loading→Content/Empty/Error/NoNetwork + FreshnessSignal)
+#        ▼
+#   CurrencyRatesViewModel (list + spot facet) · RateHistoryViewModel (history)
+
+store_pattern: NETWORK_WITH_CACHE   # list + history; spot converter is policy-routed (NETWORK_ONLY | CACHE_ONLY)
+
+entries:
+  # ── 1. FX list — ExchangeRatesStore, base=USD, search filter + emptyIfContent ──
+  - screen_id: currency-rates-list
+    trigger: on_subscribe            # exchangeRatesStream(base=USD).state stateIn(viewModelScope)
+    auth_required: false             # Frankfurter is unauthenticated public data
+    store: ExchangeRatesStore
+    store_pattern: NETWORK_WITH_CACHE
+    base_currency: USD               # hard-coded at v1
+    endpoints:
+      - { api_id: latest-rates, transport: rest, method: GET }
+    tables:
+      - name: exchange_rates
+        mutation: read_write         # SOT reader getByBase(base); writer upsert on fetch success
+        columns: [baseCurrency, date, ratesJson, fetchedAt]
+    dtos:
+      - { name: ExchangeRatesDto, role: response, api_id: latest-rates }
+      - { name: ExchangeRates,    role: domain,   api_id: latest-rates }
+    produces_state: content
+    transforms:
+      - "combineContent(stateFlow) → RatesDisplay(base, date, rates filtered by searchQuery, case-insensitive)"
+      - "emptyIfContent { it.rates.isEmpty() } → ScreenState.Empty when no code matches the query"
+    cache:
+      strategy: stale_while_revalidate
+      ttl: "AppStoreRegistry.Ttl.EXCHANGE_RATES"
+      key_template: "currency:exchangeRates:USD"
+      shape: map                     # rates: Map<code, Double>
+    freshness:
+      signal: "stream.freshness → FreshnessSignal → TopAppBar FreshnessIndicator (time-based staleness)"
+    error_paths:
+      - { error_code: network.offline, behavior: fallback_cache, fallback_dto: ExchangeRates, note: "warm cache → stale Content; cold cache → NoNetwork/Error" }
+      - { error_code: empty.no_match,   behavior: empty_slot, note: "search query matches zero codes (emptyIfContent)" }
+    notes: "Canonical Store + search-filter + emptyIfContent showcase (kmp-project-template CLAUDE.md → Currency Rates)."
+
+  # ── 2. Spot converter facet — SpotRateLookupStore, policy-routed by connectivity ──
+  - screen_id: currency-spot-converter
+    trigger: on_subscribe            # spotConversionRate: networkStatus.flatMapLatest { asScreenStream(...) }
+    auth_required: false
+    store: SpotRateLookupStore
+    store_pattern: [NETWORK_ONLY, CACHE_ONLY]   # chosen per-callsite by live connectivity
+    base_currency: USD
+    embedded_in: currency-rates-list  # same VM (CurrencyRatesViewModel.spotConversionRate); NOT a nav destination
+    endpoints:
+      - { api_id: latest-rates, transport: rest, method: GET }
+    tables:
+      - name: exchange_rates
+        mutation: read_write          # shares the exchange_rates table (same SOT); NO TTL validator
+        columns: [baseCurrency, date, ratesJson, fetchedAt]
+    dtos:
+      - { name: ExchangeRatesDto, role: response, api_id: latest-rates }
+      - { name: ExchangeRates,    role: domain,   api_id: latest-rates }
+    produces_state: content
+    policy_routing:
+      online:  "FetchPolicy.NETWORK_ONLY  — skip cache, always fetch a fresh spot rate"
+      offline: "FetchPolicy.CACHE_ONLY    — read cache, never call the API (no error flicker)"
+      rebuild: "flatMapLatest keyed on NetworkMonitor.networkStatus (Available vs Unavailable) rebuilds the stream on every flip"
+    cache:
+      strategy: policy_routed
+      ttl: "none (SpotRateLookupStore has no DefaultValidator)"
+      key_template: "currency:spotRate:USD"
+      shape: map
+    error_paths:
+      - { error_code: network.offline, behavior: cache_only_no_request, note: "CACHE_ONLY: cold cache → Loading→Empty; warm cache → Content" }
+    notes: "Archetype showcase — CACHE_ONLY + NETWORK_ONLY. Exercised by CurrencyConverterViewModelTest + CurrencyRatesViewModelTest spot* cases."
+
+  # ── 3. Rate history — RateHistoryStore, dynamic RateHistoryKey, stale carry-forward ──
+  - screen_id: rate-history
+    trigger: on_key_change           # keyFlow = stateFlow.map { RateHistoryKey(USD, target, days) }.distinctUntilChanged()
+    auth_required: false
+    store: RateHistoryStore
+    store_pattern: NETWORK_WITH_CACHE
+    dynamic_key: "RateHistoryKey(from=USD, to=<INR|EUR|GBP|JPY|AUD>, days=<7|14|30|90>)"
+    defaults: { to: INR, days: 30 }
+    endpoints:
+      - { api_id: historical-rates, transport: rest, method: GET }
+    tables:
+      - name: rate_history
+        mutation: read_write
+        columns: [fromCurrency, toCurrency, startDate, endDate, ratesJson, fetchedAt]
+    dtos:
+      - { name: RateHistoryDto, role: response, api_id: historical-rates }
+      - { name: RateHistory,    role: domain,   api_id: historical-rates }
+    produces_state: content
+    transforms:
+      - "Fetcher computes window [today - key.days, today] (UTC); writer overrides start/end with key-derived dates (Frankfurter returns last-business-day end)"
+      - "RateHistoryDto.toDomain(target): sortBy date → mapNotNull { day[target] → RatePoint(date, value) }"
+    cache:
+      strategy: stale_while_revalidate
+      ttl: "AppStoreRegistry.Ttl.RATE_HISTORY"
+      key_template: "currency:rateHistory:USD-{to}-{days}d"
+      shape: list                    # rates: List<RatePoint>
+    freshness:
+      signal: "stream.freshness → FreshnessSignal; band ∈ {Stale, VeryStale} renders inline OfflineDataBanner (carry-forward previous selection)"
+    error_paths:
+      - { error_code: network.offline, behavior: carry_forward_stale, fallback_dto: RateHistory, note: "failed new key keeps previous key's data as stale Content + OfflineDataBanner instead of full-screen NoNetwork" }
+      - { error_code: empty.no_points,  behavior: empty_slot, note: "no observations for the pair/window" }
+    notes: "Dynamic-key flow + auto-refresh on selection (kmp-project-template CLAUDE.md → Rate History)."
+
+# Forced-refresh (sync) seam — not UI-triggered.
+sync:
+  syncable: true
+  repository: CurrencyRepositoryImpl
+  method: syncWith
+  fans_out_over: [USD, EUR, INR]     # PINNED_BASE_CURRENCIES — exchange rates only, not history
+  mechanism: "Store5 stream(StoreReadRequest.fresh(base)).first { Data|Error } — bypasses cache, writes through SOT"

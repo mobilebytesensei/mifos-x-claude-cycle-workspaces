@@ -9,7 +9,7 @@
 
 ## Design Language
 
-**System**: CommonPurse-v3 (Material Design 3 · MD3) — comfortable density
+**System**: MifosSave-v3 (Material Design 3 · MD3) — comfortable density
 **Aesthetic**: `minimalist-ui` · variance 3/10 · motion 3/10 · density 7/10 · accessibility-first
 **Font**: Roboto (Android) / SF Pro (iOS) — system stack · Roboto Mono / SF Mono for KES amounts
 **Primary**: `#2E7D32` (`--primary-700`, VSLA green) — stepper active dot, filled CTAs (Next / Submit), footer button, chairperson approve
@@ -30,7 +30,7 @@
 ## Screen: Meeting #{meetingNumber} Wizard
 
 ### Entry
-- From **meeting-calendar** ("Start Meeting" on an upcoming meeting card); nav-params `meetingId: String`, `meetingNumber: Int`, `centerId: Int`
+- From **meeting-calendar** ("Start Meeting" on an upcoming meeting card); nav-params `meetingId: String`, `meetingNumber: Int`, `groupId: Int`
 - Back navigation via close button in top app bar pops the wizard and returns to `meeting-calendar` (discarding in-progress state; SQLDelight `meeting_wizard_state` retains progress for resumption on next entry)
 - Successful submit navigates to `meeting-summary` with the same three params
 
@@ -98,7 +98,7 @@
 ```
 
 - Read-only step; Back button hidden (step 0), Next advances to Attendance.
-- View Full Report → NavController push `previous-meeting-review(meetingNumber=4, centerId=7)`.
+- View Full Report → NavController push `previous-meeting-review(meetingNumber=4, groupId=7)`.
 
 ### Step 1 · Attendance
 
@@ -160,7 +160,7 @@
 └──────────────────────────────────────────┘
 ```
 
-- Read-only display of `openingCorpus` and `cashOnHand` from `CorpusRepository.getOpeningCorpus(centerId)`.
+- Read-only display of `openingCorpus` and `cashOnHand` from `CorpusRepository.getOpeningCorpus(groupId)`.
 - Corpus band above becomes visible starting this step and stays live for steps 3-6.
 
 ### Step 3 · Savings Collection
@@ -341,7 +341,7 @@
 The ui.yaml declares 4 `screen_state` members driving the wizard shell (independent of the 7 step-content bodies above).
 
 ### `loading`
-Initial parallel fetch of 5 payloads: `previousMeetingSummary`, `groupMembers` (CenterDetail), `openingCorpus + cashOnHand` (CorpusRecord), `activeLoans` (LoanSummary projection over LoanDetail), `pendingLoanApplications`.
+Initial parallel fetch of 5 payloads: `previousMeetingSummary`, `groupMembers` (GroupDetail), `openingCorpus + cashOnHand` (CorpusRecord), `activeLoans` (LoanSummary projection over LoanDetail), `pendingLoanApplications`.
 
 ```
 [ ✕ ]  Meeting #4  (subtitle deferred)     ← top_app_bar visible
@@ -392,7 +392,7 @@ Brief toast then navigate to `meeting-summary`.
         │ Meeting #4 submitted         │  Snackbar — primaryContainer bg,
         │ successfully!                │  onPrimaryContainer text
         └──────────────────────────────┘  duration 2000ms, slide-up
-                                          → NavigateToMeetingSummary(meetingId, meetingNumber, centerId)
+                                          → NavigateToMeetingSummary(meetingId, meetingNumber, groupId)
 ```
 
 ### `submit_error`
@@ -422,7 +422,7 @@ Error taxonomy (typed):
 
 ## Demo Data (state: `content`, from `demo-data.yaml`)
 
-Meeting #5 in progress for Mwangaza Women's Group (centerId 1, Kisumu West). Opening corpus KES 51,750, cash on hand KES 3,500. Five members recorded on the previous roster.
+Meeting #5 in progress for Mwangaza Women's Group (groupId 1, Kisumu West). Opening corpus KES 51,750, cash on hand KES 3,500. Five members recorded on the previous roster.
 
 ### Group members (5 rows for attendance + savings)
 
@@ -476,9 +476,9 @@ Meeting #4 · 05 May 2026 · Total collected KES 2,500 · Closing corpus KES 51,
 5. **Set loan repayment / fine** (Step 4 inputs) → `SetLoanRepayment` / `SetLoanFine` (transform_state); validated ≤ outstanding balance; fine input surfaces only when `loan.isOverdue == true`.
 6. **Cast loan vote** (Step 5 For/Against buttons) → `CastLoanVote(loanId, FOR|AGAINST)` (transform_state); local tally updates; final aggregate posts to `dt_loan_vote` datatable on submit.
 7. **Chairperson approve** (Step 5 approve button, gated) → `ApproveLoanApplication(loanId)` (transform_state); queues the disbursal for the submit sequence; corpus insufficiency blocks the tap with an error snackbar.
-8. **Submit** (Step 6 button OR footer Next on step 6) → `SubmitMeeting` (call_api, external `fineract-rest + sqldelight`); ordered sequence: `POST /meetings → POST /attendance → POST /savings/{n}/deposits → POST /loans/{n}/repayments → POST /loans/{n}/disbursals → PATCH /centers/{id}/corpus`; on any 5xx or offline the full payload is enqueued to the `sync_queue` SQLDelight table for Store5 drain on reconnect.
+8. **Submit** (Step 6 button OR footer Next on step 6) → `SubmitMeeting` (call_api, external `fineract-rest + sqldelight`); ordered sequence: `POST /meetings → POST /attendance → POST /savings/{n}/deposits → POST /loans/{n}/repayments → POST /loans/{n}/disbursals → PATCH /groups/{id}/corpus`; on any 5xx or offline the full payload is enqueued to the `sync_queue` SQLDelight table for Store5 drain on reconnect.
 9. **Back / close** (top app bar ✕) → `NavigateBack` (navigate) → pops to `meeting-calendar`; wizard progress remains persisted in local `meeting_wizard_state` for resumption.
-10. **View full previous report** (Step 0 button) → `ViewFullPreviousMeeting` (navigate) → pushes `previous-meeting-review(meetingNumber, centerId)`.
+10. **View full previous report** (Step 0 button) → `ViewFullPreviousMeeting` (navigate) → pushes `previous-meeting-review(meetingNumber, groupId)`.
 11. **Dismiss error snackbar** (auto or swipe) → `DismissError` (emit_event) → clears `stepValidationError`.
 12. **Auto save on background** → `SaveProgressLocally` fires on app background AND every successful step advance.
 
@@ -517,9 +517,9 @@ Meeting #4 · 05 May 2026 · Total collected KES 2,500 · Closing corpus KES 51,
 **External libs**: `fineract-rest`, `sqldelight`, `store5`
 
 Read paths (Step 0/1 parallel prefetch during `loading` state):
-- `previousMeetingSummary` ← `MeetingRepository.getRecentMeeting(centerId)` (Store5 stream over SQLDelight cache + Fineract `GET /centers/{id}/meetings/recent`)
-- `groupMembers[]` ← `CenterDetail.activeClientMembers` (from `GET /centers/{id}?fields=activeClientMembers`)
-- `openingCorpus`, `cashOnHand` ← `CorpusRepository.getOpeningCorpus(centerId)` (from `GET /centers/{id}/corpus`)
+- `previousMeetingSummary` ← `MeetingRepository.getRecentMeeting(groupId)` (Store5 stream over SQLDelight cache + Fineract `GET /groups/{id}/meetings/recent`)
+- `groupMembers[]` ← `GroupDetail.activeClientMembers` (from `GET /groups/{id}?fields=activeClientMembers`)
+- `openingCorpus`, `cashOnHand` ← `CorpusRepository.getOpeningCorpus(groupId)` (from `GET /groups/{id}/corpus`)
 - `activeLoans[]` ← `LoanRepository.getActiveGroupLoans(groupId)` (Fineract m_loan projected into `LoanSummary` view-model DTO)
 - `pendingLoanApplications[]` ← `LoanRepository.getPending(groupId)` + local vote tally overlay
 
@@ -530,7 +530,7 @@ Write path (Step 6 submit, ordered):
 4. `POST /loans/{n}/transactions` (type: repayment) — repayments
 5. `POST /loans/{n}/transactions` (type: chargeoff for overdue fines) — loan penalty fines
 6. `POST /loans/{n}/transactions` (type: disburse) — approved disbursals
-7. `PATCH /centers/{id}/corpus` — closing balance write-through
+7. `PATCH /groups/{id}/corpus` — closing balance write-through
 
 Offline behavior — when `NetworkMonitor.isOffline == true` OR any POST returns 5xx: the full submit payload is serialized into SQLDelight `sync_queue` with a monotonic `sync_ordinal`, the `submit_success` toast still fires ("Meeting saved offline — will sync when connected"), and NavigateToMeetingSummary proceeds. Store5 drains the queue on next connectivity change via `NetworkMonitor` events, retrying in-order with exponential backoff.
 

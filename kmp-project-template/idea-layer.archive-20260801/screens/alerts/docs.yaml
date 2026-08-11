@@ -1,0 +1,120 @@
+schema_version: '1.0'
+screen_id: alerts-list
+feature_id: feat-alerts
+archetype: paging-list
+flow: flow-alerts-browse
+title: Price Alerts
+purpose: >-
+  Let a user configure price-threshold alerts for crypto coins — "notify me when
+  <coin> goes ABOVE / BELOW <targetValue>" (or a 24h percent-change). A purely
+  offline feature (Room `alerts` table + a Store5 OFFLINE_LOCAL_ONLY store, no
+  backend): browse the list of configured alerts, add / edit an alert through an
+  offline-resilient DraftSubmitHandler form, and delete alerts. Despite the name,
+  NO device notification is scheduled — an "alert" is a stored threshold row.
+status: reverse-engineered-data-layer     # DATA layer imported from shipped source; UI modeled from the data contract
+source_of_truth: source                   # data layer imported FROM shipped source, not FROM idea-layer
+ui_implemented: false                      # feature/alerts/ is build-only — no Compose/ViewModel/navigation source yet
+quality_score: 82          # /idea sync STEP 3 — raised from 78 after enrichment: form-label literals extracted to screens_alerts_* i18n keys, initial_state declared, inbound-from-crypto edge added, persistence-bug (widen-entity) fix recorded. Ceiling held below the shipped-UI features (loans/bills 90) because the alerts UI is still modeled-from-contract (ui_implemented: false).
+last_modified: '2026-07-25'
+
+# ── Provenance & scope ──
+provenance:
+  data_layer: shipped              # model, entity, dao, repository, store, DI, outbox, syncer, tests all exist
+  ui_layer: modeled-from-contract  # screens/viewmodels/routes are PROPOSED, grounded in the data contract + repo doc comments
+  note: >-
+    This import reverse-engineers the SHIPPED data layer (the ground truth) and models the
+    prescribed UI surface (list + add/edit form) that the data contract implies. A subsequent
+    /implement of feature/alerts would realize the two screens against the existing repository.
+
+# ── Store archetype (from the template Store archetype table) ──
+showcase:
+  store: AlertsStore
+  store_archetype: OFFLINE_LOCAL_ONLY
+  store_factory: StoreFactory.createOfflineStore
+  patterns_demonstrated:
+    - "OFFLINE_LOCAL_ONLY Store5 store (AlertsStore, key=Unit → List<AlertEntity>, no remote fetcher)"
+    - "core-base invalidation bridge — daoFlow(\"alerts\") + notifyingWrite(\"alerts\") absorbing the Room 3 alpha05 wasmJs async fan-out gap"
+    - "Multi-formKey DraftSubmitHandler + OfflineSubmitSyncer (formKey=\"price_alert\", OutboxQualifiers.PriceAlert) — offline-resilient local write"
+  note: >-
+    AlertsReactiveInvalidationTest is the ONE fixed surface whose reactive read flows through a
+    Store5 SourceOfTruth (alertsStream → alertsStore.stream), not a direct DAO flow — it locks the
+    exact "alerts" table-name agreement between the store reader and the repository writes.
+
+components:               # PROPOSED — the composables a faithful implementation would use
+  - top_app_bar
+  - extended_fab
+  - lazy_column
+  - alert_row_card
+  - status_chip
+  - switch
+  - icon_button
+  - outlined_text_field
+  - decimal_field
+  - dropdown_menu
+  - draft_resume_banner
+  - button
+
+screens_summary:
+  - { id: alerts-list,   composable: PriceAlertsListScreen, viewmodel: PriceAlertsListViewModel, states: "loading, content, empty, error", provenance: proposed }
+  - { id: alert-addedit, composable: AddOrEditAlertScreen,  viewmodel: EditAlertViewModel,       states: "content, submitting, submitted, failed", provenance: proposed }
+
+user_stories:
+  - "As a user, I want to set a price alert for a coin (above/below a target) so I can track a threshold I care about."
+  - "As a user, I want to see all my configured alerts in one list, newest first."
+  - "As a user, I want to edit an alert's target or toggle it on/off."
+  - "As a user, I want to delete an alert I no longer care about."
+  - "As a user, I want my alert edits to survive being offline — auto-saved as a draft and committed on reconnect."
+
+metrics:
+  - "alerts_created / alerts_edited / alerts_deleted"
+  - "avg_active_alerts_per_user"
+  - "offline_draft_recovery_rate (drafts committed on reconnect)"
+
+data_model:
+  dto:
+    name: PriceAlert
+    source: "core/model/demo/alerts/PriceAlert.kt"
+    fields:
+      - { name: id, type: String, note: "client UUID, primary key" }
+      - { name: coinId, type: String, note: "CoinGecko id e.g. 'bitcoin' — maps to AlertEntity.symbol" }
+      - { name: direction, type: "AlertDirection (ABOVE|BELOW|PCT_CHANGE)" }
+      - { name: targetValue, type: Double, note: "USD for ABOVE/BELOW; percent for PCT_CHANGE" }
+      - { name: enabled, type: Boolean, note: "default true; disabled alerts persist but don't trigger" }
+      - { name: createdAtMs, type: Long }
+  entity:
+    name: AlertEntity
+    table: alerts
+    source: "core/database/demo/alerts/AlertEntity.kt (schema v8→v10)"
+    fields:
+      - { name: id, type: String, note: "primary key" }
+      - { name: symbol, type: String, note: "← PriceAlert.coinId" }
+      - { name: targetPrice, type: Double, note: "← PriceAlert.targetValue" }
+      - { name: conditionAbove, type: Boolean, note: "← direction (ABOVE→true, BELOW/PCT_CHANGE→false)" }
+      - { name: createdAt, type: Long, default: 0 }
+
+# ── The key surprises this import uncovered ──
+surprises:
+  - "'Alert' is NOT a notification. feature/alerts wires zero notification schedulers (only feature/bills does). An alert is a persisted price-threshold config row; nothing pushes/reminds on it in the shipped code."
+  - "The feature/alerts UI module is NOT IMPLEMENTED — feature/alerts/ contains only a build/ dir. Only the data layer (model/entity/dao/repo/store/DI/tests) ships. The two screens here are modeled from that contract."
+  - "LOSSY persistence: AlertEntity drops two model fields. `enabled` is never stored (read-back hardcodes true); AlertDirection.PCT_CHANGE has no entity encoding (collapses to BELOW via conditionAbove=false). A save→reload round-trip silently loses a disabled flag and a % -change alert type. A faithful impl must widen the entity."
+  - "The 'offline outbox' (DraftSubmitHandler + OfflineSubmitSyncer + RoomSubmitOutbox, formKey=\"price_alert\") is a framework showcase over a LOCAL commit that never actually fails on-device — same pattern as feature/loans."
+
+# ── Recorded fixes an /implement pass must land (enrichment records the requirement; does NOT edit source) ──
+required_fixes:
+  - id: P1-4-widen-alert-entity
+    severity: data-loss
+    target: "core/database/demo/alerts/AlertEntity.kt (+ mapper + AppDatabase migration)"
+    problem: >-
+      Lossy persistence — AlertEntity has neither an `enabled` column nor a 3-way direction
+      discriminant. The mapper collapses ABOVE→conditionAbove=true and BOTH BELOW & PCT_CHANGE→false,
+      and hardcodes enabled=true on read-back. A save→reload round-trip silently loses a disabled
+      flag and degrades a PCT_CHANGE alert to BELOW.
+    required_fix: >-
+      Widen AlertEntity — add `enabled: Boolean` and a direction discriminant (e.g. `direction: String`
+      persisting ABOVE|BELOW|PCT_CHANGE) with a Room migration; update the entity↔domain mapper to
+      round-trip both fields losslessly. Enrichment only RECORDS this; the fix ships with /implement.
+    surfaced_in_ui: "ui.yaml direction_dropdown.note + enabled_toggle.note (⚠ markers kept in place)"
+
+notes:
+  - "No auth, no backend, no remote sync. Store5 offline store — Room is the sole source of truth, always FRESH."
+  - "Alerts ship EMPTY (user-configured); no demo seed rows exist in source."

@@ -1,6 +1,7 @@
 <!-- source: screens/permission-set-detail/ (v4.0 siblings: ui, docs, flow, api) -->
-<!-- source_hash: ui=5b6c5a308f26 docs=35f3e964db41 flow=e38e03441839 api=8bda03c69a0e -->
-<!-- generated: 2026-07-26T04:07:02Z -->
+<!-- source_hash: ui=b99fa6b3311f docs=35f3e964db41 flow=6c78983086b8 api=5c876fef8310 -->
+<!-- generated: 2026-07-31T03:23:52Z -->
+<!-- re-verified: 2026-07-31 (post-21:09 ui enrich; spec still matches current ui/api — mtime re-stamp) -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 <!-- prior_version: — -->
@@ -15,65 +16,82 @@
 
 ## Capabilities
 
-- **has_ui** — Compose detail screen: a searchable, grouped, held-vs-total permission-code view with a fingerprint header card.
-- **has_offline_cache** — held codes come from the local core/permissions PermissionSet; the code catalog is cached CACHE_FIRST_SWR, so the detail renders fully offline.
-- **has_flow** — drilled in from the permission-capability-engine (view_permission_set); loading → content/empty/error with a content-internal search/expand/copy loop.
-- **requires_auth** — the code-catalog read (GET /v1/permissions) runs under the authenticated Fineract session.
+### has_ui
+
+Compose detail screen: a searchable, grouped, held-vs-total permission-code view with a copyable fingerprint header card.
+
+### has_offline_cache
+
+Held codes come from the local `core/permissions` PermissionSet; the code catalog is cached CACHE_FIRST_SWR, so the detail renders fully offline.
+
+### has_flow
+
+Drilled in from the permission-capability-engine (`view_permission_set`); loading → content/empty/error with a content-internal search/expand/copy loop.
+
+### requires_auth
+
+The code-catalog read (`GET /v1/permissions`) runs under the authenticated Fineract session.
 
 ## Screens (1)
 
 | Screen | ViewModel | States | Description |
 |--------|-----------|--------|-------------|
-| permission-set-detail | PermissionSetDetailViewModel | loading, content, empty, error | Read-only diagnostic drilled in from the permission-capability-engine (view_permission_set). Renders every raw permission code the signed-in user holds grouped by Fineract grouping (portfolio · transaction_loan · transaction_savings · accounting · organisation · authorisation · …), marks umbrella / short-circuit grants (ALL_FUNCTIONS, CHECKER_SUPER_USER) that widen access, and shows the PermissionSet's sha256 fingerprint — the value the CapabilityMap resolver keys on for drift detection. A search box filters codes; each grouping shows its held-vs-total count. Held set = union of the user's enabled roles' permissions (from the login-normalised PermissionSet); GET /v1/permissions supplies the catalog + grouping metadata. Purely diagnostic. Archetype: detail. |
+| permission-set-detail | PermissionSetDetailViewModel | loading, content, empty, error | Read-only diagnostic drilled in from the permission-capability-engine (`view_permission_set`). Renders every raw permission code the signed-in user holds grouped by Fineract grouping (portfolio · transaction_loan · transaction_savings · accounting · organisation · authorisation · …), marks umbrella / short-circuit grants (`ALL_FUNCTIONS`, `CHECKER_SUPER_USER`) that widen access, and shows the PermissionSet's sha256 fingerprint — the value the CapabilityMap resolver keys on for drift detection. A search box filters codes; each grouping shows its held-vs-total count. Held set = union of the user's enabled roles' permissions (from the login-normalised PermissionSet); `GET /v1/permissions` supplies the catalog + grouping metadata. Purely diagnostic. Archetype: detail. |
 
 ## State Model
 
 ### PermissionSetDetailViewModel
 
-- **State**: groupings (List<PermissionGrouping> — codes grouped by Fineract grouping with held-vs-total counts), umbrellas (List<String> — held umbrella / short-circuit grants that widen access), fingerprint (String — the PermissionSet sha256 used for CapabilityMap drift detection), query (String — active code search text), uiState (PermissionSetDetailScreenState)
+- **State**: groupings (`List<PermissionGrouping>` — codes grouped by Fineract grouping with held-vs-total counts), umbrellas (`List<String>` — held umbrella / short-circuit grants that widen access), fingerprint (`String` — the PermissionSet's sha256 used for CapabilityMap drift detection), query (`String` — active code search text), uiState (`PermissionSetDetailScreenState`)
 - **ScreenState**: loading, content, empty, error
-- **Errors**: permission_set_unavailable (empty state — resolved PermissionSet empty / not yet bootstrapped; guidance panel), permissions_catalog_load_failed (retry=true; error state — code catalog failed with no cache, Retry offered)
+- **Errors**: permission_set_unavailable (retry=false; maps to the **empty** state — resolved PermissionSet empty / not yet bootstrapped; guidance panel shown), permissions_catalog_load_failed (retry=true; maps to the **error** state — code catalog failed to load with no cache, Retry offered)
 - **Events**: (none — read-only self-scoped drill-in; system back returns to permission-capability-engine)
-- **Actions**: OnLoad (resolve the local PermissionSet + load the code catalog cache-first, join into groupings), OnSearchCode (search_code → in-VM filter across code + grouping, no refetch), OnExpandGrouping (expand_grouping → in-VM toggle revealing a grouping's held codes), OnCopyFingerprint (copy_fingerprint → copy the sha256 to the clipboard for support/drift diagnosis), OnRetry (retry → reload GET /v1/permissions, re-join with the local set)
+- **Actions**: OnLoad (resolve the local PermissionSet + load the code catalog cache-first, join into groupings), OnSearchCode (`search_code` → in-VM filter across code + grouping, no refetch), OnExpandGrouping (`expand_grouping` → in-VM toggle revealing a grouping's held codes), OnCopyFingerprint (`copy_fingerprint` → copy the sha256 to the clipboard for support/drift diagnosis), OnRetry (`retry` → reload `GET /v1/permissions`, re-join with the local set)
 - **DI**: core/permissions, core/store, core/database, core/network
 
 ## API Endpoints (1)
 
 | Function | Method | Params | Response | Errors | Table |
 |----------|--------|--------|----------|--------|-------|
-| get_permissions_catalog | GET | makerCheckerable(Boolean)? | PermissionDto[] | 401 | cached_permissions |
+| get_permissions_catalog | GET | makerCheckerable(Boolean)? | PermissionDto[] | (none) | permission_catalog_cache |
 
 ## Dependencies (Tier 2)
 
 | Feature | Type | Required | Check |
 |---------|------|----------|-------|
 | permission-capability-engine | uses | true | supplies the login-normalised PermissionSet (held codes + umbrellas + sha256 fingerprint) this detail renders |
-| fineract-auth-session | requires | true | authenticated session required for the GET /v1/permissions code-catalog read |
+| fineract-auth-session | requires | true | authenticated session required for the `GET /v1/permissions` code-catalog read |
 
 ## Navigation
 
 - **Route**: permission-set-detail()
-- **From**: permission-capability-engine (view_permission_set drill-in)
-- **To**: (none — read-only diagnostic; system back only)
+- **From**: permission-capability-engine (`view_permission_set` drill-in)
+- **To**: (none — read-only diagnostic leaf; system back only)
 
 ## Flow Logic (5 decisions)
 
 | Decision | Condition | True Path | False Path | Impl |
 |----------|-----------|-----------|------------|------|
-| Set resolves | the local PermissionSet resolves AND the code catalog loads (cache-first) | content | (see empty/error) | join core/permissions PermissionSet + CACHE_FIRST_SWR catalog |
-| Empty set | the resolved PermissionSet is empty / not bootstrapped | empty (guidance panel) | content | no held codes |
-| Catalog hard-fail | code catalog failed AND no cache exists | error (message + Retry) | content | GET /v1/permissions failure with empty cache |
-| Content interaction | a search filter changes, a grouping expands, or the fingerprint is copied | content (stays; in-VM / clipboard) | — | pure transform_state / copy_clipboard, no refetch |
-| Retry | 'Retry' tapped in error | loading → re-join catalog + set | error | reload GET /v1/permissions |
+| Set resolves | the local PermissionSet resolves AND the code catalog loads (cache-first) | content | (see empty/error rows) | join `local.permission_set` + CACHE_FIRST_SWR `remote.get_permissions_catalog` |
+| Empty set | the resolved PermissionSet is empty / not yet bootstrapped | empty (guidance panel) | content | `local.permission_set` read yields no held codes → error_code `permission_set_unavailable` maps to empty |
+| Catalog hard-fail | the code catalog failed to load and no cache is available | error (message + Retry) | content | `remote.get_permissions_catalog` failure with empty `permission_catalog_cache` → error_code `permissions_catalog_load_failed` |
+| Content interaction | a search filter changes, a grouping expands, or the fingerprint is copied | content (stays; in-VM / clipboard) | — | `search_code`/`expand_grouping` are pure `transform_state` (no refetch); `copy_fingerprint` is `copy_clipboard` (no state transition) |
+| Retry | 'Retry' tapped in error | loading → re-join catalog + set | error (on repeated failure) | `retry` action (`call_api`) reloads `GET /v1/permissions`, re-joins with the local set |
 
-## Testing (7 scenarios)
+## Testing (13 scenarios)
 
 | ID | Scenario | Priority |
 |----|----------|----------|
-| loading_shows_grouped_shimmer | The loading state shows a grouped-list shimmer with no error | medium |
-| content_shows_grouped_codes_and_fingerprint | Held codes grouped by Fineract grouping with held-vs-total counts; umbrella grants highlighted; sha256 fingerprint header | high |
-| empty_when_permission_set_unbootstrapped | A guidance panel is shown when the resolved PermissionSet is empty / not bootstrapped | low |
-| error_when_catalog_fails_no_cache | The error state is shown and Retry reloads the catalog | medium |
-| renders_offline_from_local_set | Held set renders from the local PermissionSet offline; groupings label from the cached catalog | high |
-| search_filters_codes_in_vm | Typing a code fragment filters the list in-VM across code + grouping with no refetch | low |
-| copy_fingerprint_to_clipboard | Tapping Copy fingerprint copies the sha256 for support / drift diagnosis | low |
+| loading_shows_grouped_shimmer | The loading state shows a grouped-list shimmer with no codes, groupings, fingerprint, or error visible | medium |
+| content_shows_grouped_codes_with_held_totals | Content renders 3 groupings (portfolio 8/10, transaction_loan 6/9, accounting 4/12) with held/not-held codes and the sha256 fingerprint header | high |
+| empty_when_permission_set_not_bootstrapped | The empty-state guidance panel is shown when the resolved PermissionSet has no held codes | low |
+| error_when_catalog_fails_no_cache | The error state + Retry button is shown when the catalog GET fails with no cache available | medium |
+| expand_grouping_reveals_held_codes | Tapping a grouping expands in-VM to reveal its held/not-held codes without a network refetch | high |
+| search_filters_codes_in_vm | Typing "LOAN" filters codes/groupings in-VM with no network call; clearing restores the full list | medium |
+| search_below_min_length_shows_full_list | A single-character query leaves the full grouped list unfiltered (min_length validation rule) | low |
+| copy_fingerprint_to_clipboard | Tapping Copy fingerprint writes the exact sha256 to the clipboard with a confirmation toast | low |
+| retry_reloads_catalog_after_error | Tapping Retry transitions Error → Loading → Content (or back to Error on repeated failure) by reloading the catalog | high |
+| get_permissions_catalog_cache_first_on_cold_load | A cached catalog serves Content immediately while a background SWR revalidation request runs silently | medium |
+| renders_offline_from_cached_catalog | While offline, Content renders from the cached catalog joined with the local PermissionSet (8/10, 6/9, 4/12) | high |
+| permission_set_unavailable_shows_empty_state | A missing local PermissionSet (`permission_set_unavailable`) resolves to Empty, not Error | medium |
+| acceptance_read_only_self_scoped_complete_set | Every held code is listed grouped by Fineract grouping, umbrellas are flagged, the fingerprint is copyable, and the screen is read-only + self-scoped | high |

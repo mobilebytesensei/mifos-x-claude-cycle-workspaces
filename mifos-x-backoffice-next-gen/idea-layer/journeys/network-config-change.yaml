@@ -1,0 +1,96 @@
+id: network-config-change
+version: 1.0.0
+name: Network Config Change — Switch Instance and Re-Authenticate
+description: >-
+  An authenticated user — typically a field officer switching from the demo instance to their own
+  MFI's Fineract server, or an admin pointing the app at a new tenant — opens the network-config
+  screen from the loan-area quick tile or the Settings row, edits (or scans) the base-URL, tenant,
+  username and password, validates the connection, saves, and the app forces a fresh authentication
+  against the new instance so the NavShell re-assembles with the correct role's permission set.
+
+persona:
+  archetype: returning power user
+  jtbd: switch the back-office app to point at my organisation's own Fineract instance (or back to demo) without losing any locally-queued data
+  context: on-boarding from demo to production, or re-pointing after a server migration or multi-tenant pilot
+  knowledge_level: familiar
+  emotional_state: goal-oriented — wants a clean cutover, not a confusing partial state
+
+goal: >-
+  Go from the current authenticated session through a server/tenant change to a fresh
+  authenticated session on the new Fineract instance, with the NavShell re-assembled from
+  the new role's permission set.
+
+success_metric:
+  name: network_config_change_completion
+  kind: task_completion
+  target: ">=90% of config-change attempts result in a successful re-authentication and NavShell re-assembly"
+  measurement: "funnel: network_config_opened -> config_saved -> re_auth_success -> nav_shell_reassembled"
+
+screen_sequence:
+  - screen_id: m04-loan-portfolio
+    feature_id: m04-loan-portfolio
+    state: content
+    user_intent: tap the 'Network settings' quick tile in the loan area to change the connected Fineract instance
+    success_signal: the network-config screen opens in idle state with the current base-URL, tenant and username pre-filled
+  - screen_id: network-config
+    feature_id: network-config
+    state: idle
+    user_intent: review the current server configuration before making changes
+    success_signal: the network-config surface renders with the active config loaded from the encrypted store
+  - screen_id: network-config
+    feature_id: network-config
+    state: editing
+    user_intent: edit the base-URL, tenant ID (Fineract-Platform-TenantId), username and/or password — or scan a QR code that the organisation distributes to field staff
+    success_signal: inline validation passes; the Save button is enabled; 'Connection verified' chip appears after validate_connection
+  - screen_id: network-config
+    feature_id: network-config
+    state: validating
+    user_intent: tap Validate to confirm the new base-URL and tenant are reachable before committing the change
+    success_signal: connection check succeeds; validated state shown; Save enabled
+  - screen_id: network-config
+    feature_id: network-config
+    state: saving
+    user_intent: confirm the change — persist the new config to core/network + core/datastore; swap the DynamicBaseUrlPlugin base-URL and Fineract-Platform-TenantId header; trigger a forced re-authentication
+    success_signal: save succeeds; the session is cleared and a fresh POST /authentication is dispatched against the new instance
+  - screen_id: fineract-auth-session
+    feature_id: fineract-auth-session
+    state: authenticating
+    user_intent: sign in against the new Fineract instance with the credentials supplied in the config change
+    success_signal: POST /authentication succeeds on the new base-URL; {roles, permissions[], officeId, staffId} returned
+  - screen_id: nav-shell-assembler
+    feature_id: nav-shell-assembler
+    state: assembled
+    user_intent: see the NavShell re-assembled from the permission set resolved on the new instance (the role may differ between instances)
+    success_signal: PermissionStateHolder re-emits; NavRoster rebuilt in-place with no app restart; the new instance's module roster is the active nav
+
+expected_outcome: >-
+  The app is now authenticated against the new Fineract instance; the DynamicBaseUrlPlugin is
+  pointed at the new base-URL and tenant header; the NavShell is re-assembled from the new
+  permission set; and the user lands on the role-appropriate dashboard for the chosen instance.
+
+flows:
+  - feature_id: network-config
+    flow_id: network-config-change
+    role: primary
+  - feature_id: fineract-auth-session
+    flow_id: network-config-change
+    role: supporting
+  - feature_id: nav-shell-assembler
+    flow_id: network-config-change
+    role: supporting
+
+capabilities_used: ["has_ui", "has_flow", "has_api"]
+tier: medium
+preconditions:
+  - "an authenticated session exists (network-config change is a mid-session action)"
+  - "the new Fineract instance is reachable for the validate + save steps"
+failure_modes:
+  - cause: "validate fails — new base-URL unreachable or wrong tenant"
+    recovery_screen: network-config
+    notes: "error state with Retry; user corrects the URL/tenant; previous config is still active (not overwritten until save)"
+  - cause: "save completes but re-authentication fails (wrong credentials on new instance)"
+    recovery_screen: fineract-auth-session
+    notes: "error state on re-auth; new network config is persisted; user corrects credentials and retries sign-in"
+  - cause: "QR decode fails during scan"
+    recovery_screen: network-config
+    notes: "snackbar shown; scanning state cancelled; returns to idle/editing so user can enter manually"

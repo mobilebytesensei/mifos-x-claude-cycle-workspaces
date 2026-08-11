@@ -1,0 +1,140 @@
+schema_version: "1.0"
+feature_id: feat-crypto
+screen_id: coinMarkets
+generated_by: "/idea-import (reverse-engineered from feature/crypto commonTest)"
+# Derived from the shipped tests:
+#   CoinMarketsScreenUiTest (Compose UI test) + FakeCryptoRepository (empty-fetcher fake).
+# Only ONE UI test ships today (asserts the always-visible Scaffold root). The
+# additional state/interaction/api rows below are reverse-engineered from the
+# framework paging contract (PagingScreenContent) + source behaviour, marked
+# source: shipped vs source: contract so downstream generation stays honest.
+
+state_coverage:
+  - state: empty
+    screen: coinMarkets
+    source: shipped
+    name: "empty fetcher ends in ScreenState.Empty; Scaffold root stays displayed"
+    setup: "CoinMarketsViewModel(FakeCryptoRepository) — in-memory Store with Fetcher.of { emptyList() }, AlwaysOnlineNetworkMonitor, NoOpFetchedAtRepository; wrapped in KptTheme"
+    assertions:
+      - "onNodeWithTag('coinMarkets.screen').assertIsDisplayed()  # CoinMarketsScreenUiTest.screenScaffoldIsDisplayed"
+      - "coinMarkets.list / coinMarkets.row are ABSENT — LazyColumn only renders in ScreenState.Content, and the empty fetcher resolves to Empty"
+  - state: loading
+    screen: coinMarkets
+    source: contract
+    name: "first page in flight renders the framework Loading slot"
+    setup: "fresh pagingStream before the first CoinGecko page resolves (cold Room cache)"
+    assertions:
+      - "PagingScreenContent shows its Loading slot"
+      - "coinMarkets.screen (Scaffold root) is displayed throughout"
+  - state: content
+    screen: coinMarkets
+    source: contract
+    name: "resolved page renders CoinMarketRow items keyed by coin.id"
+    setup: "fetcher returns a non-empty List<CoinMarketDto>; Store writes coin_markets rows"
+    assertions:
+      - "coinMarkets.list (LazyColumn) is displayed"
+      - "each row shows symbol.uppercase() + name + formatPrice(currentPrice) + formatChange(priceChangePercent24h)"
+      - "24h change is colorScheme.primary when >= 0, colorScheme.error when < 0"
+  - state: error
+    screen: coinMarkets
+    source: contract
+    name: "first-page failure with cold cache renders framework Error slot + retry"
+    setup: "NetworkMonitor.executeWithRetry fails (offline / HTTP 429) and coin_markets is empty"
+    assertions:
+      - "PagingScreenContent shows its Error slot with a retry affordance (label 'Retry')"
+      - "warm cache instead renders prior pages as stale Content"
+
+interactions:
+  - screen: coinMarkets
+    component: "coin row (CoinMarketRow)"
+    trigger: tap
+    source: contract
+    status: planned
+    name: "tapping a coin row is INTENDED to open its detail"
+    expected: "nav: coinDetail (params.coinId) — NOT wired at HEAD (onCoinClick no-op)"
+    assertions:
+      - "onCoinClick(coin.id) fires; today CryptoNavigation swallows it (intentional-noop)"
+  - screen: coinMarkets
+    component: "back button"
+    trigger: tap
+    source: shipped
+    name: "back pops the stack"
+    expected: "navigate_back (popBackStackSafely)"
+    assertions: ["returns to the caller"]
+  - screen: coinMarkets
+    component: "list tail (load-more)"
+    trigger: scroll_to_end
+    source: contract
+    name: "scrolling near the tail loads the next page"
+    expected: "PagingScreenStream requests page N+1 (per_page 20)"
+    assertions:
+      - "footer shows 'Loading more…' while page N+1 is in flight"
+      - "footer shows 'You're all caught up' when a page returns < 20 rows (end-of-list)"
+  - screen: coinMarkets
+    component: "pull-to-refresh / initial retry"
+    trigger: refresh
+    source: shipped
+    name: "retry resets the paging cursor to page 0"
+    expected: "CoinMarketsViewModel.retry() → pagingStream.refresh()"
+    assertions:
+      - "cursor resets to page 0; CoinGecko re-fetched; Room pages rewritten"
+
+api_integration:
+  - operation: coingecko-coins-markets
+    source: contract
+    name: "successful fetch caches to Room and renders Content"
+    setup: "CoinGeckoApi.getMarkets(page=1, perPage=20) returns coins; Store writes CoinMarketEntity rows tagged page=0"
+    assertions:
+      - "CoinMarketDto.toDomain maps snake_case wire fields; null price_change_percentage_24h → 0.0; null high/low_24h → currentPrice"
+      - "getPage(limit=20, offset=0) reader emits the cached page (ordered marketCapRank ASC)"
+      - "stream transitions Loading → Content"
+  - operation: coingecko-coins-markets
+    source: contract
+    name: "cold start with warm cache renders immediately then revalidates"
+    setup: "coin_markets has cached rows; network available; 2-min TTL"
+    assertions:
+      - "SourceOfTruth reader emits cached rows first (stale-while-revalidate)"
+      - "Fetcher refreshes from CoinGecko and upserts fresh rows"
+  - operation: coingecko-coins-markets
+    source: contract
+    name: "offline with cache falls back to stale content"
+    setup: "NetworkMonitor.executeWithRetry fails; Room cache present"
+    assertions:
+      - "cached pages render as (stale) Content; FreshnessSignal reflects Stale/VeryStale"
+
+test_infra:
+  - name: FakeCryptoRepository
+    source: shipped
+    path: "feature/crypto/src/commonTest/kotlin/kpt/feature/crypto/ui/FakeCryptoRepository.kt"
+    note: >-
+      Minimal CryptoRepository for Compose UI tests — coinMarketsStream returns an
+      always-empty paging stream via an in-memory StoreBuilder (Fetcher.of { emptyList() }),
+      AlwaysOnlineNetworkMonitor + NoOpFetchedAtRepository. coinDetailStream stays
+      permanently in ScreenState.Loading (not exercised by the shipped list test).
+
+acceptance_criteria:
+  - ref: "AC-CRYPTO-01"
+    name: "Top coins at a glance"
+    given: "the crypto graph is open"
+    when: "the user views Coin Markets"
+    then: "a scrollable list of top cryptocurrencies by market cap shows each coin's symbol, name, current USD price and 24h change (green up / red down)"
+  - ref: "AC-CRYPTO-02"
+    name: "Infinite-scroll paging"
+    given: "the list is shown"
+    when: "the user scrolls to the bottom"
+    then: "the next 20-coin page loads (footer 'Loading more…'), ending with 'You're all caught up' when no more pages remain"
+  - ref: "AC-CRYPTO-03"
+    name: "Deep-scroll restore"
+    given: "the user has scrolled several pages deep"
+    when: "they switch tabs / rotate / the process is recreated"
+    then: "the scroll position and previously loaded pages are restored (rememberSaveable list state + Room page cache) — store5-screen-state-persistence AC-17"
+  - ref: "AC-CRYPTO-04"
+    name: "Offline-first caching"
+    given: "the app has previously fetched coins and is now offline"
+    when: "the screen loads"
+    then: "cached pages render as stale content with a freshness signal, and refresh re-fetches when back online"
+  - ref: "AC-CRYPTO-05"
+    name: "Graceful empty / error"
+    given: "no coins are returned (or the first page fails with a cold cache)"
+    when: "the screen loads"
+    then: "the framework Empty slot ('No coins to show yet.') or Error slot + retry renders instead of crashing"

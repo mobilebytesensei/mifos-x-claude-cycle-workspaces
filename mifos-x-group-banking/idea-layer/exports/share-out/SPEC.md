@@ -1,5 +1,5 @@
 # Share-Out — Feature Specification
-**Project**: CommonPurse (mifos-x-group-banking)
+**Project**: MifosSave (mifos-x-group-banking)
 **Feature ID**: share-out
 **Requirements**: FR-007
 **Version**: 1.0.0
@@ -42,7 +42,7 @@ Share-out is the end-of-cycle distribution of accumulated savings and profit to 
 | cycleNumber | Int | 0 |
 
 **Actions**: OnConfirm, OnBack, Retry, OnRefresh
-**Events**: NavigateToShareOutExecute(groupId, centerId, totalPool, memberPayouts), NavigateBack, ShowSnackbar
+**Events**: NavigateToShareOutExecute(groupId, totalPool, memberPayouts), NavigateBack, ShowSnackbar
 **DI**: ShareOutRepository, SavingsRepository, NetworkMonitor, SessionManager
 
 ### ShareOutExecuteViewModel
@@ -71,10 +71,10 @@ Share-out is the end-of-cycle distribution of accumulated savings and profit to 
 
 | From | Action | To | Params |
 |------|--------|----|--------|
-| group-dashboard | Tap Share-Out (isCycleEnd=true) | share-out-preview | groupId, centerId |
-| share-out-preview | Tap Confirm & Proceed | share-out-execute | groupId, centerId, cycleNumber, totalPool, memberPayouts |
+| group-dashboard | Tap Share-Out (isCycleEnd=true) | share-out-preview | groupId |
+| share-out-preview | Tap Confirm & Proceed | share-out-execute | groupId, cycleNumber, totalPool, memberPayouts |
 | share-out-execute | Tap Done (success or queued) | group-dashboard | groupId |
-| share-out-execute | Tap back (before execution) | share-out-preview | groupId, centerId |
+| share-out-execute | Tap back (before execution) | share-out-preview | groupId |
 
 ---
 
@@ -82,9 +82,9 @@ Share-out is the end-of-cycle distribution of accumulated savings and profit to 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | /centers/{centerId}/accounts | Get all savings+loan accounts for corpus+profit computation |
-| GET | /datatables/dt_share_out/{centerId} | Check if share-out record already exists for cycle |
-| POST | /datatables/dt_share_out/{centerId} | Create share-out record in datatable |
+| GET | /groups/{groupId}/accounts | Get all savings+loan accounts for corpus+profit computation |
+| GET | /datatables/dt_share_out/{groupId} | Check if share-out record already exists for cycle |
+| POST | /datatables/dt_share_out/{groupId} | Create share-out record in datatable |
 | POST | /savingsaccounts/{savingsAccountId}/transactions | Post withdrawal per member (payout) |
 
 ---

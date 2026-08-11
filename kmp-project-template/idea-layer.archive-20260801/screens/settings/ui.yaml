@@ -1,0 +1,401 @@
+schema_version: "1.0"
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/settings — App Settings (reverse-engineered from source, read-only).
+# App appearance + language preferences, persisted LOCALLY via multiplatform-settings
+# (com.russhwolf.settings) — NOT Store5, NOT Room, NOT network.
+#
+# The persistence seam is a serialized UserData blob held in TWO Settings backends
+# (plain key "user_data_key" for UI prefs, secure key "secure_data_key" for auth) —
+# see core/datastore/UserPreferencesRepositoryImpl.kt. This feature only ever writes
+# the four UI-preference fields: themeBrand, darkThemeConfig, useDynamicColor, appLanguage.
+#
+# One feature, four surfaces (declared in screens[]):
+#   settings      → SettingsScreen        (pure-ui list host; no ViewModel)
+#   theme-dialog  → SettingsDialog         (preferences panel; SettingsViewmodel)
+#   language-dialog → LanguageDialog       (language picker; SettingsViewmodel)
+#   notification  → NotificationScreen      (pure-ui static empty state)
+#
+# GROUNDED: only rows / actions / fields that exist in source are represented.
+# ─────────────────────────────────────────────────────────────────────────────
+screen_id: settings                 # primary entry surface of the feature
+feature: feat-settings
+archetype: preferences-backed
+platforms: [android, ios, desktop, web]
+states: [content]                   # host list is always content; async lives in the dialogs
+initial_state: content              # SettingsScreen host renders content immediately (no async at the list level)
+
+business_logic:
+  kind: preferences
+  processing_kind: reactive_local
+  library_refs: [multiplatform-settings]
+  external_library_refs: ["com.russhwolf.settings"]
+  description: >-
+    App settings surface for appearance + language. The host SettingsScreen is a
+    pure-UI list of tappable cards (Change Theme, Change Language) plus a version
+    footer; it holds only transient dialog-visibility flags in rememberSaveable and
+    has NO ViewModel. The two dialogs it opens (SettingsDialog, LanguageDialog) share
+    a single SettingsViewmodel that reads a reactive UserData StateFlow off
+    UserDataRepository.userData (mapped to UserEditableSettings) and writes each
+    preference change through the repository setters. Persistence is the
+    multiplatform-settings serialized UserData blob (plain store "user_data_key"),
+    NOT a Store5 cache or Room table. Theme-brand + dynamic-color rows are Android-only
+    (getPlatform() == Android + supportsDynamicTheming()); dark-mode + language apply
+    on every platform. NotificationScreen is a static empty-state placeholder with no
+    data source.
+  processing_location: on_device
+  library_note: >-
+    Persistence via com.russhwolf.settings Settings.encodeValue/decodeValueOrNull of
+    UserData.serializer(). Reads: UserDataRepository.userData (StateFlow<UserData>).
+    Writes: setThemeBrand / setDarkThemeConfig / setDynamicColorPreference / setLanguage.
+
+# The local preference store backing every read/write in this feature.
+data_source:
+  kind: local_preferences
+  store: multiplatform-settings           # com.russhwolf.settings.Settings (plain + secure)
+  store_archetype: PREFERENCES
+  repository: UserDataRepository           # core/data/user/ (impl → core/datastore UserPreferencesRepositoryImpl)
+  model: UserData                          # core/model/user/UserData.kt (@Serializable blob)
+  editable_projection: UserEditableSettings
+  remote: none
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SCREENS
+# ═════════════════════════════════════════════════════════════════════════════
+screens:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 1) SettingsScreen — the settings list host (pure-ui, no ViewModel)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: settings
+    composable: SettingsScreen
+    viewmodel: none                       # dialog-visibility flags only, in rememberSaveable
+    route: SettingsRoute                  # @Serializable data object, no params
+    archetype: pure-ui
+    states: [content]
+
+    shell:
+      bottom_nav: { enabled: false }
+      top_app_bar:
+        enabled: true
+        title: "Settings"                 # feature_settings_settings_screen_title (KptScaffold title)
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"            # feature_settings_back_cd
+            on_click:
+              action: navigate_back
+              action_contract:
+                effect: navigate
+                description: "onBackClick → popBackStackSafely(); returns to the authenticated navbar host that launched Settings."
+
+    state_model:
+      viewmodel_base: "none — @Composable SettingsScreen holds local UI state only"
+      local_state:
+        - { name: showSettingsDialog, type: Boolean, default: false, holder: rememberSaveable, note: "Theme card tap opens SettingsDialog." }
+        - { name: showLanguageDialog, type: Boolean, default: false, holder: rememberSaveable, note: "Language card tap opens LanguageDialog." }
+        - { name: showDevMenu, type: Boolean, default: false, holder: rememberSaveable, note: "Version-footer long-press opens DevMenuDialog (debug builds only)." }
+      states:
+        content:
+          when: "always — no async, no fallible source"
+          render: "KptScaffold + Column(ThemeCard, LanguageCard, VersionLabel footer)"
+
+    state_components:
+      content:
+        - type: stack
+          direction: column
+          padding: "{spacing.lg}"
+          gap: "{spacing.md}"
+          children:
+
+            # ── Change Theme row → opens SettingsDialog ──
+            - type: card
+              variant: app_card
+              id: theme_card
+              accent: "{colorScheme.tertiary}"
+              leading_icon: sun
+              trailing_icon: arrow_right
+              title: "Change Theme"                    # feature_settings_change_theme_text
+              aria_label: "Change Theme"               # feature_settings_change_theme_placeholder_text
+              on_click:
+                action: open_theme_dialog
+                action_contract:
+                  effect: transform_state
+                  writes_to:
+                    - { state_field: "SettingsScreen.showSettingsDialog" }
+                  description: "logSettingsDialogVisible(true) then showSettingsDialog = true → renders SettingsDialog (theme preferences panel). Local UI flag only — no persistence."
+
+            # ── Change Language row → opens LanguageDialog ──
+            - type: card
+              variant: app_card
+              id: language_card
+              accent: "{colorScheme.primary}"
+              leading_icon: language
+              trailing_icon: arrow_right
+              title: "Change Language"                 # feature_settings_change_language_text
+              aria_label: "Change Language"            # feature_settings_change_language_placeholder_text
+              on_click:
+                action: open_language_dialog
+                action_contract:
+                  effect: transform_state
+                  writes_to:
+                    - { state_field: "SettingsScreen.showLanguageDialog" }
+                  description: "logLanguageDialogVisible(true) then showLanguageDialog = true → renders LanguageDialog. Local UI flag only."
+
+            # ── Version footer (static app-name label); long-press → dev menu (debug only) ──
+            - type: text
+              id: version_label
+              variant: label_medium
+              content: "Money Toolkit"                 # feature_settings_app_name (TODO: BuildKonfig version string)
+              align: center
+              on_long_press:
+                action: open_dev_menu
+                visible_when: "onTransitionGalleryClick != null || onStateGalleryClick != null"   # non-release builds
+                action_contract:
+                  effect: transform_state
+                  writes_to:
+                    - { state_field: "SettingsScreen.showDevMenu" }
+                  description: "combinedClickable onLongClick → showDevMenu = true → DevMenuDialog. Wired null in release builds (label is a plain footer)."
+
+    # DevMenuDialog — debug-only overlay listing the showcase galleries.
+    dialogs:
+      - id: dev_menu_dialog
+        composable: DevMenuDialog
+        visible_when: "showDevMenu"
+        title: "Dev tools"                              # feature_settings_dev_tools_title
+        rows:
+          - id: transition_gallery_entry
+            label: "Transition Gallery"                 # feature_settings_dev_transition_gallery
+            visible_when: "onTransitionGalleryClick != null"
+            on_click:
+              action: navigate_transition_gallery
+              action_contract:
+                effect: navigate
+                description: "onDismiss() then onTransitionGalleryClick() → navigate(TransitionGalleryRoute) in feature/showcase. Non-release only."
+          - id: state_gallery_entry
+            label: "State Gallery"                      # feature_settings_dev_state_gallery
+            visible_when: "onStateGalleryClick != null"
+            on_click:
+              action: navigate_state_gallery
+              action_contract:
+                effect: navigate
+                description: "onDismiss() then onStateGalleryClick() → navigate(StateGalleryRoute) in feature/showcase. Non-release only."
+          - id: dev_menu_close
+            label: "Close"                              # feature_settings_dev_close
+            on_click:
+              action: dismiss_dev_menu
+              action_contract:
+                effect: transform_state
+                description: "onDismiss → showDevMenu = false."
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 2) SettingsDialog — theme / appearance preferences panel (preferences-backed)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: theme-dialog
+    composable: SettingsDialog
+    viewmodel: SettingsViewmodel
+    surface: alert_dialog
+    archetype: preferences-backed
+    states: [loading, content]
+    title: "Settings"                                   # feature_settings_title
+
+    state_model:
+      viewmodel_base: "SettingsViewmodel(settingsRepository: UserDataRepository, analyticsHelper: AnalyticsHelper)"
+      stream:
+        name: settingsUiState
+        type: "StateFlow<SettingsUiState>"
+        source: "settingsRepository.userData.map { UserEditableSettings(brand, useDynamicColor, darkThemeConfig, language) }"
+        started: "SharingStarted.WhileSubscribed(5_000)"
+        initial: SettingsUiState.Loading
+      state_shape:
+        name: SettingsUiState
+        variants:
+          - { variant: Loading, note: "userData StateFlow has not yet emitted" }
+          - { variant: "Success(settings: UserEditableSettings)", note: "current persisted prefs" }
+      editable_settings:
+        name: UserEditableSettings
+        fields:
+          - { name: brand, type: ThemeBrand, values: [DEFAULT, ANDROID], note: "Android-only chooser" }
+          - { name: useDynamicColor, type: Boolean, note: "Android + DEFAULT brand + supportsDynamicTheming() only" }
+          - { name: darkThemeConfig, type: DarkThemeConfig, values: [FOLLOW_SYSTEM, LIGHT, DARK] }
+          - { name: language, type: LanguageConfig, note: "shown/edited via LanguageDialog, not this panel" }
+      states:
+        loading:
+          when: "settingsUiState == SettingsUiState.Loading"
+          render: "'Loading…' text (feature_settings_loading)"
+        content:
+          when: "settingsUiState is SettingsUiState.Success"
+          render: "SettingsPanel: theme-brand group (Android) + dynamic-color group (Android/DEFAULT) + dark-mode group"
+
+    state_components:
+      loading:
+        - { type: text, id: settings_loading_text, content: "Loading…" }     # feature_settings_loading
+      content:
+        # ── Theme brand chooser (Android only) ──
+        - type: radio_group
+          id: theme_brand_group
+          section_title: "Theme"                        # feature_settings_theme
+          visible_when: "getPlatform() == Platform.Android"
+          binds_to: "settings.brand"
+          options:
+            - { id: brand_default, label: "Default", value: "ThemeBrand.DEFAULT" }   # feature_settings_brand_default
+            - { id: brand_android, label: "Android", value: "ThemeBrand.ANDROID" }   # feature_settings_brand_android
+          on_change:
+            action: update_theme_brand
+            action_contract:
+              effect: write
+              writes_to:
+                - { store: multiplatform-settings, key: "user_data_key", field: "themeBrand" }
+              description: "onChangeThemeBrand(brand) → viewModel.updateThemeBrand → logThemeBrandChanged + repository.setThemeBrand(brand) → UserData.copy(themeBrand=…) encoded into the plain Settings blob; userData StateFlow re-emits."
+
+        # ── Dynamic color chooser (Android + DEFAULT brand + supportsDynamicTheming) ──
+        - type: radio_group
+          id: dynamic_color_group
+          section_title: "Use Dynamic Color"           # feature_settings_dynamic_color_preference
+          visible_when: "settings.brand == ThemeBrand.DEFAULT && supportDynamicColor"
+          binds_to: "settings.useDynamicColor"
+          options:
+            - { id: dynamic_yes, label: "Yes", value: "true" }   # feature_settings_dynamic_color_yes
+            - { id: dynamic_no,  label: "No",  value: "false" }  # feature_settings_dynamic_color_no
+          on_change:
+            action: update_dynamic_color
+            action_contract:
+              effect: write
+              writes_to:
+                - { store: multiplatform-settings, key: "user_data_key", field: "useDynamicColor" }
+              description: "onChangeDynamicColorPreference(useDynamicColor) → viewModel.updateDynamicColorPreference → logDynamicColorPreferences + repository.setDynamicColorPreference(bool) → UserData.copy(useDynamicColor=…)."
+
+        # ── Dark-mode chooser (all platforms) ──
+        - type: radio_group
+          id: dark_mode_group
+          section_title: "Dark mode preference"        # feature_settings_dark_mode_preference
+          binds_to: "settings.darkThemeConfig"
+          options:
+            - { id: dark_system, label: "System default", value: "DarkThemeConfig.FOLLOW_SYSTEM" }  # feature_settings_dark_mode_config_system_default
+            - { id: dark_light,  label: "Light",          value: "DarkThemeConfig.LIGHT" }          # feature_settings_dark_mode_config_light
+            - { id: dark_dark,   label: "Dark",           value: "DarkThemeConfig.DARK" }           # feature_settings_dark_mode_config_dark
+          on_change:
+            action: update_dark_theme
+            action_contract:
+              effect: write
+              writes_to:
+                - { store: multiplatform-settings, key: "user_data_key", field: "darkThemeConfig" }
+              description: "onChangeDarkThemeConfig(config) → viewModel.updateDarkThemeConfig → logThemeChanged + repository.setDarkThemeConfig(config) → UserData.copy(darkThemeConfig=…)."
+
+        # ── Dismiss ──
+        - type: button
+          id: settings_dialog_ok
+          label: "OK"                                   # feature_settings_dismiss_dialog_button_text
+          on_click:
+            action: dismiss_settings_dialog
+            action_contract:
+              effect: transform_state
+              description: "onDismiss → logSettingsDialogVisible(false) + showSettingsDialog = false. Changes already persisted on each selection — no explicit save."
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 3) LanguageDialog — app-language picker (preferences-backed)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: language-dialog
+    composable: LanguageDialog
+    viewmodel: SettingsViewmodel
+    surface: alert_dialog
+    archetype: preferences-backed
+    states: [loading, content]
+    title: "Language"                                   # feature_settings_language_preference
+
+    state_model:
+      viewmodel_base: "SettingsViewmodel (shared with SettingsDialog)"
+      stream: { name: settingsUiState, type: "StateFlow<SettingsUiState>", initial: SettingsUiState.Loading }
+      states:
+        loading: { when: "SettingsUiState.Loading", render: "'Loading…' text" }
+        content: { when: "SettingsUiState.Success", render: "LanguagePanel — radio list of LanguageConfig.entries" }
+
+    state_components:
+      loading:
+        - { type: text, id: language_loading_text, content: "Loading…" }     # feature_settings_loading
+      content:
+        - type: radio_group
+          id: language_group
+          binds_to: "settings.language"
+          options_source: "LanguageConfig.entries (41 rows: System Default + 40 locales; label = LanguageConfig.text)"
+          on_change:
+            action: update_language
+            action_contract:
+              effect: write
+              writes_to:
+                - { store: multiplatform-settings, key: "user_data_key", field: "appLanguage" }
+              description: "onChangeLanguage(language) → viewModel.updateLanguage → logLanguageChanged + repository.setLanguage(language) → UserData.copy(appLanguage=…); userData StateFlow re-emits and the app relocalizes."
+        - type: button
+          id: language_dialog_ok
+          label: "OK"                                   # feature_settings_dismiss_dialog_button_text
+          on_click:
+            action: dismiss_language_dialog
+            action_contract:
+              effect: transform_state
+              description: "onDismiss → logLanguageDialogVisible(false) + showLanguageDialog = false."
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 4) NotificationScreen — static notifications empty-state placeholder (pure-ui)
+  # ───────────────────────────────────────────────────────────────────────────
+  - screen_id: notification
+    composable: NotificationScreen
+    viewmodel: none
+    route: NotificationRoute                            # @Serializable data object, no params
+    archetype: pure-ui
+    states: [empty]
+
+    shell:
+      bottom_nav: { enabled: false }
+      top_app_bar:
+        enabled: true
+        title: "Notification"                           # feature_settings_notification_title (KptScaffold title)
+        leading:
+          - type: icon_button
+            icon: arrow_back
+            aria_label: "Back"                          # feature_settings_back_cd
+            on_click:
+              action: navigate_back
+              action_contract:
+                effect: navigate
+                description: "onBackClick → popBackStackSafely()."
+
+    state_model:
+      viewmodel_base: "none — static content"
+      states:
+        empty:
+          when: "always — no data source wired yet"
+          render: "centered HeroCard: OutlinedNotifications icon + title + message"
+
+    state_components:
+      empty:
+        - type: card
+          variant: hero_card
+          id: notifications_empty_card
+          children:
+            - { type: icon, icon: outlined_notifications, aria_label: null }
+            - { type: text, variant: title_medium, content: "No notifications yet" }            # feature_settings_notifications_empty_title
+            - { type: text, variant: body_medium,  content: "You'll see bill reminders and rate alerts here." }  # feature_settings_notifications_empty_message
+
+# ─────────────────────────────────────────────────
+# Test tags present in source (feature/settings/.../TestTags.kt)
+# ─────────────────────────────────────────────────
+test_tags:
+  - { id: "settings_screen", note: "TestTags.Settings.SCREEN — SettingsScreen root scaffold, always rendered regardless of dialog state." }
+  - { id: "notification_screen", note: "TestTags.Notification.SCREEN — NotificationScreen root scaffold." }
+
+# ─────────────────────────────────────────────────
+# Source provenance (reverse-engineered, read-only)
+# ─────────────────────────────────────────────────
+source_refs:
+  screen: "feature/settings/src/commonMain/kotlin/kpt/feature/settings/SettingsScreen.kt"
+  theme_dialog: "feature/settings/src/commonMain/kotlin/kpt/feature/settings/SettingsDialog.kt"
+  language_dialog: "feature/settings/src/commonMain/kotlin/kpt/feature/settings/LanguageDialog.kt"
+  notification_screen: "feature/settings/src/commonMain/kotlin/kpt/feature/settings/NotificationScreen.kt"
+  viewmodel: "feature/settings/src/commonMain/kotlin/kpt/feature/settings/SettingsViewmodel.kt"
+  navigation: "feature/settings/src/commonMain/kotlin/kpt/feature/settings/SettingsRoute.kt (SettingsRoute, NotificationRoute, settingsDestination, notificationDestination)"
+  di: "feature/settings/src/commonMain/kotlin/kpt/feature/settings/SettingsModule.kt (viewModelOf(::SettingsViewmodel))"
+  test_tags: "feature/settings/src/commonMain/kotlin/kpt/feature/settings/TestTags.kt"
+  repository: "core/data/user/UserDataRepository.kt (impl core/data/user/impl/UserDataRepositoryImpl.kt)"
+  persistence: "core/datastore/UserPreferencesRepositoryImpl.kt (com.russhwolf.settings; keys user_data_key + secure_data_key)"
+  model: "core/model/user/{UserData,ThemeBrand,DarkThemeConfig,LanguageConfig}.kt"
+  nav_entry: "cmp-navigation/.../authenticated/AuthenticatedNavigation.kt (settingsDestination) + authenticatednavbar/AuthenticatedNavbarNavigation.kt (navigateToSettingsScreen)"
+  design_system: ["core-base/designsystem AppCard + HeroCard", "core/ui KptScaffold", "core/designsystem AppIcons + spacing + KptTheme"]

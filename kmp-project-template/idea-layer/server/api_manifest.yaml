@@ -1,0 +1,285 @@
+schema_version: "1.0"
+manifest: api_manifest
+project: kmp-project-template
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API MANIFEST — external upstream API integrations, grouped by feature.
+#
+# This app owns NO backend of its own. PROJECT_CONFIG.yaml declares
+# `server.backends: []` (also endpoint_groups: [] and endpoints: []) — it is an
+# EXTERNAL-CONSUMER ONLY application. There is no owned REST service, no Supabase
+# project, no auth server. Every network call goes to a PUBLIC third-party API
+# (FRED, Frankfurter, World Bank, CoinGecko), each consumed through a Store5 cache
+# with a Room (or in-memory) source-of-truth. There is NO auth/login API anywhere.
+#
+# This file is a faithful roll-up of the per-feature siblings
+# idea-layer/screens/{feature}/api.yaml + data-flow.yaml — the authoritative SoT.
+# Endpoint paths, query params, and key requirements mirror those files exactly.
+# Regenerated 2026-08-05 (/idea sync --artifacts-only): re-verified against the
+# 15 screens/{feature}/api.yaml — no endpoint/auth/cache changes since last roll-up.
+#
+# Four features OWN an external upstream API:
+#     rates          → FRED               (api_key REQUIRED)
+#     currency-rates → Frankfurter        (keyless)
+#     macro          → World Bank         (keyless)
+#     crypto         → CoinGecko          (keyless)
+# One feature is a COMPOSITE consumer that reuses the shared FRED + Frankfurter
+# stores (home). Five features are LOCAL-Room-only (no external API but a declared
+# operation surface): alerts, bills, loans, watchlist, amortization. Five are
+# PURE-LOCAL with an empty api[] (no operations at all): calculators,
+# emi-calculator, profile, settings, showcase.
+# ─────────────────────────────────────────────────────────────────────────────
+
+owned_backend:
+  present: false
+  reason: >-
+    PROJECT_CONFIG.yaml server.backends is []. External-consumer only — no owned
+    REST/RPC service, no Supabase, no auth server, no login API.
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EXTERNAL API OWNERS — features that own an upstream integration
+# ═════════════════════════════════════════════════════════════════════════════
+external_apis:
+
+  # ── rates (B7 Interest Rate Tracker) → FRED ────────────────────────────────
+  - feature: rates
+    screen_id: rates
+    spec_file: apis/rates.yaml
+    source_name: FRED
+    full_name: "Federal Reserve Economic Data (St. Louis Fed)"
+    base_url: "https://api.stlouisfed.org/"
+    transport: rest
+    client: ktorfit                      # FredApi (core/network/demo/economic/api/FredApi.kt)
+    auth:
+      type: api_key
+      param: api_key                     # query param — REQUIRED; FRED returns HTTP 400 without it
+      required: true
+      secret_alias: mifos_x_fred_api_key # framework vault (Path B); Path A = FRED_API_KEY in local.properties
+      unconfigured_behavior: >-
+        apiKey null/blank → Store5 Fetcher throws IllegalStateException
+        ("FRED_API_KEY is not configured …"); row surfaces ScreenState.Error.
+    rate_limit: "120 calls/min (free tier); Store5 24h TTL keeps usage far below."
+    endpoints:
+      - operation: fred-series-observations
+        method: GET
+        path: "fred/series/observations"
+        query:
+          series_id: "<FRED series id> — DFF | DPRIME | MORTGAGE30US | DGS10 (case-sensitive)"
+          api_key: "FredApiConfig.apiKey (required)"
+          file_type: "json (forced — FRED defaults to XML)"
+          observation_start: "today - key.days (YYYY-MM-DD, days default 365)"
+          observation_end: "today (YYYY-MM-DD, UTC)"
+        response_dto: FredObservationsDto
+        consumed_by:
+          - { screen: rates, series_ids: [DFF, DPRIME, MORTGAGE30US, DGS10], fan_out: 4 }
+          - { screen: rateDetail, series_ids: ["<route seriesId>"], fan_out: 1 }
+    cache:
+      store: InterestRateSeriesStore
+      archetype: NETWORK_WITH_CACHE        # stale_while_revalidate
+      ttl: "24h"
+      room_table: interest_rate_series     # PK [seriesId, date]
+      source_of_truth: InterestRateSeriesDao
+      key_template: "economic:rates:{seriesId}:{days}d"
+
+  # ── currency-rates (B6) → Frankfurter ──────────────────────────────────────
+  - feature: currency-rates
+    screen_id: currency-rates
+    spec_file: apis/currency-rates.yaml
+    source_name: Frankfurter
+    full_name: "Frankfurter — open-source exchange-rates API (ECB reference rates)"
+    base_url: "https://api.frankfurter.dev/"   # canonical host; api.frankfurter.app is broken (301 → /v1/v1/)
+    transport: rest
+    client: ktorfit                      # FrankfurterApi
+    auth:
+      type: none
+      required: false
+      note: "Fully open — no api key, no token, no user auth. Only baseUrl is configurable."
+    rate_limit: "Unpublished soft limit; Store5 TTL keeps call volume low via cache reuse."
+    endpoints:
+      - operation: latest-rates
+        method: GET
+        path: "v1/latest"
+        query:
+          from: "<base currency code> — list VM hard-codes USD"
+        response_dto: ExchangeRatesDto
+        consumed_by:
+          - { screen: currency-rates-list, base: USD, via: ExchangeRatesStore, fetch_policy: NETWORK_WITH_CACHE }
+          - { screen: currency-spot-converter, base: USD, via: SpotRateLookupStore, fetch_policy: "NETWORK_ONLY (online) | CACHE_ONLY (offline)" }
+      - operation: historical-rates
+        method: GET
+        path: "v1/{startDate}..{endDate}"    # date-range path segment
+        path_params:
+          startDate: "today - key.days (YYYY-MM-DD, UTC)"
+          endDate: "today (YYYY-MM-DD, UTC)"
+        query:
+          from: "<base currency code> — USD"
+          to: "<target currency code> — INR | EUR | GBP | JPY | AUD"
+        response_dto: RateHistoryDto
+        consumed_by:
+          - { screen: rate-history, from: USD, to: "<currency chip>", days: "7|14|30|90", via: RateHistoryStore, fetch_policy: NETWORK_WITH_CACHE }
+    cache:
+      stores:
+        - { store: ExchangeRatesStore,    archetype: NETWORK_WITH_CACHE, ttl: "AppStoreRegistry.Ttl.EXCHANGE_RATES", room_table: exchange_rates, source_of_truth: ExchangeRatesDao, key_template: "currency:exchangeRates:{base}" }
+        - { store: SpotRateLookupStore,   archetype: "policy-routed (NETWORK_ONLY | CACHE_ONLY)", ttl: "none (no validator)", room_table: exchange_rates, source_of_truth: ExchangeRatesDao, key_template: "currency:spotRate:{base}" }
+        - { store: RateHistoryStore,      archetype: NETWORK_WITH_CACHE, ttl: "AppStoreRegistry.Ttl.RATE_HISTORY", room_table: rate_history, source_of_truth: RateHistoryDao, key_template: "currency:rateHistory:{from}-{to}-{days}d" }
+    sync:
+      syncable: true
+      operation: "CurrencyRepositoryImpl.syncWith(synchronizer)"
+      behavior: "Forced-refresh fans out fresh(base) across [USD, EUR, INR] → v1/latest. Rate history NOT part of syncWith at v1."
+
+  # ── macro (B8 Country Macro Snapshot) → World Bank ─────────────────────────
+  - feature: macro
+    screen_id: macro
+    spec_file: apis/macro.yaml
+    source_name: "World Bank Open Data"
+    full_name: "World Bank Open Data — World Development Indicators API v2"
+    base_url: "https://api.worldbank.org/"
+    transport: rest
+    client: ktorfit                      # WorldBankApi
+    auth:
+      type: none
+      required: false
+      note: "Fully open — NO api key, NO key-missing failure mode (contrast FRED). Only baseUrl configurable."
+    rate_limit: "Generous public quota; MEMORY_ONLY cache + 7-day TTL → ≤ ~1 call/week per (country, indicator)."
+    wire_quirk: >-
+      Every response is a 2-element JSON array [metadata, observations[]] parsed by a
+      custom WorldBankResponseSerializer; non-array root (404/rate-limit) → empty domain (Empty slot).
+    endpoints:
+      - operation: worldbank-country-indicator
+        method: GET
+        path: "v2/country/{countryCode}/indicator/{indicator}"
+        path_params:
+          countryCode: "ISO 3166-1 alpha-2 (e.g. US); alpha-3 also accepted"
+          indicator: "World Bank indicator code from IndicatorKind.worldBankCode"
+        query:
+          format: "json (forced — defaults to XML)"
+          per_page: 50
+          date: "{startYear}:{endYear} (today.year-key.years .. today.year, years default 25)"
+        indicator_codes:
+          - { kind: GDP,            code: "NY.GDP.MKTP.CD", dashboard: true }
+          - { kind: INFLATION_CPI,  code: "FP.CPI.TOTL.ZG", dashboard: true }
+          - { kind: UNEMPLOYMENT,   code: "SL.UEM.TOTL.ZS", dashboard: true }
+          - { kind: GDP_PER_CAPITA, code: "NY.GDP.PCAP.CD", dashboard: false }
+          - { kind: GINI,           code: "SI.POV.GINI",    dashboard: false }
+        response_dto: WorldBankResponseDto
+        consumed_by:
+          - { screen: macro, indicators: [GDP, INFLATION_CPI, UNEMPLOYMENT], fan_out: 3 }
+          - { screen: macroIndicatorDetail, indicators: ["<route indicatorKind>"], fan_out: 1 }
+      - operation: supported-countries-static
+        method: none
+        note: "Country picker reads bundled SupportedCountries.list — NOT an API call."
+    cache:
+      store: MacroIndicatorStore
+      archetype: MEMORY_ONLY               # createMemoryStore(fetcher) — NO Room, NO SourceOfTruth
+      ttl: "7d"
+      room_table: null                     # in-memory only, no on-device table
+      key_template: "economic:macro:{countryCode}:{indicator}:{years}y"
+
+  # ── crypto → CoinGecko ─────────────────────────────────────────────────────
+  - feature: crypto
+    screen_id: coinMarkets
+    spec_file: apis/crypto.yaml
+    source_name: CoinGecko
+    full_name: "CoinGecko Public API v3"
+    base_url: "https://api.coingecko.com/"
+    transport: rest
+    client: ktorfit                      # CoinGeckoApi
+    auth:
+      type: none
+      required: false
+      note: "Free public tier is unauthenticated — no api key."
+    rate_limit: "~5-15 calls/min (shared demo-tier; HTTP 429 on breach). Per-page Store5 caches keep round-trips low."
+    endpoints:
+      - operation: coingecko-coins-markets
+        method: GET
+        path: "api/v3/coins/markets"
+        status: shipped
+        query:
+          vs_currency: "usd"
+          order: "market_cap_desc"
+          per_page: "PageKey.pageSize (20)"
+          page: "PageKey.page + 1 (wire is 1-indexed)"
+        response_dto: "List<CoinMarketDto>"
+        pagination: { kind: offset_page, page_size: 20, wire_page_base: 1 }
+        consumed_by:
+          - { screen: coinMarkets, note: "SHIPS — CoinMarketsScreen" }
+      - operation: coingecko-coin-detail
+        method: GET
+        path: "api/v3/coins/{id}"
+        status: planned                    # DATA-WIRED at HEAD (Store+repo+DTO+DAO+entity); CoinDetailScreen UI NOT shipped
+        ui_pending: true
+        path_params:
+          id: "coin id (e.g. bitcoin) — CoinMarket.id from tapped row"
+        query:
+          localization: false
+          tickers: false
+          community_data: false
+          developer_data: false
+        response_dto: CoinDetailDto
+        consumed_by:
+          - { screen: coinDetail, note: "PLANNED — data-wired, UI pending; CryptoNavigation passes intentional-noop onCoinClick" }
+    cache:
+      stores:
+        - { store: CoinMarketsStore, archetype: NETWORK_WITH_CACHE, paged: true, ttl: "2m (AppStoreRegistry.Ttl.COIN_MARKETS)", room_table: coin_markets, source_of_truth: CoinMarketDao, key_template: "crypto:coinMarkets" }
+        - { store: CoinDetailStore,  archetype: NETWORK_WITH_CACHE, ttl: "5m (AppStoreRegistry.Ttl.COIN_DETAIL)", room_table: coin_detail, source_of_truth: CoinDetailDao, key_template: "crypto:coinDetail:{coinId}", status: planned }
+
+# ═════════════════════════════════════════════════════════════════════════════
+# COMPOSITE CONSUMERS — reuse shared external stores, own no endpoint
+# ═════════════════════════════════════════════════════════════════════════════
+composite_consumers:
+  - feature: home
+    screen_id: home
+    spec_file: apis/home.yaml
+    source: composite
+    note: >-
+      Dashboard aggregating FOUR upstream sources — two LOCAL (loans via LoanRepository,
+      bills via BillReminderRepository) and two REMOTE reused from the shared stores:
+      FRED (2 series DFF+MORTGAGE30US, 30-day window, InterestRateSeriesStore) and
+      Frankfurter (latest?base=USD, EUR/GBP/INR, exchangeRatesStore, FetchPolicy.PERIODIC 5-min).
+      Home owns NO endpoint of its own — it reuses feature/rates (B7) and
+      feature/currency-rates (B6) stores with narrower params.
+    remote_reuses:
+      - { source: FRED,        path: "fred/series/observations", store: InterestRateSeriesStore, series_ids: [DFF, MORTGAGE30US], window_days: 30 }
+      - { source: Frankfurter, path: "latest", store: exchangeRatesStore, base: USD, symbols: [EUR, GBP, INR], fetch_policy: "PERIODIC(300000ms)" }
+
+# ═════════════════════════════════════════════════════════════════════════════
+# LOCAL FEATURES — declared operation surface, but NO external API
+# ═════════════════════════════════════════════════════════════════════════════
+local_features:
+  - feature: alerts
+    external_api: none
+    source: local_room
+    note: "OFFLINE_LOCAL_ONLY. Store5 AlertsStore (createOfflineStore) over Room table `alerts`. Ops: observe-all-alerts, submit-alert, delete-alert. NO remote endpoint."
+  - feature: bills
+    external_api: none
+    source: local_room
+    note: "OFFLINE_LOCAL_ONLY. Store5 BillRemindersStore over Room table `banking_bill_reminders`. Reads/writes + platform notification-scheduling side-effect (schedule/cancel-bill-notification via BillNotificationGateway). NO remote endpoint."
+  - feature: loans
+    external_api: none
+    source: local_room
+    note: "OFFLINE_LOCAL_ONLY. Store5 LoansStore over Room table `banking_loans`. Reads/writes only. NO remote endpoint."
+  - feature: watchlist
+    external_api: none
+    source: local_room
+    note: >-
+      Watch-list membership is LOCAL (raw WatchlistDao on `personal_watchlist`, NO Store5).
+      Live value-resolution CONSUMES feature/crypto's CryptoRepository streams
+      (coinMarketsStream / coinDetailStream, Store5 NETWORK_WITH_CACHE over CoinGecko) —
+      a consumed cross-feature dependency, NOT an owned endpoint.
+    consumed_streams:
+      - { owner_feature: feat-crypto, method: "coinMarketsStream(scope, pageSize)", dto: CoinMarket }
+      - { owner_feature: feat-crypto, method: "coinDetailStream(coinId, scope)", dto: CoinDetail }
+  - feature: amortization
+    external_api: none
+    source: local_room
+    note: "OFFLINE_LOCAL_ONLY + READ-ONLY. Reuses feature/loans observe-loan-by-id (Room `banking_loans`) + one pure local compute (compute-amortization-schedule, no data source). NO remote endpoint."
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PURE-LOCAL FEATURES — api.yaml is intentionally empty (no operations)
+# ═════════════════════════════════════════════════════════════════════════════
+pure_local_features:
+  - { feature: calculators,   external_api: none, note: "Pure on-device math (core/domain/demo/calc). api[] intentionally empty." }
+  - { feature: emi-calculator, external_api: none, note: "Pure local state, no Store. Synchronous calculateEmi. api[] intentionally empty." }
+  - { feature: profile,        external_api: none, note: "Pure-static presentational screen, no ViewModel/state. api[] intentionally empty." }
+  - { feature: settings,       external_api: none, note: "Local preferences via multiplatform-settings. api[] intentionally empty (prefs in data-flow.yaml)." }
+  - { feature: showcase,       external_api: none, note: "Dev-only pure-UI component gallery. api[] intentionally empty." }

@@ -41,7 +41,6 @@
 
 | Function | Method | Params | Response | Errors | Table |
 |----------|--------|--------|----------|--------|-------|
-| get_centers_for_staff | GET | staffId(Long), paged(Boolean), limit(Int), offset(Int) | PagedCentersResponse | 401, 500 | /centers |
 | get_groups_for_staff | GET | staffId(Long), paged(Boolean), limit(Int), offset(Int) | PagedGroupsResponse | 401, 500 | /groups |
 | run_report | GET | R_staffId(Long), output-type(String) | FileResponse | 403, 500 | /runreports/FieldOfficerGroupReport |
 
@@ -51,7 +50,7 @@
 |---------|------|----------|-------|
 | cmp-network-monitor | library | true | offline stale-while-revalidate gating |
 | SQLDelight | external | true | offline cache (TTL 300s) |
-| Fineract REST API | external | true | centers/groups/runreports endpoints |
+| Fineract REST API | external | true | groups/runreports endpoints |
 
 ## Navigation
 

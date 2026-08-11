@@ -1,10 +1,11 @@
 # Features — Money Toolkit (kmp-project-template)
 
-> **SoT note:** Reverse-engineered from shipped source on 2026-07-25 via `/idea import`.
-> 15 features across 4 domains. Status legend: **shipped** (feature + UI in-tree),
-> **partial** (some screens shipped, others data-wired/UI-pending), **ui-pending**
-> (data layer + DI shipped, ViewModels/screens not yet in-tree). The demo showcase is
-> **removed by default** by `customizer.sh` (a fork opts in with `--keep-demo`).
+> **SoT note:** Reverse-engineered fresh from shipped source at HEAD on 2026-08-01 via
+> `/idea import`. 15 feature modules across 4 domains. Status legend: **shipped** (feature
+> + UI in-tree), **partial** (some screens shipped, others data-wired/UI-pending),
+> **ui-pending** (data layer + DI shipped, ViewModels/screens not yet in-tree). The demo
+> showcase is **removed by default** by `customizer.sh` (a fork opts in with `--keep-demo`).
+> `core/auth` was removed — there is deliberately **no auth feature**.
 
 ---
 
@@ -29,9 +30,9 @@
 | F-015 | Price Alerts | feat-alerts | Crypto | P1 | P1 | OFFLINE_LOCAL_ONLY | ⏳ ui-pending ⚠ bug |
 
 **UI-pending / gap items (the P1 drive target):**
-- **F-013 crypto-detail** — `CoinDetail` model, store, repo stream, DTO, DAO, Room table all wired; `CoinDetailScreen` UI NOT shipped; `onCoinClick` is an intentional-noop.
-- **F-014 watchlist** — data layer + DI + `AppDatabase` v5→v6 migration shipped; `WatchlistScreen`/`AddToWatchlistStar` ViewModels+screens NOT in-tree (module is build-only).
-- **F-015 alerts** — data layer (model/entity/dao/repo/store/DI/outbox/tests) shipped; `PriceAlertsListScreen`/`AddOrEditAlertScreen` NOT in-tree (module is build-only).
+- **F-013 crypto-detail** — `CoinDetail` model, store, repo stream, DTO, DAO, Room table all wired; `CoinDetailScreen` UI NOT shipped; `onCoinClick` is an intentional-noop (confirmed in `CryptoNavigation.kt`).
+- **F-014 watchlist** — data layer (`WatchlistEntity`/`WatchlistDao`/`WatchlistRepository`) + DI + `AppDatabase` v5→v6 migration shipped in `core/`; `WatchlistScreen`/`AddToWatchlistStar` ViewModels+screens NOT in-tree (`feature/watchlist/` is build-only).
+- **F-015 alerts** — data layer (model/entity/dao/repo/store/DI/outbox/tests) shipped in `core/`; `PriceAlertsListScreen`/`AddOrEditAlertScreen` NOT in-tree (`feature/alerts/` is build-only).
 - **F-015 alerts persistence bug** — `AlertEntity` cannot represent `PCT_CHANGE` (collapses to `BELOW`) nor a `disabled` flag (read-back hardcodes `true`); a save→reload round-trip silently degrades. A faithful impl must widen the entity.
 - **F-009 bills gap** — `Delete` and `ToggleEnabled` exist as fully-tested ViewModel APIs but are NOT surfaced as row controls in the shipped list UI (only Paid + tap-to-edit are wired).
 
@@ -42,7 +43,7 @@
 ### F-001 · Money Toolkit Home Dashboard (`feat-home`) — ✅ shipped
 - **One-liner:** The main landing tab — a composite dashboard fanning 4 independent reactive sources (local loans, upcoming bills, FRED rates, self-refreshing USD exchange) into one screen, plus an 8-tile Tools grid; every card loads/errors/retries independently.
 - **Screens:** `HomeScreen` (wraps `HomeDashboard`, `HomeViewModel`) — states loading/content/empty/error per card.
-- **Store archetype:** COMPOSITE — 2 local Room Flows (loans, bills) + 2 Store5 NETWORK_WITH_CACHE streams (rates via FRED, exchange via Frankfurter PERIODIC 5-min); `combineScreenStates` fuses the 2 FRED series into one "Today's Rates" card.
+- **Store archetype:** COMPOSITE — 2 local Room Flows (loans, bills) + 2 Store5 NETWORK_WITH_CACHE streams (rates via FRED, exchange via Frankfurter PERIODIC 5-min); `combineScreenStates` fuses the FRED series into one "Today's Rates" card.
 - **Notable:** Needs `FRED_API_KEY` for the rates card only (unset → Error slot, not crash). `HomeScreen` Scaffold shell is framework-owned and survives `customizer --clean`; the `HomeDashboard` demo body is stripped.
 - **Dependencies:** navigates outbound into loans, bills, rates, currency, emi-calculator, calculators (affordability/amortization/comparison/wizard), macro, and Settings.
 

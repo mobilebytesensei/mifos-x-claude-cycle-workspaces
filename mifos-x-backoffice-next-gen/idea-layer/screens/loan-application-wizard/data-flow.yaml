@@ -19,6 +19,21 @@ entries:
       keys: [client_id, product_id, template_json, fetched_at]
       note: "CACHE_FIRST_SWR mirror of GET /v1/loans/template; the wizard field set + validation rules hydrate from here so an application can be drafted offline."
 
+  - trigger: on_interact
+    source: remote.calculate_loan_schedule
+    target_state: content
+    loading_state: content
+    error_state: content
+    on_error:
+      nav_target: null
+      error_code: schedule_calc_failed
+    note: >-
+      Step-3 schedule preview. POST /v1/loans?command=calculateLoanSchedule with the captured terms returns the amortised
+      LoanScheduleDto (per-installment principal/interest/fees + totals, api_id=calculate_loan_schedule) so the officer sees
+      repayments before committing. A transient compute — NOT persisted and NOT enqueued to the outbox (idempotency:none);
+      requires connectivity, so a failed/offline calc degrades the preview step to a retry strip while the captured draft
+      terms remain editable.
+
   - trigger: on_action
     source: local.enqueue_loan_application
     target_state: content
@@ -27,18 +42,26 @@ entries:
     on_error:
       nav_target: null
       error_code: submit_failed
+    mutation: write
     persistence_contract:
+      is_durable: true
+      storage_backend: local_db
       store: room
       table: draft_outbox
-      mutation: write
+      idempotency_key: durable-uuid-v4
+      action: [CREATE_LOAN]
+      entity: LOAN
+      replay: exactly-once-via-batches
+      offline: queued-and-replay
       keys: [idempotency_key, action, entity, payload_json, status, client_id]
       note: >-
         The completed application is enqueued here with a durable idempotency_key, action=CREATE_LOAN,
         entity=LOAN; the offline-sync-engine replays it via POST /v1/batches. A rejected replay routes to
         needs-attention-inbox, never silently dropped.
+        Origination/onboarding field-ops (offline_policy) → offline-queued + replay, exactly-once; maker-checker submit.
 
 cache:
   strategy: cache_first_swr
   note: "The template revalidates in the background per FreshnessBands; the schedule preview is transient (not persisted); the outbox is authoritative for the in-flight application."
 
-# regenerated-provenance: idea-data-flow re-verified 2026-07-26 — entries + persistence_contract consistent with current ui.yaml + api.yaml; mtime re-stamp (isStale enriched-unstick).
+# regenerated-provenance: idea-data-flow re-verified 2026-07-31 — re-derived against current api.yaml; ADDED the on_interact PREVIEW_SCHEDULE entry wiring remote.calculate_loan_schedule → LoanScheduleDto (schedule-preview step previously unrepresented); F1-F5 pass; mtime re-stamp (isStale enriched-unstick); re-stamped after 2026-07-31T21:09 ui.yaml touch to restore freshness vs source.

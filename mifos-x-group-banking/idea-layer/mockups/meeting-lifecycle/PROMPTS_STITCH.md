@@ -1,5 +1,5 @@
 # PROMPTS_STITCH — meeting-lifecycle
-# CommonPurse (mifos-x-group-banking) | Feature FR-003 / FR-019
+# MifosSave (mifos-x-group-banking) | Feature FR-003 / FR-019
 # Generated: 2026-05-06
 # Sections: 6 | Total lines: ≥1,200
 
@@ -8,7 +8,7 @@
 ## SECTION 1 — Design System Context
 
 ### 1.1 Brand Identity
-CommonPurse is a VSLA (Village Savings and Loan Association) group banking app designed for rural East African women's savings groups. The Mwangaza Women's Group (mwangaza = "light" in Swahili) conducts weekly meetings to collect savings, review loans, and track their shared corpus fund. The UI must project trust, growth, and communal ownership. Every color choice is deliberate and culturally resonant.
+MifosSave is a VSLA (Village Savings and Loan Association) group banking app designed for rural East African women's savings groups. The Mwangaza Women's Group (mwangaza = "light" in Swahili) conducts weekly meetings to collect savings, review loans, and track their shared corpus fund. The UI must project trust, growth, and communal ownership. Every color choice is deliberate and culturally resonant.
 
 ### 1.2 Color System — Light Theme
 
@@ -1094,7 +1094,7 @@ Column:
 
 ### 6.2 Compact (0–599dp) — Primary Target
 
-This is the primary design target for CommonPurse. Rural East Africa predominantly uses mid-range Android phones (Samsung A-series, Tecno, Infinix) with 360–412dp width.
+This is the primary design target for MifosSave. Rural East Africa predominantly uses mid-range Android phones (Samsung A-series, Tecno, Infinix) with 360–412dp width.
 
 **MeetingCalendarScreen (compact):**
 - UpcomingMeetingCard: full-width minus 32dp margins

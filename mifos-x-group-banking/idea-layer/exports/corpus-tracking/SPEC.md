@@ -1,5 +1,5 @@
 # SPEC — corpus-tracking
-# CommonPurse (mifos-x-group-banking) | Feature FR-018
+# MifosSave (mifos-x-group-banking) | Feature FR-018
 # Generated: 2026-05-06
 
 ---
@@ -29,7 +29,7 @@ closing_corpus = opening_corpus
 - AC-CT-004: CorpusBand is visible on wizard steps 2–6 of MeetingConductScreen; it shows live corpus: "Corpus: KES X" and "Cash on Hand: KES Y".
 - AC-CT-005: CorpusBand updates in real-time (≤100ms latency) as savings amounts, loan repayments, and loan disbursements are entered in the wizard.
 - AC-CT-006: ApproveLoanApplication in step 5 is blocked if the prospective closing corpus would be < 0; error snackbar shown: "Corpus insufficient for this disbursement — available KES X."
-- AC-CT-007: On meeting submission, corpus is updated via PUT /fineract-provider/api/v1/datatables/dt_group_corpus/{centerId} with the computed closingCorpus as the new corpusBalance.
+- AC-CT-007: On meeting submission, corpus is updated via PUT /fineract-provider/api/v1/datatables/dt_group_corpus/{groupId} with the computed closingCorpus as the new corpusBalance.
 - AC-CT-008: Corpus data is cached offline (SQLDelight); if offline, corpus is shown from cache with last-updated meeting number.
 - AC-CT-009: GroupDashboard corpus card uses network-first strategy (TTL 60s) to ensure real-time accuracy.
 - AC-CT-010: The Start Meeting quick action on GroupDashboard navigates to meeting-calendar even when corpus is insufficient (the block is on loan disbursement, not meeting start).
@@ -53,10 +53,10 @@ closing_corpus = opening_corpus
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | isLoading | Boolean | true | |
-| group | Group? | null | From get_center |
+| group | Group? | null | From get_group |
 | corpus | GroupCorpus? | null | From dt_group_corpus |
 | config | GroupConfig? | null | From dt_group_config |
-| accounts | GroupAccounts? | null | From get_center_accounts |
+| accounts | GroupAccounts? | null | From get_group_accounts |
 | recentActivity | List\<ActivityItem\> | emptyList() | |
 | isCorpusInsufficient | Boolean | false | computed: corpus.currentBalance < config.minimumDisbursementThreshold |
 | isCycleEnd | Boolean | false | computed: group.cycleWeek == group.cycleLengthWeeks |
@@ -95,11 +95,11 @@ closing_corpus = opening_corpus
 
 | ID | Method | Path | Description |
 |----|--------|------|-------------|
-| get_center | GET | /fineract-provider/api/v1/centers/{centerId} | Fetch group center data |
-| get_center_accounts | GET | /fineract-provider/api/v1/centers/{centerId}/accounts | Fetch savings and loan accounts |
-| get_group_corpus | GET | /fineract-provider/api/v1/datatables/dt_group_corpus/{centerId} | Fetch real-time corpus balance |
-| get_group_config | GET | /fineract-provider/api/v1/datatables/dt_group_config/{centerId} | Fetch group config including minimumDisbursementThreshold |
-| put_group_corpus | PUT | /fineract-provider/api/v1/datatables/dt_group_corpus/{centerId} | Update corpus balance after meeting |
+| get_group | GET | /fineract-provider/api/v1/groups/{groupId} | Fetch group data |
+| get_group_accounts | GET | /fineract-provider/api/v1/groups/{groupId}/accounts | Fetch savings and loan accounts |
+| get_group_corpus | GET | /fineract-provider/api/v1/datatables/dt_group_corpus/{groupId} | Fetch real-time corpus balance |
+| get_group_config | GET | /fineract-provider/api/v1/datatables/dt_group_config/{groupId} | Fetch group config including minimumDisbursementThreshold |
+| put_group_corpus | PUT | /fineract-provider/api/v1/datatables/dt_group_corpus/{groupId} | Update corpus balance after meeting |
 
 ---
 

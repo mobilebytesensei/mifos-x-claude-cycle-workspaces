@@ -21,16 +21,16 @@
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
-| GET | /fineract-provider/api/v1/centers/{centerId}/accounts | Savings+loan accounts for corpus+profit computation | BasicAuth |
-| GET | /fineract-provider/api/v1/datatables/dt_share_out/{centerId} | Existing share-out records for this cycle | BasicAuth |
-| POST | /fineract-provider/api/v1/datatables/dt_share_out/{centerId} | Create share-out record | BasicAuth |
+| GET | /fineract-provider/api/v1/groups/{groupId}/accounts | Savings+loan accounts for corpus+profit computation | BasicAuth |
+| GET | /fineract-provider/api/v1/datatables/dt_share_out/{groupId} | Existing share-out records for this cycle | BasicAuth |
+| POST | /fineract-provider/api/v1/datatables/dt_share_out/{groupId} | Create share-out record | BasicAuth |
 | POST | /fineract-provider/api/v1/savingsaccounts/{savingsAccountId}/transactions | Member withdrawal (payout) | BasicAuth |
 
 ---
 
 ## Request / Response Details
 
-### GET /centers/{centerId}/accounts
+### GET /groups/{groupId}/accounts
 **Response**:
 ```json
 {
@@ -56,7 +56,7 @@
 }
 ```
 
-### GET /datatables/dt_share_out/{centerId}
+### GET /datatables/dt_share_out/{groupId}
 ```json
 [
   {
@@ -70,7 +70,7 @@
 ```
 **404 response**: No share-out record yet — treat as fresh cycle, proceed with calculation.
 
-### POST /datatables/dt_share_out/{centerId}
+### POST /datatables/dt_share_out/{groupId}
 **Body (CreateShareOutRequest)**:
 ```json
 {
@@ -163,7 +163,7 @@
 | locale | String | "en" |
 | dateFormat | String | "dd MMMM yyyy" |
 
-### CenterAccounts (computed)
+### GroupAccounts (computed)
 | Field | Type | Source |
 |-------|------|--------|
 | totalCorpus | Double (KES) | Sum of all savingsAccounts.accountBalance |

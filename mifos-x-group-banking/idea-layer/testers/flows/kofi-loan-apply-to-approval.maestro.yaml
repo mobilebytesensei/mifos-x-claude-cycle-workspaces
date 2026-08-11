@@ -1,0 +1,119 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# journey-maestro-gen (Testers Army SP-02) — kofi (Group Organizer, primary)
+#                                            × loan-apply-to-approval (tier: critical)
+# ───────────────────────────────────────────────────────────────────────────
+# resolution_confidence_summary: high=3 medium=1 low=1   (protected_write_withheld=1)
+#
+# READ-ONLY against LIVE mifos-bank-2 (real "Mwangaza Women's Group", Grace's real
+# loan 13) reached via the Go companion on :8090 + adb reverse tcp:8080 tcp:8090.
+# The loan-apply form is WALKED (member-select + amount = pure reads / client state)
+# but the final Submit (OnSubmit → post_loan, creates a new m_loan) is DELIBERATELY
+# NOT tapped — that is a destructive write on protected live data. loan-detail is
+# therefore verified against the EXISTING real loan 13 (Grace Wanjiru) via the read
+# path, not against a just-created loan.
+#
+# TestTags triangulated: flow.yaml (trigger→action) + ui.yaml (component→on_click)
+# + source *TestTags.kt (LoanList/LoanApply/LoanDetail). Nav TestTags confirmed
+# against the shipped real-*-verify.yaml device flows.
+# ═══════════════════════════════════════════════════════════════════════════
+appId: "org.mifos.groupbanking"
+name: "testers-army — kofi × loan-apply-to-approval (read-only, live mifos-bank-2)"
+tags:
+  - testers-army
+  - "persona:kofi"
+  - "journey:loan-apply-to-approval"
+  - "tier:critical"
+  - real-network
+---
+- launchApp:
+    appId: "org.mifos.groupbanking"
+    clearState: true
+- assertVisible: { id: "login_signup_screen" }
+
+# --- login (mifos / password) → organizer dashboard (real userId 56) ---
+- tapOn: { id: "login_signup_field_email_phone" }
+- inputText: "mifos"
+- tapOn: { id: "login_signup_field_password" }
+- inputText: "password"
+- hideKeyboard
+- tapOn: { id: "login_signup_login_button" }
+- extendedWaitUntil:
+    visible: { id: "organizer_dashboard_screen" }
+    timeout: 25000
+- assertVisible: "Mwangaza Women's Group"   # real group pulled from mifos-bank-2
+
+# --- navigate to the journey entry: loan-list (All Groups → Mwangaza → Loans) ---
+- tapOn: "All Groups"
+- extendedWaitUntil:
+    visible: { id: "group_list_screen" }
+    timeout: 20000
+- tapOn: "Mwangaza Women's Group"
+- extendedWaitUntil:
+    visible: { id: "group_dashboard_screen" }
+    timeout: 20000
+- tapOn: { id: "group_dashboard_view_loans_button" }
+- extendedWaitUntil:
+    visible: { id: "loan_list_screen" }
+    timeout: 20000
+
+# ═══ journey step 1/3 · screen=loan-list · state=content · signal="taps Apply Loan FAB"
+# resolution_confidence: high
+#   flow.yaml#on_apply_loan → navigate loan-apply · ui.yaml#apply_loan_fab → OnApplyLoan
+#   · source LoanListTestTags.FAB_APPLY = "loan_list_fab_apply"
+- assertVisible: "Grace Wanjiru"            # real Fineract loan (Grace, loan 13) rendered — content state proven
+- extendedWaitUntil:
+    visible: { id: "loan_list_fab_apply" }  # visible_when canApplyLoan (organizer/treasurer gate)
+    timeout: 15000
+- tapOn: { id: "loan_list_fab_apply" }
+- extendedWaitUntil:
+    visible: { id: "loan_apply_screen" }    # state assertion: loan-list → loan-apply
+    timeout: 20000
+
+# ═══ journey step 2/3 · screen=loan-apply · state=idle · signal="loan application submitted"
+# resolution_confidence: high  (target = LoanApplyTestTags.SUBMIT_BUTTON / OnSubmit → post_loan)
+# ── PROTECTED-WRITE STOP ──────────────────────────────────────────────────────
+#   OnSubmit POSTs a new m_loan to Fineract on live Mwangaza. The form is walked
+#   (reads + client-side state only) and the review/submit boundary is asserted,
+#   but Submit is NOT tapped. Deliberate withhold — not an unresolved / fabricated
+#   step. The declared write side-effect is documented in the sibling .behavior.yaml.
+- tapOn: { id: "loan_apply_dropdown_member" }
+# resolution_confidence: medium
+#   member option resolved by text: (rows are data-driven from LoanApplyState.members,
+#   no per-option TestTag) — lower confidence, honest text fallback.
+- extendedWaitUntil:
+    visible: "Grace Wanjiru"
+    timeout: 15000
+- tapOn: "Grace Wanjiru"                    # OnMemberSelected → get_member_savings (READ) → eligibility recompute
+- extendedWaitUntil:
+    visible: { id: "loan_apply_eligibility_banner" }   # real savings × loanMultiplier rendered from mifos-bank-2
+    timeout: 15000
+- tapOn: { id: "loan_apply_field_amount" }
+- inputText: "1500"                         # kofi (organizer) test-data — modest amount within member eligibility
+- hideKeyboard
+# review boundary renders — DO NOT TAP submit (protected write on live data)
+- assertVisible: { id: "loan_apply_submit_button" }
+- pressKey: Back                            # leave the form without submitting (no write; top-bar back icon is not taggable)
+- extendedWaitUntil:
+    visible: { id: "loan_list_screen" }
+    timeout: 20000
+
+# ═══ journey step 3/3 · screen=loan-detail · state=content · signal="loan detail screen shows status and vote breakdown"
+# Reached via the READ path (tap the existing real loan) because the create-write was withheld above.
+- tapOn: "Grace Wanjiru"                    # OnLoanClick → loan-detail (real Fineract loan 13)
+- extendedWaitUntil:
+    visible: { id: "loan_detail_screen" }
+    timeout: 20000
+# resolution_confidence: high
+#   "status" → LoanDetailTestTags.STATUS_BADGE + HEADER_CARD + OUTSTANDING_CHIP;
+#   real data from GET /loans/13 (outstanding 6289, 24-row schedule).
+- assertVisible: { id: "loan_detail_header_card" }
+- assertVisible: { id: "loan_detail_status_badge" }
+- assertVisible: "Grace Wanjiru"
+- assertVisible: { id: "loan_detail_outstanding_chip" }
+# resolution_confidence: low
+# finding: tester-ambiguous-success-signal
+#   loan-detail/ui.yaml renders header / status / outstanding / schedule / history
+#   ONLY — no component renders an approval-vote tally. The success_signal sub-clause
+#   "vote breakdown" resolves to NO source. Surfaced (not fabricated) as an
+#   intentionally-failing assertVisible for -converge / SP-04 to pick up.
+- assertVisible: { text: "RESOLVE: success_signal — loan detail shows vote breakdown / approval-vote tally (no source component)" }

@@ -1,10 +1,10 @@
 # Loan Request — Stitch Mockup
 
 **Status**: Generated (metadata refreshed from current ui.yaml + demo-data)
-**Project**: CommonPurse (mifos-x-group-banking)
+**Project**: MifosSave (mifos-x-group-banking)
 **Stitch Project ID**: `2628966868931366090`
 **Screen ID**: `a93904e687de4a38a2f0293c153b559f`
-**Design System**: CommonPurse-v3 (`assets/17261554270924114992`)
+**Design System**: MifosSave-v3 (`assets/17261554270924114992`)
 **Device**: Mobile (Android)
 **Generated**: 2026-05-09 (initial stitch render)
 **Metadata refreshed**: 2026-07-18 (mtime bump — reflects ui.yaml v4.0 + demo-data v2.1.0)

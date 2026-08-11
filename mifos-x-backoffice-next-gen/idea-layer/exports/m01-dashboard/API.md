@@ -1,6 +1,6 @@
 <!-- source: screens/m01-dashboard/api.yaml -->
 <!-- source_hash: api=be368d02a877 -->
-<!-- generated: 2026-07-21T18:16:34Z -->
+<!-- generated: 2026-07-31T03:22:52Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 

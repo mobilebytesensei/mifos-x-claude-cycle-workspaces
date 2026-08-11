@@ -1,8 +1,9 @@
-# Features - CommonPurse (mifos-x-group-banking)
+# Features - MifosSave (mifos-x-group-banking)
 
-> 23 app features | 17 must | 5 should | 1 could | + 1 external-gate (companion-api-backend)
+> 24 app features | 18 must | 5 should | 1 could | + 1 external-gate (companion-api-backend)
 > **One unified identity — self-signup**: anyone downloads → self-registers → creates or joins a group. Post-login capabilities auto-resolved **per group** (organizer vs member), never chosen up front.
 > Global self-signup pivot (2026-07-17): `unified-auth`, `self-signup-organizer`, `group-type-config`, `pluggable-distribution`, `member-invitations` added; the old dual `authentication` feature + `client-type-selector`/`login`/`admin-dashboard` screens removed; `companion-api-backend` added as the external infrastructure gate.
+> Production launch evolve (2026-08-01): `demo-explore` feature added (FR-027); requirement cross-maps fixed — group-type-config now satisfies FR-025, notifications now satisfies FR-031 (was FR-019), meeting-lifecycle references FR-019, unified-auth references FR-030 (first-class accept-invitation), offline-sync references FR-029 (server-ready). See `evolve-plans/20260801-production-signup-server-migration.md`.
 > Source of truth: `idea-plan.yaml` (§features, §screens, §release_plan) + Community Research (CR-003) + VSLA best-practices + global self-signup pivot 2026-07-17.
 
 ## Feature Matrix
@@ -12,9 +13,9 @@
 | # | Feature | Priority | Surface | Version | Screens | Flow | Data Tables | Reqs |
 |---|---------|----------|---------|---------|---------|------|-------------|------|
 | 0 | **companion-api-backend** | **external-gate** | server-infra | pre-1.0.0 | — | — | group_type_config, invitations, rosca_rotation, rosca_auction, vsla_cycle, welfare_fund | FR-013, FR-021–025 |
-| 1 | unified-auth | must | all | 1.0.0 | login-signup | unified-auth-flow | dt_member_role, invitations | FR-013, FR-014, FR-015 |
+| 1 | unified-auth | must | all | 1.0.0 | login-signup | unified-auth-flow | dt_member_role, invitations | FR-013, FR-014, FR-015, FR-030 |
 | 2 | self-signup-organizer | must | organizer | 1.0.0 | login-signup, group-create, group-type-picker | self-signup-organizer-flow | group_type_config | FR-021, FR-013 |
-| 3 | group-type-config | must | organizer | 1.0.0 | group-type-picker, group-create | — | group_type_config | FR-022 |
+| 3 | group-type-config | must | organizer | 1.0.0 | group-type-picker, group-create | — | group_type_config | FR-022, FR-025 |
 | 4 | pluggable-distribution | must | organizer | 1.0.0 | share-out-preview, share-out-execute | share-out-flow | rosca_rotation, rosca_auction, vsla_cycle | FR-023, FR-007 |
 | 5 | member-invitations | must | organizer | 1.0.0 | member-invite, join-with-code, member-list | member-invitation-flow | dt_member_invitation, invitations | FR-002, FR-024 |
 | 6 | group-management | must | organizer | 1.0.0 | group-list, group-dashboard, group-create, group-type-picker | group-creation-flow | dt_group_config | FR-001, FR-022 |
@@ -26,9 +27,10 @@
 | 12 | loan-management | must | organizer | 1.0.0 | loan-list, loan-apply, loan-detail, meeting-conduct | loan-lifecycle-flow | dt_loan_vote | FR-005, FR-006 |
 | 13 | loan-ceilings | must | organizer | 1.0.0 | loan-ceiling-config, loan-apply | — | dt_group_loan_policy, dt_member_ceiling_override | FR-005 |
 | 14 | share-out | must | organizer | 1.0.0 | share-out-preview, share-out-execute | share-out-flow | dt_share_out | FR-007, FR-023 |
-| 15 | offline-sync | must | all | 1.0.0 | sync-status | offline-sync-flow | dt_sync_metadata | FR-008 |
-| 16 | notifications | must | all | 1.0.0 | notification-feed | — | dt_notification | FR-019 |
+| 15 | offline-sync | must | all | 1.0.0 | sync-status | offline-sync-flow | dt_sync_metadata | FR-008, FR-029 |
+| 16 | notifications | must | all | 1.0.0 | notification-feed | — | dt_notification | FR-031 |
 | 17 | end-user-dashboard | must | member | 1.0.0 | personal-dashboard, personal-savings, personal-loans, loan-request | end-user-loan-request-flow | dt_loan_request | FR-014, FR-016 |
+| 24 | demo-explore | must | all | 1.0.0 | login-signup, personal-dashboard, group-dashboard | demo-explore-flow | — (offline-seeded) | FR-027, FR-028 |
 | 18 | fines-tracking | should | organizer | 1.0.0 | meeting-conduct | — | dt_meeting_attendance | FR-012, FR-020 |
 | 19 | multi-language | should | all | 1.0.0 | settings | — | — | FR-010 |
 | 20 | loan-guarantees | should | organizer | 1.1.0 | loan-guarantee-select, loan-detail | loan-guarantee-flow | dt_loan_guarantor | FR-006 |
@@ -60,8 +62,8 @@
 ### companion-api-backend (External gate — must land before v1.0.0 device-verify)
 See section above. Spec: `server-layer/COMPANION_API_BUILD_DEPLOY.md`
 
-### v1.0.0 - Core Group Banking (16 features)
-unified-auth, self-signup-organizer, group-type-config, pluggable-distribution, member-invitations, group-management, member-onboarding, meeting-lifecycle, savings-collection, group-linked-savings, corpus-tracking, loan-management, loan-ceilings, share-out, offline-sync, notifications
+### v1.0.0 - Core Group Banking (17 features)
+unified-auth, self-signup-organizer, group-type-config, pluggable-distribution, member-invitations, group-management, member-onboarding, meeting-lifecycle, savings-collection, group-linked-savings, corpus-tracking, loan-management, loan-ceilings, share-out, offline-sync, notifications, demo-explore
 _(+ should/could riders shipping in 1.0.0: fines-tracking, multi-language, end-user-dashboard)_
 
 ### v1.1.0 - Supervision, Lending Maturity & Social
@@ -74,10 +76,10 @@ mobile-money-integration, web-admin-dashboard, sms-notifications, inter-group-le
 
 | Epic | Features | Milestone |
 |------|----------|-----------|
-| Core Group Infrastructure | unified-auth, self-signup-organizer, end-user-dashboard, group-management, member-onboarding | v1.0.0 |
+| Core Group Infrastructure | unified-auth, self-signup-organizer, end-user-dashboard, group-management, member-onboarding, member-invitations, demo-explore | v1.0.0 |
 | Meeting & Savings Engine | meeting-lifecycle, savings-collection, group-linked-savings, corpus-tracking, fines-tracking | v1.0.0 |
 | Lending & Distribution Lifecycle | loan-management, loan-ceilings, share-out, pluggable-distribution, group-type-config | v1.0.0 |
-| Platform Foundation | offline-sync, multi-language, notifications, member-invitations | v1.0.0 |
+| Platform Foundation | offline-sync, multi-language, notifications | v1.0.0 |
 | Supervision & Social | field-officer-view, social-fund | v1.1.0 |
 | Lending Maturity | loan-guarantees, loan-repayment-health | v1.1.0 |
 
@@ -87,7 +89,7 @@ mobile-money-integration, web-admin-dashboard, sms-notifications, inter-group-le
 
 | Screen | Archetype | Features | Surface |
 |--------|-----------|----------|---------|
-| login-signup | form | unified-auth, self-signup-organizer | all |
+| login-signup | form | unified-auth, self-signup-organizer, demo-explore | all |
 | organizer-dashboard | dashboard | self-signup-organizer, group-management | organizer |
 | group-type-picker | form | group-type-config, group-management, self-signup-organizer | organizer |
 | join-with-code | form | member-invitations, unified-auth | all |
@@ -124,7 +126,7 @@ mobile-money-integration, web-admin-dashboard, sms-notifications, inter-group-le
 
 | Entity | Key Fields | Fineract Mapping |
 |--------|------------|------------------|
-| Group | name, cycle, rules, currency, corpus_balance, group_type_config | Center + group_type_config datatable |
+| Group | name, cycle, rules, currency, corpus_balance, group_type_config | m_group + group_type_config datatable |
 | Member | name, phone, photo, role (per group) | Client + dt_member_role |
 | Meeting | number, date, attendance, collected, opening_balance, closing_balance | dt_meeting_record |
 | SavingsTransaction | member, amount, type (group-linked / individual) | Savings Transaction |
@@ -135,7 +137,7 @@ mobile-money-integration, web-admin-dashboard, sms-notifications, inter-group-le
 
 ## API Coverage
 
-- **Fineract endpoints**: 55+ (centers, groups, clients, savings, loans, charges, reports, batch, self-service)
+- **Fineract endpoints**: 55+ (groups, clients, savings, loans, charges, reports, batch, self-service)
 - **Companion API contracts**: 16 (COMP-AUTH-001..003, COMP-GRP-001..005, COMP-CAL-001..003, COMP-DT-001..005, COMP-DIST-001/002) — abstract contract, backend built later
 - **MCP tools**: 101 (full programmatic access via extended Mifos MCP Server / mcp-mifosx)
 - **Custom Data Tables**: 11 Fineract-native domain extensions + 6 companion datatables provisioned via COMP-DT-001
@@ -148,16 +150,16 @@ mobile-money-integration, web-admin-dashboard, sms-notifications, inter-group-le
 
 | Data Table | Attached To | Feature | Purpose |
 |-----------|-------------|---------|---------|
-| dt_group_config | m_center | group-management | Cycle rules, contribution limits, loan multiplier, fine amounts, cycle dates |
-| dt_meeting_record | m_center | meeting-lifecycle | Per-meeting summary: attendance, totals, decisions |
+| dt_group_config | m_group | group-management | Cycle rules, contribution limits, loan multiplier, fine amounts, cycle dates |
+| dt_meeting_record | m_group | meeting-lifecycle | Per-meeting summary: attendance, totals, decisions |
 | dt_meeting_attendance | m_client | meeting-lifecycle, fines-tracking | Per-member attendance: present/late/fined |
 | dt_member_role | m_client | unified-auth, member-onboarding | Per-(member, group) role — organizer/treasurer/chairperson/secretary/member; drives per-group RBAC |
-| dt_share_out | m_center | share-out | Cycle share-out record: pool, distribution, status |
-| dt_social_fund | m_center | social-fund | Emergency fund balance and disbursement tracking |
+| dt_share_out | m_group | share-out | Cycle share-out record: pool, distribution, status |
+| dt_social_fund | m_group | social-fund | Emergency fund balance and disbursement tracking |
 | dt_loan_vote | m_loan | loan-management | Loan approval voting: for/against/chairperson approval |
-| dt_sync_metadata | m_center | offline-sync | Sync state: last sync, pending ops, conflicts |
+| dt_sync_metadata | m_group | offline-sync | Sync state: last sync, pending ops, conflicts |
 | dt_loan_request | m_client | end-user-dashboard | Member loan requests submitted for organizer review at meetings |
-| dt_group_corpus | m_center | corpus-tracking | Running fund balance: current, inflows, outflows, meeting open/close |
+| dt_group_corpus | m_group | corpus-tracking | Running fund balance: current, inflows, outflows, meeting open/close |
 | dt_member_invitation | m_client | member-invitations | Invite token audit trail — code, role, expiry, accepted state |
 
 **Companion datatables (6) — provisioned via COMP-DT-001 at deploy:**

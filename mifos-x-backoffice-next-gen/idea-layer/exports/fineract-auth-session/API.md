@@ -1,6 +1,6 @@
 <!-- source: screens/fineract-auth-session/api.yaml -->
 <!-- source_hash: api=1d50cda2c102 -->
-<!-- generated: 2026-07-26T04:07:02Z -->
+<!-- generated: 2026-07-31T03:19:28Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 

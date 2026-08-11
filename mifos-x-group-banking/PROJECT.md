@@ -1,11 +1,11 @@
-# CommonPurse — Mifos X Group Banking
+# MifosSave — Mifos X Group Banking
 
 > Offline-first KMP community banking app digitizing VSLA/ROSCA group savings, lending & share-out via Mifos Fineract.
 
 | Field | Value |
 |-------|-------|
 | Status | **initialized** (planning → initialized on 2026-05-05) |
-| Display name | CommonPurse |
+| Display name | MifosSave |
 | Slug | mifos-x-group-banking |
 | Type | kmp |
 | Subtype | kmp-app |
@@ -15,7 +15,7 @@
 | Repo (origin = fork) | [therajanmaurya/mifos-x-group-banking](https://github.com/therajanmaurya/mifos-x-group-banking) — push target |
 | Repo (upstream) | [openMF/mifos-x-group-banking](https://github.com/openMF/mifos-x-group-banking) — PR target |
 | Repo (template) | [openMF/kmp-project-template](https://github.com/openMF/kmp-project-template) — template upstream |
-| Backend | Mifos Fineract (sandbox.mifos.community) + 36 generated MCP tools |
+| Backend | Mifos Fineract — **`https://mifos-bank-2.mifos.community` (tenant `mifos-bank-2`, creds `mifos`/`password`)** via companion server (mcp-mifosx) + 36 generated MCP tools (sandbox `default` = fallback) |
 | Created | 2026-05-02 |
 | Promoted | 2026-05-05 (via `/idea-plan` [P]) |
 
@@ -34,7 +34,7 @@
 
 ## Source
 
-`source/mifos-x-group-banking/` — fork-aware clone of `openMF/kmp-project-template@dev` (commit `7146992`), customized with `org.mifos.groupbanking` package + `CommonPurse` brand.
+`source/mifos-x-group-banking/` — fork-aware clone of `openMF/kmp-project-template@dev` (commit `7146992`), customized with `org.mifos.groupbanking` package + `MifosSave` brand.
 
 Remotes:
 - `origin`   → `git@github.com:therajanmaurya/mifos-x-group-banking.git` (fork — push here)

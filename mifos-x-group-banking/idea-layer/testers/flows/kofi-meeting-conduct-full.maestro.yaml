@@ -1,0 +1,97 @@
+appId: "org.mifos.groupbanking"
+tags: [testers-army, persona:kofi, journey:meeting-conduct-full, tier:critical]
+# resolution_confidence_summary: high=11 medium=1 low=0
+# ─────────────────────────────────────────────────────────────────────────────
+# READ-ONLY SAFETY OVERRIDE (LIVE mifos-bank-2 data via adb reverse tunnel):
+# meeting-conduct is a destructive multi-step WRITE wizard (attendance, savings,
+# repayments, loan disbursals, corpus PUT → dt_meeting_record). Mwangaza Women's
+# Group is a PROTECTED live group. This flow proves the wizard LOADS real data:
+# it walks login → dashboard → All Groups → Mwangaza → group dashboard →
+# Start Meeting → meeting-conduct, advances the wizard from step0 (previous review)
+# to step1 (attendance) via a PURE transform_state Next tap (no I/O — flow.yaml
+# step_advance.step_0 = validation:none, on_valid:advance_to_step_1, no save), then
+# asserts the 3 real members render — and STOPS.
+# Journey steps 4-7 (savings → loans → close → SubmitMeeting write) are
+# INTENTIONALLY NOT WALKED. No Submit / Confirm / Next-past-attendance is emitted.
+# ─────────────────────────────────────────────────────────────────────────────
+---
+- launchApp:
+    appId: "org.mifos.groupbanking"
+    clearState: true
+
+# ── journey pre-step: authenticate as organizer kofi ─────────────────────────
+# resolution_confidence: high — all TestTags resolved from LoginSignupTestTags
+- assertVisible: { id: "login_signup_screen" }
+- tapOn: { id: "login_signup_tab_login" }        # ensure LOGIN mode (login_button is login-mode only)
+- tapOn: { id: "login_signup_field_email_phone" }
+- inputText: "mifos"
+- tapOn: { id: "login_signup_field_password" }
+- inputText: "password"
+- hideKeyboard
+- tapOn: { id: "login_signup_login_button" }
+# async auth → organizer dashboard
+- extendedWaitUntilVisible:
+    id: "organizer_dashboard_screen"
+    timeout: 25000
+
+# ── journey step 1 (meeting-calendar) resolved via device path: All Groups ────
+# Device truth overrides the journey's calendar entry_point: kofi reaches the
+# group via the dashboard "All Groups" quick-nav tile, not the calendar.
+# resolution_confidence: high — OrganizerDashboardTestTags.NAV_GROUP_LIST_CARD
+- tapOn: { id: "organizer_dashboard_nav_group_list_card" }
+- extendedWaitUntilVisible:
+    id: "group_list_screen"
+    timeout: 20000
+
+# select the real group. No stable TestTag: GroupListTestTags.cardTag(groupId)
+# is keyed by a runtime Fineract groupId unknown at generation time, so the row
+# is resolved by its visible label (filtered via the search field for determinism).
+# resolution_confidence: medium — text: fallback (no static card TestTag)
+- tapOn: { id: "group_list_search_field" }
+- inputText: "Mwangaza"
+- hideKeyboard
+- assertVisible: { text: "Mwangaza Women's Group" }
+- tapOn: { text: "Mwangaza Women's Group" }
+- extendedWaitUntilVisible:
+    id: "group_dashboard_screen"
+    timeout: 20000
+
+# ── journey step 2 (previous-meeting-review) resolved via device path ─────────
+# "Start Meeting" management action → meeting-conduct wizard.
+# resolution_confidence: high — GroupDashboardTestTags.START_MEETING_BUTTON
+- assertVisible: { id: "group_dashboard_start_meeting_button" }
+- tapOn: { id: "group_dashboard_start_meeting_button" }
+# meeting-conduct runs 5 parallel loads (groups/corpus/loans/votes/prev-record)
+# before rendering Content — allow a long async settle.
+- extendedWaitUntilVisible:
+    id: "meeting_conduct_screen"
+    timeout: 25000
+
+# ── journey step 3 (meeting-conduct step 0-1) — WHERE THE WALK STOPS ──────────
+# Wizard opens at step 0 (previous-meeting review). Assert the stepper + step0
+# container render, proving the wizard is live.
+# resolution_confidence: high — MeetingConductTestTags.STEPPER / STEP0_PREVIOUS_REVIEW
+- assertVisible: { id: "meeting_conduct_stepper" }
+- assertVisible: { id: "meeting_conduct_step0_previous_review" }
+
+# Advance step0 → step1 (attendance). SAFE: flow.yaml step_advance.step_0 is
+# validation:none / advance_to_step_1 with NO save_progress_locally — a pure
+# in-memory ViewModel transition (transform_state), NOT a write.
+# resolution_confidence: high — MeetingConductTestTags.NEXT_FOOTER_BUTTON
+- tapOn: { id: "meeting_conduct_next_footer_button" }
+- extendedWaitUntilVisible:
+    id: "meeting_conduct_step1_attendance"
+    timeout: 15000
+
+# Prove real member data loaded from live mifos-bank-2 (the 3 Mwangaza members).
+# Data assertions (text), not taps — these confirm the READ succeeded.
+- assertVisible: { text: "Amina" }
+- assertVisible: { text: "Grace" }
+- assertVisible: { text: "Joseph" }
+
+# ── HARD STOP ────────────────────────────────────────────────────────────────
+# Attendance renders with real members. Journey steps 4-7 (savings collection →
+# loan review/votes → closing balance → SubmitMeeting) are DELIBERATELY NOT
+# walked: they cross the write boundary (save_progress_locally on step1→step2,
+# then the ordered POST/PUT collection-sheet submit). No further Next / Submit
+# is emitted. The flow ends here.

@@ -1,78 +1,233 @@
-feature: needs-attention-inbox
+sibling: data-flow
+schema_version: v2.2.0
+feature_id: needs-attention-inbox
 
 # Fan-in of four sources into one ranked feed. The local outbox (draft_outbox) is the
-# system-of-record for failed replays and reads via a Room Flow (no network). The three
-# remote sources are CACHE_FIRST_SWR through Store5 so the inbox works fully offline.
+# system-of-record for failed replays and reads via a Room Flow (no network). The three remote
+# sources are CACHE_FIRST_SWR through Store5 so the inbox works fully offline. Each remote source
+# degrades independently: a source error becomes a per-group strip, never a whole-screen error.
+#
+# WAIVER (idea-plan.yaml#dataflow_coverage_excludes, review_by 2026-10-31): only the maker-checker
+# source (SOURCE 1) is fully backend-wired; the collections (SOURCE 3) and notifications (SOURCE 4)
+# sources depend on Collections/NotificationsApiService backends that do not exist yet — they are
+# documented here as design intent (endpoints declared in api.yaml) but are NOT fabricated as live
+# wiring. Full fan-in is tracked by store5-canonical-proof-fixture-live.
 
 entries:
   # ── SOURCE 2 · failed/rejected outbox commands (LOCAL Room, offline SoT) ──
-  - trigger: on_mount
-    source: local.draft_dao_observe_all_failed
-    target_state: content
-    loading_state: loading
-    error_state: error
-    on_error:
-      nav_target: null
-      error_code: local_read_failed
-    persistence_contract:
-      store: room
-      table: draft_outbox
-      keys: [idempotency_key, action, entity, payload_json, status, server_error, conflict_strategy, rejected_at, snooze_until]
-      note: >-
-        Reads status IN (failed, rejected) rows via DraftDao.observeAllFailed(); Retry updates status
-        + mints a fresh idempotency_key, Discard deletes with conflict_strategy=discard, Snooze sets
-        snooze_until — all in place. This table is the ONLY irreplaceable local store.
+  - screen_id: needs-attention-inbox
+    trigger: on_mount
+    produces_state: content
+    auth_required: true
+    tables:
+      - name: draft_outbox
+        mutation: read
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Reads status IN (failed, rejected) rows via DraftDao.observeAllFailed() (local Room Flow, no
+          HTTP GET) — idempotency_key, action, entity, payload_json, status, server_error,
+          conflict_strategy, rejected_at, snooze_until. This table is the ONLY irreplaceable local
+          store; it is authoritative and never revalidated against the network.
+    error_paths:
+      - error_code: local_read_failed
+        behavior: retry
+        message_key: nai_local_read_failed
 
   # ── SOURCE 1 · maker-checker approvals (remote, cached, permission-filtered) ──
-  - trigger: on_mount
-    source: remote.makercheckers_list
-    target_state: content
-    loading_state: loading
-    error_state: content   # a source error degrades to a per-group strip, NOT the whole-screen error
-    on_error:
-      nav_target: null
-      error_code: approvals_source_failed
-    persistence_contract:
-      store: room
-      table: maker_checker_cache
-      keys: [audit_id, action_name, entity_name, maker, made_on_date, processing_result]
-      note: "CACHE_FIRST_SWR mirror of GET /v1/makercheckers; contributes rows only where canCheck(action,entity)."
+  - screen_id: needs-attention-inbox
+    trigger: on_mount
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_pending_approvals
+        transport: rest
+    tables:
+      - name: maker_checker_cache
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          CACHE_FIRST_SWR mirror of GET /v1/makercheckers (audit_id, action_name, entity_name, maker,
+          made_on_date, processing_result); contributes an 'approvals' row only where
+          canCheck(action, entity). The canonical, fully-backend-wired source.
+    dtos:
+      - name: MakerCheckerEntryDto
+        role: response
+        api_id: list_pending_approvals
+    cache:
+      strategy: cache_first
+      ttl_seconds: 900
+      key_template: "fineract:inbox:makercheckers:{staffId}"
+      shape: flat
+    privacy_constraint:
+      scope: user_synced
+      notes: "Approval rows are permission-filtered client-side to the checker's canCheck scope; encrypted at rest."
+    error_paths:
+      - error_code: approvals_source_failed
+        behavior: fallback_cache
+        message_key: nai_approvals_source_failed
 
   # ── SOURCE 3 · overdue collections / field tasks (remote, cached, staffId-scoped) ──
-  - trigger: on_mount
-    source: remote.collections_overdue
-    target_state: content
-    loading_state: loading
-    error_state: content
-    on_error:
-      nav_target: null
-      error_code: tasks_source_failed
-    persistence_contract:
-      store: room
-      table: collection_task_cache
-      keys: [entity_ref, entity_type, due_date, staff_id, amount_due, status]
-      note: "Derived from the staffId-scoped collection sheet; overdue/undue-today rows become 'overdue_tasks'."
+  # WAIVER: CollectionsApiService backend not yet built — documented design intent, not live wiring.
+  - screen_id: needs-attention-inbox
+    trigger: on_mount
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_overdue_collections
+        transport: rest
+    tables:
+      - name: collection_task_cache
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Derived from the staffId-scoped collection sheet (entity_ref, entity_type, due_date,
+          staff_id, amount_due, status); overdue/undue-today rows become 'overdue_tasks'. Pending the
+          Collections backend (waiver) — the cache contract is defined but not yet populated live.
+    dtos:
+      - name: CollectionSheetDto
+        role: response
+        api_id: list_overdue_collections
+    cache:
+      strategy: cache_first
+      ttl_seconds: 900
+      key_template: "fineract:inbox:collections:{staffId}"
+      shape: flat
+    error_paths:
+      - error_code: tasks_source_failed
+        behavior: fallback_cache
+        message_key: nai_tasks_source_failed
 
   # ── SOURCE 4 · unread actionable alerts (remote, cached) ──
-  - trigger: on_mount
-    source: remote.notifications_unread
-    target_state: content
-    loading_state: loading
-    error_state: content
-    on_error:
-      nav_target: null
-      error_code: alerts_source_failed
-    persistence_contract:
-      store: room
-      table: notification_cache
-      keys: [notification_id, object_type, object_id, action, content, is_read, created_at, snooze_until]
-      note: "CACHE_FIRST_SWR mirror of GET /v1/notifications; snooze_until suppresses a row without marking it read."
+  # WAIVER: NotificationsApiService backend not yet built — documented design intent, not live wiring.
+  - screen_id: needs-attention-inbox
+    trigger: on_mount
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: list_notifications
+        transport: rest
+    tables:
+      - name: notification_cache
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          CACHE_FIRST_SWR mirror of GET /v1/notifications (notification_id, object_type, object_id,
+          action, content, is_read, created_at, snooze_until); snooze_until suppresses a row without
+          marking it read. Pending the Notifications backend (waiver).
+    dtos:
+      - name: NotificationDto
+        role: response
+        api_id: list_notifications
+    cache:
+      strategy: cache_first
+      ttl_seconds: 900
+      key_template: "fineract:inbox:notifications:{userId}"
+      shape: flat
+    error_paths:
+      - error_code: alerts_source_failed
+        behavior: fallback_cache
+        message_key: nai_alerts_source_failed
 
-cache:
-  strategy: cache_first_swr
-  note: >-
-    All remote sources read cache-first and revalidate in the background per FreshnessBands; the
-    local outbox is authoritative and never revalidated. The aggregated feed re-emits whenever any
-    contributing Flow updates (Room change, SWR refresh, or a permission-fingerprint swap).
+  # ── ACTION · inline approve/reject a queued maker-checker command ─────
+  - screen_id: needs-attention-inbox
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: approve_or_reject_entry
+        transport: rest
+    tables:
+      - name: maker_checker_cache
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: "The approved/rejected row is optimistically removed from the inbox cache and reconciled against the server on the follow-on refresh; deep approval workflow lives in M15."
+    dtos:
+      - name: CommandProcessingResultDto
+        role: response
+        api_id: approve_or_reject_entry
+    side_effects:
+      - kind: invalidate_cache
+        target: "the maker-checker inbox cache — revalidated after the approve/reject posts"
+    error_paths:
+      - error_code: approve_reject_failed
+        behavior: retry
+        message_key: nai_approve_reject_failed
+      - error_code: permission.drift
+        behavior: navigate
+        nav_target: permission-capability-engine
+        message_key: nai_access_changed
 
-# regenerated-provenance: idea-data-flow re-verified 2026-07-26 (post a11y-label enrich) — 4 fan-in sources (local outbox SoT + 3 CACHE_FIRST_SWR remote) + persistence_contract consistent with current ui.yaml + api.yaml; cascade mtime re-stamp (isStale enriched-unstick).
+  # ── ACTION · retry a failed/rejected outbox command (re-enqueue for batch replay) ──
+  - screen_id: needs-attention-inbox
+    trigger: on_interact
+    produces_state: submitting
+    auth_required: true
+    endpoints:
+      - api_id: replay_failed_command
+        transport: rest
+    tables:
+      - name: draft_outbox
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: >-
+          Retry re-enqueues the rejected outbox command for replay via POST /v1/batches
+          (enclosingTransaction); status is updated and a FRESH durable idempotency_key is minted so a
+          crash between retry and replay cannot double-post. Discard deletes with
+          conflict_strategy=discard; Snooze sets snooze_until — all in place on the local row.
+    dtos:
+      - name: BatchResponseDto
+        role: response
+        api_id: replay_failed_command
+    side_effects:
+      - kind: enqueue_job
+        target: "OfflineSubmitSyncer drain for the re-enqueued command via offline-sync-engine's POST /v1/batches"
+    error_paths:
+      - error_code: replay_rejected
+        behavior: user_action
+        message_key: nai_replay_rejected
+      - error_code: network.offline
+        behavior: fallback_cache
+        message_key: nai_queued_offline
+
+  # ── ACTION · mark an alert read once actioned/snoozed ─────────────────
+  - screen_id: needs-attention-inbox
+    trigger: on_interact
+    produces_state: content
+    auth_required: true
+    endpoints:
+      - api_id: mark_notification_read
+        transport: rest
+    tables:
+      - name: notification_cache
+        mutation: upsert
+        persistence_contract:
+          is_durable: true
+          storage_backend: local_db
+        persistence_note: "Marks the alert row is_read=true (or sets snooze_until) so it stops surfacing in the inbox; reconciled on the next notifications revalidate."
+    dtos:
+      - name: CommandProcessingResultDto
+        role: response
+        api_id: mark_notification_read
+    error_paths:
+      - error_code: mark_read_failed
+        behavior: silent
+        message_key: nai_mark_read_failed
+
+# regenerated-provenance: idea-data-flow refreshed 2026-07-31 — migrated legacy trigger/source shape to
+# v2.2.0 (screen_id/endpoints/dtos/cache/error_paths). 4-source fan-in preserved (local outbox SoT +
+# maker-checker canonical + collections + notifications) with the dataflow_coverage_excludes waiver
+# honored: collections + notifications remain documented design intent (backends pending), NOT fabricated
+# live wiring. Added the 3 inbox write actions (approve/reject, retry-replay, mark-read) so all 6 api.yaml
+# endpoints are wired. DTO refs resolve.

@@ -1,4 +1,4 @@
-# Design System Overview — mifos-x-group-banking (CommonPurse)
+# Design System Overview — mifos-x-group-banking (MifosSave)
 
 ## Profile: Outdoor WCAG
 

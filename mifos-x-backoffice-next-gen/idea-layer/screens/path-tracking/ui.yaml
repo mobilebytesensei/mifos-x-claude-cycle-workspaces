@@ -1,0 +1,201 @@
+schema_version: v4.0
+screen_id: path-tracking
+feature: path-tracking
+name: "Path Tracking (GPS field-visit route trail)"
+status: enriched
+archetype: detail_screen
+cluster: field-operations
+module: foundation
+initial_state: idle
+
+business_logic:
+  kind: composite
+  processing_kind: on_demand
+  description: "Manages GPS route recording sessions via core/platform LocationProvider. Appends waypoints to Room every ~5s. Renders the live or historical route as a map polyline. No Fineract API calls — entirely offline."
+  library_refs: []
+  external_library_refs:
+    - "core/platform LocationProvider (KMP expect/actual)"
+    - "androidx.room"
+    - "maps-compose / MapKit"
+  required_modules:
+    - core/datastore
+
+states:
+  idle:
+    description: "No active recording — shows the session history list (completed routes) with date, duration, distance, and a thumbnail map preview. 'Start route' button visible."
+    is_default: true
+  recording:
+    description: "GPS recording active — a full-screen or split map view shows the growing polyline trail in real time. A floating control bar shows elapsed time, distance covered, current speed, and Stop / Pause buttons."
+  paused:
+    description: "Recording paused — map frozen on the last known position. Control bar shows 'Paused' chip + Resume / Stop buttons. The session stays open in Room."
+  viewing:
+    description: "Viewing a completed historical session — full map view with the complete polyline, route statistics (total distance, duration, start/end time), and a 'Delete route' option."
+  permission_required:
+    description: "Location permission not granted — an illustration + 'Location access required' message + 'Open app settings' button."
+  error:
+    description: "GPS service failed or location unavailable — error banner with a Retry. The current session (if any) is paused to prevent data gaps."
+
+state_model:
+  fields:
+    - name: sessions
+      type: List<PathTrackingSession>
+      notes: "Completed route sessions from Room ordered by started_at DESC. Each carries session_id, started_at, ended_at, distance_km, duration_secs, waypoints_count. Rendered in the history list."
+    - name: activeSession
+      type: PathTrackingSession?
+      notes: "The currently open recording or paused session. Null in idle/viewing states. The control bar stats (elapsed, distance, speed) derive from this session."
+    - name: elapsedSeconds
+      type: Long
+      notes: "Seconds elapsed in the active session — updated every second by a coroutine ticker while recording. Shown in the control bar as HH:MM:SS. 0 when no active session."
+    - name: distanceKm
+      type: Double
+      notes: "Total distance (km) covered in the active session, computed incrementally from PathTrackingPoints using the Haversine formula. Shown in the control bar."
+    - name: currentSpeedKmh
+      type: Double
+      notes: "Most recent GPS speed reading (km/h) from the platform LocationProvider. 0 when paused or no active session."
+    - name: activeRoutePoints
+      type: List<LatLng>
+      notes: "Ordered GPS coordinates for the growing live polyline (recording/paused states). Each location update appends a point. Cleared when the session is stopped."
+    - name: selectedSession
+      type: PathTrackingSession?
+      notes: "The historical session being viewed (viewing state). Null in other states. Used to load selectedRoutePoints."
+    - name: selectedRoutePoints
+      type: List<LatLng>
+      notes: "All GPS coordinates for the selected historical session loaded from Room. Rendered as a static full-route polyline in the viewing state."
+    - name: locationPermissionGranted
+      type: Boolean
+      notes: "Whether the OS location permission has been granted. False drives the permission_required state; true allows start_tracking."
+
+shell:
+  bottom_navigation_visible: false
+  top_app_bar_visible: true
+  fab_visible: false
+  snackbar_visible: true
+
+components:
+  - id: header
+    type: header
+    label: "{strings.path_tracking_title}"
+    testTag: "path-tracking_header"
+
+  - id: session_history_list
+    type: content_area
+    label: "{strings.path_tracking_history}"
+    testTag: "path-tracking_history_list"
+    visible_states: [idle]
+    description: "List of completed route sessions: date, duration (HH:MM), distance (km), thumbnail map. Rows tap to viewing state."
+
+  - id: session_row
+    type: list_item
+    label: "{strings.path_tracking_session_row}"
+    testTag: "path-tracking_session_item"
+    visible_states: [idle]
+    accessibility_label: "View route session details and map"
+    on_click:
+      action: view_session
+      action_contract:
+        effect: navigate
+        description: "Open the viewing state for the selected historical route — renders the full polyline map + statistics."
+        required_permission: READ_COLLECTIONSHEET
+        denied_behavior: hide-root
+
+  - id: start_button
+    type: button
+    label: "{strings.path_tracking_start}"
+    testTag: "path-tracking_start"
+    variant: primary
+    visible_states: [idle]
+    accessibility_label: "Start recording a new GPS route"
+    on_click:
+      action: start_tracking
+      action_contract:
+        effect: emit_event
+        writes_to:
+          - table: path_tracking_sessions
+          - table: app_settings
+        produces_state: recording
+        description: "Request location permission if needed; start background LocationProvider; open a new PathTrackingSession in Room; persist tracking_active_session_id; show a persistent notification. Transitions to recording."
+        required_permission: READ_COLLECTIONSHEET
+        denied_behavior: gray-out-info-dialog
+
+  - id: route_map
+    type: map_view
+    label: "{strings.path_tracking_map}"
+    testTag: "path-tracking_map"
+    visible_states: [recording, paused, viewing]
+    description: "Interactive map (maps-compose / MapKit) rendering the GPS polyline. In recording/paused states: live map centered on current position with a growing blue polyline. In viewing state: static map fitting the full completed route."
+
+  - id: recording_controls
+    type: control_bar
+    testTag: "path-tracking_controls"
+    visible_states: [recording, paused]
+    description: "Floating control bar showing elapsed time, distance, current speed. Contains Pause (recording) / Resume (paused) and Stop buttons."
+
+  - id: pause_button
+    type: button
+    label: "{strings.path_tracking_pause}"
+    testTag: "path-tracking_pause"
+    variant: secondary
+    visible_states: [recording]
+    accessibility_label: "Pause GPS route recording"
+    on_click:
+      action: pause_tracking
+      action_contract:
+        effect: transform_state
+        required_permission: READ_COLLECTIONSHEET
+        denied_behavior: gray-out-info-dialog
+        writes_to:
+          - table: path_tracking_sessions
+        produces_state: paused
+        description: "Pause the LocationProvider; update the session status to paused in Room; keep the session open for resumption."
+
+  - id: resume_button
+    type: button
+    label: "{strings.path_tracking_resume}"
+    testTag: "path-tracking_resume"
+    variant: primary
+    visible_states: [paused]
+    accessibility_label: "Resume paused GPS route recording"
+    on_click:
+      action: resume_tracking
+      action_contract:
+        effect: transform_state
+        required_permission: READ_COLLECTIONSHEET
+        denied_behavior: gray-out-info-dialog
+        writes_to:
+          - table: path_tracking_sessions
+        produces_state: recording
+        description: "Resume the LocationProvider; update session status to recording in Room; continue appending waypoints."
+
+  - id: stop_button
+    type: button
+    label: "{strings.path_tracking_stop}"
+    testTag: "path-tracking_stop"
+    variant: destructive
+    visible_states: [recording, paused]
+    accessibility_label: "Stop recording and save the completed route"
+    on_click:
+      action: stop_tracking
+      action_contract:
+        effect: transform_state
+        required_permission: READ_COLLECTIONSHEET
+        denied_behavior: gray-out-info-dialog
+        writes_to:
+          - table: path_tracking_sessions
+          - table: app_settings
+        produces_state: idle
+        description: "Stop the LocationProvider; close the session (status=completed, ended_at=now); clear tracking_active_session_id. Route appears in the history list."
+
+  - id: open_settings_button
+    type: button
+    label: "{strings.path_tracking_open_settings}"
+    testTag: "path-tracking_open_settings"
+    variant: outlined
+    visible_states: [permission_required]
+    accessibility_label: "Open app settings to grant location permission"
+    on_click:
+      action: open_app_settings
+      action_contract:
+        effect: emit_event
+        required_permission: ""
+        denied_behavior: gray-out-info-dialog
+        description: "Deep-link to the OS app settings so the user can grant location permission. App re-checks on return."

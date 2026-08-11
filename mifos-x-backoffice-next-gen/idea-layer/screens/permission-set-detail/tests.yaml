@@ -1,44 +1,250 @@
 schema_version: v1.0.0
 feature: permission-set-detail
-# Regenerated 2026-07-25 (/idea-test-generate) against the enriched ui.yaml —
-# coverage verified: one scenario per ui.yaml state (loading/content/empty/error)
-# + per api operation (get_permissions_catalog).
+# Regenerated 2026-07-31 (/idea-test-generate) then extended by /idea-feature-enrich 2026-07-31 —
+# coverage: one scenario per ui.yaml state (loading/content/empty/refreshing/error)
+# + per api operation (get_permissions_catalog cache_first_swr, refresh_role_permissions)
+# + per on_click (search_code, toggle_umbrella, expand_grouping, copy_fingerprint, refresh_permissions, retry, go_back)
+# + docs acceptance refs.
+# Demo data grounded in demo-data.yaml: role=Branch Manager, fingerprint=sha256:1c7d0f4a...,
+# totalHeld=42, totalCatalog=128; groupings: portfolio 8/10, transaction_loan 6/9, accounting 4/12.
+# Re-verified 2026-07-31 (post-21:09 ui.yaml enrich): scenarios still cover all 5 states + on_click set; no delta — mtime re-stamp to clear content-hash staleness.
 scenarios:
+  # ── state coverage ──
   - id: loading_shows_grouped_shimmer
-    preconditions: ["the detail is opened", "the local set + code catalog have not resolved yet"]
-    actions: ["open Permission set detail from the permission engine"]
-    assertions: ["the loading state shows a grouped-list shimmer", "no error is shown"]
-    priority: medium
-  - id: content_shows_grouped_codes_and_fingerprint
-    preconditions: ["the local PermissionSet resolves + the code catalog loads"]
-    actions: ["open the detail"]
+    preconditions:
+      - "the Permission Set Detail screen is opened"
+      - "the local PermissionSet resolution and the code catalog fetch have not yet completed"
+    actions:
+      - "open Permission Set Detail from the permission-capability-engine (view_permission_set)"
     assertions:
-      - "held codes are grouped by Fineract grouping (portfolio, transaction_loan, accounting, …) with held-vs-total counts"
-      - "umbrella / short-circuit grants (ALL_FUNCTIONS, CHECKER_SUPER_USER) are highlighted"
-      - "the header shows the sha256 fingerprint used for CapabilityMap drift detection"
-    priority: high
-  - id: empty_when_permission_set_unbootstrapped
-    preconditions: ["the resolved PermissionSet is empty / not yet bootstrapped"]
-    actions: ["open the detail"]
-    assertions: ["a guidance panel is shown"]
-    priority: low
-  - id: error_when_catalog_fails_no_cache
-    preconditions: ["the code catalog failed to load and no cache is available"]
-    actions: ["open the detail"]
-    assertions: ["the error state is shown", "Retry reloads the catalog"]
+      - "uiState is Loading"
+      - "a grouped-list shimmer is displayed"
+      - "no permission codes, groupings, or fingerprint are visible"
+      - "no error message is shown"
     priority: medium
-  - id: renders_offline_from_local_set
-    preconditions: ["the device is offline", "the catalog was cached"]
-    actions: ["open the detail offline"]
-    assertions: ["the held set renders from the local PermissionSet", "groupings label from the cached catalog"]
+
+  - id: content_shows_grouped_codes_with_held_totals
+    preconditions:
+      - "the signed-in user is Branch Manager"
+      - "the local PermissionSet resolves with fingerprint sha256:1c7d0f4a92e63b58ad4f10c2e7b9d035f6a81e2c4b0d9f37a5c6e8b1d240f9a3 and 42 held codes"
+      - "GET /v1/permissions returns the 128-code catalog (cache-first)"
+    actions:
+      - "open Permission Set Detail"
+    assertions:
+      - "uiState is Content"
+      - "three groupings are rendered: portfolio (8 held of 10), transaction_loan (6 held of 9), accounting (4 held of 12)"
+      - "under portfolio: READ_CLIENT and CREATE_CLIENT appear as held (selected: true); DELETE_CLIENT appears as not held (selected: false)"
+      - "under transaction_loan: READ_LOAN and APPROVE_LOAN appear as held; DISBURSE_LOAN as not held"
+      - "under accounting: READ_JOURNALENTRY appears as held; CREATE_JOURNALENTRY as not held"
+      - "the header card shows the fingerprint sha256:1c7d0f4a92e63b58ad4f10c2e7b9d035f6a81e2c4b0d9f37a5c6e8b1d240f9a3"
+      - "umbrella/short-circuit grants (ALL_FUNCTIONS, CHECKER_SUPER_USER) are highlighted if held"
+      - "the screen is read-only; no edit controls are present"
+      - "total held-vs-total counts across groupings reflect 42 of 128 catalog codes"
     priority: high
+
+  - id: empty_when_permission_set_not_bootstrapped
+    preconditions:
+      - "the resolved PermissionSet is empty — no permissions held or not yet bootstrapped"
+    actions:
+      - "open Permission Set Detail"
+    assertions:
+      - "uiState is Empty"
+      - "the guidance panel is shown with message: 'No permission set has been resolved for this role yet'"
+      - "no permission codes or groupings are visible"
+      - "no error message is shown"
+    priority: low
+
+  - id: error_when_catalog_fails_no_cache
+    preconditions:
+      - "GET /v1/permissions fails (network error or 5xx)"
+      - "no cached catalog is available (first load, permission_catalog_cache is empty)"
+    actions:
+      - "open Permission Set Detail"
+    assertions:
+      - "uiState is Error"
+      - "error code permissions_catalog_load_failed is raised"
+      - "an error message is displayed"
+      - "the Retry button (testTag: permission-set-detail_error_retry) is visible"
+      - "no permission codes or groupings are shown"
+    priority: medium
+
+  # ── interaction coverage ──
+  - id: expand_grouping_reveals_held_codes
+    preconditions:
+      - "uiState is Content"
+      - "the portfolio grouping (psd_grouping) is collapsed"
+    actions:
+      - "tap the portfolio expandable section (testTag: permission-set-detail_grouping)"
+    assertions:
+      - "the portfolio section expands in-VM without a network refetch"
+      - "held codes READ_CLIENT and CREATE_CLIENT are shown (selected: true)"
+      - "DELETE_CLIENT is shown as not held (selected: false)"
+      - "the held-vs-total label reads 8 of 10"
+      - "tapping the section again collapses it"
+      - "no other groupings change their expand/collapse state"
+    priority: high
+
   - id: search_filters_codes_in_vm
-    preconditions: ["codes are shown"]
-    actions: ["type a code fragment in search"]
-    assertions: ["the list filters in-VM across code and grouping with no refetch"]
+    preconditions:
+      - "uiState is Content"
+      - "all three groupings are loaded: portfolio, transaction_loan, accounting"
+      - "search field (testTag: permission-set-detail_search) is empty"
+    actions:
+      - "type 'LOAN' (4 characters) in the search field"
+    assertions:
+      - "the permission list filters in-VM with no network refetch"
+      - "codes READ_LOAN, APPROVE_LOAN, and DISBURSE_LOAN are visible under transaction_loan"
+      - "portfolio and accounting groupings with no matching codes are hidden"
+      - "transaction_loan grouping header remains visible with its matching codes"
+      - "clearing the search field restores the full grouped list"
+    priority: medium
+
+  - id: search_below_min_length_shows_full_list
+    preconditions:
+      - "uiState is Content"
+      - "all groupings are visible"
+    actions:
+      - "type a single character ('L') in the search field (testTag: permission-set-detail_search)"
+    assertions:
+      - "the search min_length validation rule fires"
+      - "the full grouped permission list remains visible and unchanged"
+      - "no filtering is applied for single-character queries"
+      - "no validation error or warning is shown to the user"
     priority: low
+
   - id: copy_fingerprint_to_clipboard
-    preconditions: ["the fingerprint header is shown"]
-    actions: ["tap Copy fingerprint"]
-    assertions: ["the sha256 fingerprint is copied to the clipboard for support / drift diagnosis"]
+    preconditions:
+      - "uiState is Content"
+      - "the header card shows fingerprint sha256:1c7d0f4a92e63b58ad4f10c2e7b9d035f6a81e2c4b0d9f37a5c6e8b1d240f9a3"
+    actions:
+      - "tap the Copy fingerprint button (testTag: permission-set-detail_copy_fingerprint)"
+    assertions:
+      - "the exact fingerprint value sha256:1c7d0f4a92e63b58ad4f10c2e7b9d035f6a81e2c4b0d9f37a5c6e8b1d240f9a3 is written to the clipboard"
+      - "a confirmation (toast or snackbar) indicates the copy succeeded"
+      - "no network call is made"
+      - "the action effect is copy_clipboard (no state transition)"
     priority: low
+
+  - id: retry_reloads_catalog_after_error
+    preconditions:
+      - "uiState is Error (error code: permissions_catalog_load_failed)"
+      - "the Retry button (testTag: permission-set-detail_error_retry) is visible"
+    actions:
+      - "tap the Retry button"
+    assertions:
+      - "uiState transitions immediately to Loading"
+      - "GET /v1/permissions is called again"
+      - "on success uiState transitions to Content with grouped codes and fingerprint"
+      - "on repeated catalog failure uiState returns to Error with the Retry button still visible"
+    priority: high
+
+  # ── endpoint / behavior coverage ──
+  - id: get_permissions_catalog_cache_first_on_cold_load
+    preconditions:
+      - "a cached catalog is present in permission_catalog_cache (from a prior successful GET /v1/permissions)"
+      - "the device is online"
+    actions:
+      - "open Permission Set Detail"
+    assertions:
+      - "the cached catalog is served immediately; uiState reaches Content without waiting for a network response"
+      - "a background SWR revalidation request is issued to GET /v1/permissions"
+      - "the screen updates silently if the SWR response contains catalog changes"
+      - "no loading shimmer is shown for the catalog portion when cache is present"
+    priority: medium
+
+  - id: renders_offline_from_cached_catalog
+    preconditions:
+      - "the device is offline"
+      - "permission_catalog_cache contains a prior catalog response"
+      - "the local secure_session holds the resolved PermissionSet (42 held codes, fingerprint sha256:1c7d0f4a92e63b58ad4f10c2e7b9d035f6a81e2c4b0d9f37a5c6e8b1d240f9a3)"
+    actions:
+      - "open Permission Set Detail while offline"
+    assertions:
+      - "uiState is Content without any network call"
+      - "groupings are rendered by joining the cached catalog with the local PermissionSet"
+      - "held-vs-total counts match the local set: portfolio 8/10, transaction_loan 6/9, accounting 4/12"
+      - "the fingerprint sha256:1c7d0f4a92e63b58ad4f10c2e7b9d035f6a81e2c4b0d9f37a5c6e8b1d240f9a3 is shown in the header"
+      - "no Error or Empty state is shown"
+    priority: high
+
+  - id: permission_set_unavailable_shows_empty_state
+    preconditions:
+      - "the local secure_session does not contain a resolved PermissionSet"
+      - "error code permission_set_unavailable is raised on the on_mount local read"
+    actions:
+      - "open Permission Set Detail"
+    assertions:
+      - "the on_mount local.permission_set read fails with error_code permission_set_unavailable"
+      - "uiState resolves to Empty (NOT Error; this path maps to the empty state per data-flow)"
+      - "the guidance panel is shown"
+      - "the catalog GET /v1/permissions may still fire but the screen remains in Empty state"
+    priority: medium
+
+  - id: refresh_from_role_rebuilds_set_on_fingerprint_change
+    preconditions:
+      - "uiState is Content for role Branch Manager"
+      - "the resolved PermissionSet holds fingerprint sha256:1c7d0f4a92e63b58ad4f10c2e7b9d035f6a81e2c4b0d9f37a5c6e8b1d240f9a3"
+      - "the Refresh button (testTag: permission-set-detail_refresh) is visible"
+    actions:
+      - "tap the Refresh-from-role button"
+    assertions:
+      - "uiState transitions to Refreshing while the existing grouped content stays visible under a progress indicator"
+      - "GET /v1/roles/{roleId}/permissions is called (password-less refresh)"
+      - "core/permissions rebuilds the PermissionSet + sha256 fingerprint"
+      - "on a changed fingerprint the encrypted session set is atomically swapped and groupings/umbrellas/fingerprint re-render, then uiState returns to Content"
+      - "on an unchanged fingerprint no visible change occurs and uiState returns to Content"
+      - "no permission-mutation request is made — the refresh is read-only"
+    priority: high
+
+  - id: refresh_failure_keeps_last_known_set
+    preconditions:
+      - "uiState is Content with a resolved PermissionSet"
+      - "GET /v1/roles/{roleId}/permissions will fail (network error or 5xx)"
+    actions:
+      - "tap the Refresh-from-role button (testTag: permission-set-detail_refresh)"
+    assertions:
+      - "uiState transitions to Refreshing then back to Content (error degrades into content, never a blank screen)"
+      - "error code permission_refresh_failure is raised"
+      - "the last-known groupings, umbrellas, and fingerprint remain visible and unchanged"
+      - "a transient error (snackbar/toast) is surfaced"
+    priority: medium
+
+  - id: toggle_umbrella_shows_short_circuit_explanation
+    preconditions:
+      - "uiState is Content"
+      - "the resolved set holds an umbrella grant (e.g. CHECKER_SUPER_USER) rendered as a chip (testTag: permission-set-detail_umbrella_chip)"
+    actions:
+      - "tap the umbrella grant chip"
+    assertions:
+      - "an inline explanation of the umbrella's short-circuit effect expands in-VM with no network refetch"
+      - "selectedUmbrella reflects the tapped grant"
+      - "tapping the chip again collapses the explanation (selectedUmbrella cleared)"
+      - "no other umbrella chip changes state"
+    priority: low
+
+  - id: back_navigates_to_capability_engine
+    preconditions:
+      - "uiState is Content, drilled in from the permission-capability-engine (view_permission_set)"
+      - "the Back button (testTag: permission-set-detail_back) is visible"
+    actions:
+      - "tap the Back button"
+    assertions:
+      - "navigation returns to the permission-capability-engine capability surface"
+      - "no network call is made"
+      - "the action effect is navigate (no local state mutation on this screen)"
+    priority: low
+
+  # ── docs acceptance ref ──
+  - id: acceptance_read_only_self_scoped_complete_set
+    preconditions:
+      - "any authenticated user opens Permission Set Detail"
+      - "requires_permission is empty (every authenticated user may view their own set)"
+    actions:
+      - "open Permission Set Detail"
+    assertions:
+      - "every raw permission code the signed-in user holds is listed, grouped by Fineract grouping (portfolio, transaction_loan, accounting, …)"
+      - "umbrella/short-circuit grants (ALL_FUNCTIONS, CHECKER_SUPER_USER) are flagged where held"
+      - "the sha256 fingerprint used for CapabilityMap drift detection is displayed and copyable"
+      - "the screen is read-only; no mutation controls are present"
+      - "the detail is self-scoped — only the signed-in user's own resolved PermissionSet is shown"
+    priority: high

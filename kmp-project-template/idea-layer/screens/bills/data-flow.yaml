@@ -15,11 +15,12 @@ store:
   value: "List<BillReminderEntity>"
   source_of_truth: "Room banking_bill_reminders (BillReminderDao)"
   remote_fetcher: none
+  builder: "StoreFactory.createOfflineStore(SourceOfTruth.of(reader=daoFlow{dao.observeAll()}, writer, delete=deleteAll, deleteAll))"
   invalidation: "core-base/database daoFlow{}(banking_bill_reminders) — absorbs Room 3 alpha05 wasmJs async-fan-out gap"
 
 platform_side_effect:
   capability: notification_scheduling
-  seam: BillNotificationGateway            # feature-local mockable interface
+  seam: BillNotificationGateway            # feature-local mockable interface (+ BillNotificationGatewayImpl delegate)
   contract: BillReminderScheduler          # expect/actual (WorkManager · UNUserNotificationCenter · no-op stubs)
   payload: BillReminderSchedule            # {billId, title, body, triggerAtMs}
   compute: "BillReminderRecurrence.nextDueDate(payload, today) + reminderTriggerMs(reminderDaysBefore, 09:00 local)"
@@ -46,10 +47,10 @@ entries:
       strategy: source_of_truth_only   # Store5 offline — Room IS the SoT, no TTL, always FRESH
       ttl_seconds: 0
       key_template: "bills:all"
-    error_paths: []                    # local read — no network error class
-    notes: "Zero bills → ScreenState.Empty. combine() of 3 Flows → one BillRemindersUiState. DataFreshness.FRESH unconditionally."
+    error_paths: []                    # local read — no network error class; VM never emits ScreenState.Error
+    notes: "Zero bills → ScreenState.Empty. combine() of 3 Flows → one BillRemindersUiState. Starts Loading until first emission. DataFreshness.FRESH unconditionally."
 
-  # ── bills-list: mark-paid — read-modify-write + cancel notification ──
+  # ── bills-list: mark-paid — read-modify-write + cancel notification (the ONLY wired list write) ──
   - screen_id: bills-list
     trigger: on_mark_paid
     auth_required: false
@@ -66,9 +67,9 @@ entries:
     produces_state: content
     cache: { strategy: source_of_truth_only, ttl_seconds: 0 }
     error_paths: []
-    notes: "getById(id) → upsert(copy(updatedAtMs=now)) → scheduler.cancel(id). Reactive stream re-emits; row bubbles to 'recently touched'."
+    notes: "getById(id) → upsert(copy(updatedAtMs=now)) → scheduler.cancel(id). Reactive stream re-emits; row bubbles to 'recently touched'. Wired to the row Paid button."
 
-  # ── bills-list: delete — remove row + cancel notification ──
+  # ── bills-list: delete — remove row + cancel notification (ViewModel API; NOT UI-surfaced, F-009) ──
   - screen_id: bills-list
     trigger: on_delete
     auth_required: false
@@ -84,7 +85,26 @@ entries:
     produces_state: content
     cache: { strategy: source_of_truth_only, ttl_seconds: 0 }
     error_paths: []
-    notes: "repository.delete(id) + scheduler.cancel(id). VM action exposed; delete/toggle controls not yet surfaced in the shipped list row UI."
+    notes: "repository.delete(id) + scheduler.cancel(id). BillRemindersAction.Delete + onDelete(id) exist and are unit-tested, but delete has NO trigger in BillRemindersListScreen — not surfaced in the shipped list row UI (F-009)."
+
+  # ── bills-list: toggle-enabled — flip flag + cancel when disabling (ViewModel API; NOT UI-surfaced, F-009) ──
+  - screen_id: bills-list
+    trigger: on_toggle_enabled
+    auth_required: false
+    endpoints: none
+    tables:
+      - name: banking_bill_reminders
+        mutation: upsert
+        filter: { id: "{billId}" }
+        columns: [enabled, updatedAtMs]
+    dtos:
+      - { name: BillReminder, role: request, api_id: upsert-bill }
+    side_effects:
+      - { capability: notification_scheduling, op: "cancel (only on true→false)", api_id: cancel-bill-notification }
+    produces_state: content
+    cache: { strategy: source_of_truth_only, ttl_seconds: 0 }
+    error_paths: []
+    notes: "getById(id) → upsert(copy(enabled=!enabled, updatedAtMs=now)); scheduler.cancel(id) only when flipping to disabled. BillRemindersAction.ToggleEnabled + onToggleEnabled(id) exist and are unit-tested, but toggle has NO trigger in BillRemindersListScreen — not surfaced in the shipped list row UI (F-009)."
 
   # ── bill-addedit: hydrate (edit mode) then local write + notification schedule ──
   - screen_id: bill-addedit
@@ -101,7 +121,7 @@ entries:
     produces_state: content
     cache: { strategy: none }
     error_paths: []
-    notes: "One-shot getById in init → hydrate _formState; skipped in add-mode (billId == null). Form is user-owned thereafter — not a Flow (would clobber in-progress edits)."
+    notes: "One-shot getById in init → hydrate _formState, then mutableScreenState = Content(snapshot). Skipped in add-mode (billId == null, Content immediately). Form is user-owned thereafter — not a Flow (would clobber in-progress edits)."
 
   - screen_id: bill-addedit
     trigger: on_submit

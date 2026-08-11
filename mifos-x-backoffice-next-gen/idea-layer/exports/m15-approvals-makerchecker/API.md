@@ -1,6 +1,6 @@
 <!-- source: screens/m15-approvals-makerchecker/api.yaml -->
-<!-- source_hash: api=5eb3fdb0179f -->
-<!-- generated: 2026-07-21T18:20:00Z -->
+<!-- source_hash: api=3cb354c554fc -->
+<!-- generated: 2026-07-31T03:23:09Z -->
 <!-- generated_from_feature_version: 1.0.0 -->
 <!-- generated_from_contract_version: 2.0.0 -->
 
@@ -14,12 +14,12 @@
 
 | Function | Method | Table | Auth | Params | Response | Cache |
 |----------|--------|-------|------|--------|----------|-------|
-| list_makercheckers | GET | maker_checker_inbox | Yes | actionName(String?), entityName(String?), makerCheckerable(Boolean?), makerDateTimeFrom(String?), offset, limit | MakerCheckerEntryDto[]: auditId, action, entity, maker, madeOn, processingResult, commandJson | CACHE_FIRST_SWR |
-| makerchecker_search_template | GET | maker_checker_search_template_cache | Yes | — | MakerCheckerSearchTemplateDto: actionNames, entityNames, processingResults | CACHE_FIRST_SWR |
-| approve_entry | POST | draft_outbox | Yes | auditId(Long), command=approve | CommandProcessingResultDto: commandId, resourceId | durable-outbox |
-| reject_entry | POST | draft_outbox | Yes | auditId(Long), command=reject | CommandProcessingResultDto: commandId, resourceId | durable-outbox |
-| delete_entry | DELETE | draft_outbox | Yes | auditId(Long) | CommandProcessingResultDto: commandId, resourceId | durable-outbox |
-| bulk_approve_entries | POST | draft_outbox | Yes | enclosingTransaction(Boolean=false), BatchRequest([]) | BatchResponseDto[]: statusCode, body per approve step | durable-outbox |
+| list_makercheckers | GET | maker_checker_inbox | Yes | actionName(String?), entityName(String?), makerCheckerable(Boolean?), makerDateTimeFrom(String?), offset(Int?), limit(Int?) | MakerCheckerEntryDto[]: auditId, actionName, entityName, maker, madeOnDate, processingResult, commandJson | cache_first_swr |
+| makerchecker_search_template | GET | maker_checker_search_template_cache | Yes | — | MakerCheckerSearchTemplateDto: actionNames, entityNames, processingResults | cache_first_swr |
+| approve_entry | POST | draft_outbox | Yes | auditId(Long), command(String)=approve | CommandProcessingResultDto: resourceId, officeId, changes | -- |
+| reject_entry | POST | draft_outbox | Yes | auditId(Long), command(String)=reject | CommandProcessingResultDto: resourceId, officeId, changes | -- |
+| delete_entry | DELETE | draft_outbox | Yes | auditId(Long) | CommandProcessingResultDto: resourceId, officeId, changes | -- |
+| bulk_approve_entries | POST | draft_outbox | Yes | enclosingTransaction(Boolean?)=false | BatchResponseDto[]: requestId, statusCode, body | -- |
 
 ## Error Handling
 
@@ -31,10 +31,11 @@ All endpoints follow standard error mapping:
 - 500 -> Server error (retryable; error state + Retry)
 
 Notes:
-- `list_makercheckers` + `makerchecker_search_template` are reads — CACHE_FIRST_SWR through a Store5 SourceOfTruth over Room so the self-scoped queue + filter chips render offline; the server scopes to the checker and the client further gates each entry by `canCheck(action,entity)`.
-- `approve_entry` / `reject_entry` / `delete_entry` are command mutations enqueued through the offline outbox with a durable idempotency key and replayed EXACTLY-ONCE via `POST /v1/batches` — a queued command can never be double-approved; the entry is locked (removed from `selectedIds`) while in flight.
+- `list_makercheckers` + `makerchecker_search_template` are reads — CACHE_FIRST_SWR through a Store5 SourceOfTruth over Room so the self-scoped queue + filter chips render offline; the server scopes results to the checker and the client further gates each entry by `canCheck(action,entity)`.
+- `approve_entry` / `reject_entry` / `delete_entry` are command mutations enqueued through the offline `draft_outbox` with a durable idempotency key and replayed EXACTLY-ONCE via `POST /v1/batches` — a queued command can never be double-approved; the entry is locked (removed from `selectedIds`) while `status IN (pending, retrying)`.
 - `bulk_approve_entries` applies one approve BatchRequest per selected audit id as an Independent batch (`enclosingTransaction=false`) so a single failed entry never aborts the rest; per-entry failures surface individually in needs-attention-inbox.
-- Replay re-checks `canCheck(action,entity)` in the domain layer: a revoked permission surfaces `BLOCKED_PERMISSION_REVOKED` and a hard rejection routes to needs-attention-inbox — never silently dropped.
+- Replay re-checks `canCheck(action,entity)` in the domain layer: a revoked permission surfaces `BLOCKED_PERMISSION_REVOKED` and a hard server-level rejection routes to needs-attention-inbox — never silently dropped.
+- All amounts in demo/contract payloads are KES (Kenyan Shilling) — e.g. `approvedLoanAmount: 75000` = KES 75,000.
 
 ## Full Contracts
 

@@ -1,0 +1,289 @@
+schema_version: "1.0"
+screen_id: coinMarkets
+feature: feat-crypto
+archetype: paging-list
+platforms: [android, ios, desktop, web]
+# ─────────────────────────────────────────────────
+# Crypto — CoinGecko-backed infinite-scroll coin-markets list.
+# Reverse-engineered (read-only) from feature/crypto + core/{network,data,store,
+# database,model}/demo/crypto. ONE screen SHIPS today:
+#   - coinMarkets  (CoinMarketsScreen)  — paged top-coins-by-market-cap list (PRIMARY, this file)
+# The data layer for a per-coin detail (coinDetailStream / CoinDetailStore / CoinDetail
+# model / CoinDetailDto / CoinDetailDao / coin_detail table) is ALREADY WIRED at HEAD,
+# but the CoinDetailScreen UI is NOT shipped — CoinMarketsScreen.onCoinClick is an
+# intentional-noop awaiting a future sub-plan. The coinDetail entry under
+# related_screens is therefore modelled as status: planned (data-wired, UI-pending).
+#
+# This is the canonical showcase of the toolkit PagingScreenContent archetype
+# (core-base/ui owns the LazyColumn + load-more trigger + footer) over a Store5
+# NETWORK_WITH_CACHE, page-keyed cache (Room source-of-truth). It backs the
+# store5-screen-state-persistence AC-17 deep-scroll-restore Maestro flow.
+# ─────────────────────────────────────────────────
+states: [loading, content, empty, error]
+initial_state: loading          # /idea sync STEP 3 — coinMarkets opens in Loading while page 0 is fetched (or Room cache is cold)
+
+# ─────────────────────────────────────────────────
+# Feature business logic (RULE-IDEA-IMPL-INTELLIGENCE-001 II-1..II-3)
+# ─────────────────────────────────────────────────
+business_logic:
+  kind: pagination
+  processing_kind: on_demand   # + background revalidation: Store5 2-min TTL (stale-while-revalidate) per page
+  processing_location: on_device
+  library_refs: [cmp-network-monitor]
+  external_library_refs: [ktorfit, ktor, store5, room]
+  description: >-
+    Stream the CoinGecko coin-markets list — the top cryptocurrencies ordered by
+    descending market cap — as an infinite-scroll paged list. The ViewModel opens
+    ONE PagingScreenStream<CoinMarket> from CryptoRepository.coinMarketsStream
+    (pageSize = 20), backed by the CoinMarketsStore (Store5 NETWORK_WITH_CACHE
+    archetype, page-keyed). PagingScreenContent (core-base/ui) owns the LazyColumn,
+    the load-more trigger when the user scrolls near the tail, and the footer
+    (loading / error+retry / end-of-list) — the screen declares only the per-row
+    content. Each page N requests CoinGecko api/v3/coins/markets?page=N+1&per_page=20
+    (1-indexed on the wire; PageKey.page is 0-indexed) and writes it to the Room
+    coin_markets table (SourceOfTruth), keyed by page so scroll position and prior
+    pages survive tab-switch, config-change and process-death. On first subscription
+    the Room reader emits any cached rows immediately, then the Ktorfit CoinGeckoApi
+    silently refreshes (stale-while-revalidate, 2-min TTL). Pull-to-refresh / initial
+    retry resets the paging cursor to page 0 (pagingStream.refresh()). Each row shows
+    the coin symbol + name and, right-aligned, the current USD price and the 24h
+    price-change percent — coloured primary (up) or error (down). Scroll retention is
+    a pure Compose concern: PagingScreenContent's internal rememberLazyListState()
+    uses rememberSaveable, so the ViewModel carries NO retention plumbing.
+  library_note: >-
+    Store5 read-only paged cache (StoreFactory.createStore with PageKey) — Fetcher =
+    Ktorfit CoinGeckoApi.getMarkets wrapped in NetworkMonitor.executeWithRetry(maxAttempts=1);
+    SourceOfTruth = CoinMarketDao (Room coin_markets, reader getPage(limit, offset),
+    writer deleteByPage + upsertAll). PagingScreenStream (core-base/store/paging) owns
+    the ScreenState + append-state + FreshnessSignal projection. cacheKey =
+    "crypto:coinMarkets". HTTP 401 is handled transparently by the Ktor Auth
+    interceptor; all other failures propagate to the DecisionEngine.
+
+# ─────────────────────────────────────────────────
+# State model — mirrors CoinMarketsViewModel.kt.
+# Read-only screen: BaseViewModel<Unit, Nothing, CoinMarketsAction> — Unit state,
+# no one-shot events, empty action surface (CoinMarketsAction is a placeholder
+# sealed interface with no variants). The reactive state lives in pagingStream,
+# not in a ViewModel UiState field.
+# ─────────────────────────────────────────────────
+state_model:
+  viewmodel: CoinMarketsViewModel
+  base: "BaseViewModel<Unit, Nothing, CoinMarketsAction>"
+  event_type: Nothing   # navigation is via onBackClick / onCoinClick callbacks; no Effect channel
+  state:
+    name: Unit
+    fields: []
+    note: >-
+      No UiState data class — the screen's reactive state is the
+      PagingScreenStream<CoinMarket> exposed as viewModel.pagingStream. Paging
+      state (Loading / Content / Empty / Error + append loading/end) is projected
+      by the framework PagingScreenContent from that stream.
+  streams:
+    - name: pagingStream
+      type: "PagingScreenStream<CoinMarket>"
+      source: "repository.coinMarketsStream(scope = viewModelScope, pageSize = 20)"
+      note: "Single paged stream. Emits initial Loading→Content/Empty/Error + per-append load-more state."
+  actions:
+    name: CoinMarketsAction
+    variants: []
+    note: >-
+      Placeholder sealed interface with ZERO variants — the read-only list has no
+      dispatch surface today. handleAction(action) = Unit. retry()/refresh are
+      exposed as plain VM methods wired to the framework footer, not MVI actions.
+  methods:
+    - { name: retry, effect: "pagingStream.refresh() — reset paging cursor to page 0 (pull-to-refresh / initial retry)" }
+
+# ─────────────────────────────────────────────────
+# Shell — plain TopAppBar with back; no bottom nav (pushed destination),
+# no refresh icon (refresh is the framework pull-to-refresh + footer-retry).
+# ─────────────────────────────────────────────────
+shell:
+  bottom_nav:
+    enabled: false
+  top_app_bar:
+    enabled: true
+    title: "Coin Markets"                       # screens_crypto_coin_markets_title
+    leading:
+      - type: icon_button
+        icon: arrow_back                          # Icons.AutoMirrored.Filled.ArrowBack
+        aria_label: "Back"                        # screens_crypto_coin_markets_back_cd
+        on_click:
+          action: "navigate_back"
+          action_contract:
+            effect: navigate
+            description: "Pop the back stack (popBackStackSafely) to return to the caller."
+    # /idea sync STEP 3 — crypto-cluster top-bar entry to the two sibling features
+    # (agreed entry model: Home "Markets" tile → coinMarkets; from here → watchlist / alerts-list).
+    actions:
+      - type: icon_button
+        icon: star                                # Icons.Filled.Star (watchlist affordance)
+        test_tag: "coinMarkets.watchlistAction"
+        aria_label: "Watchlist"                   # screens_crypto_coin_markets_watchlist_action_cd
+        on_click:
+          action: "navigate"
+          target: "watchlist"
+          action_contract:
+            effect: navigate
+            description: "Open the personal watchlist (WatchlistRoute) — cross-feature nav into feature/watchlist."
+      - type: icon_button
+        icon: notifications                       # Icons.Filled.Notifications (price alerts affordance)
+        test_tag: "coinMarkets.alertsAction"
+        aria_label: "Price alerts"                # screens_crypto_coin_markets_alerts_action_cd
+        on_click:
+          action: "navigate"
+          target: "alerts-list"
+          action_contract:
+            effect: navigate
+            description: "Open the price-alerts list (PriceAlertsListRoute) — cross-feature nav into feature/alerts."
+
+# ─────────────────────────────────────────────────
+# State components. The list is ONE PagingScreenStream rendered by
+# core-base/ui PagingScreenContent: Loading / Empty / Error+retry / append-footer
+# slots are framework-owned; Content slot = the CoinMarketRow items block.
+# ─────────────────────────────────────────────────
+state_components:
+
+  # ── LOADING — first page in flight; PagingScreenContent renders its Loading slot ──
+  loading:
+    - type: paging_list
+      component: PagingScreenContent
+      test_tag: "coinMarkets.list"
+      children:
+        - type: loading_indicator
+          aria_label: "Loading coin markets"
+          description: "Framework Loading slot while the first CoinGecko page is fetched (or the Room cache is cold)."
+
+  # ── EMPTY — stream resolves with zero coins (framework Empty slot) ──
+  empty:
+    - type: paging_list
+      component: PagingScreenContent
+      test_tag: "coinMarkets.list"
+      children:
+        - type: empty_slot
+          aria_label: "No coins to show yet"      # screens_crypto_coin_markets_empty
+          message: "No coins to show yet."
+          description: >-
+            Rendered by PagingScreenContent's framework Empty slot when page 0 returns
+            an empty list AND the Room cache is empty (e.g. the fake-backed UI test).
+
+  # ── ERROR — first-page fetch fails with no cache; framework Error slot + retry ──
+  error:
+    - type: paging_list
+      component: PagingScreenContent
+      test_tag: "coinMarkets.list"
+      children:
+        - type: error_slot
+          id: coin_markets_error
+          aria_label: "Couldn't load coin markets — tap to retry"
+          retry_label: "Retry"                    # screens_crypto_coin_markets_error_retry
+          variants:
+            - id: network_error
+              trigger: "CoinGecko unreachable / offline → NetworkMonitor.executeWithRetry(maxAttempts=1) fails"
+              note: "ScreenState.NoNetwork / Error(isNetworkError=true) — cached pages render as stale Content when present."
+            - id: rate_limited
+              trigger: "CoinGecko free-tier rate limit (HTTP 429) → fetch fails"
+              note: "Surfaces the Error slot on cold cache; warm cache renders stale pages instead."
+          on_retry:
+            action: "retry"
+            action_contract:
+              effect: call_api
+              external_library_refs: [ktorfit, store5]
+              reads_from:
+                - { source: "CoinGecko api/v3/coins/markets", dto: CoinMarket }
+              description: "CoinMarketsViewModel.retry() → pagingStream.refresh() — reset the cursor to page 0 and re-fetch from CoinGecko."
+
+  # ── CONTENT — resolved LazyColumn of CoinMarketRow items + append footer ──
+  content:
+    - type: paging_list
+      component: PagingScreenContent
+      test_tag: "coinMarkets.list"
+      scroll: vertical
+      retains_scroll: true          # rememberLazyListState()+rememberSaveable — survives tab-switch/config-change/process-death
+      item_key: "coin.id"
+      append:
+        loading_message: "Loading more…"          # screens_crypto_coin_markets_load_more_loading
+        end_message: "You're all caught up"       # screens_crypto_coin_markets_load_more_end
+        trigger: "scroll near tail → PagingScreenStream requests page N+1 (per_page 20)"
+      row:
+        type: list_row
+        component: CoinMarketRow
+        test_tag: "coinMarkets.row"
+        aria_label: "Coin market row — tap for detail"
+        layout: "Row(SpaceBetween): leading Column(symbol.uppercase + name) · trailing Column(price + 24h change)"
+        children:
+          - { type: text, variant: label_large, content_source: "coin.symbol.uppercase() (e.g. BTC)" }
+          - { type: text, variant: body_medium,  content_source: "coin.name (e.g. Bitcoin)" }
+          - { type: text, variant: title_small,  content_source: "formatPrice(coin.currentPrice) — locale-free $#.## (KMP/JS/wasmJs-safe)", aria_label: "Current price" }
+          - type: text
+            variant: body_small
+            content_source: "formatChange(coin.priceChangePercent24h) — signed +#.##%"
+            aria_label: "24 hour change"
+            accent: "coin.priceChangePercent24h >= 0 → colorScheme.primary (up); < 0 → colorScheme.error (down)"
+        on_click:
+          action: "navigate"
+          target: "coinDetail"
+          params: { coinId: "coin.id" }
+          action_contract:
+            effect: navigate
+            status: planned
+            description: >-
+              onCoinClick(coin.id) — INTENDED to navigate to CoinDetailScreen for the
+              tapped coin. NOT WIRED at HEAD: cryptoGraph passes an intentional-noop
+              onCoinClick (the CoinDetailRoute destination arrives with a future
+              sub-plan; the coinDetailStream + CoinDetailStore are already wired).
+
+# ─────────────────────────────────────────────────
+# Related screen — per-coin detail. DATA LAYER WIRED at HEAD, UI NOT SHIPPED.
+# ─────────────────────────────────────────────────
+related_screens:
+  - screen_id: coinDetail
+    status: planned                 # data-wired, UI-pending — no CoinDetailScreen/ViewModel/Route.kt at HEAD
+    viewmodel: "CoinDetailViewModel (planned)"
+    base: "BaseViewModel<Unit, Nothing, DetailAction> (expected shape, mirrors CoinMarketsViewModel)"
+    archetype: screen-content
+    route: "CoinDetailRoute(coinId: String) (planned — future sub-plan)"
+    states: [loading, content, empty, error]
+    wired_today:
+      model: "CoinDetail (core/model/demo/crypto/CoinMarket.kt) — adds circulatingSupply, maxSupply?, description"
+      store: "CoinDetailStore.provideCoinDetailStore (Store5 NETWORK_WITH_CACHE, single String key, 5-min TTL)"
+      stream: "CryptoRepository.coinDetailStream(coinId, scope): ScreenDataStream<CoinDetail>"
+      dto: "CoinDetailDto (core/network/demo/crypto/dto) — nested market_data + description.en"
+      dao: "CoinDetailDao / coin_detail Room table (SourceOfTruth)"
+      api: "CoinGeckoApi.getCoinDetail(id) → api/v3/coins/{id}"
+    description: >-
+      Planned per-coin detail. Would stream a single CoinDetail through the same
+      NETWORK_WITH_CACHE Store5 path (single String key = coinId, cacheKey
+      "crypto:coinDetail:{coinId}"), rendering name/symbol/current price, 24h high/low,
+      market cap + rank, circulating/max supply and the coin description. All of the
+      data plumbing exists at HEAD; only the Compose Screen/ViewModel/Route + nav
+      wiring (replacing CryptoNavigation's intentional-noop onCoinClick) remain.
+
+# ─────────────────────────────────────────────────
+# Test tags present in source (feature/crypto/.../TestTags.kt) — APPEND-ONLY
+# ─────────────────────────────────────────────────
+test_tags:
+  - { id: "coinMarkets.screen", screen: coinMarkets, note: "Root Scaffold surface — always rendered regardless of paging state; stable UI-test target." }
+  - { id: "coinMarkets.list",   screen: coinMarkets, note: "PagingScreenContent LazyColumn — only present in ScreenState.Content." }
+  - { id: "coinMarkets.row",    screen: coinMarkets, note: "Individual CoinMarketRow in the paged list." }
+  - { id: "coinMarkets.watchlistAction", screen: coinMarkets, provenance: proposed, note: "Top-bar Watchlist action → watchlist (P1 wiring — not in source at HEAD; the crypto-cluster entry model target)." }
+  - { id: "coinMarkets.alertsAction",    screen: coinMarkets, provenance: proposed, note: "Top-bar Price-alerts action → alerts-list (P1 wiring — not in source at HEAD)." }
+
+# ─────────────────────────────────────────────────
+# Source provenance (reverse-engineered, read-only)
+# ─────────────────────────────────────────────────
+source_refs:
+  list_screen: "feature/crypto/src/commonMain/kotlin/kpt/feature/crypto/ui/CoinMarketsScreen.kt"
+  list_route: "feature/crypto/src/commonMain/kotlin/kpt/feature/crypto/ui/CoinMarketsRoute.kt"
+  list_viewmodel: "feature/crypto/src/commonMain/kotlin/kpt/feature/crypto/ui/CoinMarketsViewModel.kt"
+  navigation: "feature/crypto/src/commonMain/kotlin/kpt/feature/crypto/navigation/CryptoNavigation.kt"
+  di: "feature/crypto/src/commonMain/kotlin/kpt/feature/crypto/di/CryptoFeatureModule.kt"
+  test_tags: "feature/crypto/src/commonMain/kotlin/kpt/feature/crypto/ui/TestTags.kt"
+  strings: "feature/crypto/src/commonMain/composeResources/values/strings.xml"
+  repository: "core/data/src/commonMain/kotlin/kpt/core/data/demo/crypto/{CryptoRepository.kt,impl/CryptoRepositoryImpl.kt}"
+  store: "core/store/src/commonMain/kotlin/kpt/core/store/demo/crypto/impl/{CoinMarketsStore.kt,CoinDetailStore.kt}"
+  network: "core/network/src/commonMain/kotlin/kpt/core/network/demo/crypto/{api/CoinGeckoApi.kt,dto/CoinMarketDto.kt,dto/CoinDetailDto.kt}"
+  database: "core/database/src/commonMain/kotlin/kpt/core/database/demo/crypto/{dao/CoinMarketDao.kt,dao/CoinDetailDao.kt,entity/CoinMarketEntity.kt,entity/CoinDetailEntity.kt,mapper/*}"
+  model: "core/model/src/commonMain/kotlin/kpt/core/model/demo/crypto/CoinMarket.kt (CoinMarket + CoinDetail)"
+  ttl_registry: "core/store/src/commonMain/kotlin/kpt/core/store/AppStoreRegistry.kt (Ttl.COIN_MARKETS = 2.minutes, Ttl.COIN_DETAIL = 5.minutes)"
+  nav_wiring: "cmp-navigation/src/commonMain/kotlin/cmp/navigation/authenticated/AuthenticatedNavigation.kt (cryptoGraph(navController)) + di/KoinModules.kt (CryptoFeatureModule)"
+  design_system: ["core-base/ui PagingScreenContent (LazyColumn + load-more + footer)", "compose material3 Scaffold/TopAppBar", "core/designsystem KptTheme"]
