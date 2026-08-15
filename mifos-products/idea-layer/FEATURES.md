@@ -15,6 +15,7 @@
 | 7a | MifosSave full page (`/mobile/group-banking`) | Bespoke full product page sourced from the mifos-x-group-banking idea-layer: hero + problem + 5 values + 8 features + meeting lifecycle + 9 group models + roles + KMP tech + demo credentials + CTA. Indigo brand. | ✅ implemented |
 | 8 | White-Label Template | `openMF/kmp-project-template` featured as the white-label starting point — band on `/mobile` + `/mobile/kmp-project-template` detail page. | ✅ implemented |
 | 9 | i18n catalog | Localized copy. | ⭘ backlog (v1.2) |
+| 10 | Real product-level app pages | Each `/mobile/<id>` rebuilt from the app's actual GitHub README (fixed 2 wrong facts: Mifos Mobile is self-service banking not "white-label banking"; "Open Banking App" was wrongly linked to `mobile-wallet` — the real repo is `mifos-x-open-banking-pisp-app`; template is branded "App Toolkit"). Componentized: AppHero/Overview/Problem/FeatureGrid/TechStrip/Downloads/Highlights, alternating-band scroll rhythm. | ✅ implemented |
 
 ## Catalog contents (mirrored from products.mifos.org)
 
