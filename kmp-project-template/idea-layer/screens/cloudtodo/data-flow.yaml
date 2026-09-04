@@ -1,0 +1,72 @@
+schema_version: "1.0"
+feature_id: feat-cloudtodo
+name: Cloud Todo data flow
+status: designed
+
+# One vertical, two directions. The READ side is the ordinary offline-first stream every other
+# screen uses; the WRITE side is what makes this feature the MUTABLE archetype showcase.
+
+entries:
+  - id: read-todo
+    direction: read
+    source: "CloudTodoRepository.todoStream(id, scope)"
+    chain:
+      - "CloudTodoScreen  ← ScreenDataStream<CloudTodo>"
+      - "CloudTodoViewModel"
+      - "CloudTodoRepository.todoStream(id)  → store.asScreenStream(key, cacheKey = AppCacheKeys.cloudTodo(id))"
+      - "AppStoreRegistry.CloudTodo (read Store, StoreFactory.createStore)"
+      - "SourceOfTruth: CloudTodoDao.observeById(id)  → Room table `cloud_todos`"
+      - "Fetcher: JsonPlaceholderApi.getTodo(id)  → GET /todos/{id}"
+    fetch_policy: CACHE_FIRST_SWR
+    note: >-
+      Default asScreenStream policy — the cached row renders immediately and revalidation is
+      band-gated (only when the freshness band is Stale/VeryStale AND the device is online).
+
+  - id: write-optimistic
+    direction: write
+    source: "CloudTodoRepository.toggleCompleted(todo)"
+    policy: "MutationPolicy.Optimistic"
+    chain:
+      - "CloudTodoViewModel"
+      - "CloudTodoRepository.toggleCompleted(todo)"
+      - "MutationGateway.upsert(store, key, value, Optimistic)"
+      - "AppStoreRegistry.CloudTodoMutable (MutableStore, StoreFactory.createMutableStore)"
+      - "SourceOfTruth writer → CloudTodoDao.upsert  (Room `cloud_todos`)   ← lands FIRST"
+      - "Updater → PUT /todos/{id}                                          ← queued, async"
+      - "Bookkeeper (RoomBookkeeper) records a failed sync for retry on reconnect"
+    reemits: "read-todo — the read Store observes the same `cloud_todos` table, so the UI updates at once"
+    note: >-
+      The read Store and the MutableStore are DIFFERENT Store5 instances over the SAME Room table.
+      That is the shape the MUTABLE archetype prescribes, because in Store5 5.1 MutableStore is not
+      a Store subtype and cannot feed asScreenStream directly.
+
+  - id: write-online-required
+    direction: write
+    source: "CloudTodoRepository.completeOnline(todo)"
+    policy: "MutationPolicy.OnlineRequired"
+    returns: "MutationResult<CloudTodo>"
+    chain:
+      - "CloudTodoViewModel"
+      - "CloudTodoRepository.completeOnline(todo)"
+      - "MutationGateway  → network FIRST"
+      - "on success: ingest the server record under its real key → SourceOfTruth write"
+      - "on offline:  MutationResult.Blocked(OFFLINE) — NO local write at all"
+      - "on divergence: conflictStrategy.resolve(server, client) in the Updater → ConflictInbox.record"
+    note: "The only path in the template that refuses to write rather than writing locally."
+
+  - id: conflict-resolution
+    direction: write
+    source: "ConflictInbox"
+    chain:
+      - "SyncAndDraftsScreen (feature/settings, SHIPPED) ← ConflictInboxViewModel ← observePending(): Flow<List<ConflictEntry>>"
+      - "RoomConflictInbox → ConflictDao → Room table `framework_write_conflicts` (schema v11→v12)"
+      - "resolve(conflictId, ACCEPT_SERVER | RETRY_LOCAL)"
+    note: >-
+      Server-wins is applied to the store at record time; the user's payload is preserved as
+      localPayloadJson so RETRY_LOCAL can re-open the form pre-filled.
+
+invariants:
+  - "A repository NEVER calls a DAO write directly — every mutation routes through MutationGateway."
+  - "Read and write share one Room table, so a Store stream and a DAO query can never diverge."
+  - "MutationResult is exhaustive: no offline write or conflict can be silently swallowed."
+  - "The MutableStore cannot be registered with StoreCacheManager (not a Store subtype); its data is still purged at logout via the read store's deleteAll on the shared table."

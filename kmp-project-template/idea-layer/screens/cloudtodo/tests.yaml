@@ -1,0 +1,90 @@
+schema_version: "1.0"
+feature_id: feat-cloudtodo
+name: Cloud Todo write-path test plan
+status: designed
+
+# The data layer already has unit tests (DefaultMutationGatewayTest, MutationGatewayContractTest,
+# RoomConflictInboxTest, DeleteSyncTest, CloudTodoRepositoryTest). What has never been tested is the
+# UI binding — that every MutationResult arm actually reaches a rendered state. These scenarios
+# cover that gap, which is the whole reason the feature exists.
+
+state_coverage:
+  cloud-todo-detail:
+    loading:    "todoStream(id) has not emitted — ScreenContent renders the loading slot."
+    content:    "CloudTodo present; both write actions enabled."
+    empty:      "No cached row and none fetched."
+    error:      "Fetch failed with no cached fallback."
+    no_network: "Offline with no cached row; Optimistic still works, OnlineRequired is Blocked."
+# conflict-inbox is NOT a screen of this feature — resolution is the shipped
+# feature/settings SyncAndDraftsScreen, covered by that module's own tests.
+
+scenarios:
+  - id: T1-read-stream-renders
+    screen: cloud-todo-detail
+    given: "the cloud_todos row for id=1 is cached"
+    when:  "the screen opens"
+    then:  "state=content and todo_summary binds title + completed from the stream"
+
+  - id: T2-optimistic-applies-locally-offline
+    screen: cloud-todo-detail
+    given: "the device is OFFLINE"
+    when:  "toggle_optimistic is tapped"
+    then:  >-
+      the local write lands immediately, the read stream re-emits with the flipped `completed`,
+      and the outcome card shows Applied. NOTHING is blocked — this is the policy difference.
+    asserts:
+      - "todo_summary reflects the new completed value without a network round-trip"
+      - "outcome_card is visible"
+
+  - id: T3-online-required-blocked-offline
+    screen: cloud-todo-detail
+    given: "the device is OFFLINE"
+    when:  "complete_online is tapped"
+    then:  "MutationResult.Blocked(OFFLINE) is returned and NOTHING is written"
+    asserts:
+      - "outcome_card shows the Blocked copy naming OFFLINE"
+      - "todo_summary is UNCHANGED — an OnlineRequired write must not fall back to a local write"
+    note: "This is the single most important assertion in the feature — it is the policy contract."
+
+  - id: T4-online-required-applies-online
+    screen: cloud-todo-detail
+    given: "the device is ONLINE"
+    when:  "complete_online is tapped"
+    then:  "MutationResult.Applied(synced=true) and the server record is ingested"
+
+  - id: T5-conflict-hands-off-to-shipped-surface
+    screen: cloud-todo-detail
+    given: "the server echo diverges from the local payload"
+    when:  "the write completes"
+    then:  >-
+      MutationResult.Conflicted(conflictId) is rendered, server-wins is already applied to the
+      store, and outcome_resolve_conflict navigates to the SHIPPED SyncAndDraftsRoute
+    asserts:
+      - "the conflictId in the outcome matches the recorded ConflictEntry"
+      - "the Resolve action calls navigateToSyncAndDrafts()"
+    note: >-
+      Resolution BEHAVIOUR (list, ACCEPT_SERVER, RETRY_LOCAL, empty state) is owned and tested by
+      feature/settings. Re-testing it here would assert someone else's contract and imply this
+      feature owns a conflict screen.
+
+# Compose UI tests (RULE-KMP-COMPOSE-UITEST-001) — one per on_click action_contract.
+ui_test_plan:
+  file: "feature/cloudtodo/src/commonTest/.../CloudTodoScreenUiTest.kt"
+  covers_test_tags:
+    - cloudtodo_toggle_optimistic
+    - cloudtodo_complete_online
+    - cloudtodo_outcome
+    - cloudtodo_outcome_dismiss
+    - cloudtodo_outcome_resolve
+  note: >-
+    100% on_click coverage is required by RULE-IMPL-BEHAVIOR-EXECUTED-001 — the @Test count must
+    equal the declared action_contract count. After the conflict-inbox removal that is 5 contracts
+    on the single screen: navigate_back, toggle_completed_optimistic, complete_online_required,
+    dismiss_outcome, navigate-to-sync-and-drafts.
+
+device_verification:
+  required: true
+  note: >-
+    The offline arms (T2, T3) cannot be proven by a fixture — they need airplane mode on a real
+    device or emulator. Per RULE-IDEA-TESTERS-001 an authored Maestro flow is LOCKED, not VERIFIED,
+    until executed; a `pending-device-verify` verdict blocks status:done.
