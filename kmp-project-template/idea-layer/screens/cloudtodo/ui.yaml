@@ -1,0 +1,199 @@
+schema_version: "1.0"
+# ─────────────────────────────────────────────────────────────────────────────
+# feature/cloudtodo — Cloud Todo write-path demo (modeled from the shipped DATA layer).
+#
+# ⚠ PROVENANCE: the DATA layer is FULLY SHIPPED (PR #294 store-as-single-write-SoT):
+# CloudTodoStore (read Store + MutableStore over the same `cloud_todos` Room table),
+# CloudTodoRepository, MutationGateway/DefaultMutationGateway, ConflictInbox/RoomConflictInbox,
+# DeleteSync, and their unit tests. What does NOT exist is any UI: a grep across
+# feature/** and cmp-navigation/** finds ZERO references to CloudTodoRepository, so the
+# entire write architecture has no on-device surface. The screens below are MODELED FROM
+# THE REPOSITORY CONTRACT — composable / ViewModel / Route names are PROPOSED.
+#
+# ⚠ WHY THIS MATTERS: MutationResult is a sealed interface precisely so a ViewModel cannot
+# silently swallow an offline write or a conflict. With no screen, that exhaustiveness has
+# never been exercised. (An earlier revision also claimed the conflict-resolution screen did not
+# exist — it DOES: SyncAndDraftsScreen + ConflictInboxViewModel in feature/settings are shipped and
+# reachable from BackboneRegistry. Corrected 2026-09-03; this feature adds NO second conflict
+# surface — that would be G-IMPL-DUP.)
+# ─────────────────────────────────────────────────────────────────────────────
+screen_id: cloud-todo-detail
+name: Cloud Todo (write-path demo)
+status: designed                  # enriched → designed. /idea approve is the human gate before /implement
+feature: feat-cloudtodo
+
+# RULE-SCREEN-VISUAL-ASSETS-001 (SVA-1). Explicitly EMPTY — the sanctioned opt-out for a screen with
+# no visual role. This is a dev-menu diagnostic surface: every glyph is a Material Symbols icon from
+# the design system (cloud_sync / bolt / cloud_upload / cloud_off / merge_type), there is no
+# illustration, hero, mascot, empty-state artwork or thumbnail to generate. Declared rather than
+# omitted so the gate reads intent, not an oversight.
+visual_assets: []
+feature_profile:
+  combo_id: content_input_submit
+  facets: [content, input, offline]
+  archetype: screen-content
+  store_archetype: MUTABLE
+  recipe_ref: CORE_BASE_STORE.md
+  heal: auto
+platforms: [android, ios, desktop, web]
+states: [loading, content, empty, error, no_network]
+initial_state: loading
+
+# Flat component inventory (born-default contract). Per-screen detail + on_click
+# action_contracts live under `screens[]` below.
+components:
+  - { id: todo_summary,             type: card,           screen: cloud-todo-detail }
+  - { id: toggle_optimistic,        type: button,         screen: cloud-todo-detail }
+  - { id: complete_online,          type: outlined_button, screen: cloud-todo-detail }
+  - { id: outcome_card,             type: card,           screen: cloud-todo-detail }
+  - { id: outcome_resolve_conflict, type: button,         screen: cloud-todo-detail }
+
+business_logic:
+  kind: crud
+  processing_kind: reactive_offline_first
+  library_refs: [store5, room, ktor]
+  external_library_refs: [store5]
+  description: >-
+    Reads one todo through CloudTodoRepository.todoStream(id) — a CACHE_FIRST_SWR
+    ScreenDataStream over the read Store (createStore, Room SourceOfTruth on `cloud_todos`).
+    Writes go through the MutationGateway, never a DAO call, so the read stream and any DAO
+    query over the same table stay coherent. Two actions demonstrate the two MutationPolicy
+    arms: toggleCompleted() is Optimistic (Room-first — lands locally at once, queues the
+    network leg, retries on reconnect via the Bookkeeper), and completeOnline() is
+    OnlineRequired (awaits the server; offline it returns MutationResult.Blocked(OFFLINE) and
+    writes NOTHING). The screen renders the returned MutationResult verbatim so all four arms
+    — Applied(synced|queued), Blocked(reason), Conflicted(id), Failed(rolledBack) — are
+    observable on device rather than only asserted in tests.
+
+data_source:
+  read: "CloudTodoRepository.todoStream(id, scope): ScreenDataStream<CloudTodo>"
+  writes:
+    - "CloudTodoRepository.toggleCompleted(todo)            # MutationPolicy.Optimistic"
+    - "CloudTodoRepository.completeOnline(todo)             # MutationPolicy.OnlineRequired → MutationResult"
+    - "ConflictInbox.observePending() / resolve(id, resolution)"
+  store: "AppStoreRegistry.CloudTodo (read) + AppStoreRegistry.CloudTodoMutable (write)"
+
+screens:
+  - id: cloud-todo-detail
+    composable: CloudTodoScreen              # PROPOSED
+    viewmodel: CloudTodoViewModel            # PROPOSED
+    route: CloudTodoRoute                    # PROPOSED
+    states: [loading, content, empty, error, no_network]
+    scaffold:
+      top_app_bar:
+        title: "Cloud Todo"                  # screens_cloudtodo_detail_title
+        navigation_icon: arrow_back
+        test_tag: cloudtodo_detail_app_bar
+        on_click:
+          action: "navigate_back"
+          action_contract:
+            effect: navigate
+            description: "popBackStackSafely() to the previous destination."
+    components:
+      - id: todo_summary
+        type: card
+        variant: todo_summary_card
+        test_tag: cloudtodo_summary
+        binds: { title: "{todo.title}", completed: "{todo.completed}" }
+        note: "Reflects the read stream; an Optimistic write re-emits here immediately."
+
+      - id: toggle_optimistic
+        type: button
+        label: "Toggle (optimistic)"         # screens_cloudtodo_toggle_optimistic_text
+        test_tag: cloudtodo_toggle_optimistic
+        on_click:
+          action: "toggle_completed_optimistic"
+          params: { todo: "{todo}" }
+          action_contract:
+            effect: mutate
+            writes_to: "CloudTodoRepository.toggleCompleted(todo)"
+            policy: Optimistic
+            description: >-
+              Room-first write through MutationGateway.upsert with MutationPolicy.Optimistic.
+              Lands locally at once (the read stream re-emits), queues the network sync, and
+              retries on reconnect. Offline this still succeeds locally — that is the point.
+
+      - id: complete_online
+        type: outlined_button
+        label: "Complete (online-required)"  # screens_cloudtodo_complete_online_text
+        test_tag: cloudtodo_complete_online
+        on_click:
+          action: "complete_online_required"
+          params: { todo: "{todo}" }
+          action_contract:
+            effect: mutate
+            writes_to: "CloudTodoRepository.completeOnline(todo)"
+            policy: OnlineRequired
+            returns: "MutationResult<CloudTodo>"
+            description: >-
+              Network-first write. Awaits the server and ingests the real record; OFFLINE it
+              returns MutationResult.Blocked(OFFLINE) and writes nothing. The returned result
+              is rendered by outcome_card.
+
+      - id: outcome_card
+        type: card
+        variant: outcome_card
+        test_tag: cloudtodo_outcome
+        visible_when: "lastOutcome != null"
+        note: >-
+          Renders the LAST MutationResult exhaustively — Applied(synced) / Applied(queued) /
+          Blocked(OFFLINE|UNAUTHENTICATED|PRECONDITION_FAILED) / Conflicted(conflictId) /
+          Failed(rolledBack). Conflicted links out to the shipped Sync & Drafts screen.
+        on_click:
+          action: "dismiss_outcome"
+          action_contract:
+            effect: state
+            writes_to: "CloudTodoViewModel.lastOutcome = null"
+            description: "Dismiss the outcome card."
+
+      - id: outcome_resolve_conflict
+        type: button
+        label: "Resolve conflict"            # screens_cloudtodo_outcome_resolve_text
+        test_tag: cloudtodo_outcome_resolve
+        visible_when: "lastOutcome is Conflicted"
+        on_click:
+          action: "navigate"
+          target: "settings/sync-and-drafts"
+          route_symbol: "kpt.feature.settings.SyncAndDraftsRoute"
+          action_contract:
+            effect: navigate
+            description: >-
+              navigateToSyncAndDrafts() — the SHIPPED conflict surface (SyncAndDraftsScreen +
+              ConflictInboxViewModel, feature/settings). This feature deliberately builds no
+              conflict screen of its own; doing so would duplicate a shipped surface (G-IMPL-DUP).
+
+# A `conflict-inbox` screen is deliberately ABSENT. Resolution is the SHIPPED
+# feature/settings SyncAndDraftsScreen (ConflictInboxViewModel + ACCEPT_SERVER / RETRY_LOCAL rows,
+# feature_settings_conflicts_* strings, SyncAndDraftsRoute reachable from BackboneRegistry).
+# An earlier revision scaffolded a duplicate here; removed 2026-09-03 — see docs.yaml#surprises.
+
+state_model:
+  initial: ScreenState.Loading
+  loading: "todoStream(id) has not emitted yet."
+  content: "CloudTodo present — summary + both write actions enabled."
+  empty: "No cached todo and none fetched."
+  error: "Fetch failed with no cached fallback (AppErrorMapper.categorize)."
+  no_network: "Offline with no cached row. Optimistic writes still work; OnlineRequired is Blocked."
+
+test_tags:              # provenance: proposed — not present in source (UI module unshipped)
+  - cloudtodo_detail_app_bar
+  - cloudtodo_summary
+  - cloudtodo_toggle_optimistic
+  - cloudtodo_complete_online
+  - cloudtodo_outcome
+  - cloudtodo_outcome_resolve
+  - cloudtodo_outcome_dismiss
+
+i18n_keys:
+  - screens_cloudtodo_detail_title
+  - screens_cloudtodo_toggle_optimistic_text
+  - screens_cloudtodo_complete_online_text
+  - screens_cloudtodo_outcome_resolve_text
+  # Conflict-list copy is NOT duplicated here — feature/settings already ships
+  # feature_settings_conflicts_* for the shipped SyncAndDraftsScreen.
+
+source_refs:
+  - "core/store/demo/cloudtodo/impl/CloudTodoStore.kt"
+  - "core/data/demo/cloudtodo/CloudTodoRepository.kt"
+  - "core-base/store/mutation/MutationGateway.kt"
+  - "core-base/store/mutation/conflict/ConflictInbox.kt"

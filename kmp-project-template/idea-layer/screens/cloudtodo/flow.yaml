@@ -1,0 +1,91 @@
+schema_version: "1.0"
+feature_id: feat-cloudtodo
+name: Cloud Todo write-path flow
+status: designed
+flow_id: flow-cloudtodo-write
+
+# ── How a user reaches this surface ──
+entry_points:
+  - id: dev-menu
+    from: settings
+    label: "Cloud Todo (dev)"
+    note: >-
+      Dev-menu entry, same pattern as ShowcaseRegistry's State/Transition galleries — hidden on
+      release builds (isReleaseBuild()) and stripped by remove-demo.sh with the demo fence.
+  - id: conflict-handoff
+    from: cloud-todo-detail
+    label: "Resolve conflict"
+    note: >-
+      A Conflicted outcome hands off to the SHIPPED SyncAndDraftsScreen (feature/settings), which
+      already lists pending ConflictEntry rows with ACCEPT_SERVER / RETRY_LOCAL. This feature adds
+      no conflict screen of its own.
+
+inbound_routes:
+  - { from: settings,          to: cloud-todo-detail,         trigger: "dev-menu entry tapped" }
+  - { from: cloud-todo-detail, to: settings/sync-and-drafts,  trigger: "Resolve conflict tapped on a Conflicted outcome" }
+
+transitions:
+  # ── read path ──
+  - { from: cloud-todo-detail, on: "screen opened",              to: cloud-todo-detail, state: loading,    note: "todoStream(id) not yet emitted" }
+  - { from: cloud-todo-detail, on: "stream emits CloudTodo",     to: cloud-todo-detail, state: content }
+  - { from: cloud-todo-detail, on: "stream empty, offline",      to: cloud-todo-detail, state: no_network, note: "CACHE_FIRST_SWR: offline + no cached row" }
+  - { from: cloud-todo-detail, on: "fetch failed, no cache",     to: cloud-todo-detail, state: error }
+
+  # ── Optimistic write (MutationPolicy.Optimistic) ──
+  - from: cloud-todo-detail
+    on: "toggle_optimistic tapped"
+    to: cloud-todo-detail
+    state: content
+    outcome: "Applied"
+    note: >-
+      Room-first — the local write lands immediately and the read stream re-emits, so the summary
+      flips before any network call. Works identically offline; the network leg is queued.
+  - from: cloud-todo-detail
+    on: "reconnect after an offline optimistic write"
+    to: cloud-todo-detail
+    state: content
+    outcome: "Applied(synced=true)"
+    note: "OfflineSubmitSyncer drains the Bookkeeper and replays the queued write."
+
+  # ── OnlineRequired write (MutationPolicy.OnlineRequired) ──
+  - from: cloud-todo-detail
+    on: "complete_online tapped WHILE ONLINE"
+    to: cloud-todo-detail
+    outcome: "Applied(synced=true)"
+    note: "Server awaited; the real server record is ingested under its server key."
+  - from: cloud-todo-detail
+    on: "complete_online tapped WHILE OFFLINE"
+    to: cloud-todo-detail
+    outcome: "Blocked(OFFLINE)"
+    note: >-
+      NOTHING is written — not even locally. This is the behavioural difference between the two
+      policies and the reason the demo asks the user to turn the network off.
+  - from: cloud-todo-detail
+    on: "server record diverged from the local payload"
+    to: cloud-todo-detail
+    outcome: "Conflicted(conflictId)"
+    note: >-
+      Server-wins is applied to the store immediately; the user's payload is preserved in the
+      ConflictInbox and the outcome card offers the Resolve conflict action.
+  - from: cloud-todo-detail
+    on: "permanent reject"
+    to: cloud-todo-detail
+    outcome: "Failed(rolledBack)"
+    note: "rolledBack reports whether the optimistic local write was undone."
+
+  # ── conflict resolution — HANDED OFF, not implemented here ──
+  - from: cloud-todo-detail
+    on: "outcome_resolve_conflict tapped"
+    to: settings/sync-and-drafts
+    note: >-
+      navigateToSyncAndDrafts(). Everything past this edge is the SHIPPED surface: the screen lists
+      pending ConflictEntry rows and resolves them via ACCEPT_SERVER / RETRY_LOCAL. Those
+      transitions belong to feature/settings and are deliberately NOT restated here — restating them
+      would imply this feature owns a conflict screen, which it must not (G-IMPL-DUP).
+
+exit_points:
+  - { from: cloud-todo-detail, to: settings, trigger: "back" }
+
+notes:
+  - "No auth. Backend is JSONPlaceholder — writes are echoed, not persisted upstream."
+  - "Every transition above is observable on device; that is the point of the feature."

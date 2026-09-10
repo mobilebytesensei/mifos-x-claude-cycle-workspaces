@@ -1,0 +1,68 @@
+schema_version: "1.0"
+feature_id: feat-cloudtodo
+name: Cloud Todo API surface
+status: designed
+
+# JSONPlaceholder — a public fake REST API. Writes are ECHOED, not persisted upstream, which is
+# exactly what makes it safe as a shipped demo: the write PATH is real (Updater → network → server
+# echo → conflict resolution → SoT write-back) while the remote state is disposable.
+base_url_ref: "app-profile/app.yaml#network.access_points[id=jsonplaceholder]"
+
+endpoints:
+  - id: get-todo
+    method: GET
+    path: "/todos/{id}"
+    used_by: "CloudTodoStore fetcher (read Store + MutableStore both)"
+    request: { path_params: { id: Int } }
+    response:
+      shape: "{ userId: Int, id: Int, title: String, completed: Boolean }"
+      maps_to: CloudTodo
+    notes:
+      - "/todos/1 is the stable demo row the screen opens on."
+      - "Feeds the Room SourceOfTruth on `cloud_todos`; the read stream observes that table."
+
+  - id: put-todo
+    method: PUT
+    path: "/todos/{id}"
+    used_by: "CloudTodoStore Updater (the write leg of createMutableStore)"
+    request:
+      path_params: { id: Int }
+      body: "{ id: Int, title: String, completed: Boolean }"
+    response:
+      shape: "{ id: Int, title: String, completed: Boolean }   # server echo"
+      maps_to: CloudTodo
+    notes:
+      - >-
+        The response is the SERVER ECHO, and it is the value conflict resolution runs against:
+        the Updater calls conflictStrategy.resolve(server = echo, client = value) and writes the
+        resolved result back to the SourceOfTruth.
+      - >-
+        Conflict resolution lives HERE, in the caller's Updater, not in StoreFactory — Store5 types
+        the updater `Updater<Key, Output, *>`, so the factory cannot reach this server value.
+      - "A failed write (offline) is recorded by RoomBookkeeper and retried on reconnect."
+
+# ── Not an HTTP surface, but the contract the UI binds to ──
+local_contracts:
+  - id: mutation-gateway
+    source: "core-base/store/mutation/MutationGateway.kt"
+    operations:
+      - "upsert(store, key, value, policy): MutationResult<V>"
+      - "delete(store, key, deleteEndpoint, bookkeeper, policy): MutationResult<Unit>"
+      - "command(spec, policy): MutationResult<R>"
+    note: "The single write door — a repository never calls a DAO write directly."
+
+  - id: conflict-inbox-interface        # the framework INTERFACE, not a screen of this feature
+    source: "core-base/store/mutation/conflict/ConflictInbox.kt"
+    consumed_by: "feature/settings SyncAndDraftsScreen (SHIPPED) — this feature only navigates to it"
+    operations:
+      - "record(entity, key, localPayloadJson, serverPayloadJson, formRoute): String"
+      - "observePending(): Flow<List<ConflictEntry>>"
+      - "resolve(conflictId, resolution)"
+    note: "Backed by RoomConflictInbox over ConflictDao / ConflictEntity (schema v11→v12)."
+
+error_mapping:
+  - { condition: "offline + MutationPolicy.OnlineRequired", result: "MutationResult.Blocked(OFFLINE)",              ui: "Blocked card — nothing was written" }
+  - { condition: "unauthenticated",                          result: "MutationResult.Blocked(UNAUTHENTICATED)",      ui: "Blocked card" }
+  - { condition: "server precondition failed pre-write",     result: "MutationResult.Blocked(PRECONDITION_FAILED)",  ui: "Blocked card" }
+  - { condition: "server echo diverges from local payload",  result: "MutationResult.Conflicted(conflictId)",        ui: "Conflict card + Resolve action" }
+  - { condition: "permanent reject",                         result: "MutationResult.Failed(cause, rolledBack)",     ui: "Failed card, states rollback" }
