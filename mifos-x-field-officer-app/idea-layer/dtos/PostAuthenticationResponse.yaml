@@ -1,0 +1,84 @@
+# PostAuthenticationResponse — what Fineract returns from POST authentication.
+#
+# Field list taken from the REAL response captured off apis.mifos.community on 2026-10-02, not from
+# a spec document. idea-layer-first (P4 Q1): this is the contract.
+
+schema_version: "1.0"
+dto: PostAuthenticationResponse
+kind: response
+used_by:
+  feature: signin
+  endpoint: authentication
+  method: POST
+
+# ──────────────── THE DECISIVE PROPERTY ────────────────
+success_condition:
+  expression: "status == 200 AND authenticated == true"
+  why: >
+    NOT status alone. Fineract answers HTTP 200 with `authenticated: false` for a BAD CREDENTIAL, so
+    a successful CALL is not a successful LOGIN. Both v1 and the port check the flag explicitly;
+    dropping that check admits a failed login.
+
+# ──────────────── NULLABILITY IS THE CONTRACT ────────────────
+# EVERY field is nullable, deliberately. v1 force-unwrapped `userId!!`, `officeId!!` and
+# `permissions!!`, so any instance answering 200 without one of them crashed the app at the moment
+# of a SUCCESSFUL login. Nullable + a defaulting read is what makes that impossible.
+fields:
+  - { name: username,                       type: string,   nullable: true }
+  - { name: userId,                         type: long,     nullable: true, port_default: 0 }
+  - { name: base64EncodedAuthenticationKey, type: string,   nullable: true }
+  - { name: authenticated,                  type: boolean,  nullable: true }
+  - { name: officeId,                       type: int,      nullable: true, port_default: 0 }
+  - { name: officeName,                     type: string,   nullable: true }
+  - { name: roles,                          type: "array<Role>",   nullable: true, port_default: "[]" }
+  - { name: permissions,                    type: "array<string>", nullable: true, port_default: "[]" }
+
+deserialization:
+  json_config:
+    isLenient: true
+    ignoreUnknownKeys: true
+    explicitNulls: false
+    coerceInputValues: true
+  load_bearing:
+    ignoreUnknownKeys: >
+      Fineract adds fields across versions. Without it a single new key fails deserialization and
+      locks every user out of an app that worked yesterday.
+    permissions_size: >
+      A live response carries a ~600-entry `permissions[]`. Any consumer that assumes a small list
+      will be surprised.
+
+# ──────────────── KNOWN GAP (inherited, not introduced) ────────────────
+known_gaps:
+  - id: no-expect-success
+    description: >
+      The shared HTTP client does not set `expectSuccess`, so a NON-2XX body is deserialized onto
+      this DTO's defaults and reaches the caller as a successful empty result. A 401 error payload
+      therefore parses "fine", with every field null.
+    mitigation_here: >
+      The explicit `authenticated == true` check is what saves this endpoint: an error body cannot
+      satisfy it. The guard is that `authenticated` must NOT default to true. If anyone ever gives
+      it a `true` default, sign-in silently accepts failures.
+    locked_by: "core/network AuthDtoContractTest.anErrorBodyDoesNotMasqueradeAsASuccessfulLogin"
+    scope: "core-base/network — raised for upstream; not fixable from this feature"
+
+# ──────────────── WHAT THE APP DOES WITH IT ────────────────
+on_success:
+  persists:
+    - "username"
+    - "userId"
+    - "base64EncodedAuthenticationKey  (RAW — see credential_handoff)"
+    - "officeId / officeName"
+    - "permissions"
+  does_not_persist:
+    - "the raw password (never written; nothing reads it)"
+
+credential_handoff:
+  stored: "the RAW base64EncodedAuthenticationKey"
+  wire_format: "AuthScheme.BASIC.format prepends 'Basic ' at request time"
+  why_it_matters: >
+    Storing a PRE-FORMATTED "Basic <token>" produced `Authorization: Basic Basic <token>` and 401'd
+    every authenticated call while sign-in itself kept working. Measured on device 2026-10-01.
+
+locked_by:
+  - "core/network AuthDtoContractTest (5 tests, real captured payload)"
+  - "feature/signin SignInViewModelTest (authenticated-false is not success)"

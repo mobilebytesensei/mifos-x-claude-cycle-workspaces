@@ -12,10 +12,22 @@
 |-----------|-------|
 | Architecture | Client-Server (KMP mobile → REST API) |
 | Backend Type | REST (Apache Fineract) |
-| Base URL | https://demo.mifos.io/fineract-provider/api/v1 |
+| Base URL | https://apis.mifos.community/1.0/field/v1/ |
 | Auth Method | Basic Auth (base64 username:password) |
 | Database | Server: MySQL/PostgreSQL (Fineract), Client: SQLite (offline) |
-| API Docs | https://demo.mifos.io/fineract-provider/api/docs |
+| API Docs | https://apis.mifos.community/1.0/field/swagger-ui/ |
+
+> **Base URL corrected 2026-10-02.** This table read
+> `https://demo.mifos.io/fineract-provider/api/v1` — the plain-Fineract path, which is the EXACT
+> value that 404'd on every call during the 2026-10-01 incident and took a packet-level probe to
+> diagnose, because the UI reported "Login failed. Check your credentials and try again." The live
+> instance is an API-gateway deployment: `apis.mifos.community` + base path `1.0/field/v1/`, tenant
+> `mifos-bank-1`. Verified on a physical device the same day — clean install, sign-in, 100 real
+> clients. The authoritative copy is `app-profile/app.yaml#network.access_points[id=mifos]`, which
+> `syncForkConfig` turns into `AppAccessPoints`; `ServerConfigAccessPointParityTest` (core/network)
+> fails the build if the two ever diverge again. Keeping the stale value here was not harmless: it
+> is a documented input, and the Stitch renderer put `demo.mifos.io` on the sign-in mockups 10
+> times, where it reads as a verified fact about where the app connects.
 
 ### Key Entities / Data Model
 
