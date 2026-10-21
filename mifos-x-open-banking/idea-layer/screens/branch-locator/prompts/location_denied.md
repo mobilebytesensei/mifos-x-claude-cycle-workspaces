@@ -1,0 +1,95 @@
+---
+ui_yaml_sha: d391c854afce9fba00f2238f990383086957bff54113cc5108c997f5d69fc58b
+design_md_hash: dad4a3ee16afd9663516aa33ebf1647c1d6ede5dc90a1c9bb2c448cd63c225fb
+app_shell_hash: e267a146a693f7d8b57131c73d180b6010ff34beca799edb4ca3c85c5879e0b4
+design_read_hash: 8f83034d22434d75ef7d377035c51c37ef557f4bbb2e0bf510409a4804964a50
+content_hash: 3c8aa899841626870b13828b30a6fc840b438da36c5d584cf91304dd1aa37a1b
+
+design_read_aesthetic: minimalist-ui
+design_read_dials: {variance: 3, motion: 2, density: 5}
+aesthetic_variant_override: null
+archetype: index_list
+
+feature: branch-locator
+state: location_denied
+state_visibility: location_denied
+
+project_id: '17153754672098888646'
+design_system_id: '2047482829824847747'
+
+generated_by: stitch-prompt-build.ts v2.0.0
+prompt_template_version: stitch-per-state-v3.0.0
+craft_rules_version: v1.0.0
+---
+
+# branch-locator — location_denied state
+
+> Auto-generated from screens/branch-locator/ui.yaml @ SHA 96a4487cba1f018f
+> Stitch DesignSystem: 2047482829824847747
+> DO NOT redeclare colors / fonts / spacing — they live in DESIGN.md.
+
+↓↓↓ MOCKUP PROMPT
+
+> DO NOT invent navigation, tabs, or screens beyond the declared app-shell (Home, Accounts, Pay, More) plus the composition below. Every nav item you render MUST come from that list.
+> Only elements that navigate or perform an action may look tappable (cursor, ripple, pressed state). DO NOT add tap affordances to decorative content — page titles, section headings, avatars, standalone icons, badges, and static labels are NOT interactive.
+
+## Archetype: index_list
+
+## Layout
+- type: scrollable_column
+- padding: default
+- alignment: start
+- responsive: any multi-column region MUST be mobile-first and collapse to a single column at narrow/phone widths — never a fixed multi-column grid with no single-column fallback.
+
+## Composition (top → bottom)
+1. **search_field** (#branch_search_field)
+2. **icon_button** (#branch_use_my_location) — icon: "my_location", on_click: { action: request_device_location }
+3. **slider** (#branch_radius_control) — label: "{strings.branch_locator.radius.label}"
+4. **filter_chip_group** (#branch_filter_accessibility) — label: "{strings.branch_locator.filter.accessibility}"
+5. **filter_toggle** (#branch_filter_counter_service) — label: "{strings.branch_locator.filter.counter_service}"
+6. **list** (#branch_list)
+7. **list_item** (#branch_row)
+8. **banner** (#branch_closure_banner)
+9. **week_table** (#branch_opening_hours)
+10. **contact_row** (#branch_contact)
+11. **label** (#branch_service_summary)
+12. **caption** (#branch_attribution) — text: "{strings.branch_locator.attribution}"
+
+## State-specific behavior
+- Custom state "Location Denied" — render per the composition below.
+
+## Content source manifest
+- (no demo collections bound for this state)
+
+## Components (vocabulary used in this prompt)
+- (no named components extracted — see composition)
+
+## Shell (app-shell resolved for this state)
+- Home: navigates to home
+- Accounts: navigates to accounts
+- Pay: navigates to payments
+- More: navigates to settings
+- Render MUST keep nav/bar elements consistent with the list above — present or absent, never partial.
+
+## Tokens (design-tokens roles consumed)
+- Colors: primary / secondary / surface / on-surface / on-surface-variant / error (M3 standard roles).
+- Typography: body-large / title-large (M3 standard roles).
+- Spacing: gap.sm / gap.md / gap.lg.
+- ALL token references are by name from the uploaded design system — no hex literals, no inline size values.
+
+## Self-Validation Checklist (MANDATORY)
+
+Before returning the rendered mockup, verify ALL of these are true. If any fails, FIX the output and re-render.
+
+- [ ] **Per-state shape:** the render shows ONLY this state ("location_denied"). Do not blend multiple states into one mockup.
+- [ ] **Real content:** every text label, image, and data point reflects the content source manifest above — no numbered generic items, no filler text, no dummy text, no empty strings.
+- [ ] **Token fidelity:** colors come from the uploaded design system (primary/secondary/surface/etc.) by name; spacing comes from declared scale tokens. No invented hex codes, no invented size literals.
+- [ ] **Component vocabulary:** every component in the render maps to a named design-system component (Card, FAB, BottomBar, etc.) — no invented or off-system components.
+- [ ] **Archetype honored:** the layout follows the "index_list" archetype skeleton — composition order top → bottom matches the Composition section.
+- [ ] **App-shell parity:** if a bottom nav, top app bar, or FAB appears in the render, it matches the resolved shell from the app-shell config. Shell elements are either present-and-consistent OR absent — never partial.
+
+If any of these fail and the fix isn't clear → halt rendering and surface "Self-validation failed at: {checkpoint}."
+
+Return ONLY when all 6 checkpoints pass.
+
+↑↑↑ MOCKUP PROMPT

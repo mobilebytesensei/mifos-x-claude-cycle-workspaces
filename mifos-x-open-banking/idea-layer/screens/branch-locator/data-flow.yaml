@@ -1,0 +1,168 @@
+sibling: data-flow
+schema_version: "4.0"
+feature_id: branch-locator
+
+# Open Data: no consent, no token, no mTLS. The data flow has no auth leg at all, which is
+# what makes it structurally unlike every other data-flow.yaml in this project.
+
+flows:
+
+  - screen_id: branch-locator
+    trigger: on_load
+    event: OnScreenOpened
+    endpoints: [get_branches_by_geolocation]
+    direction: outbound
+    dtos:
+      - { name: Branch, role: response, api_id: get_branches_by_geolocation }
+    produces_state: loading
+    precondition: "device location granted"
+    note: >-
+      CORRECTED 2026-08-07 — radius is NOT enforced by the server; omitting it is byte-identical
+      to radius=1. Send it explicitly anyway, because 1 mile is a poor default: it returns 6
+      branches in central London where radius=10 returns 42.
+    clamp_before_request: >-
+      Clamp to 1..10 in the client. radius=11 and radius=0 both return HTTP 200 with zero
+      results rather than a 400, so an out-of-range value is indistinguishable from an empty
+      area. Validation is the only thing standing between a bad conversion and a false
+      "no branches near you".
+
+  - screen_id: branch-locator
+    trigger: on_load
+    event: OnScreenOpenedWithoutLocation
+    endpoints: [get_branches_by_postcode]
+    direction: outbound
+    dtos:
+      - { name: Branch, role: response, api_id: get_branches_by_postcode }
+    produces_state: location_denied
+    note: >-
+      The fallback that makes location refusal a supported path rather than a dead end. This is
+      the whole reason the postcode and town extensions matter.
+
+  - screen_id: branch-locator
+    trigger: on_interact
+    event: OnSearchSubmitted
+    endpoints: [get_branches_by_postcode, get_branches_by_town]
+    direction: outbound
+    dtos:
+      - { name: Branch, role: response, api_id: get_branches_by_postcode }
+    produces_state: content
+    routing_rule: >-
+      Choose the endpoint from the input shape: a UK postcode pattern goes to the postcode path,
+      free text goes to country/town with country fixed to GB. There is no combined search
+      endpoint and no town-only path.
+
+  - screen_id: branch-locator
+    trigger: on_interact
+    event: OnSortCodeLookup
+    endpoints: [get_branch_by_sortcode]
+    direction: outbound
+    dtos:
+      - { name: Branch, role: response, api_id: get_branch_by_sortcode }
+    produces_state: content
+    note: >-
+      No ATM equivalent. Turns a bare sort code — which the app already holds on beneficiaries,
+      standing orders and transactions — into a named branch, with no consent required.
+    format_SETTLED:
+      probed_at: "2026-08-07"
+      answer: "SIX DIGITS, NO HYPHENS. /sortcode/400106 returns the branch; /sortcode/40-01-06 returns zero results."
+      required_transform: "Strip every non-digit from the sort code before building the path."
+      why_it_bites: >-
+        The app's own stored sort codes, and this very API's SortCode response field, are
+        hyphenated 327/327. The response format is not accepted by the request. Passing a value
+        straight through from either source finds nothing, and finds it silently — a
+        wrongly-formatted code and a non-existent one return identical empty responses with
+        HTTP 200. There is no error to catch and no way to tell the two apart after the fact.
+      call_site_rule: >-
+        Normalise at the call site, not at the display layer. Beneficiaries, standing orders and
+        transactions each present sort codes differently (40-01-06, 40 01 06, 400106); all three
+        must reduce to six digits before the request is built.
+
+  - screen_id: branch-locator
+    trigger: on_interact
+    event: OnFilterChanged
+    endpoints: []
+    direction: none
+    dtos: []
+    produces_state: content
+    note: >-
+      CLIENT-SIDE ONLY. The accessibility chips and the counter-service toggle operate on the
+      already-fetched list — no endpoint accepts them as parameters. Refetching on a filter
+      change is both pointless and a 429 risk.
+    scope_narrowed_2026_08_07: >-
+      CustomerSegment is no longer a filter. All eight of its values appear on all 327 UK
+      branches, so it has zero variance nationally and could never exclude anything. The service
+      filter also collapsed from five chips to one toggle for the same reason — see
+      ui.yaml#branch_filter_counter_service.
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE NORMALISATION STEP — not optional
+# ─────────────────────────────────────────────────────────────────────────
+post_fetch_transform:
+  required: true
+  steps:
+    - flatten: >-
+        data[] → Brand[] → Branch[], carrying BrandName down onto each branch. The real estate
+        is data[0].Brand[0].Branch[327] — exactly one Brand element nationally — but traverse the
+        loop anyway, because the same envelope is reused by the ATM and Product Finder feeds
+        where the brand split IS real.
+    - trim: >-
+        Every string. BuildingNumber arrives with a trailing space on 281 of 327 branches (86%) —
+        '90 ', '117 ', '1-3 '. StreetName is clean 327/327, so the defect is localised, but a
+        blanket trim costs nothing.
+    - apply_closure_override: >-
+        NEW 2026-08-07. If Availability.NonStandardAvailability is present and today falls within
+        [StartDate, EndDate], flag the branch as temporarily closed and suppress its weekly
+        pattern. Branch 401118 (Birmingham New Street) is closed 2025-10-06 to 2027-03-21 and
+        STILL publishes a full Monday-to-Saturday 09:30-16:30 schedule. Without this step the
+        app confidently sends users to a building that has been shut for months. 1 of 327
+        nationally — rare enough that it will never appear in a London test, common enough that
+        it is live in production today.
+    - fill_closed_days: >-
+        Build a fixed Monday-to-Sunday week and mark every day ABSENT from
+        Availability.StandardAvailability.Day[] as Closed. Absence means closed, not unknown.
+        NOT ONE of the 327 UK branches publishes a Sunday, so this fires on every single record
+        in the country; Saturday is absent on 160 of them.
+    - keep_all_opening_ranges: "OpeningHours is a list per day. Reading [0] hides a split day the first time HSBC publishes one. Zero exist today across all 1802 Day entries — this is contract insurance, not a live fix."
+  ordering_matters: >-
+    apply_closure_override runs BEFORE fill_closed_days. A temporarily-closed branch should not
+    have a tidy seven-row week built for it and then be contradicted by a banner — the closure
+    is the headline fact about that branch, not a footnote to its hours.
+  rationale: >-
+    This feed is published under a regulatory obligation, not curated for display. Skipping the
+    transform produces double-spaced addresses, a silently missing Sunday row on every branch in
+    the country, a shuttered branch advertised as open, and an 'Open now' badge that cannot
+    account for bank holidays because the feed carries none.
+
+no_auth_flow:
+  finding: "There is no token acquisition, no consent check and no session read anywhere in this feature."
+  consequence: >-
+    Do not route these calls through the mTLS/OAuth client. That client presents a certificate
+    this host never asked for and will attach headers the endpoint does not declare.
+
+cache_policy:
+  suggestion: >-
+    Branch data is reference data — meta.LastUpdated was 2026-08-05 on a 2026-08-07 fetch, so it
+    moves on the order of days. Cache aggressively and key on meta.LastUpdated. This is also the
+    cheapest defence against the 429 risk, which is real here and nowhere else in the app.
+  epoch_sentinel_CORRECTION:
+    added: "2026-08-07 — qualifies the suggestion above, which is unsafe as written."
+    finding: >-
+      Every EMPTY response carries meta.LastUpdated = "1970-01-01T00:00:00.000Z". Measured on
+      four separate empty responses (bad radius, bad sort-code format, unknown sort code,
+      mid-ocean coordinates). Populated responses carry a real timestamp.
+    hazard: >-
+      A cache keyed naively on meta.LastUpdated will ingest 1970 as a legitimate value. Depending
+      on the comparison, that either makes every empty result look infinitely stale and refetch
+      forever — the exact behaviour most likely to trigger the 429 this policy exists to avoid —
+      or stores an empty result under a key that never invalidates.
+    rule: "Check for the epoch value and refuse to cache the response before comparing timestamps."
+  per_endpoint_timestamps: >-
+    meta.LastUpdated is NOT a single global estate timestamp. The geo-location probe returned
+    2026-08-05T14:38:33.096Z while the unfiltered and sortcode endpoints returned
+    2026-08-06T10:26:11.506Z on the same day. Cache keys must include the endpoint and its
+    parameters, not the timestamp alone.
+  cold_prime_option: >-
+    The unfiltered estate is 443 KB for all 327 branches in one uncacheable-by-radius call. For
+    the ATM join specifically — 135 ATMs resolving to only 31 distinct branch ids — one cold
+    prime plus a client-side index is dramatically cheaper than per-id lookups, and it removes
+    the 429 exposure from that path entirely.

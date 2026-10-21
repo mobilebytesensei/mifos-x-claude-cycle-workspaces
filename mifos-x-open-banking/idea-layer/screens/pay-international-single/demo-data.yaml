@@ -1,0 +1,231 @@
+sibling: demo-data
+schema_version: "4.0"
+feature_id: pay-international-single
+
+inherits_fixtures_from: pay-domestic-single
+inherits: [debtor_accounts]
+
+content:
+  eligibility_override:
+    note: >-
+      Same base accounts as the domestic rail, but Global Money is ALSO excluded here. On this
+      rail GM is a conversion product bound by three U002 business rules (same account only,
+      GBP instructed, EUR/USD transfer), not a general payment source.
+    excluded_additionally:
+      - { AccountId: "1123456843", reason: "Global Money — conversion product, not a payment source on this form" }
+    hidden_account_count: 2
+
+  charge_bearer_options:
+    note: "All three staged 201 (INT-11, INT-12). None is a bank default — the PSU chooses."
+    values:
+      - { code: BorneByDebtor, label: "I pay all charges" }
+      - { code: Shared, label: "We share the charges" }
+      - { code: BorneByCreditor, label: "The recipient pays the charges" }
+    omitted_result: "U004 Field is missing @ Data.Initiation.ChargeBearer (R18-B01)"
+
+  bic_probes:
+    note: "11 characters or omit. 8-character BICs are what bank directories publish, and they are refused."
+    accepted:
+      - { value: "COBADEFFXXX", length: 11, iban_country: DE, result: "201 AWAU" }
+      - { value: "HSBCDEFF325", length: 11, iban_country: DE, result: "201 AWAU" }
+      - { value: "HBUKGB4BXXX", length: 11, iban_country: GB, result: "201 AWAU" }
+      - { value: null, note: "omitted entirely", result: "201 AWAU (R3-07)" }
+    refused:
+      - { value: "COBADEFF", length: 8, iban_country: DE, error: "Invalid Bank Code" }
+      - { value: "NWBKFRPP", length: 8, iban_country: FR, error: "Invalid Bank Code" }
+      - { value: "NWBKGB2L", length: 8, iban_country: FR, error: "Invalid Bank Code + Invalid Country", note: "A GB BIC paired with a French IBAN — a test error, recorded so the double message is not misread." }
+      - { partial: "Name + PostalAddress, no Identification", error: "U004 Field is missing @ CreditorAgent.Identification", scenario: "R3-08" }
+    length_not_country:
+      note: >-
+        The decisive pair. R2-07 matches BIC country to IBAN country and is still refused; R3-04
+        mismatches nothing and passes on length alone. Together they show the check is LENGTH.
+      probes:
+        - { scenario: "R2-07", value: "NWBKFRPP", length: 8, iban_country: FR, countries_match: true, error: "U002 Invalid Bank Code" }
+        - { scenario: "R3-04", value: "COBADEFFXXX", length: 11, iban_country: DE, countries_match: true, result: "201 AWAU" }
+
+  creditor_agent_partial_probes:
+    note: >-
+      The partial-object trap. Sending the CreditorAgent key at all makes Identification
+      mandatory — so a half-populated block is WORSE than no block, and the natural
+      'help the user find their bank' UI is what builds one.
+    refused:
+      - { scenario: "R8-01", sent: '{"CreditorAgent":{"PostalAddress":{"Country":"DE"}}}', error: "U004 Field is missing @ Data.Initiation.CreditorAgent.Identification" }
+      - { scenario: "R8-02", sent: '{"CreditorAgent":{"PostalAddress":{"Country":"DE"}}}', error: "U004 @ Data.Initiation.CreditorAgent.Identification" }
+      - { scenario: "R8-03", sent: '{"CreditorAgent":{"PostalAddress":{"Country":"FR"}}}', error: "U004 @ Data.Initiation.CreditorAgent.Identification" }
+      - { scenario: "R8-09", sent: "CreditorAgent, PostalAddress.Country only", error: "U004 @ Data.Initiation.CreditorAgent.Identification" }
+      - { scenario: "R8-10", sent: "CreditorAgent, PostalAddress.Country only", error: "U004 @ Data.Initiation.CreditorAgent.Identification" }
+      - { scenario: "R3-08", sent: "CreditorAgent { Name, PostalAddress.Country }", error: "U004 @ Data.Initiation.CreditorAgent.Identification" }
+    control:
+      scenario: "R8-11"
+      sent: "Identical to R8-01 with the CreditorAgent key REMOVED"
+      result: "201"
+      significance: "Same body, opposite outcome, on the presence of the key alone."
+
+  non_eea_creditor_probes:
+    note: >-
+      The rail is not EEA/SEPA-scoped. Both of these carried a COMPLETE CreditorAgent — an
+      11-character BIC alongside PostalAddress.Country — which is consistent with the
+      partial-object rule rather than an exception to it.
+    accepted:
+      - { scenario: "R8-04", country: AE, iban_length: 23, creditor_agent: "11-char BIC + PostalAddress.Country", result: 201 }
+      - { scenario: "R8-05", country: TR, iban_length: 26, creditor_agent: "11-char BIC + PostalAddress.Country", result: 201 }
+    validator_consequence: >-
+      23 and 26 characters. A fixed or maximum IBAN length taken from the 22-character DE/FR
+      examples silently rejects both corridors.
+
+  hsbc_vendor_scheme_probes:
+    note: >-
+      HSBC's OWN vendor schemes are refused by this sandbox. There is no local-rail US or India
+      path — an IBAN is the only creditor address that works.
+    refused:
+      - { scenario: "R8-06", corridor: US, creditor_scheme: "UK.HSBC.LocalAccountNumber", creditor_agent_scheme: "UK.HSBC.LCC", error: 'U027 "Unsupported scheme"' }
+      - { scenario: "R8-07", corridor: India, creditor_scheme: "UK.HSBC.LocalAccountNumber", creditor_agent_scheme: "UK.HSBC.LCC", error: 'U027 "Unsupported scheme"' }
+    documentation_divergence: >-
+      Implementation Guide §21.3.1 TABULATES a local-account row for exactly these corridors. The
+      endpoint does not honour it. Recorded as a divergence between documentation and
+      observation; not resolved in favour of either.
+
+  accepted_optional_field_probes:
+    note: >-
+      Optional fields the endpoint TOOK and ECHOED. None is sent by this form. Recorded so a
+      future 'the API probably refuses that' assumption is checked against an observation.
+    accepted:
+      - { scenario: "R2-10", field: "Purpose", value: "SALA", result: "201, echoed" }
+      - { scenario: "R2-10", field: "InstructionPriority", value: "Normal", result: "201, echoed", note: "Sent in the same body as Purpose; both accepted." }
+      - { scenario: "R2-11", field: "LocalInstrument", value: "UK.OBIE.SWIFT", result: "201, echoed" }
+      - { scenario: "INT-01", field: "CreditorAccount.SecondaryIdentification", value: "00445", result: "201, echoed" }
+
+  debtor_scheme_probes:
+    note: "Debtor scheme rules are RAIL-dependent, not just creditor ones."
+    accepted:
+      - { scenario: "R4-04", rail: international, debtor_scheme: "UK.OBIE.IBAN", result: "201 AWAU" }
+    refused_on_the_other_rail:
+      - { scenario: "R4-07", rail: domestic, debtor_scheme: "UK.OBIE.IBAN", error: "U027 @ Data.Initiation.DebtorAccount.SchemeName" }
+
+  exchange_rate_information_probes:
+    note: >-
+      Not merely unquoted — REFUSED. This closes what had been recorded as the highest-value open
+      FX experiment on the standing-order rail.
+    refused:
+      - { scenario: "R16-P1", rail: "international single", rate_type: Actual }
+      - { scenario: "R16-P2", rail: "international single", rate_type: Indicative }
+      - { scenario: "R16-P3", rail: "international single", rate_type: Agreed, sent: "ExchangeRate 1.15 + ContractIdentification 'FX-CONTRACT-001'" }
+      - { scenario: "R16-S1/S2/S3", rail: "international scheduled", rate_type: "all three" }
+      - { scenario: "R16-O1/O2/O3", rail: "international standing order", rate_type: "all three" }
+    controls:
+      - { scenario: "R16-C1", note: "same body, block removed", result: 201 }
+      - { scenario: "R16-C2", note: "same body, block removed", result: 201 }
+      - { scenario: "R16-C3", note: "same body, block removed", result: 201 }
+    conclusion: "THERE IS NO WAY TO SHOW THE CUSTOMER A RATE BEFORE AUTHORISATION."
+
+  currency_probes:
+    note: "Instructed and transfer currency need not match on a non-Global-Money account."
+    accepted:
+      - { instructed: "GBP", transfer: "USD", result: "201 AWAU (R2-06)" }
+      - { instructed: "USD", transfer: "USD", result: "201 AWAU (INT-02)" }
+      - { instructed: "USD", amount: "300000.00", result: "201 AWAU (INT-13)", note: "Titled as a 250k-limit probe. No ceiling fired at consent staging. Whether one applies later is untested." }
+      - { transfer: "JPY", amount: "1000", from: "current account", result: "201 AWAU (INT-14)", note: "NO decimal places on the amount, and accepted. The formatter is currency-aware, not fixed at two places." }
+    global_money_rules:
+      - { shape: "GM -> third-party IBAN, instructed USD", result: "same-account + currency errors (INT-05)" }
+      - { shape: "GM -> GM, instructed GBP, transfer GBP", result: "U002 CurrencyOfTransfer must be EUR/USD (R2-01)" }
+      - { shape: "GM -> GM, instructed GBP, transfer USD", result: "201 AWAU (R2-02)" }
+      - { shape: "GM -> GM, instructed GBP, transfer EUR", result: "201 AWAU (R2-03)" }
+
+  staged_consent_response:
+    note: "Shape from R18-B02, the ChargeBearer control run."
+    Data:
+      ConsentId: "45264"
+      CreationDateTime: "2026-08-06T17:17:56+00:00"
+      Status: "AWAU"
+      StatusUpdateDateTime: "2026-08-06T17:17:56+00:00"
+      Initiation:
+        InstructionIdentification: "R187f90453767dc49e7"
+        EndToEndIdentification: "E2E7f90453767dc49e7"
+        ChargeBearer: "BorneByCreditor"
+        CurrencyOfTransfer: "EUR"
+        InstructedAmount: { Amount: "5.00", Currency: "GBP" }
+        DebtorAccount:
+          SchemeName: "UK.OBIE.SortCodeAccountNumber"
+          Identification: "80200110203349"
+        CreditorAccount:
+          SchemeName: "UK.OBIE.IBAN"
+          Identification: "DE89370400440532013000"
+          Name: "Klara Weiss"
+    Risk: { CategoryPurposeCode: "EPAY" }
+    charges_note: "NO Charges array. Verified across all 33 international single-payment consents — 0/33 carried one."
+    key_order_note: >-
+      The Initiation keys above are in the SERVER's echo order — ChargeBearer, CurrencyOfTransfer,
+      InstructedAmount, [MandateRelatedInformation], [CreditorAgent], [DebtorAccount],
+      CreditorAccount — not the order the request sent them in. The server reorders on echo, so
+      this fixture must never be used as the expected output of a re-serialised local model.
+    absent_keys_note: >-
+      Charges, CutOffDateTime, ExpectedExecutionDateTime and ExpectedSettlementDateTime are all
+      ABSENT, not empty. The domestic rails return them. Parse as nullable; do not default
+      Charges to [].
+    consent_id_note: >-
+      "45264" is a short sequential integer-as-string, like every ConsentId on this surface.
+      Enumerable, not a UUID — never log it, deep-link it or put it in a PSU-visible error.
+
+  authorised_consent_response:
+    Data: { ConsentId: "45264", Status: "AUTH", StatusUpdateDateTime: "2026-08-06T17:17:56+00:00" }
+    note: "StatusUpdateDateTime unchanged from creation, as on every other family."
+
+  rejected_consent_response:
+    note: "A real observed terminal state — the PSU denied it at the bank (consent 45121)."
+    Data: { ConsentId: "45121", Status: "RJCT", CreationDateTime: "2026-08-06T09:29:12+00:00", StatusUpdateDateTime: "2026-08-06T09:29:12+00:00" }
+
+  funds_confirmation_response:
+    Data: { FundsAvailableResult: { FundsAvailable: "Available" } }
+    timing_note: "Called minutes before submission in both authorised FX flows, with no rejection — the documented 40-second window was not enforced."
+
+  submit_response:
+    Data:
+      InternationalPaymentId: "19906"
+      ConsentId: "45104"
+      Status: "ACSP"
+      CreationDateTime: "2026-08-06T09:04:36+00:00"
+
+  status_readback_response:
+    note: "All four authorised international payments read back ACCC with NO Charges at any point."
+    Data:
+      InternationalPaymentId: "19906"
+      Status: "ACCC"
+      StatusUpdateDateTime: "2026-08-06T09:06:10+00:00"
+
+  error_responses:
+    envelope_ref: "dtos/ObPaymentError.yaml — the full envelope, Path quirks and Message instability live there."
+    two_entry_error:
+      note: >-
+        THE fixture the error panel must be built against. Errors carries TWO entries; the SCHEME
+        check precedes the business rule. A renderer bound to Errors[0] shows the unreachable
+        half and hides the actionable one.
+      scenario: "R13-10 (R9-11 is the same pair)"
+      http: 400
+      body:
+        Errors:
+          - { ErrorCode: "U027", Message: "Unsupported scheme", Path: "Data.Initiation.CreditorAccount.SchemeName" }
+          - { ErrorCode: "U002", Message: "Debtor and Creditor Account cannot be same", Path: "Data.Initiation.DebtorAccount.Identification" }
+    creditor_agent_partial:
+      note: "The partial-object trap. Control R8-11 removes the key and gets 201."
+      scenario: "R8-01"
+      http: 400
+      body: { Errors: [{ ErrorCode: "U004", Message: "Field is missing", Path: "Data.Initiation.CreditorAgent.Identification" }] }
+    hsbc_local_scheme:
+      scenario: "R8-06 / R8-07"
+      http: 400
+      body: { Errors: [{ ErrorCode: "U027", Message: "Unsupported scheme", Path: "Data.Initiation.CreditorAccount.SchemeName" }] }
+    charge_bearer_omitted:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U004", Message: "Field is missing", Path: "Data.Initiation.ChargeBearer" }] }
+    remittance_information_sent:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U005", Message: "Field is not expected", Path: "Data.Initiation.RemittanceInformation" }] }
+    sort_code_creditor:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U027", Message: "Unsupported scheme", Path: "Data.Initiation.CreditorAccount.SchemeName" }] }
+    short_bic:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U002", Message: "Invalid Bank Code", Path: "Data.Initiation.CreditorAgent.Identification" }] }
+    partial_creditor_address:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U004", Message: "Field is missing", Path: "Data.Initiation.Creditor.PostalAddress.BuildingNumber" }] }

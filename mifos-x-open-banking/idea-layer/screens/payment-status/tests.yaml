@@ -1,0 +1,177 @@
+sibling: tests
+schema_version: "4.0"
+feature_id: payment-status
+
+screen_id: payment-status
+
+scenarios:
+  - id: TC-PSTAT-001
+    description: "Payment resource loads and renders the echoed Initiation"
+    state: content
+    priority: p0
+    given: "GET /domestic-payments/PMT-812774903-01 returns AcceptedSettlementInProcess"
+    when: "Screen mounts with paymentId=PMT-812774903-01"
+    then:
+      - "Amount renders as £850.00"
+      - "Payee renders as Jameson Lettings"
+      - "Reference renders as RENT-FLAT12"
+      - "Funding account renders from Data.Initiation.DebtorAccount"
+      - "Submitted-at renders from Data.CreationDateTime"
+
+  - id: TC-PSTAT-002
+    description: "An in-progress payment is NEVER described as sent or complete"
+    state: content
+    priority: p0
+    given: "Status is AcceptedSettlementInProcess"
+    when: "The content state renders"
+    then:
+      - "disposition is in_progress"
+      - "The status chip uses the progress variant, not the success variant"
+      - "The in-progress note is visible explaining the money has not moved yet"
+      - "No visible string asserts the payment is sent, complete, or successful"
+
+  - id: TC-PSTAT-003
+    description: "Only a settled status renders as terminal success"
+    state: content
+    priority: p0
+    given: "Status is AcceptedSettlementCompleted"
+    when: "The content state renders"
+    then:
+      - "disposition is terminal_success"
+      - "The status chip uses the success variant"
+      - "The in-progress note is NOT visible"
+      - "The refresh button is NOT visible — a terminal status cannot change"
+
+  - id: TC-PSTAT-004
+    description: "Polling stops the moment a terminal disposition arrives"
+    state: content
+    priority: p1
+    given: "The read sequence is in-process, in-process, settled"
+    when: "The auto-poll runs"
+    then:
+      - "Exactly three reads are made"
+      - "Zero further reads occur after the settled response"
+
+  - id: TC-PSTAT-005
+    description: "Polling never starts when the first read is already terminal"
+    state: content
+    priority: p1
+    given: "The first read returns AcceptedSettlementCompleted"
+    when: "Screen mounts"
+    then:
+      - "Exactly one read is made"
+      - "No poll timer is started"
+
+  - id: TC-PSTAT-006
+    description: "An unrecognised status fails open to in_progress rather than guessing an outcome"
+    state: content
+    priority: p1
+    given: "Status is AcceptedTechnicalValidation, which is outside the mapped vocabulary"
+    when: "The content state renders"
+    then:
+      - "disposition is in_progress"
+      - "Polling continues"
+      - "The status is NOT rendered as either success or failure"
+
+  - id: TC-PSTAT-007
+    description: "A rejected payment offers a fresh payment, not a retry of the same instruction"
+    state: content
+    priority: p1
+    given: "Status is Rejected"
+    when: "The content state renders"
+    then:
+      - "disposition is terminal_failure"
+      - "New payment button is visible and routes to send-money with a cleared form"
+      - "Refresh button is NOT visible"
+      - "No affordance resubmits against the rejected consent"
+
+  - id: TC-PSTAT-008
+    description: "A not-found payment is terminal and gets no Retry"
+    state: error
+    priority: p2
+    given: "The read returns 400 U011 Resource cannot be found"
+    when: "Screen mounts with an unknown paymentId"
+    then:
+      - "Error state renders with the PaymentNotFound message"
+      - "Retry button is NOT visible — the resource does not exist, so retrying cannot help"
+
+  - id: TC-PSTAT-009
+    description: "Screen shows a circular loading indicator while the initial payment read is in flight"
+    state: loading
+    priority: p1
+    given: "GET /domestic-payments/{DomesticPaymentId} has not yet responded"
+    when: "Screen mounts with paymentId=PMT-812774903-01 and domestic-payment-read is in flight"
+    then:
+      - "The circular progress indicator is visible"
+      - "The progress indicator accessibility label matches {strings.payment_status.loading_label}"
+      - "The status chip is NOT visible — no content has arrived yet"
+      - "The payment summary card is NOT visible"
+      - "The error state is NOT visible"
+
+  # ── The FOURTH disposition, added 2026-08-07 ─────────────────────────────
+  - id: TC-PSTAT-010
+    description: "INCO renders as instruction_established — neither a success tick nor a clock"
+    state: content
+    priority: p0
+    given: "Status is INCO on a domestic standing order (fixture payment_instruction_established)"
+    when: "The content state renders"
+    then:
+      - "disposition is instruction_established, NOT terminal_success and NOT in_progress"
+      - "The status chip icon is event_repeat — never check_circle, never schedule"
+      - "The status chip container is the hue-less surfaceVariant, not any tonal variant"
+      - "The instruction-established note is visible, stating no payment has been made yet"
+      - "The in-progress note is NOT visible — it claims the bank accepted a payment that does not exist yet"
+      - "No visible string contains paid, sent, complete or completed"
+      - "The status label names the INSTRUCTION, e.g. 'Standing order set up', never 'Paid'"
+
+  - id: TC-PSTAT-011
+    description: "Polling stops on instruction_established, and never starts when it is the first read"
+    state: content
+    priority: p0
+    given: "The domestic deferred ladder PDNG then INCO, and separately a first read of INCO"
+    when: "The auto-poll runs"
+    then:
+      - "On PDNG then INCO exactly two reads are made and zero occur afterwards"
+      - "On a first read of INCO exactly one read is made and no poll timer is started"
+      - "instruction_established is treated as a RESTING disposition, like the two terminal ones"
+    regression_guard: >-
+      Before 2026-08-07 the stop set was {terminal_success, terminal_failure} only. INCO resolves
+      to neither, so a domestic deferred payment polled a dormant standing order for the full
+      600000ms max_duration while rendering it as live. This test fails if that stop set narrows.
+
+  - id: TC-PSTAT-012
+    description: "INCO is mapped explicitly and never reaches the fail-open branch"
+    state: content
+    priority: p0
+    given: "Status is INCO, in both the short form and the long form InitiationCompleted"
+    when: "dispositionFor resolves the status"
+    then:
+      - "Both encodings resolve to instruction_established"
+      - "Neither encoding takes the unknown-status branch"
+      - "Every member of ObStatusCode has an explicit arm — the fail-open default is unreachable for enum members"
+    rationale: >-
+      Fail-open is a SAFETY NET for codes nobody anticipated, not a substitute for mapping a
+      status that is in the enum. INCO was in the enum and still fell through, because the
+      vocabulary had nowhere to put it. TC-PSTAT-006 covers the genuinely-unknown case and this
+      test covers the boundary the two must not blur.
+
+coverage_notes:
+  truthfulness: >-
+    TC-PSTAT-002 and TC-PSTAT-003 are the guard for this screen's whole reason to exist. A
+    successful submit returns AcceptedSettlementInProcess, so the tempting simplification —
+    treat any Accepted* prefix as success — would tell a PSU their money had moved when it had
+    not. These two tests make that regression fail loudly.
+  polling_hygiene: >-
+    TC-PSTAT-004 and TC-PSTAT-005 pin that polling is bounded by disposition, not by a timer.
+    Polling a terminal status is how a client earns a 429 for no information gain.
+  fail_open: >-
+    TC-PSTAT-006 encodes the deliberate choice to treat an unknown status as still-working.
+    Guessing success on an unmapped code is the worst available failure mode. TC-PSTAT-012 draws
+    the boundary the rule must not be stretched past: fail-open is a safety net for codes nobody
+    anticipated, NOT a substitute for mapping a status that is in the enum.
+  instruction_established: >-
+    TC-PSTAT-010 to TC-PSTAT-012 cover the fourth disposition, added 2026-08-07. Four of the
+    seven rails terminate in INCO, and the previous three-way vocabulary had nowhere true to put
+    it — terminal_success would tick a payment that has not happened, and the fail-open path
+    would render a dormant standing order as perpetually live. These tests pin BOTH wrong answers
+    as failures, not just one.

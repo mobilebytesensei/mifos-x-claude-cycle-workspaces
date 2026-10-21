@@ -1,0 +1,360 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: accounts
+
+screen_id: accounts
+archetype: index_list
+name: "Accounts"
+# status: REMOVED 2026-08-04 (CROSS_LEAK repair — sibling-layout.json assigns `status` to
+# the docs sibling). This copy held `implemented`; docs.yaml is the single owner.
+quality_score: 95
+initial_state: loading
+i18n: true
+
+# ─────────────────────────────────────────────────────────────────────
+# SOURCE BINDING — reverse-synced from source 2026-07-28
+# ─────────────────────────────────────────────────────────────────────
+implementation:
+  status: implemented
+  source_module: "feature/accounts"
+  package: "org.mifosx.openbanking.feature.accounts"
+  graph: "accountsGraph(onNavigateToAccountDetail)"
+  route: "AccountsRoute (data object) inside AccountsDestination graph"
+  viewmodel: AccountsViewModel
+  screen: AccountsScreen
+  test_tags_object: AccountsTestTags
+  bottom_nav_tab: "AccountsTab (order 1)"
+  synced_from_source_at: "2026-07-28"
+  removed_in_sync:
+    - "consent_expiring state — no such ScreenState or UiState member in source"
+    - "navigateReconfirmConsent action — AccountsAction has only FilterAccounts and RetryLoad"
+    - "total_balance_summary stat_block — AccountsContent renders only the filter row and the card list; AccountsState carries no total-balance fields"
+    - "filter_global chip — AccountFilter declares only ALL, CURRENT, SAVINGS, CREDIT"
+
+status_history:
+  - { from: draft, to: enriched, at: "2026-06-29", by: "/idea-enrich" }
+  - { from: enriched, to: enriched, at: "2026-06-29", by: "/idea-enrich (quality push)", quality_before: 88, quality_after: 94 }
+  - { from: enriched, to: enriched, at: "2026-07-14", by: "/idea-enrich (quality push)", quality_before: 94, quality_after: 95 }
+  - { from: enriched, to: implemented, at: "2026-07-28", by: "/gap-analysis-project (reverse sync from source)" }
+
+business_logic:
+  kind: crud
+  description: "AccountsViewModel collects AccountsOverviewRepository through combineContent, producing a ScreenState<AccountsData>. Each AccountWithBalance is projected into an AccountRowUi carrying a canonicalised AccountUiType (CURRENT / SAVINGS / CREDIT / GLOBAL_MONEY / GLOBAL_WALLET / OTHER), a formatted identifier via formatAccountIdentifier, and a balanceLabel via formatMoney — GBP renders bare, other currencies are prefixed with the ISO code, and an unavailable balance falls back to an em dash. isBalanceOwed drives the 'balance owed' badge on credit cards. AccountFilter.matches applies the chip filter client-side against the canonical subtype with no API round-trip; the active filter lives inside AccountsData, so filtering re-emits Content rather than mutating a separate field. Tapping a card navigates to account-detail with the AccountId."
+  external_library_refs:
+    - "ktorfit"
+    - "hsbc-obie-ais-v4.0:accounts"
+    - "hsbc-obie-ais-v4.0:balances"
+  description_author: claude
+  description_authored_at: "2026-07-28T00:00:00Z"
+
+# ─────────────────────────────────────────────────────────────────────
+# STATE MODEL — AccountsViewModel contract
+# Mirrors ui/AccountsViewModel.kt verbatim.
+# ─────────────────────────────────────────────────────────────────────
+state_model:
+  AccountsViewModel:
+    state:
+      name: AccountsState
+      fields:
+        - name: uiState
+          type: ScreenState<AccountsData>
+    data_model:
+      name: AccountsData
+      fields:
+        - name: rows
+          type: List<AccountRowUi>
+        - name: activeFilter
+          type: AccountFilter
+    row_model:
+      name: AccountRowUi
+      fields:
+        - name: id
+          type: String
+        - name: type
+          type: AccountUiType
+        - name: nickname
+          type: String
+        - name: identifier
+          type: String
+        - name: balanceLabel
+          type: String
+        - name: isBalanceOwed
+          type: Boolean
+        - name: accountSubType
+          type: String
+        - name: accountNumber
+          type: String
+        - name: rawIdentification
+          type: String
+    screen_state:
+      sealed_class: ScreenState        # shared core-base type, not a feature-local sealed interface
+      members:
+        - Loading
+        - Content                      # AccountsData
+        - Empty
+        - Error
+        - NoNetwork
+        - Unauthenticated
+    enums:
+      AccountUiType: [CURRENT, SAVINGS, CREDIT, GLOBAL_MONEY, GLOBAL_WALLET, OTHER]
+      AccountFilter: [ALL, CURRENT, SAVINGS, CREDIT]
+    actions:
+      members:
+        - FilterAccounts               # data class — client-side chip filter, no API round-trip
+        - RetryLoad
+    di:
+      - AccountsOverviewRepository     # Koin single; combineContent over accounts + balances
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  top_app_bar_title: "{strings.accounts.screen.title}"
+  fab_visible: false
+
+states: [loading, content, empty, error]
+
+# TEST TAGS — reconciled against source 2026-08-02 by /idea-sync (source-truth pass).
+# VERIFIED COMPLETE, nothing changed. Recorded because a naive count reads 12 declared here
+# against 9 consts in source and looks over-declared — it is not.
+test_tags:
+  source: "feature/accounts/src/commonMain/kotlin/org/mifosx/openbanking/feature/accounts/AccountsTestTags.kt"
+  declared_in_source: 9          # 7 applied consts + 2 PREFIX consts consumed at render time
+  bound: 12
+  why_more_than_source: >-
+    Two of the nine source entries are prefixes, not finished tags: "accounts_card_" is
+    concatenated with the account id per row, and "accounts_filter_" with the AccountFilter
+    enum case. The idea-layer expands them to the concrete surfaces they produce — one
+    interpolated card binding plus the four real filter chips — so 7 flat + 5 expanded = 12.
+    The expansion is correct; collapsing it back to 9 would lose which filters actually exist.
+  interpolated:
+    - { tag: "accounts_card_{item.id}", prefix_const: "accounts_card_" }
+  expanded_from_prefix:
+    prefix_const: "accounts_filter_"
+    builder_note: "suffix is the AccountFilter enum case — ALL / CURRENT / SAVINGS / CREDIT"
+    values: [accounts_filter_ALL, accounts_filter_CURRENT, accounts_filter_SAVINGS, accounts_filter_CREDIT]
+    no_global_entry: >-
+      There is deliberately no accounts_filter_GLOBAL. AccountFilter has no GLOBAL member
+      (AccountsViewModel.kt:82-87): HSBC UK Personal AIS v4.0 dropped AccountSubType from
+      OBAccount6, so a Global Money account arrives as CACC and is already listed under
+      CURRENT. A GLOBAL chip could never match and would render a permanently empty list.
+
+components:
+
+  # ── LOADING STATE — AccountsSkeleton ───────────────────────────────
+  - type: stack
+    id: loading_skeleton
+    state_binding: [loading]
+    direction: vertical
+    gap: spacing.sm
+    padding: spacing.md
+    test_tag: "accounts_skeleton"
+    accessibility_label: "{strings.accounts.loading.description}"
+    children:
+      - type: shimmer
+        id: skeleton_card_1
+        variant: card
+        height: "96dp"
+        corner_radius: radius.md
+      - type: shimmer
+        id: skeleton_card_2
+        variant: card
+        height: "96dp"
+        corner_radius: radius.md
+      - type: shimmer
+        id: skeleton_card_3
+        variant: card
+        height: "96dp"
+        corner_radius: radius.md
+
+  # ── CONTENT: account type filter chips (AccountTypeFilterRow) ──────
+  # Rendered from AccountFilter.entries — four chips, no Global option.
+  - type: chip_group
+    id: account_type_filter
+    state_binding: [content]
+    selection_mode: single
+    scroll_direction: horizontal
+    padding: { horizontal: spacing.md, bottom: spacing.sm }
+    test_tag: "accounts_filter_row"
+    accessibility_label: "{strings.accounts.filter.label}"
+    # `type: chip` added to all four entries 2026-07-30 (/idea-verify check 13 -> /idea-heal).
+    # They previously carried id/test_tag/label/on_click but NO type, so action-contract-walk.ts
+    # reported them as "type=<none> — NOT evaluated", which the walker itself labels "a coverage
+    # hole, not a pass": each has an on_click that was neither passed nor failed, just skipped.
+    # account-detail's chips already declare `type: chip` (the walker reads them as type=chip),
+    # so this aligns with the existing convention rather than inventing one. The action_contract
+    # blocks were already present and correct — only the type was missing to make them visible
+    # to RULE-IDEA-ACTION-CONTRACT-001.
+    chips:
+      - id: filter_all
+        type: chip
+        keyboard:
+          focusable: true
+        test_tag: "accounts_filter_ALL"
+        label: "{strings.accounts.filter.all_label}"
+        selected_by_default: true
+        on_click:
+          action: FilterAccounts
+          params:
+            filter: "ALL"
+          action_contract:
+            effect: transform_state
+            external_library_refs: [kotlinx-coroutines]
+            description: "Dispatches AccountsAction.FilterAccounts(ALL), re-emitting AccountsData with every row and activeFilter = ALL. Purely client-side; no API round-trip."
+      - id: filter_current
+        type: chip
+        keyboard:
+          focusable: true
+        test_tag: "accounts_filter_CURRENT"
+        label: "{strings.accounts.filter.current_label}"
+        on_click:
+          action: FilterAccounts
+          params:
+            filter: "CURRENT"
+          action_contract:
+            effect: transform_state
+            external_library_refs: [kotlinx-coroutines]
+            description: "Dispatches AccountsAction.FilterAccounts(CURRENT), re-emitting AccountsData filtered by AccountFilter.matches against the canonical CurrentAccount subtype."
+      - id: filter_savings
+        type: chip
+        keyboard:
+          focusable: true
+        test_tag: "accounts_filter_SAVINGS"
+        label: "{strings.accounts.filter.savings_label}"
+        on_click:
+          action: FilterAccounts
+          params:
+            filter: "SAVINGS"
+          action_contract:
+            effect: transform_state
+            external_library_refs: [kotlinx-coroutines]
+            description: "Dispatches AccountsAction.FilterAccounts(SAVINGS), re-emitting AccountsData filtered to the canonical Savings subtype."
+      - id: filter_credit
+        type: chip
+        keyboard:
+          focusable: true
+        test_tag: "accounts_filter_CREDIT"
+        label: "{strings.accounts.filter.credit_label}"
+        on_click:
+          action: FilterAccounts
+          params:
+            filter: "CREDIT"
+          action_contract:
+            effect: transform_state
+            external_library_refs: [kotlinx-coroutines]
+            description: "Dispatches AccountsAction.FilterAccounts(CREDIT), re-emitting AccountsData filtered to the canonical CreditCard subtype."
+
+  # ── CONTENT: account list (LazyColumn of AccountCard) ──────────────
+  - type: list
+    id: accounts_list
+    state_binding: [content]
+    scroll_direction: vertical
+    padding: { horizontal: spacing.md }
+    gap: spacing.sm
+    items_source: "{rows}"
+    item_key: "{item.id}"
+    test_tag: "accounts_content"
+    accessibility_label: "{strings.accounts.list.accessibility}"
+    children:
+      - type: card
+        keyboard:
+          focusable: true
+        id: account_card
+        test_tag: "accounts_card_{item.id}"
+        elevation: 1
+        padding: spacing.md
+        corner_radius: radius.md
+        accessibility_label: "{strings.accounts.card.accessibility.account_card}"
+        children:
+          - type: stack
+            direction: horizontal
+            alignment: center_vertical
+            gap: spacing.md
+            children:
+              - type: icon
+                id: account_type_icon
+                name: "{item.type}"
+                size: icon.lg
+                color: "primary"
+                decorative: true
+              - type: stack
+                id: account_text_column
+                direction: vertical
+                gap: spacing.xs
+                weight: 1
+                children:
+                  - type: text
+                    id: account_subtype
+                    content: "{item.accountSubType}"
+                    style: labelSmall
+                    color: "secondary"
+                  - type: text
+                    id: account_nickname
+                    content: "{item.nickname}"
+                    style: titleMedium
+                  - type: text
+                    id: account_number
+                    content: "{item.identifier}"
+                    style: bodySmall
+                    color: "onSurfaceVariant"
+                    accessibility_label: "{strings.accounts.card.account_number.label}"
+              - type: stack
+                id: balance_column
+                direction: vertical
+                alignment: end
+                gap: spacing.xxs
+                children:
+                  - type: text
+                    id: balance_amount
+                    content: "{item.balanceLabel}"
+                    style: headlineSmall
+                    alignment: end
+                  - type: badge
+                    id: balance_owed_badge
+                    test_tag: "accounts_balance_owed_badge"
+                    label: "{strings.accounts.card.balance.owed_label}"
+                    variant: tonal
+                    visible_when: "{item.isBalanceOwed}"
+        on_click:
+          action: navigate_account_detail
+          target: account-detail
+          params:
+            accountId: "{item.id}"
+          action_contract:
+            effect: navigate
+            description: "Invokes the accountsGraph onNavigateToAccountDetail callback, which navigates to AccountDetailRoute(accountId) — a nav-host callback, not an AccountsAction member."
+
+  # ── EMPTY STATE — AccountsEmpty ────────────────────────────────────
+  - type: empty_state
+    id: empty_accounts
+    state_binding: [empty]
+    icon: account_balance_wallet
+    title: "{strings.accounts.empty.title}"
+    body: "{strings.accounts.empty.body}"
+    test_tag: "accounts_empty"
+    accessibility_label: "{strings.accounts.empty.title}"
+
+  # ── ERROR STATE — AccountsError ────────────────────────────────────
+  - type: error_state
+    id: error_accounts
+    state_binding: [error]
+    icon: error_outline
+    title: "{strings.accounts.error.title}"
+    body: "{strings.accounts.error.body}"
+    test_tag: "accounts_error"
+    accessibility_label: "{strings.accounts.error.title}"
+    children:
+      - type: button
+        keyboard:
+          focusable: true
+        id: retry_button
+        variant: filled
+        label: "{strings.accounts.error.retry_button}"
+        test_tag: "accounts_error_retry"
+        accessibility_label: "{strings.accounts.error.accessibility.retry}"
+        on_click:
+          action: RetryLoad
+          action_contract:
+            effect: call_api
+            reads_from: [accounts-list, balances]
+            external_library_refs: [ktorfit, "hsbc-obie-ais-v4.0:accounts", "hsbc-obie-ais-v4.0:balances"]
+            description: "Dispatches AccountsAction.RetryLoad, re-running the AccountsOverviewRepository combineContent stream over the accounts and balances sources to rebuild AccountsData."

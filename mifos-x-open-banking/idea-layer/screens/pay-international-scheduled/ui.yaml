@@ -1,0 +1,238 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: pay-international-scheduled
+
+id: pay-international-scheduled
+name: Pay abroad on a date
+feature: pay-international-scheduled
+flavor: consumer
+quality_score: 91
+contract_version: "2.0.0"
+capabilities: [has_ui, has_api]
+
+# Six steps: Account -> Recipient -> Amount -> Date -> Charges -> Review.
+# Every component is inherited: the international Recipient/Amount/Charges steps from
+# pay-international-single, the Date step from pay-domestic-scheduled. This screen adds no new
+# input control of its own — only the combination, and the two notices that combination requires.
+
+inherits_from: pay-international-single
+inherits_components:
+  - debtor_account_list
+  - ineligible_accounts_note
+  - no_eligible_accounts
+  - iban_field
+  - payee_name_field
+  - bic_field
+  - bic_length_error
+  - amount_field
+  - instructed_currency_picker
+  - transfer_currency_picker
+  - fx_disclosure
+  - no_reference_note
+  - charge_bearer_picker
+
+screens:
+  - id: pay-international-scheduled
+    name: Pay abroad on a date
+    archetype: form
+    shell:
+      top_bar:
+        title: "{strings.pay_international_scheduled.title}"
+        navigation_icon: back
+        actions: []
+      bottom_nav: true
+
+components:
+  - type: stepper
+    id: step_indicator
+    steps: 6
+    labels:
+      - "{strings.payment.step.account}"
+      - "{strings.payment.step.recipient}"
+      - "{strings.payment.step.amount}"
+      - "{strings.payment.step.date}"
+      - "{strings.payment.step.charges}"
+      - "{strings.payment.step.review}"
+    test_context:
+      tag: payInternationalScheduled:stepIndicator
+    note: >-
+      The longest form in the app at six steps. Justified: the international rails need a
+      recipient step that cannot reuse saved payees, a two-currency amount step, and a mandatory
+      charge-bearer choice, and the scheduled rails need a date. None can be dropped, and
+      collapsing any two would put unrelated decisions on one screen.
+
+  - type: date_picker
+    id: execution_date_picker
+    label: "{strings.payment.execution_date_label}"
+    helper_text: "{strings.payment.execution_date_helper}"
+    min_date: "today + 1 day"
+    max_date: "today + 365 days"
+    allow_weekends: true
+    visibility: "step == Date"
+    test_context:
+      tag: payInternationalScheduled:executionDatePicker
+    action_contract:
+      on_click: SelectExecutionDate(date)
+      effect: "sets content.requestedExecutionDate"
+      writes_to: "PayInternationalScheduledUiState.Content.requestedExecutionDate"
+    note: >-
+      Identical bounds to the domestic scheduled rail — the upper edge was measured at exactly
+      T+365 on BOTH rails, and T-1 returns U003 here too (SP-I13).
+
+  - type: text
+    id: date_normalisation_note
+    content: "{strings.payment.date_normalisation_note}"
+    style: { typography: bodySmall, color: onSurfaceVariant }
+    visibility: "step == Date"
+    test_context:
+      tag: payInternationalScheduled:dateNormalisationNote
+
+  # ── Review ──────────────────────────────────────────────────────────────
+  - type: summary_card
+    id: review_card
+    visibility: "step == Review"
+    rows:
+      - { label: "{strings.payment.review.from}", value: debtorAccountLabel }
+      - { label: "{strings.payment.review.to}", value: creditorIbanLabel }
+      - { label: "{strings.payment.review.bank}", value: bicLabel, visibility: "bic is not blank" }
+      - { label: "{strings.payment.review.amount}", value: instructedAmountLabel }
+      - { label: "{strings.payment.review.arrives_in}", value: transferCurrencyLabel }
+      - { label: "{strings.payment.review.date}", value: executionDateLabel }
+      - { label: "{strings.payment.review.charges}", value: chargeBearerLabel }
+      - { label: "{strings.payment.review.fee}", value: feeLabel, empty_value: "{strings.payment.fee_unknown}" }
+    test_context:
+      tag: payInternationalScheduled:reviewCard
+    note: >-
+      This review DOES carry a fee row, unlike the international single rail. The consent stages
+      with no Charges, but a 0.50 charge in the INSTRUCTED currency appears at resource creation.
+      So the row reads unknown before staging and is populated from the resource afterwards.
+
+      The fee row MUST read UNKNOWN — never blank and never '0.00'. Charges is ABSENT from the
+      consent response, not an empty array, and the four keys the international rails omit
+      (Charges, CutOffDateTime, ExpectedExecutionDateTime, ExpectedSettlementDateTime) are all
+      missing rather than empty. A model that defaults Charges to [] cannot tell 'no charge' from
+      'no charge information', and it would render this row as free for a payment that costs
+      0.50 — a false statement about the PSU's money, made at the exact step where they consent
+      to it.
+
+      And the fee is UNKNOWABLE here by design, not merely unfetched: the charge first appears at
+      RESOURCE CREATION, never at AWAU and never at AUTH. A PISP cannot show an international
+      deferred fee at ANY point before the PSU has authorised. There is no earlier call to make
+      and no endpoint to add.
+
+  - type: banner
+    id: deferred_charge_note
+    content: "{strings.payment.deferred_charge_note}"
+    severity: info
+    visibility: "step == Review"
+    test_context:
+      tag: payInternationalScheduled:deferredChargeNote
+    note: >-
+      States that a fee applies but is not quoted until the payment is set up. True: 0 charges
+      at consent, 0.50 at resource creation. Without this the empty fee row on the review step
+      reads as "free", which the international single rail genuinely is and this one is not.
+
+      This banner is doing more work than it looks like. The fee is invisible until AFTER
+      authorisation — it appears only at resource creation, never at AWAU and never at AUTH — so
+      the sentence is not an apology for a slow fetch. It is the honest description of a rail on
+      which the PSU is asked to approve a payment whose cost the app cannot know yet. Paired with
+      fx_disclosure, the PSU authorises without a rate and without a fee; saying both plainly is
+      the only truthful option available.
+
+  - type: banner
+    id: no_funds_check_note
+    content: "{strings.payment.no_funds_check_note}"
+    severity: info
+    visibility: "step == Review"
+    test_context:
+      tag: payInternationalScheduled:noFundsCheckNote
+
+  - type: banner
+    id: amend_notice
+    content: "{strings.payment.amend_notice_scheduled}"
+    severity: info
+    visibility: "step == Review OR uiState is Success"
+    test_context:
+      tag: payInternationalScheduled:amendNotice
+
+  - type: button
+    id: confirm_button
+    label: "{strings.payment.confirm_scheduled}"
+    style: { variant: filled_pill }
+    visibility: "step == Review AND uiState is Content"
+    test_context:
+      tag: payInternationalScheduled:confirmButton
+    action_contract:
+      on_click: ConfirmAndStageConsent
+      effect: "POST /international-scheduled-payment-consents, then hands off to payment-consent"
+      writes_to: "PayInternationalScheduledUiState -> Submitting(StagingConsent)"
+
+  - type: progress
+    id: submitting_indicator
+    visibility: "uiState is Submitting"
+    labels:
+      StagingConsent: "{strings.payment.staging}"
+      AwaitingAuthorisation: "{strings.payment.awaiting_authorisation}"
+      SubmittingPayment: "{strings.payment.submitting}"
+    test_context:
+      tag: payInternationalScheduled:submittingIndicator
+    note: "No ConfirmingFunds stage — this family has no funds-confirmation endpoint."
+
+  - type: error_panel
+    id: error_panel
+    visibility: "uiState is Error"
+    renders: "one row per entry in the 400 body's Errors array, in WIRE ORDER"
+    test_context:
+      tag: payInternationalScheduled:errorPanel
+      row_tag: payInternationalScheduled:errorPanelRow
+    error_contract_ref: dtos/ObPaymentError.yaml
+    note: >-
+      Inherited behaviour, but SP-I04 is this rail's own two-entry case and it is the clearest
+      argument for the rule: its first error names the CREDITOR and its second names the
+      CURRENCY. A panel bound to Errors[0] sends the PSU back to fix the recipient, after which
+      the payment is still refused for the currency they were never told about.
+
+      Rows render in wire order — the server puts the scheme check (U027) ahead of the business
+      rule (U002) deliberately. Copy is keyed by ErrorCode + Path, never by Message: U004 alone
+      carries four wordings across the corpus.
+
+responsive: { mobile_only: false, baseline_width: 390 }
+
+states:
+  initial_state: loading
+  loading: { layout: { visible_components: [step_indicator] } }
+  content: { layout: { visible_components: [step_indicator, debtor_account_list, ineligible_accounts_note] } }
+  content_no_eligible_accounts: { layout: { visible_components: [step_indicator, no_eligible_accounts] } }
+  submitting: { layout: { visible_components: [step_indicator, submitting_indicator] } }
+  error: { layout: { visible_components: [step_indicator, error_panel] } }
+
+state_model:
+  view_model: PayInternationalScheduledViewModel
+  ui_state_type: PayInternationalScheduledUiState
+  states: ["Loading", "Content(step)", "Submitting(stage)", "Error(type)"]
+  actions:
+    - LoadPaymentSources
+    - SelectDebtorAccount
+    - EnterIban
+    - EnterPayeeName
+    - EnterBic
+    - EnterAmount
+    - SelectInstructedCurrency
+    - SelectTransferCurrency
+    - SelectExecutionDate
+    - SelectChargeBearer
+    - ReviewPayment
+    - ConfirmAndStageConsent
+    - SubmitPayment
+    - RetrySubmit
+    - BackStep
+    - CancelPayment
+  events: [NavigateToPaymentConsent, NavigateToPaymentStatus]
+  di: [AccountsOverviewRepository, PaymentInitiationRepository]
+
+form_submit_guard: state-transition-unmount
+
+dependencies:
+  tier: feature
+  features: [accounts, payment-consent, payment-status]
+  # fx-rates deliberately NOT a dependency — OBIE has no FX rate endpoint.

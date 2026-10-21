@@ -1,0 +1,307 @@
+sibling: api
+schema_version: "4.0"
+feature_id: payment-status
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PAYMENT STATUS — the shared settlement tracker for ALL SEVEN payment families
+#
+# Rewritten 2026-08-06 (/idea-sync, PISP-tests research). Previously served
+# domestic-payments only.
+#
+# This screen resolves its endpoint from the `paymentFamily` nav param. Every payment screen
+# passes it, because the seven families use SEVEN different resource endpoints, FOUR different
+# status ladders, and TWO different status encodings.
+# ═══════════════════════════════════════════════════════════════════════════
+
+base_path: "/obie/open-banking/v4.0/pisp"
+api_source_ref: API-003
+
+nav_params:
+  - { name: paymentId, required: true, description: "The family's resource id." }
+  - { name: paymentFamily, required: true, enum_ref: PaymentFamily, description: "Selects the endpoint AND the status ladder. Without it neither is resolvable." }
+
+# ─────────────────────────────────────────────────────────────────────────
+# ENDPOINT RESOLUTION
+# ─────────────────────────────────────────────────────────────────────────
+operations:
+  - id: get_payment_status
+    endpoint_template: "GET /{familyResourcePath}/{paymentId}"
+    auth: client_credentials_payments_scope
+    headers: []
+    note: "Pure read on every family — no JWS, no idempotency key."
+    family_resolution:
+      - { paymentFamily: domestic-payment, path: "domestic-payments", id_field: DomesticPaymentId, ladder: single }
+      - { paymentFamily: domestic-scheduled-payment, path: "domestic-scheduled-payments", id_field: DomesticScheduledPaymentId, ladder: domestic_deferred }
+      - { paymentFamily: domestic-standing-order, path: "domestic-standing-orders", id_field: DomesticStandingOrderId, ladder: domestic_deferred }
+      - { paymentFamily: international-payment, path: "international-payments", id_field: InternationalPaymentId, ladder: single }
+      - { paymentFamily: international-scheduled-payment, path: "international-scheduled-payments", id_field: InternationalScheduledPaymentId, ladder: international_deferred }
+      - { paymentFamily: international-standing-order, path: "international-standing-orders", id_field: InternationalStandingOrderId, ladder: international_deferred }
+      - { paymentFamily: domestic-vrp, path: "domestic-vrps", id_field: DomesticVRPId, ladder: vrp }
+    response:
+      status: 200
+      content_type: application/json
+      dto: ObPaymentStatus
+      envelope: "Data + Links + Meta"
+      fields:
+        - { name: "Data.{id_field}", type: string, required: true, description: "Name varies by family — see family_resolution.id_field. There is no single shared key." }
+        - { name: Data.ConsentId, type: string, required: true }
+        - { name: Data.Status, type: enum, required: true, enum_short: [ACSP, ACCC, PDNG, INCO, RJCT], description: "MUST be matched against BOTH encodings — see dual_encoding_rule. Unrecognised maps to in_progress per fail_open_rule." }
+        - { name: Data.CreationDateTime, type: datetime, required: true }
+        - { name: Data.StatusUpdateDateTime, type: datetime, required: true, description: "INERT — equals CreationDateTime even across ACSP -> ACCC on all eight corpus payments. Never poll or diff it." }
+        - { name: Data.Initiation, type: object, required: true, description: "Source of the REQUESTED execution date the UI renders instead of the stub fields." }
+        - { name: Data.Charges, type: array, required: false, description: "Domestic rails only, and ABSENT (not empty) on international. Parse as nullable — see response_shape_differs_by_rail." }
+        - { name: Data.Refund, type: object, required: false, description: "Returned when the consent set ReadRefundAccount Yes. Observed on VRP payments, naming the debtor." }
+        - { name: Data.CutOffDateTime, type: datetime, required: false, description: "Stub on deferred families — see stub_fields. Never rendered." }
+        - { name: Data.ExpectedExecutionDateTime, type: datetime, required: false, description: "Stub except on VRP, where it is CreationDateTime + 30s — see stub_fields.vrp_exception." }
+        - { name: Data.ExpectedSettlementDateTime, type: datetime, required: false, description: "Same as above." }
+        - { name: Data.MultiAuthorisation, type: object, required: false, description: "Not observed on UK Personal. Present in the OBIE schema; treat as absent." }
+        - { name: Links.Self, type: string, required: true }
+        - { name: Meta.TotalPages, type: integer, required: true, observed: 1 }
+      absent_fields_rule: >-
+        ExchangeRateInformation and CurrencyExchange are NEVER present on any family at any status.
+        No FX rate is disclosed by this endpoint, by the consent, or by the AIS transaction record.
+        The screen must not render a rate or an converted amount it claims came from the API.
+
+  - id: get_consent_status
+    endpoint_template: "GET /{familyConsentPath}/{consentId}"
+    auth: client_credentials_payments_scope
+    headers: []
+    optional: true
+    response:
+      status: 200
+      content_type: application/json
+      dto: ObPaymentStatus
+      envelope: "Data + Risk + Links + Meta"
+      fields:
+        - { name: Data.ConsentId, type: string, required: true }
+        - { name: Data.Status, type: enum, required: true, enum: [AWAU, AUTH, COND, RJCT], description: "COND on the six PIS families once the resource is created; AUTH forever on VRP. RJCT means the PSU denied at the bank." }
+        - { name: Data.StatusUpdateDateTime, type: datetime, required: true, description: "Inert, as on the resource read." }
+        - { name: Data.Initiation, type: object, required: true, description: "Bank-authoritative after AUTH — carries the DebtorAccount the PSU picked where the TPP omitted one." }
+        - { name: Links.Self, type: string, required: true }
+        - { name: Meta.TotalPages, type: integer, required: true }
+      vrp_primary_read_note: >-
+        On VRP this is the PRIMARY read. A consent sitting at AUTH is NOT proof the mandate can
+        pay — a card-funded VRP consent reaches AUTH, passes funds-confirmation, and then refuses
+        every payment with U021. Mandate health is not consent status.
+    note: >-
+      Read alongside the resource on the six PIS families to distinguish 'the consent was
+      consumed normally' from 'the consent was rejected'. On VRP it is the PRIMARY read, because
+      the mandate's own health lives on the consent, not the payment.
+    family_resolution:
+      - { paymentFamily: domestic-payment, path: "domestic-payment-consents" }
+      - { paymentFamily: domestic-scheduled-payment, path: "domestic-scheduled-payment-consents" }
+      - { paymentFamily: domestic-standing-order, path: "domestic-standing-order-consents" }
+      - { paymentFamily: international-payment, path: "international-payment-consents" }
+      - { paymentFamily: international-scheduled-payment, path: "international-scheduled-payment-consents" }
+      - { paymentFamily: international-standing-order, path: "international-standing-order-consents" }
+      - { paymentFamily: domestic-vrp, path: "domestic-vrp-consents" }
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE FOUR LADDERS — full contract in the ObPaymentStatus DTO
+# ─────────────────────────────────────────────────────────────────────────
+status_ladders:
+  single:
+    families: [domestic-payment, international-payment]
+    resource: "ACSP -> ACCC"
+    consent: "AWAU -> AUTH -> COND"
+    render: "ACSP is in progress and must NEVER read as sent. ACCC is terminal success."
+  domestic_deferred:
+    families: [domestic-scheduled-payment, domestic-standing-order]
+    resource: "PDNG -> INCO"
+    consent: "AWAU -> AUTH -> COND"
+    render: "Both mean the INSTRUCTION is established. Neither means money moved."
+  international_deferred:
+    families: [international-scheduled-payment, international-standing-order]
+    resource: "INCO -> INCO"
+    consent: "AWAU -> AUTH -> COND"
+    render: "Never emits PDNG. INCO at creation is normal, not anomalous."
+  vrp:
+    families: [domestic-vrp]
+    resource: "ACSP -> ACCC"
+    consent: "AWAU -> AUTH, forever — never COND. 400 U011 once revoked."
+    render: "Accept both encodings. U011 on the consent is 'revoked', not an error."
+    # CORRECTED 2026-08-07 (/idea-sync). This row previously read "returned in the v3.1 LONG
+    # form", which asserts a per-endpoint encoding rule. dtos/ObPaymentStatus.yaml#dual_encoding_trap
+    # was corrected the same day and REFUTES that: payment 19933 on domestic-vrps read "ACCC" at
+    # 15:12:26 and "AcceptedCreditSettlementCompleted" on a later re-read, with nothing changed in
+    # the request. The encoding is not a property of the endpoint. Both forms are accepted on
+    # EVERY endpoint and domestic-vrps is NOT special-cased.
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE THREE RULES THIS SCREEN EXISTS TO ENFORCE
+# ─────────────────────────────────────────────────────────────────────────
+dual_encoding_rule:
+  rule: "Every status code is matched against BOTH its v4.0 short form and its v3.1 long form, on EVERY endpoint."
+  # CORRECTED 2026-08-07 (/idea-sync). The prior evidence text framed this as "domestic-vrps
+  # returns long, everything else returns short" — a per-endpoint rule the corpus does not
+  # support. Full contract: dtos/ObPaymentStatus.yaml#dual_encoding_trap.
+  evidence: >-
+    The SAME endpoint rendered the SAME field BOTH ways at different times: payment 19933 on
+    domestic-vrps read "ACCC" at 15:12:26 and "AcceptedCreditSettlementCompleted" on a later
+    re-read, with nothing changed in the request. A same-session probe still showed short codes
+    elsewhere (domestic-payments 19908 ACCC, international-payments 19911 ACCC,
+    domestic-standing-orders 19916 INCO) — but those are point-in-time renderings, not a
+    contract. HSBC serves both spec generations side by side; the AIS consent header check
+    returns the long UK.OBIE.Header.Unexpected where v4.0 codes it U020.
+  no_special_casing: >-
+    Do NOT special-case domestic-vrps. That encodes a rule the evidence refutes and breaks the
+    moment another endpoint renders long — which is exactly what this one did.
+  failure_mode_if_ignored: >-
+    A short-code-only mapper reads a long-form status as unrecognised and, per fail_open_rule,
+    renders a COMPLETED payment as permanently in progress. Silent and unrecoverable, and caught
+    by neither a unit test written from the short list nor a single live probe.
+
+status_field_only_rule:
+  rule: "Authorisation and settlement transitions are detected from Data.Status alone."
+  forbidden: "Polling or diffing StatusUpdateDateTime."
+  evidence: >-
+    All five authorised consents in the corpus transitioned AWAU -> AUTH with StatusUpdateDateTime
+    still equal to CreationDateTime. A timestamp-keyed poll never fires.
+
+fail_open_rule:
+  rule: "An unrecognised status maps to in_progress. Never to success, never to failure."
+  rationale: >-
+    Guessing success tells a PSU their money moved when it may not have; guessing failure sends
+    them to retry a payment that already succeeded. In progress degrades to stale-but-honest.
+
+# ─────────────────────────────────────────────────────────────────────────
+# WHAT THIS SCREEN MUST NOT CLAIM
+# ─────────────────────────────────────────────────────────────────────────
+per_execution_status:
+  exists: false
+  affected_families: [domestic-scheduled-payment, domestic-standing-order, international-scheduled-payment, international-standing-order]
+  finding: >-
+    There is NO per-execution status anywhere in OBIE. The resource status describes the
+    mandate's or instruction's SETUP, not the Nth payment. A TPP cannot learn that execution #3
+    failed for insufficient funds by any API means — the only route is AIS transaction polling
+    plus inference, and even that is closed for accounts whose standing-orders read returns 400.
+  ui_requirement: >-
+    For these four families the screen reports that the instruction is set up, shows the schedule
+    it will follow, and says explicitly that individual future payments cannot be tracked here.
+    It must never render a progress indicator implying instalments are being counted.
+
+stub_fields:
+  fields: [ExpectedExecutionDateTime, ExpectedSettlementDateTime, CutOffDateTime]
+  finding: >-
+    On the deferred families all three equal CreationDateTime even when RequestedExecutionDateTime
+    is T+7. They carry NO usable information.
+  ui_requirement: >-
+    Never rendered — not as an arrival date, not as anything. The screen shows the REQUESTED
+    execution date from the Initiation instead. Rendering the stub would tell a PSU their payment
+    dated a week out arrives today.
+  # ── THE ONE HONEST EXCEPTION — added 2026-08-07 ────────────────────────
+  vrp_exception:
+    finding: >-
+      On domestic-vrp, ExpectedExecutionDateTime and ExpectedSettlementDateTime are identical and
+      exactly CreationDateTime + 30 SECONDS, on ALL 8 payments in the corpus (15:12:26 -> 15:12:56).
+    reading: "This is the one place these fields are honest, and 30s is a real settling window."
+    ui_permission: >-
+      A 30-second settling indicator IS legitimate on VRP and only on VRP. It is a per-family
+      permission, not a general one — the same fields on any other family remain unrenderable.
+
+# ── SETTLEMENT IS ASYNCHRONOUS AND BATCHED — added 2026-08-07 ────────────
+settlement_batching:
+  finding: >-
+    Every booking timestamp observed falls on a five-minute boundary at :01 or :02 seconds —
+    09:10:01, 09:25:02, 09:35:02, 09:40:02, 09:45:02. Settlement runs in batches, not on submit.
+  consequence: >-
+    ACSP means accepted-NOT-YET-BOOKED. A balance read taken immediately after submission can
+    show NO movement for a payment that settles minutes later. The absence of a balance change
+    is not evidence the payment failed.
+  ui_requirement:
+    - "Never render ACSP as sent, paid or complete — restates truthfulness_invariant with the mechanism behind it."
+    - "Never cross-check settlement against a balance read taken in the same minute as the submit."
+    - "The poll interval (3s backing off to 30s, 10-minute ceiling) is correctly sized for a five-minute batch cadence — do not shorten it."
+
+# ── CHARGES ARE QUOTED BUT NOT APPLIED — added 2026-08-07 ────────────────
+charges_are_not_applied:
+  finding: >-
+    Every transaction record carries ChargeAmount 0.00 GBP — including domestic payments whose
+    consent AND payment responses quoted 0.05 GBP UK.OBIE.CHAPSOut. The quote and the charge do
+    not agree.
+  no_fx_disclosure: >-
+    No transaction carries a CurrencyExchange block either, so no FX rate is disclosed anywhere
+    on the AIS side. An international payment's true cost is not observable.
+  charge_type_is_misleading:
+    finding: >-
+      Charges[].Type is "UK.OBIE.CHAPSOut" on ALL 116 charge objects observed, with NO other
+      value anywhere — including weekly standing orders and USD/EUR international transfers
+      where CHAPS is not the settlement rail.
+    ui_requirement: "NEVER render Type raw to a PSU. It is a misleading label, not a rail name."
+  charge_bearer_self_contradicts:
+    finding: >-
+      Charges[].ChargeBearer is always "BorneByDebtor" regardless of what Initiation.ChargeBearer
+      requested. Resources 19917, 19918 and 19921 each carry BOTH values, contradicting
+      themselves within a single document.
+    ui_requirement: "If a bearer is shown at all, show the Charges[] value and never the Initiation value. Preferably show neither."
+  ui_requirement: >-
+    A quoted charge is a quote, not a fee. Render it as "estimated" or not at all; it must never
+    be presented as what the PSU was charged, because the observed answer is always 0.00.
+  # RESOLVED 2026-08-07. This previously read "Recorded, not resolved … neither is refuted by the
+  # other". The two figures were never in conflict — they are two different rails quoted at two
+  # different lifecycle stages, and the capture corpus carries both.
+  quoted_amount_by_rail:
+    domestic_all_three_families:
+      amount: "0.05 GBP"
+      quoted_at: consent-staging
+      observed: "14 of 14 successful domestic consents, before any payer exists"
+    international_single:
+      amount: null
+      quoted_at: never
+      observed: "0 of 33 — the Charges key is ABSENT at every stage, through to ACCC"
+    international_deferred:
+      amount: "0.50"
+      quoted_at: resource-creation
+      currency_rule: "Denominated in InstructedAmount.Currency, NOT CurrencyOfTransfer — a GBP-instructed USD transfer is charged 0.50 GBP; a USD-instructed USD transfer is charged 0.50 USD."
+      observed: "Absent at AWAU and at AUTH; appears for the first time only once the resource is created"
+      ui_consequence: >-
+        A TPP therefore CANNOT disclose an international deferred fee before the PSU authorises.
+        Do not render an estimate in its place — say the fee is not quoted until the instruction
+        is created.
+    still_true_for_all: >-
+      Whatever is quoted, the AIS transaction record shows ChargeAmount 0.00 GBP. A quoted charge
+      is a quote, not a fee — see charges_are_not_applied above.
+
+# ── RESPONSE FIELD PRESENCE DIFFERS BY RAIL — added 2026-08-07 ───────────
+response_shape_differs_by_rail:
+  domestic_201_carries: [Charges, CutOffDateTime, ExpectedExecutionDateTime, ExpectedSettlementDateTime]
+  international_201_carries: "NONE of them — the keys are ABSENT, not empty."
+  ui_requirement: >-
+    Parse Charges as nullable/absent, NEVER default to []. A model defaulting to [] cannot
+    distinguish "no charge" from "no charge information", and on the international rail the
+    second is what is true. Full contract: dtos/ObPaymentError.yaml#response_shape_differs_by_rail.
+
+# ── WRITE-THEN-READ CORRELATION IS IMPOSSIBLE — added 2026-08-07 ─────────
+pis_to_ais_correlation:
+  finding: >-
+    A PIS-created standing order (19936) was NOT visible in AIS roughly five minutes after
+    creation, while healthy at INCO on the PIS side. Separately, StandingOrderId is absent from
+    EVERY AIS standing-order element.
+  consequence: >-
+    Write-then-read correlation is impossible IN PRINCIPLE, not merely delayed. Even after AIS
+    catches up there is no shared identifier to match on.
+  ui_requirement: >-
+    This screen must never fall back to an AIS read to "confirm" a deferred instruction, and must
+    never tell a PSU to check the standing-orders list to verify it worked. The PIS resource
+    status is the only source, and it only ever describes setup.
+
+polling:
+  starts_only_if: "disposition == in_progress"
+  stops_on: "any terminal disposition"
+  rationale: "A terminal status cannot change. Polling it is waste and an easy way to earn a 429."
+  interval_ms: 3000
+  backoff_multiplier: 1.5
+  max_interval_ms: 30000
+  max_duration_ms: 600000
+  on_429: "double the current interval; keep the last known status rendered"
+  deferred_families_note: >-
+    On the four deferred families the resource reaches INCO almost immediately and stays there,
+    so polling stops after the first terminal read. There is nothing further to observe — the
+    execution date may be a year away.
+
+error_cases:
+  - { code: U011, http: 400, trigger: "VRP consent GET after revocation", recovery: "Render as revoked from the local mandate record. NOT an error." }
+  - { http: 404, trigger: "unknown payment id", recovery: "Payment not found." }
+  - { http: 401, trigger: "expired token", recovery: "Retry after refresh." }
+  - { http: 403, trigger: "consent revoked or expired", recovery: "View Consents CTA. Payments already completed are unaffected." }
+  - { http: 429, trigger: "rate limited", recovery: "Double the poll interval; keep the last known status rendered." }

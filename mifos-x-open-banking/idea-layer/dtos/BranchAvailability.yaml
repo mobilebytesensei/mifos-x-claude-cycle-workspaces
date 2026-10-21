@@ -1,0 +1,214 @@
+name: BranchAvailability
+version: "1.1.0"
+source:
+  origin: external_api
+  api_path: "GET /open-banking/v2.2/branches and the five /x-open-banking/v2.2/branches/… extensions"
+  host: api.hsbc.com
+  host_status: resolved
+  api_ref: API-OD-BRANCH
+  spec: "OBIE Open Data v2.2 — unauthenticated, outside the OBIE consent surface"
+  created:
+    at: "2026-08-07"
+    by: "/idea-sync — dangling-ref closure"
+    reason: >-
+      Branch v2.0.0 declared `Availability` as `dto_ref: BranchAvailability` but no such DTO
+      existed. It also REPLACES the OBP-era LobbyHours DTO, which modelled the same concept as
+      seven optional display strings.
+
+description: >-
+  When a branch is open. A structured per-day array, NOT a display string — which is the single
+  largest shape change between the OBP sandbox model and OBIE Open Data. Everything difficult
+  about this DTO is about what it does NOT contain.
+
+# ─────────────────────────────────────────────────────────────────────────
+# TRAP 1 — CLOSED DAYS ARE ABSENT, NOT MARKED CLOSED
+# ─────────────────────────────────────────────────────────────────────────
+closed_days_are_absent:
+  finding: "A day the branch is CLOSED is simply NOT IN THE Day ARRAY. There is no closed flag."
+  evidence:
+    measured_over: >-
+      CENSUS — all 327 UK branches, 2026-08-07, the unfiltered
+      GET /open-banking/v2.2/branches. 1802 Day entries in total. Upgraded at 1.1.0 from the
+      25-branch London SAMPLE the previous revision measured.
+    reproduce: >-
+      curl -H "Accept: application/prs.openbanking.opendata.v2.2+json"
+      "https://api.hsbc.com/open-banking/v2.2/branches"
+    per_day_counts: { Monday: 327, Tuesday: 327, Wednesday: 327, Thursday: 327, Friday: 327, Saturday: 167, Sunday: 0 }
+    per_branch: "160 branches publish 5 days (Mon-Fri); 167 publish 6 (Mon-Sat). Never 7."
+    superseded_sample: >-
+      The sample read Saturday 9/25 (36%) and inferred a rate. The census says 167/327 (51%) —
+      understated by fifteen points. Sunday 0 held. Cite the /327 figures.
+  no_branch_publishes_sunday:
+    finding: "Sunday appears on 0 of 327 branches — the whole estate — though the Day.Name enum declares it."
+    consequence: >-
+      A renderer that iterates only the days it receives DROPS SUNDAY FROM EVERY BRANCH. The user
+      sees a week with no Sunday row at all and cannot tell whether the branch is shut or whether
+      the app forgot. This fires on 100% of records — it is not an edge case, it is the default.
+      The same bug drops Saturday from the 160 branches that are genuinely closed then.
+  requirement: >-
+    Build the week from a FIXED Monday-to-Sunday list and mark every day the API did not send as
+    Closed. ABSENCE MEANS CLOSED, not unknown. Iterate the seven weekdays and look each one up in
+    the response; never iterate the response and hope it covers the week.
+
+# ─────────────────────────────────────────────────────────────────────────
+# TRAP 2 — THERE IS NO BANK-HOLIDAY DATA (but NonStandardAvailability IS sent — see TRAP 2b)
+# ─────────────────────────────────────────────────────────────────────────
+no_holiday_data:
+  finding: >-
+    No BANK-HOLIDAY CALENDAR exists anywhere in this feed. Christmas Day, Good Friday and bank
+    holiday Mondays are simply not represented, so the weekly pattern is the ONLY temporal
+    information available and it is wrong on roughly eight days a year.
+  corrected_at_1_1_0: >-
+    The previous revision went further and said `NonStandardAvailability` is "declared in the
+    swagger and sent by nobody", measured `0/25`. That is FALSE and is withdrawn — it was an
+    absence claim drawn from a 25-branch London sample. See TRAP 2b. The bank-holiday half of the
+    finding survives: NonStandardAvailability carries ad-hoc closures, not a holiday calendar.
+  measured: { StandardAvailability: "327/327", NonStandardAvailability: "1/327" }
+  requirement: >-
+    NEVER compute or render "Open now", "Closes in 20 minutes", or a green/red open dot. On a
+    bank holiday every one of those is confidently wrong, and it is wrong in the direction that
+    sends a person to a locked door. Present the standard weekly pattern and label it as such.
+  what_to_say_instead: >-
+    "Standard opening hours" with the weekly table. If a live-status indicator is wanted, it needs
+    a bank-holiday calendar from somewhere other than this API, and that is a scope decision, not
+    a rendering detail.
+
+# ─────────────────────────────────────────────────────────────────────────
+# TRAP 2b — NonStandardAvailability IS SENT, ON EXACTLY ONE BRANCH
+# ─────────────────────────────────────────────────────────────────────────
+non_standard_availability_is_real:
+  added_at: "1.1.0 — reverses the 1.0.0 claim that this member is sent by nobody."
+  finding: "Present on 1 of 327 branches. Rare, but live in production today and NOT optional to handle."
+  the_one_instance:
+    identification: "401118"
+    name: "Birmingham, New Street - Temporarily closed"
+    value: { Name: "Temporarily Closed", StartDate: "2025-10-06", EndDate: "2027-03-21", Notes: "Branch Temporarily Closed" }
+    and_yet: >-
+      The same record publishes a completely ordinary StandardAvailability — Mon-Fri 09:30-16:30,
+      Saturday 09:30-13:00. The closure and the weekly pattern sit side by side and the weekly
+      pattern gives no hint the building is shut.
+  observed_shape: >-
+    A single OBJECT, not an array. One live instance, one window; plurality was untestable because
+    no multi-window branch exists. Tolerate an array defensively.
+  requirement: >-
+    Read this member BEFORE rendering the weekly pattern. If it is present and today falls within
+    [StartDate, EndDate], the closure WINS — banner shown, opening hours suppressed or visibly
+    overridden. A client that ignores it, or treats it as a footnote below the hours, sends users
+    to a locked door until 2027-03-21.
+  why_rarity_is_not_safety: >-
+    1-in-327 never surfaces in development, never appears in a London fixture, and never comes up
+    in review — which makes it more dangerous, not less. Fixture pinned at
+    screens/branch-locator/demo-data.yaml (branch 401118).
+  reproduce: >-
+    curl -H "Accept: application/prs.openbanking.opendata.v2.2+json"
+    "https://api.hsbc.com/x-open-banking/v2.2/branches/sortcode/401118"
+
+# ─────────────────────────────────────────────────────────────────────────
+# TRAP 3 — OpeningHours IS A LIST
+# ─────────────────────────────────────────────────────────────────────────
+opening_hours_is_a_list:
+  finding: "OpeningHours is an ARRAY per day (minItems 1, no maximum), modelling a lunchtime closure as two ranges."
+  observed: "1802/1802 Day entries across the whole 327-branch estate carried exactly ONE range. A split day has never been seen."
+  consequence: >-
+    Reading [0] works today and silently hides an afternoon session the first time HSBC publishes
+    a split day. The bug will not surface in any test written against the current feed, which is
+    exactly why it needs writing down rather than testing for.
+  requirement: "Render all ranges for a day, joined — '09:30-13:00, 14:00-16:30'. Never index [0]."
+
+# ─────────────────────────────────────────────────────────────────────────
+# STRUCTURE
+# ─────────────────────────────────────────────────────────────────────────
+fields:
+  - name: StandardAvailability
+    type: StandardAvailabilityObject
+    required: true
+    pii: false
+    primary_key: false
+    observed: "327/327 — present on every branch in the estate."
+    description: "The recurring weekly pattern. Required by the contract, and on 326 of 327 branches the entire DTO."
+
+  - name: NonStandardAvailability
+    type:
+      optional: NonStandardAvailabilityObject
+    required: false
+    pii: false
+    primary_key: false
+    observed: "1/327 — branch 401118 only. CORRECTED at 1.1.0; the 25-branch sample read 0/25 and wrongly concluded never sent."
+    description: >-
+      Temporary-closure hours, and HSBC does publish them — rarely. Handling it is MANDATORY, not
+      defensive modelling: read it before the weekly pattern and let a live closure window
+      override the hours. It is NOT a bank-holiday calendar, so "Open now" stays unsafe for the
+      separate reason given in no_holiday_data. See non_standard_availability_is_real.
+
+nested_shapes:
+  StandardAvailabilityObject:
+    required: [Day]
+    fields:
+      - name: Day
+        type: { list_of: DayObject }
+        required: true
+        constraint: "minItems 1, maxItems 7"
+        observed: "5 elements on 160 branches, 6 on 167. Never 7 — no branch in the estate publishes a Sunday."
+  DayObject:
+    required: [Name, OpeningHours]
+    fields:
+      - name: Name
+        type: String
+        required: true
+        enum_ref: WeekdayName
+        observed: "Monday-Friday on all 327; Saturday on 167; Sunday on none. Census, not sample."
+      - name: OpeningHours
+        type: { list_of: OpeningHoursObject }
+        required: true
+        constraint: "minItems 1"
+        observed: "Always length 1 — 1802/1802 Day entries estate-wide."
+      - name: Notes
+        type: { list_of: String }
+        required: false
+        observed: "0/1802 — never sent, across the whole estate."
+        description: "Declared per-day free text. Would be the natural home for 'counter service Monday-Friday only'; instead that caveat is appended to Branch.Name."
+  OpeningHoursObject:
+    required: [OpeningTime, ClosingTime]
+    fields:
+      - name: OpeningTime
+        type: String
+        required: true
+        constraint: 'pattern ^(2[0-3]|[01][0-9]):?([0-5][0-9])$'
+        observed: '"09:30" on nearly every record.'
+      - name: ClosingTime
+        type: String
+        required: true
+        constraint: 'pattern ^(2[0-3]|[01][0-9]):?([0-5][0-9])$'
+        observed: '"16:30" on weekdays, "13:00" on Saturdays.'
+    time_format_trap:
+      finding: >-
+        The pattern makes the COLON OPTIONAL — "0930" is as valid as "09:30". Only the colon form
+        has been observed, but a parser that assumes "HH:mm" will throw on a conformant response.
+      also: >-
+        These are LOCAL times with no zone, no seconds and no date. Do not parse them into an
+        instant. The OBIE description permits "24:00" as end-of-day, which the pattern's 2[0-3]
+        upper bound actually excludes — a contradiction inside the spec itself, unexercised live.
+
+enums:
+  - name: WeekdayName
+    declared: [Friday, Monday, Saturday, Sunday, Thursday, Tuesday, Wednesday]
+    observed: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday]
+    note: "Declared unordered and alphabetical. The API does not tell you the week order — the client owns it."
+
+replaces:
+  dto: LobbyHours
+  was_shape: "Seven optional String fields (monday…sunday), each a display string like '09:00-17:00'."
+  why_not_a_migration: >-
+    LobbyHours encoded 'closed' as an absent field, which is the same convention this DTO uses at
+    the array level — but it flattened the day to ONE string, so it could not express a split day,
+    and it carried no structured times, so it could not be sorted, compared or localised. The
+    OBIE shape is strictly richer and shares no field name.
+  see_also: "DriveUpHours has no OBIE counterpart at all — nothing here replaces it."
+
+used_by:
+  - { dto: Branch, field: Availability, role: "embedded object — optional, observed 327/327" }
+  - { feature: branch-locator, api_id: get_all_branches, role: "response — nested" }
+  - { feature: branch-locator, api_id: get_branches_by_geolocation, role: "response — nested" }
+  - { feature: branch-locator, api_id: get_branch_by_sortcode, role: "response — nested" }
+  - { feature: branch-locator, api_id: get_branches_by_postcode, role: "response — nested" }
+  - { feature: branch-locator, api_id: get_branches_by_town, role: "response — nested" }

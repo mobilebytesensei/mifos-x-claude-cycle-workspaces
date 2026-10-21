@@ -1,0 +1,118 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: transactions
+
+screen_id: transactions
+
+params:
+  - name: accountId
+    type: string
+    required: true
+    source: route
+  # `category` route param REMOVED 2026-07-30 (/idea-sync stale reconciliation).
+  # It was the pre-filter passed by the pfm drill-down, and that entry point was deleted
+  # in the 2026-07-28 reverse sync. Source confirms it never existed:
+  # TransactionsRoute is `data class TransactionsRoute(val accountId: String)` — one arg.
+  # (TransactionCategory still exists in source, but as a field on a transaction UI model,
+  # not as a navigation argument.)
+
+# ── Local UI state tracked by ViewModel ────────────────────────────────────────
+state:
+  has_next_page:
+    type: boolean
+    default: false
+    description: "True when OBIE Links.Next is present in the most recent transactions response page."
+  next_link:
+    type: string
+    nullable: true
+    default: null
+    description: "Full absolute URL from OBReadTransaction6#Links.Next; used as URL override for load_more_transactions."
+  is_paginating:
+    type: boolean
+    default: false
+    description: "True while a next-page fetch is in flight; drives pagination_loader visibility and hides load_more_button."
+
+# ── On mount ───────────────────────────────────────────────────────────────────
+on_mount:
+  - trigger: transactions_load
+    description: "Load first page of transactions for the account. Updates has_next_page and next_link from response Links."
+    steps:
+      - call: transactions
+        path_params:
+          AccountId: "{params.accountId}"
+        store_as: transactions
+        on_response:
+          update_state:
+            next_link: "{response.Links.Next}"
+            has_next_page: "{response.Links.Next != null}"
+    on_loading: loading
+    on_success: content
+    on_error: error
+    on_empty: empty
+
+# ── User actions ───────────────────────────────────────────────────────────────
+on_user_action:
+  - trigger: filter_transactions
+    description: "Client-side filter: all | credit | debit. Does not re-fetch; operates on accumulated in-memory list."
+    re_runs: []
+    client_filter:
+      field: CreditDebitIndicator
+      value: "{action.params.filter}"
+
+  - trigger: open_date_range_picker
+    description: >
+      Opens date-range picker bottom sheet. On confirm: resets pagination cursor,
+      re-fetches first page with fromBookingDateTime/toBookingDateTime bounds set.
+    re_runs: [transactions_load]
+    on_confirm:
+      reset_state:
+        next_link: null
+        has_next_page: false
+        is_paginating: false
+
+  - trigger: search_transactions
+    description: "Client-side text search on TransactionInformation and MerchantDetails.MerchantName. No re-fetch."
+    re_runs: []
+
+  - trigger: load_more_transactions
+    description: >
+      Fetch next page using next_link (Links.Next cursor). Appends new OBTransaction6
+      rows to the existing in-memory list. Updates has_next_page and next_link from
+      the new response. Sets is_paginating=true for the duration of the fetch.
+    steps:
+      - call: transactions
+        url_override: "{state.next_link}"
+        append_to: transactions
+        on_response:
+          update_state:
+            next_link: "{response.Links.Next}"
+            has_next_page: "{response.Links.Next != null}"
+            is_paginating: false
+    on_loading:
+      overlay_state:
+        is_paginating: true
+    on_success: content
+    on_error: error
+    re_runs: []
+
+  - trigger: clear_filters
+    description: "Resets CreditDebitIndicator filter, date range, and search query. Transitions empty → content if data present."
+    re_runs: []
+
+  - trigger: retry_load
+    description: "Re-triggers transactions_load from scratch; resets pagination cursor."
+    re_runs: [transactions_load]
+    on_retry:
+      reset_state:
+        next_link: null
+        has_next_page: false
+        is_paginating: false
+
+  - trigger: navigate_transaction_detail
+    description: "Push transaction-detail route with transactionId and accountId params."
+    re_runs: []
+    navigation:
+      target: transaction-detail
+      params:
+        transactionId: "{action.params.transactionId}"
+        accountId: "{action.params.accountId}"

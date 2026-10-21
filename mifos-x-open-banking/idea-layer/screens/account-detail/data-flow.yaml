@@ -1,0 +1,64 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: account-detail
+
+screen_id: account-detail
+
+params:
+  - name: accountId
+    type: string
+    required: true
+    source: route
+
+on_mount:
+  - trigger: account_detail_load
+    description: "Load account metadata and all balance types in parallel coroutines via ktorfit."
+    steps:
+      - call: account-detail
+        path_params:
+          AccountId: "{params.accountId}"
+        store_as: account
+      - call: balances
+        path_params:
+          AccountId: "{params.accountId}"
+        store_as: balances
+    on_loading: loading
+    on_success:
+      condition: "balances.length > 0"
+      true_route: content
+      false_route: empty         # zero-balance edge case → empty state, not content
+    on_error:
+      # Typed routing: ViewModel reads HTTP status from the thrown exception and
+      # sets error.code + error.message + error.recoverable before entering error state.
+      routes:
+        - code: 401
+          error_id: TokenExpiredError
+          message: "Session expired. Please log in again."
+          recoverable: true
+          route_to: error
+        - code: 403
+          error_id: ConsentWithdrawnError
+          message: "Access to this account has been withdrawn."
+          recoverable: false
+          route_to: error
+        - code: 404
+          error_id: AccountNotFoundError
+          message: "Account not found in your authorised account set."
+          recoverable: false
+          route_to: error
+        - code: network
+          error_id: NetworkError
+          message: "No network connection. Please check your connection and retry."
+          recoverable: true
+          route_to: error
+        - code: default
+          error_id: UnexpectedError
+          message: "Something went wrong. Please try again."
+          recoverable: true
+          route_to: error
+
+on_user_action:
+  - trigger: retry_load
+    re_runs: [account_detail_load]
+    visible_when: "error.recoverable == true"
+    description: "Only shown and wired for recoverable errors (401, network). Hidden for 403/404."

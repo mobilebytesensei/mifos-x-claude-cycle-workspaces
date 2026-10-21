@@ -1,0 +1,189 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: pay-domestic-scheduled
+
+id: pay-domestic-scheduled
+name: Pay on a date
+feature: pay-domestic-scheduled
+flavor: consumer
+quality_score: 91
+contract_version: "2.1.0"
+capabilities: [has_ui, has_api]
+
+# Five steps: Account -> Payee -> Amount -> Date -> Review.
+# Inherits every component of pay-domestic-single's first three steps unchanged; the Date step
+# and the amendment notice are the additions, and the funds-confirmation stage is removed.
+
+inherits_from: pay-domestic-single
+inherits_components:
+  - debtor_account_list
+  - ineligible_accounts_note
+  - no_eligible_accounts
+  - beneficiary_list
+  - enter_manually_button
+  - sort_code_field
+  - account_number_field
+  - payee_name_field
+  - amount_field
+  - amount_error
+  - reference_field
+
+screens:
+  - id: pay-domestic-scheduled
+    name: Pay on a date
+    archetype: form
+    shell:
+      top_bar:
+        title: "{strings.pay_domestic_scheduled.title}"
+        navigation_icon: back
+        actions: []
+      bottom_nav: true
+
+components:
+  - type: stepper
+    id: step_indicator
+    steps: 5
+    labels:
+      - "{strings.payment.step.account}"
+      - "{strings.payment.step.payee}"
+      - "{strings.payment.step.amount}"
+      - "{strings.payment.step.date}"
+      - "{strings.payment.step.review}"
+    test_context:
+      tag: payDomesticScheduled:stepIndicator
+
+  # ── Step 4: the execution date — the only new input on this rail ────────
+  - type: date_picker
+    id: execution_date_picker
+    label: "{strings.payment.execution_date_label}"
+    helper_text: "{strings.payment.execution_date_helper}"
+    min_date: "today + 1 day"
+    max_date: "today + 365 days"
+    allow_weekends: true
+    visibility: "step == Date"
+    test_context:
+      tag: payDomesticScheduled:executionDatePicker
+    action_contract:
+      on_click: SelectExecutionDate(date)
+      effect: "sets content.requestedExecutionDate and enables Review"
+      writes_to: "PayDomesticScheduledUiState.Content.requestedExecutionDate"
+    note: >-
+      min_date is tomorrow. T+0 is refused by the bank as 'a date in the past', measured — so
+      today must not be selectable. max_date is exactly T+365: T+365 stages 201 and T+366
+      returns U002, measured on both rails.
+
+      allow_weekends is TRUE deliberately. HSBC's Guide §22.2.1 states the execution date must
+      be a valid working day, but a Saturday staged 201 in testing (R15-A02). Filtering
+      weekends out would enforce a rule the bank does not, and would refuse dates it accepts.
+
+  - type: text
+    id: date_normalisation_note
+    content: "{strings.payment.date_normalisation_note}"
+    style:
+      typography: bodySmall
+      color: onSurfaceVariant
+    visibility: "step == Date"
+    test_context:
+      tag: payDomesticScheduled:dateNormalisationNote
+    note: >-
+      States that the payment is made on the chosen DATE, without a guaranteed time. The bank
+      normalises RequestedExecutionDateTime to midnight and discards the time component, so
+      implying a time would be a promise the API does not make.
+
+  # ── Step 5: review ──────────────────────────────────────────────────────
+  - type: summary_card
+    id: review_card
+    visibility: "step == Review"
+    rows:
+      - { label: "{strings.payment.review.from}", value: debtorAccountLabel }
+      - { label: "{strings.payment.review.to}", value: creditorLabel }
+      - { label: "{strings.payment.review.amount}", value: amountLabel }
+      - { label: "{strings.payment.review.date}", value: executionDateLabel }
+      - { label: "{strings.payment.review.reference}", value: referenceLabel, visibility: "reference is not blank" }
+      - { label: "{strings.payment.review.fee}", value: feeLabel }
+    test_context:
+      tag: payDomesticScheduled:reviewCard
+
+  - type: banner
+    id: no_funds_check_note
+    content: "{strings.payment.no_funds_check_note}"
+    severity: info
+    visibility: "step == Review"
+    test_context:
+      tag: payDomesticScheduled:noFundsCheckNote
+    note: >-
+      States that the app cannot check whether funds will be available on the execution date.
+      This rail has no funds-confirmation endpoint, and substituting a check against today's
+      balance would present a stronger guarantee than the data supports.
+
+  - type: banner
+    id: amend_notice
+    content: "{strings.payment.amend_notice_scheduled}"
+    severity: info
+    visibility: "step == Review OR uiState is Success"
+    test_context:
+      tag: payDomesticScheduled:amendNotice
+    note: >-
+      MANDATORY under OBL's Customer Experience Guidelines — a PISP that cannot amend or cancel
+      must tell the PSU to use the bank's own channel. Shown before confirming AND on the
+      success state, because a PSU who only sees it afterwards has already lost the chance to
+      reconsider.
+
+  - type: button
+    id: confirm_button
+    label: "{strings.payment.confirm_scheduled}"
+    style: { variant: filled_pill }
+    visibility: "step == Review AND uiState is Content"
+    test_context:
+      tag: payDomesticScheduled:confirmButton
+    action_contract:
+      on_click: ConfirmAndStageConsent
+      effect: "POST /domestic-scheduled-payment-consents, then hands off to payment-consent"
+      writes_to: "PayDomesticScheduledUiState -> Submitting(StagingConsent)"
+
+  - type: progress
+    id: submitting_indicator
+    visibility: "uiState is Submitting"
+    labels:
+      StagingConsent: "{strings.payment.staging}"
+      AwaitingAuthorisation: "{strings.payment.awaiting_authorisation}"
+      SubmittingPayment: "{strings.payment.submitting}"
+    test_context:
+      tag: payDomesticScheduled:submittingIndicator
+    note: "No ConfirmingFunds stage — this family has no funds-confirmation endpoint."
+
+responsive: { mobile_only: false, baseline_width: 390 }
+
+states:
+  initial_state: loading
+  loading: { layout: { visible_components: [step_indicator] } }
+  content: { layout: { visible_components: [step_indicator, debtor_account_list, ineligible_accounts_note] } }
+  content_no_eligible_accounts: { layout: { visible_components: [step_indicator, no_eligible_accounts] } }
+  submitting: { layout: { visible_components: [step_indicator, submitting_indicator] } }
+  error: { layout: { visible_components: [step_indicator, error_panel] } }
+
+state_model:
+  view_model: PayDomesticScheduledViewModel
+  ui_state_type: PayDomesticScheduledUiState
+  states: ["Loading", "Content(step)", "Submitting(stage)", "Error(type)"]
+  actions:
+    - LoadPaymentSources
+    - SelectDebtorAccount
+    - SelectCreditor
+    - EnterAmount
+    - EnterReference
+    - SelectExecutionDate
+    - ReviewPayment
+    - ConfirmAndStageConsent
+    - SubmitPayment
+    - RetrySubmit
+    - BackStep
+    - CancelPayment
+  events: [NavigateToPaymentConsent, NavigateToPaymentStatus]
+  di: [AccountsOverviewRepository, BeneficiariesRepository, PaymentInitiationRepository]
+
+form_submit_guard: state-transition-unmount
+
+dependencies:
+  tier: feature
+  features: [accounts, beneficiaries, payment-consent, payment-status]

@@ -1,0 +1,145 @@
+sibling: tests
+schema_version: "4.0"
+feature_id: payment-consent
+
+screen_id: payment-consent
+
+scenarios:
+  - id: TC-PCON-001
+    description: "Happy path — redirect validates, code exchanges, consent reaches AUTH, event emitted"
+    state: authorised
+    priority: p0
+    given: "PendingAuthStore holds consentId 812774903 with state st1785412953 and nonce nnc1785412953"
+    when: "The redirect arrives with a matching state and a valid code, and the consent poll returns AUTH on the third read"
+    then:
+      - "PendingAuthStore.consume() is called exactly once"
+      - "POST /oauth2/token is sent with grant_type=authorization_code and a private_key_jwt client assertion"
+      - "GET /domestic-payment-consents/812774903 is polled until Data.Status == AUTH"
+      - "PaymentConsentEvent.Authorised is emitted carrying consentId and the payments-scope token"
+      - "The authorised state renders"
+
+  - id: TC-PCON-002
+    description: "State mismatch is rejected before any token exchange is attempted"
+    state: error
+    priority: p0
+    given: "PendingAuthStore holds state st1785412953"
+    when: "The redirect arrives with state st0000000000"
+    then:
+      - "Error state renders with the StateMismatch message"
+      - "POST /oauth2/token is NEVER sent — the guard runs before the exchange"
+      - "No Restart authorisation button is shown; only Abandon"
+
+  - id: TC-PCON-003
+    description: "Nonce mismatch in the id_token is rejected after exchange"
+    state: error
+    priority: p1
+    given: "State matches but the returned id_token carries a different nonce"
+    when: "The redirect is handled"
+    then:
+      - "Error state renders with the StateMismatch message"
+      - "The consent status is NOT polled"
+
+  - id: TC-PCON-004
+    description: "Missing pending authorisation (app restarted mid-flow) is handled without a crash"
+    state: error
+    priority: p1
+    given: "PendingAuthStore.consume() returns null because the process was killed during authorisation"
+    when: "The redirect arrives"
+    then:
+      - "Error state renders with the NoPendingAuthorisation message"
+      - "No network call of any kind is made"
+
+  - id: TC-PCON-005
+    description: "Expired authorisation code offers Restart authorisation"
+    state: error
+    priority: p0
+    given: "The code is older than its 30-60s TTL; the token endpoint returns 400 invalid_grant"
+    when: "The code exchange runs"
+    then:
+      - "Error state renders with the CodeExpired message"
+      - "Restart authorisation button is visible"
+      - "Tapping it emits RestartAuthorisation and returns to send-money"
+
+  - id: TC-PCON-006
+    description: "PSU declined at the bank — consent status RJCT is terminal, not retryable"
+    state: error
+    priority: p0
+    given: "The consent poll returns Data.Status RJCT"
+    when: "The poll completes"
+    then:
+      - "Error state renders with the ConsentRejected message"
+      - "Restart authorisation button is NOT visible — the PSU made a deliberate choice"
+      - "Abandon button is visible"
+
+  - id: TC-PCON-007
+    description: "The payments-scope token is never written to ConsentSession"
+    state: authorised
+    priority: p0
+    given: "A successful token exchange returns a payments-scope access token"
+    when: "The authorisation completes"
+    then:
+      - "Zero writes are made to ConsentSession"
+      - "ConsentSession.isActive() and consentId() are unchanged from before the payment"
+      - "The token is carried only on the emitted Authorised event"
+
+  - id: TC-PCON-008
+    description: "Poll deadline elapsing while still AwaitingAuthorisation yields a timeout, not a hang"
+    state: error
+    priority: p1
+    given: "The consent stays AWAU for longer than the 45000ms deadline"
+    when: "The poll runs to its deadline"
+    then:
+      - "Error state renders with the AuthorisationTimedOut message"
+      - "Restart authorisation button is visible"
+      - "Check again remains available during the checking state before the deadline"
+
+  - id: TC-PCON-009
+    description: "Validating state is entered on mount before any network call; the progress indicator is visible and the auth code is not spent prematurely"
+    state: validating
+    priority: p1
+    given: "PendingAuthStore holds a pending authorisation (state, nonce, consentId 812774903); the redirect has arrived and on-mount handling has begun"
+    when: "The state-nonce guard has not yet completed"
+    then:
+      - "The authorising_indicator is visible (accessibility label strings.payment_consent.progress_label)"
+      - "The progress_detail text is visible (strings.payment_consent.progress_detail)"
+      - "POST /oauth2/token has NOT been called — the guard must pass before the code is spent"
+      - "GET /domestic-payment-consents/812774903 has NOT been called"
+      - "The check_again_button is NOT visible — its state_binding is [checking] only"
+
+  - id: TC-PCON-010
+    description: "Exchanging state is held while POST /oauth2/token is in-flight; the nonce guard runs only after the exchange returns and the re-poll button is not yet exposed"
+    state: exchanging
+    priority: p1
+    given: "PendingAuthStore validated successfully; POST /oauth2/token is in progress and has not yet returned a token"
+    when: "The code exchange is running"
+    then:
+      - "The authorising_indicator remains visible (accessibility label strings.payment_consent.progress_label)"
+      - "The progress_detail text is visible (strings.payment_consent.progress_detail)"
+      - "The check_again_button is NOT visible — its state_binding is [checking] only, not [exchanging]"
+      - "GET /domestic-payment-consents/{ConsentId} has NOT been called — the poll is gated on the id_token nonce guard which runs after exchange returns"
+
+  - id: TC-PCON-011
+    description: "Checking state exposes the check_again_button so a PSU who finished at the bank after the automatic poll window can advance without restarting"
+    state: checking
+    priority: p1
+    given: "State validation passed, token exchange succeeded, and the first automatic GET /domestic-payment-consents/{ConsentId} poll returned AWAU"
+    when: "The screen enters the checking state with the automatic poll still running"
+    then:
+      - "The authorising_indicator is visible (accessibility label strings.payment_consent.progress_label)"
+      - "The progress_detail text is visible (strings.payment_consent.progress_detail)"
+      - "The check_again_button is visible with label strings.payment_consent.check_again"
+      - "Tapping the check_again_button triggers a fresh GET /domestic-payment-consents/{ConsentId} and keeps the screen in the checking state"
+      - "The check_again_button was NOT visible during validating or exchanging — it appears uniquely in this state"
+
+coverage_notes:
+  ordering: >-
+    TC-PCON-002 and TC-PCON-004 pin the guard ordering. Validating before exchanging matters
+    because an authorisation code is single-use with a very short TTL — spending it on a
+    request that was going to be rejected anyway destroys the PSU's only recovery path.
+  token_isolation: >-
+    TC-PCON-007 is the guard for the single most damaging mistake available here: reusing the
+    shipped consent-callback's token persistence would overwrite the AIS session token and
+    silently conflate a one-payment authorisation with a data-sharing session.
+  terminal_vs_retryable: >-
+    TC-PCON-006 pins that a PSU decline is terminal. Offering Restart after an explicit decline
+    would nag the PSU to re-approve something they just refused.

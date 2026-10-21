@@ -1,0 +1,52 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: statements
+
+screen_id: statements
+
+cache_strategy: memory_lru
+cache_key: "statements:{accountId}"
+cache_ttl_seconds: 300
+
+on_mount:
+  - trigger: statements_load
+    description: "Load statement list for the given accountId; derive periodLabel and closingBalanceFormatted fields from OBStatement2 raw response."
+    steps:
+      - call: statements
+        path_params:
+          AccountId: "{accountId}"
+        store_as: statements_raw
+      - transform: derive_display_fields
+        input: statements_raw
+        produces:
+          periodLabel: "kotlinx-datetime: StartDateTime.toLocalDateTime(TimeZone.UTC).month.name + ' ' + year (e.g. 'May 2026')"
+          closingBalanceFormatted: "StatementAmount[?Type=='ClosingBalance'].Amount formatted as GBP (e.g. '£2,847.63')"
+          startDateFormatted: "StartDateTime formatted as 'd MMM yyyy' (e.g. '1 May 2026')"
+          endDateFormatted: "EndDateTime formatted as 'd MMM yyyy' (e.g. '31 May 2026')"
+        store_as: statements
+    on_loading: loading
+    on_success: content
+    on_empty: empty
+    on_error: error
+
+on_user_action:
+  - trigger: retry_load
+    re_runs: [statements_load]
+
+  - trigger: download_statement
+    description: "Request statement file (PDF/CSV) for the given StatementId. Emits inline loading on the row icon; on success dispatches bytes to platform file handler; on HTTP 501 shows unavailable toast."
+    steps:
+      - call: statement_file
+        path_params:
+          AccountId: "{accountId}"
+          StatementId: "{statementId}"
+        headers:
+          Accept: "application/pdf, text/csv"
+        store_as: statement_file_bytes
+    on_loading: null
+    on_success: null
+    on_error: null
+    side_effects:
+      success: "Platform file handler (share sheet / Downloads) receives statement_file_bytes"
+      http_501: "Emit toast: {strings.statements.download.toast_unavailable}"
+      error: "Emit toast: {strings.statements.download.toast_error}"

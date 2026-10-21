@@ -1,0 +1,359 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: direct-debits
+
+screen_id: direct-debits
+archetype: index_list
+name: "Direct Debits"
+# status: REMOVED 2026-08-04 (CROSS_LEAK repair — sibling-layout.json assigns `status` to
+# the docs sibling). This copy held `implemented`; docs.yaml is the single owner.
+initial_state: loading
+i18n_coverage: true
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  top_app_bar_title: "{strings.direct_debits.title}"
+  top_app_bar_leading: back
+  fab_visible: false
+
+states: [loading, content, empty, unsupported, error]
+
+# TEST TAGS — reconciled against source 2026-08-02 by /idea-sync (source-truth pass).
+# The 4 state-root tags were already correct; 11 more were backfilled this pass.
+test_tags:
+  source: "feature/direct-debits/src/commonMain/kotlin/org/mifosx/openbanking/feature/directdebits/DirectDebitsTestTags.kt"
+  declared_in_source: 21         # 16 const val + 5 per-mandate builder fns
+  bound: 15
+  interpolated:
+    # Every builder keys on mandateId — DirectDebitsContent.kt passes mandate.mandateId to all five.
+    - { tag: "directDebits:card:{item.mandateId}",              builder: "fun card(mandateId)" }
+    - { tag: "directDebits:statusBadge:{item.mandateId}",       builder: "fun statusBadge(mandateId)" }
+    - { tag: "directDebits:amount:{item.mandateId}",            builder: "fun amount(mandateId)" }
+    - { tag: "directDebits:lastCollected:{item.mandateId}",     builder: "fun lastCollected(mandateId)" }
+    - { tag: "directDebits:mandateReference:{item.mandateId}",  builder: "fun mandateReference(mandateId)" }
+  unbound:
+    - { tag: "directDebits:skeletonChipRow", parent: loading_skeleton,
+        why: "Tags the chip-row placeholder INSIDE the skeleton; the idea-layer models loading as one skeleton component with no children." }
+    - { tag: "directDebits:emptyTitle",       parent: empty_direct_debits,      why: "Text node modelled as the parent's `title:` field." }
+    - { tag: "directDebits:emptyBody",        parent: empty_direct_debits,      why: "Text node modelled as the parent's `body:` field." }
+    - { tag: "directDebits:unsupportedTitle", parent: unsupported_direct_debits, why: "Text node modelled as the parent's `title:` field." }
+    - { tag: "directDebits:unsupportedBody",  parent: unsupported_direct_debits, why: "Text node modelled as the parent's `body:` field." }
+    - { tag: "directDebits:errorTitle",       parent: error_state,              why: "Text node modelled as the parent's `title:` field." }
+    - { tag: "directDebits:errorBody",        parent: error_state,              why: "Text node modelled as the parent's `body:` field." }
+
+business_logic:
+  kind: crud
+  description: "Calls GET /accounts/{AccountId}/direct-debits via ktorfit to retrieve OBReadDirectDebit2. Maps each Data.DirectDebit using Name, DirectDebitStatusCode, PreviousPaymentAmount, PreviousPaymentDateTime, and MandateIdentification. ViewModel derives status_variant (Active → primary badge, Inactive → outline badge), computes activeCount / inactiveCount summary, sorts list Active-first then Inactive, and maps HTTP error codes to typed user-facing messages (TokenExpired 401, ConsentRevoked 403, RateLimited 429, NetworkError). Read-only under AISP ReadDirectDebits consent; retry is suppressed for 403 ConsentRevoked."
+  external_library_refs:
+    - "ktorfit"
+    - "hsbc-obie-ais-v4.0:direct-debits"
+  description_author: claude
+  description_authored_at: "2026-06-29T12:00:00Z"
+
+# ─────────────────────────────────────────────────────────────────────
+# STATE MODEL — DirectDebitsViewModel contract
+# Derived from docs.yaml#vm_actions + error_cases for implementation.
+# Satisfies QUALITY_FORMULA.md Category 10 (State Model, 5 pts).
+# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
+# SOURCE BINDING — reverse-synced from source 2026-07-28
+# ─────────────────────────────────────────────────────────────────────
+implementation:
+  status: implemented
+  source_module: "feature/direct-debits"
+  package: "org.mifosx.openbanking.feature.directdebits"
+  route: "DirectDebitsRoute(accountId: String)"
+  viewmodel: DirectDebitsViewModel
+  screen: DirectDebitsScreen
+  test_tags_object: DirectDebitsTestTags
+  reachable_from:
+    - "account-detail — AccountDetailChip.DirectDebits -> navigate(DirectDebitsRoute(accountId))"
+  synced_from_source_at: "2026-07-28"
+  added_in_sync:
+    - "unsupported state — DirectDebitsUiState.Unsupported(message) ships in source and renders DirectDebitsUnsupported.kt; the idea-layer never declared it"
+  removed_in_sync:
+    - "loadDirectDebits and navigateBack actions — DirectDebitsAction declares only RetryLoad; back is a nav-host onBack callback, and the initial load is stream collection in init{}"
+    - "NavigationController DI — source injects no navigation abstraction; navigation is callback-based"
+
+state_model:
+  DirectDebitsViewModel:
+    state:
+      name: DirectDebitsState
+      fields:
+        - name: accountId
+          type: String
+        - name: uiState
+          type: DirectDebitsUiState
+    screen_state:
+      sealed_class: DirectDebitsUiState
+      members:
+        - Loading
+        - Content      # mandates: List<DirectDebitRowUi>, activeCount: Int, inactiveCount: Int
+        - Empty        # no mandates returned
+        - Unsupported  # message: String — servicer does not expose direct debits for this account
+        - Error        # kind: DirectDebitsErrorKind
+    row_model:
+      name: DirectDebitRowUi
+      fields:
+        - name: mandateId
+          type: String
+        - name: name
+          type: String
+        - name: statusLabel
+          type: String
+        - name: isActive
+          type: Boolean
+        - name: amountLabel
+          type: String
+        - name: lastCollectedLabel
+          type: String
+    errors:
+      types:
+        - DirectDebitsErrorKind.TokenExpired   # Unauthorized — isRetriable = true
+        - DirectDebitsErrorKind.ConsentRevoked # Forbidden — isRetriable = false
+        - DirectDebitsErrorKind.RateLimited    # RateLimited — isRetriable = true
+        - DirectDebitsErrorKind.ServerError    # fallback — isRetriable = true
+        - DirectDebitsErrorKind.NetworkError   # NetworkError.Network — isRetriable = true
+    actions:
+      members:
+        - RetryLoad
+    di:
+      - SavedStateHandle          # supplies the accountId route arg
+      - DirectDebitsRepository    # Koin single; stream over the direct-debits store
+
+components:
+
+  # ── LOADING STATE ───────────────────────────────────────────────────
+  - type: skeleton
+    id: loading_skeleton
+    test_tag: "directDebits:loadingSkeleton"
+    variant: list_card
+    item_count: 4
+    state_binding: [loading]
+    accessibility_label: "{strings.direct_debits.loading_a11y}"
+    test_context:
+      purpose: "List-shaped skeleton (4 cards) during HSBC AIS direct-debits fetch; visually anchors layout before data arrives"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  # ── GLOBAL (ALL STATES) ─────────────────────────────────────────────
+  - type: icon_button
+    keyboard:
+      focusable: true
+    id: back_button
+    icon: arrow_back
+    accessibility_label: "{strings.direct_debits.back_a11y}"
+    on_click:
+      action: navigate_back
+      target: account-detail
+      action_contract:
+        effect: navigate
+        description: "Invokes the directDebitsScreen onBack callback, which calls popBackStack(), returning the user to account-detail. A nav-host callback, not a DirectDebitsAction member."
+    test_context:
+      purpose: "Return user to account-detail screen, discarding direct-debits context"
+      required_fields: []
+      interaction_type: navigate
+      data_driven: false
+
+  # ── CONTENT STATE — mandate summary chips ───────────────────────────
+  - type: chip_group
+    id: mandate_summary_chips
+    test_tag: "directDebits:summaryChips"
+    state_binding: [content]
+    accessibility_label: "{strings.direct_debits.summary_a11y}"
+    chips:
+      - type: chip
+        id: active_count_chip
+        test_tag: "directDebits:activeChip"
+        label: "{strings.direct_debits.active_count_label} ({activeCount})"
+        variant: tonal
+        accessibility_label: "{activeCount} {strings.direct_debits.active_count_label} direct debits"
+        test_context:
+          purpose: "Displays ViewModel-computed count of Active mandates as a tonal chip"
+          required_fields: ["activeCount"]
+          interaction_type: display
+          data_driven: true
+      - type: chip
+        id: inactive_count_chip
+        test_tag: "directDebits:inactiveChip"
+        label: "{strings.direct_debits.inactive_count_label} ({inactiveCount})"
+        variant: outline
+        accessibility_label: "{inactiveCount} {strings.direct_debits.inactive_count_label} direct debits"
+        test_context:
+          purpose: "Displays ViewModel-computed count of Inactive mandates as an outline chip"
+          required_fields: ["inactiveCount"]
+          interaction_type: display
+          data_driven: true
+
+  # ── CONTENT STATE — mandate list ────────────────────────────────────
+  - type: list
+    id: direct_debits_list
+    test_tag: "directDebits:content"      # CONTENT tags the content list root here, not a wrapper column
+    state_binding: [content]
+    scroll_direction: vertical
+    items_source: "{mandates}"
+    accessibility_label: "{strings.direct_debits.list_a11y}"
+    test_context:
+      purpose: "Render full OBReadDirectDebit2 Data.DirectDebit array sorted Active-first"
+      required_fields: ["directDebits"]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: card
+        id: direct_debit_card
+        test_tag: "directDebits:card:{item.mandateId}"
+        elevation: 1
+        accessibility_label: "{item.name}, {item.statusLabel}"
+        test_context:
+          purpose: "Container per direct debit mandate; groups all mandate fields with accessible card label from originator name + status"
+          required_fields: ["item"]
+          interaction_type: display
+          data_driven: true
+        children:
+          - type: text
+            id: dd_originator_name
+            role: heading
+            content: "{item.name}"
+            style: titleMedium
+            test_context:
+              purpose: "Originator name from OBReadDirectDebit2 Data.DirectDebit.Name; heading role for in-card navigation"
+              required_fields: ["item.Name"]
+              interaction_type: display
+              data_driven: true
+
+          # Retyped badge -> status_chip 2026-08-04 (/idea-sync, findings N-1 + R-1c).
+          # `badge` is the numeric count badge in feedback.yaml — props count/max/variant, no
+          # text slot — so `value:` had nowhere to land and the icon contract was unreachable.
+          - type: status_chip
+            id: dd_status_badge
+            test_tag: "directDebits:statusBadge:{item.mandateId}"
+            label: "{item.statusLabel}"
+            variant: "{item.isActive ? 'active' : 'inactive'}"
+            accessibility_label: "{strings.direct_debits.status_prefix} {item.statusLabel}"
+            test_context:
+              purpose: "Mandate status badge; variant from ViewModel: Active→primary, Inactive→outline; never decorative-only (has a11y label)"
+              required_fields: ["item.DirectDebitStatusCode", "item.status_variant"]
+              interaction_type: display
+              data_driven: true
+
+          - type: text
+            id: dd_previous_amount
+            test_tag: "directDebits:amount:{item.mandateId}"
+            role: amount
+            content: "{item.amountLabel}"
+            style: headlineSmall
+            test_context:
+              purpose: "Pre-formatted last-collected amount; the mapper resolves currency into the label. Neutral on-surface colour (NOT error — amounts are not inherently negative)"
+              required_fields: ["item.amountLabel"]
+              interaction_type: display
+              data_driven: true
+
+          - type: text
+            id: dd_previous_date
+            test_tag: "directDebits:lastCollected:{item.mandateId}"
+            role: body
+            content: "{strings.direct_debits.last_collected_prefix} {item.lastCollectedLabel}"
+            style: bodySmall
+            color: "onSurfaceVariant"
+            test_context:
+              purpose: "Pre-formatted last-collected date resolved by the mapper; label from i18n key"
+              required_fields: ["item.lastCollectedLabel"]
+              interaction_type: display
+              data_driven: true
+
+          - type: text
+            id: dd_mandate_id
+            test_tag: "directDebits:mandateReference:{item.mandateId}"
+            role: caption
+            content: "{strings.direct_debits.mandate_prefix} {item.mandateId}"
+            style: labelSmall
+            color: "onSurfaceVariant"
+            test_context:
+              purpose: "Mandate reference from MandateIdentification for identification and support; label from i18n key"
+              required_fields: ["item.MandateIdentification"]
+              interaction_type: display
+              data_driven: true
+
+  # ── EMPTY STATE ─────────────────────────────────────────────────────
+  - type: empty_state
+    id: empty_direct_debits
+    state_binding: [empty]
+    icon: subscriptions
+    title: "{strings.direct_debits.empty_title}"
+    body: "{strings.direct_debits.empty_body}"
+    test_tag: "directDebits:emptyState"
+    accessibility_label: "{strings.direct_debits.empty_a11y}"
+    test_context:
+      purpose: "Zero-result state when Data.DirectDebit[] is empty in OBIE response"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  # ── UNSUPPORTED STATE ───────────────────────────────────────────────
+  # DirectDebitsUiState.Unsupported(message) — rendered by DirectDebitsUnsupported.kt.
+  # Distinct from empty: the servicer does not expose direct debits for this account
+  # at all, so there is nothing to retry.
+  - type: empty_state
+    id: unsupported_direct_debits
+    variant: info
+    state_binding: [unsupported]
+    icon: info_outline
+    title: "{strings.direct_debits.unsupported_title}"
+    body: "{uiState.message}"
+    test_tag: "directDebits:unsupportedState"
+    accessibility_label: "{strings.direct_debits.unsupported_a11y}"
+    test_context:
+      purpose: "Servicer does not support the direct-debits resource for this account. No retry CTA — the capability registry refused the call rather than the network failing."
+      required_fields: ["uiState.message"]
+      interaction_type: display
+      data_driven: true
+
+  # ── ERROR STATE ─────────────────────────────────────────────────────
+  - type: error_state
+    id: error_state
+    state_binding: [error]
+    icon: error_outline
+    title: "{strings.direct_debits.error_title}"
+    body: "{strings.direct_debits.error_body}"
+    test_tag: "directDebits:errorState"
+    accessibility_label: "{strings.direct_debits.error_a11y}"
+    test_context:
+      purpose: "Typed API error display. classifyDirectDebitsError maps Unauthorized→TokenExpired, Forbidden→ConsentRevoked, RateLimited→RateLimited, NetworkError.Network→NetworkError, else→ServerError. Body copy is selected per kind."
+      required_fields: ["uiState.kind"]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: button
+        keyboard:
+          focusable: true
+        id: retry_button
+        variant: filled
+        label: "{strings.direct_debits.retry_label}"
+        test_tag: "directDebits:retryButton"
+        accessibility_label: "{strings.direct_debits.retry_a11y}"
+        visible: "{uiState.kind.isRetriable}"
+        on_click:
+          action: RetryLoad
+          action_contract:
+            effect: call_api
+            reads_from: ["direct-debits-list"]
+            external_library_refs: ["ktorfit", "hsbc-obie-ais-v4.0:direct-debits"]
+            description: "Dispatches DirectDebitsAction.RetryLoad, refreshing the direct-debits stream after a retriable failure and returning the screen to Loading then Content or Empty."
+        test_context:
+          purpose: "Retry button shown only when DirectDebitsErrorKind.isRetriable is true; hidden for ConsentRevoked (retry won't help; the user must re-authorise consent)"
+          required_fields: ["uiState.kind.isRetriable"]
+          interaction_type: action
+          data_driven: true
+
+quality_score: 95
+status_history:
+  - from: draft
+    to: enriched
+    at: "2026-06-29"
+    by: "/idea-enrich"
+  - from: enriched
+    to: enriched
+    at: "2026-06-29"
+    by: "/idea-enrich (quality push: i18n, skeleton, a11y, chip summary, error types, fixed amount color)"

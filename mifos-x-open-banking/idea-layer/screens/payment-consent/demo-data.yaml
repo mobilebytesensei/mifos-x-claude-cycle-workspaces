@@ -1,0 +1,146 @@
+sibling: demo-data
+schema_version: "2.1.0"
+feature_id: payment-consent
+
+screen_id: payment-consent
+models: wire
+maps_to_dto: [PsuTokenResponse, DomesticPaymentConsentResponse, DomesticPaymentData]
+_models_note: "Fixtures are the OBIE wire envelope, not the domain projection. api.yaml#response_dto names the domain DTO the repository yields; the mapper sits between. RULE-DEMO-DATA-001 DD5 compares against the wire contract for this file."
+_content_policy: "RULE-PROTO-CONTENT-001 — zero placeholders; real HSBC-sandbox-shaped OBIE data only."
+
+# Consent 812774903 is the same staged consent used by the send-money fixtures, so the two
+# features exercise one coherent payment end to end.
+
+pending_authorisation:
+  consentId: "812774903"
+  state: "st1785412953"
+  nonce: "nnc1785412953"
+  redirect_uri: "org.mifosx.openbanking://callback"
+  scope: "payments"
+
+redirect_success:
+  code: "3f9a7c2e-51b8-4d06-9e77-c40b8a12de35"
+  state: "st1785412953"
+  id_token_claims:
+    nonce: "nnc1785412953"
+    openbanking_intent_id: "812774903"
+    acr: "urn:openbanking:psd2:sca"
+    iss: "https://secure.sandbox.ob.hsbc.co.uk"
+
+redirect_state_mismatch:
+  code: "3f9a7c2e-51b8-4d06-9e77-c40b8a12de35"
+  state: "st0000000000"          # does not match pending_authorisation.state
+  _expected_error: StateMismatch
+
+token_exchange_response:
+  access_token: "pmt.4vG7T5CrGPBgYF5rtVYDu0QUwSJy7KLpCYoVXSTggRA1XnKvRzwPmcoX8GXJyTvQ"
+  token_type: "Bearer"
+  refresh_token: "pmt.rf.99poLG4a75mAdgDRKkelmtA0J8q0FL2AACUueCiTlGIkAZl0QiOdpubhui1qd"
+  expires_in: 3599
+  scope: "payments"
+
+consent_status_awaiting:
+  Data:
+    ConsentId: "812774903"
+    Status: "AWAU"
+    CreationDateTime: "2026-07-30T10:42:33+00:00"
+    StatusUpdateDateTime: "2026-07-30T10:42:33+00:00"
+  Links:
+    Self: "https://secure.sandbox.ob.hsbc.co.uk/obie/open-banking/v4.0/pisp/domestic-payment-consents/812774903"
+  Meta:
+    TotalPages: 1
+
+consent_status_authorised:
+  Data:
+    ConsentId: "812774903"
+    Status: "AUTH"
+    CreationDateTime: "2026-07-30T10:42:33+00:00"
+    StatusUpdateDateTime: "2026-07-30T10:43:51+00:00"
+    Initiation:
+      InstructionIdentification: "MFX20260730T1042330001"
+      EndToEndIdentification: "E2E-RENT-FLAT12-202607"
+      InstructedAmount:
+        Amount: "850.00"
+        Currency: "GBP"
+      DebtorAccount:
+        SchemeName: "UK.OBIE.SortCodeAccountNumber"
+        Identification: "80200110203349"
+        Name: "Mr Nico"
+      CreditorAccount:
+        SchemeName: "UK.OBIE.SortCodeAccountNumber"
+        Identification: "40120965872310"
+        Name: "Jameson Lettings"
+      RemittanceInformation:
+        Unstructured:
+          - "RENT-FLAT12"
+  Links:
+    Self: "https://secure.sandbox.ob.hsbc.co.uk/obie/open-banking/v4.0/pisp/domestic-payment-consents/812774903"
+  Meta:
+    TotalPages: 1
+
+consent_status_rejected:
+  Data:
+    ConsentId: "812774903"
+    Status: "RJCT"
+    CreationDateTime: "2026-07-30T10:42:33+00:00"
+    StatusUpdateDateTime: "2026-07-30T10:44:12+00:00"
+  Links:
+    Self: "https://secure.sandbox.ob.hsbc.co.uk/obie/open-banking/v4.0/pisp/domestic-payment-consents/812774903"
+  Meta:
+    TotalPages: 1
+
+error_fixtures:
+  code_expired:
+    # RFC 6749 shape — the token endpoint returns this form, not the OB envelope.
+    http_status: 400
+    body:
+      error: "invalid_grant"
+      error_description: "The provided access grant is invalid, expired, or revoked."
+
+  invalid_client:
+    http_status: 401
+    body:
+      error: "invalid_client"
+      error_description: "The request JWT signature is invalid"
+
+  consent_not_found:
+    http_status: 400
+    body:
+      Code: "400"
+      Id: "7d3b1e64-2a09-4c7f-8b55-e1f0c2a94d13"
+      Message: "Bad Request"
+      Errors:
+        - ErrorCode: "U011"
+          Message: "Resource cannot be found"
+
+_test_fixtures:
+  single_use_pending:
+    description: "PendingAuthStore.consume() returns the record then clears it; a second read is null."
+    expected_second_read: null
+  poll_reaches_authorised:
+    sequence: [consent_status_awaiting, consent_status_awaiting, consent_status_authorised]
+    expected_terminal_state: authorised
+  poll_times_out:
+    sequence: "consent_status_awaiting repeated past the 45000ms deadline"
+    expected_error: AuthorisationTimedOut
+  token_never_persisted:
+    description: "The payments-scope token must not be written to ConsentSession."
+    expected_consent_session_writes: 0
+
+# ── State index (added 2026-08-02 via /idea-data) ────────────────────────────
+# ui.yaml declares states: [validating, exchanging, checking, authorised, error] — a state
+# MACHINE for an OAuth round-trip, not the usual loading/content/empty/error set. That is why
+# it carries no `empty` and no `content`, and the dismissal is already recorded in
+# DESIGN_VALIDATION. Each state below is one leg of the redirect.
+states:
+  - { scope: validating,  fixture: redirect_success,
+      _step: "1 — verify the returned state parameter against the one we sent" }
+  - { scope: exchanging,  fixture: token_exchange_response,
+      _step: "2 — swap the authorisation code for a payments-scope token",
+      _security: "That token is never written to ConsentSession — see _test_fixtures.token_never_persisted." }
+  - { scope: checking,    fixture: consent_status_awaiting,
+      _step: "3 — poll the consent resource until the bank moves it off AwaitingAuthorisation" }
+  - { scope: authorised,  fixture: consent_status_authorised,
+      _step: "4 — terminal success; release navigation to the payment submit" }
+  - { scope: error,       fixture: error_fixtures,
+      _includes: "redirect_state_mismatch (a possible tampering signal, non-retriable) and consent_status_rejected (the PSU declined at their bank)." }

@@ -1,0 +1,733 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: account-detail
+
+screen_id: account-detail
+archetype: detail_screen
+name: "Account Detail"
+# status: REMOVED 2026-08-04 (CROSS_LEAK repair — sibling-layout.json assigns `status` to
+# the docs sibling). This copy held `implemented`; docs.yaml is the single owner.
+
+# ─────────────────────────────────────────────────────────────────────
+# SOURCE BINDING — reverse-synced from source 2026-07-28
+# ─────────────────────────────────────────────────────────────────────
+implementation:
+  status: implemented
+  source_module: "feature/account-detail"
+  package: "org.mifosx.openbanking.feature.accountdetail"
+  route: "AccountDetailRoute(accountId: String)"
+  viewmodel: AccountDetailViewModel
+  screen: AccountDetailScreen
+  test_tags_object: AccountDetailTestTags
+  reachable_from:
+    - "accounts — onNavigateToAccountDetail(accountId)"
+  components:
+    - "components/AccountHeaderCard.kt"
+    - "components/AccountDescriptionCard.kt"
+    - "components/ExploreOptionsColumn.kt"
+  synced_from_source_at: "2026-07-28"
+  removed_in_sync:
+    - "The nine discrete navigate* actions — source collapses them into the AccountDetailChip enum plus one onNavigateToChip callback"
+    - "loadAccountDetail action — the initial load is stream collection in init{}"
+    - "navigateBack action — back is a nav-host onBack callback"
+    - "NavigationController DI — replaced by AccountCapabilityRegistry, which gates chip availability"
+  # Was `dangling_nav_target:` — resolved 2026-07-30 (/idea-sync stale reconciliation).
+  # The binding is no longer dangling: the chip below now declares
+  # `target: _placeholder:atm-locator` with implementation_status + source_binding, so the
+  # placeholder is explicit rather than a pointer to a deleted screen.
+  placeholder_bound_chips:
+    - chip: AtmLocator
+      route: AtmLocatorRoute
+      status: placeholder
+      takes_args: false
+      note: >-
+        Resolves to PlaceholderScreen("ATM locator") in cmp-navigation. The atm-locator
+        idea-layer screen was removed in the 2026-07-28 reverse sync because no feature module
+        implements it; the chip still renders and still navigates, so it stays documented.
+        AtmLocatorRoute is an arg-less data object — no accountId is passed.
+initial_state: loading
+quality_score: 95
+
+status_history:
+  - from: draft
+    to: enriched
+    at: "2026-06-29"
+    by: "/idea-enrich"
+  - from: enriched
+    to: enriched
+    at: "2026-06-29"
+    by: "/idea-enrich (quality push — i18n, empty state, a11y, consent badge)"
+  - from: enriched
+    to: enriched
+    at: "2026-07-14"
+    by: "/idea enrich"
+
+business_logic:
+  kind: crud
+  description: "Fetches account metadata and balances in parallel via ktorfit (GET /accounts/{id} + GET /accounts/{id}/balances); produces AccountDetailUiState (Loading/Content/Empty/Error) with typed error handling (401/403/404/network). Chip row navigates to transactions, statements, standing-orders, direct-debits, scheduled-payments, beneficiaries, atm-locator, product, and party, each scoped by accountId."
+  external_library_refs:
+    - "ktorfit"
+    - "hsbc-obie-ais-v4.0:accounts"
+    - "hsbc-obie-ais-v4.0:balances"
+  description_author: claude
+  description_authored_at: "2026-07-14T20:00:00Z"
+  description_hash: machine-authored
+
+# ─────────────────────────────────────────────────────────────────────
+# STATE MODEL — AccountDetailViewModel contract
+# Derived from docs.yaml#vm_actions + error_cases for implementation.
+# Satisfies QUALITY_FORMULA.md Category 10 (State Model, 5 pts).
+# ─────────────────────────────────────────────────────────────────────
+state_model:
+  AccountDetailViewModel:
+    state:
+      name: AccountDetailState
+      fields:
+        - name: accountId
+          type: String
+        - name: uiState
+          type: AccountDetailUiState
+    fields_extra:
+      - name: availableChips
+        type: Set<AccountDetailChip>   # resolved by AccountCapabilityRegistry per account
+    screen_state:
+      sealed_class: AccountDetailUiState
+      members:
+        - Loading
+        - Content
+        - Empty
+        - Error
+    enums:
+      AccountDetailChip:
+        # The nine Explore destinations. Source models these as ONE enum plus a single
+        # onNavigateToChip(chip, accountId) callback — not nine discrete actions.
+        - Transactions       # -> TransactionsRoute(accountId)
+        - Statements         # -> StatementsRoute(accountId)
+        - StandingOrders     # -> StandingOrdersRoute(accountId)
+        - DirectDebits       # -> DirectDebitsRoute(accountId)
+        - ScheduledPayments  # -> ScheduledPaymentsRoute(accountId)
+        - Beneficiaries      # -> BeneficiariesRoute(accountId)
+        - AtmLocator         # -> AtmLocatorRoute — PLACEHOLDER destination, no feature module
+        - Product            # -> ProductRoute(accountId)
+        - Party              # -> AccountHolderRoute(accountId)
+    actions:
+      members:
+        - RetryLoad
+    nav_callbacks:
+      # Host-owned; resolved by navigateFromChip() in AuthenticatedNavbarNavigationScreen.
+      - "onNavigateToChip(chip: AccountDetailChip, accountId: String)"
+      - "onBack -> popBackStack() returning to accounts"
+    di:
+      - SavedStateHandle           # supplies the accountId route arg
+      - AccountDetailRepository    # Koin single; account + balances stream
+      - AccountCapabilityRegistry  # decides which chips are available for this account
+
+# ─────────────────────────────────────────────────────────────────────
+# DESIGN READ context: trustworthy, calm, secure, data-legible.
+# Density dial = 5 → 6–9 top-level components target.
+# quiet_constraints: accessibility-first → ≤4 interactive elements per
+# state. Content state has 9 chip interactions: waivered as sub-items
+# inside a single chip_row interactive group per M3 accessibility spec.
+# ─────────────────────────────────────────────────────────────────────
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  top_app_bar_title: "{account.Nickname}"
+  top_app_bar_leading: back
+  fab_visible: false
+
+# ─────────────────────────────────────────────────────────────────────
+# STATES
+# ─────────────────────────────────────────────────────────────────────
+states: [loading, content, empty, error]
+
+# ─────────────────────────────────────────────────────────────────────
+# TEST TAGS — reconciled against source 2026-08-02 by /idea-sync (source-truth pass)
+# ─────────────────────────────────────────────────────────────────────
+# Every `test_tag:` below components[] is copied VERBATIM from AccountDetailTestTags.kt.
+# This feature uses the `feature:camelCase` convention; transactions and home use snake_case.
+# Both are source truth — do NOT harmonise them. The tag is the contract the Robolectric and
+# instrumented UI tests drive the screen through; a "tidied" value breaks onNodeWithTag.
+test_tags:
+  source: "feature/account-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/accountdetail/AccountDetailTestTags.kt"
+  declared_in_source: 21         # 19 const val + 2 builder fns (balanceRow, chip)
+  bound_to_components: 18        # 16 consts + balanceRow (per row) + chip (x9 chips)
+  interpolated:
+    - tag: "accountDetail:balanceRow:{item.Type}"
+      builder: "fun balanceRow(type: String)"
+    - tag: "accountDetail:chip:{AccountDetailChip}"
+      builder: "fun chip(destination: AccountDetailChip)"
+      note: >-
+        The suffix is the ENUM CASE verbatim — Transactions, Statements, StandingOrders,
+        DirectDebits, ScheduledPayments, Beneficiaries, AtmLocator, Product, Party. Not the
+        component id, not a lowercased slug.
+  unbound:
+    - tag: "accountDetail:loadingSkeleton"
+      source_ref: "AccountDetailSkeleton.kt"
+      why: >-
+        Tags the skeleton CONTAINER that wraps the spinner. The idea-layer models loading as a
+        single progress_circular, which carries accountDetail:loadingSpinner; there is no
+        container component to hold the second tag.
+    - tag: "accountDetail:errorTitle"
+      source_ref: "AccountDetailError.kt"
+      why: "Tags a Text node the idea-layer models as the error_state component's `title:` field, not a child component."
+    - tag: "accountDetail:errorBody"
+      source_ref: "AccountDetailError.kt"
+      why: "Tags a Text node the idea-layer models as the error_state component's `body:` field, not a child component."
+
+# ─────────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────────────────────────────
+components:
+
+  # ── LOADING ──────────────────────────────────────────────────────
+  - type: progress_circular
+    id: loading_spinner
+    state_binding: [loading]
+    accessibility_label: "{strings.account_detail_loading_label}"
+    test_tag: "accountDetail:loadingSpinner"    # AccountDetailTestTags.LOADING_SPINNER @ AccountDetailSkeleton.kt
+    test_context:
+      purpose: "Visual feedback during concurrent account and balances API fetch."
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  # ── BACK NAVIGATION (always) ─────────────────────────────────────
+  - type: icon_button
+    keyboard:
+      focusable: true
+    id: back_button
+    icon: arrow_back
+    accessibility_label: "{strings.account_detail_navigate_back}"
+    on_click:
+      action: navigate_back
+      target: accounts
+      action_contract:
+        effect: navigate
+        description: "Pops the account-detail screen from the navigation stack, returning the user to the accounts list."
+    test_context:
+      purpose: "Pop screen off nav stack returning to accounts list."
+      required_fields: []
+      interaction_type: navigate
+      data_driven: false
+
+  # ── ACCOUNT HEADER CARD (content + empty) ────────────────────────
+  - type: card
+    id: account_header_card
+    state_binding: [content, empty]
+    elevation: 2
+    accessibility_label: "{strings.account_detail_header_accessibility}"
+    test_tag: "accountDetail:headerCard"        # AccountDetailTestTags.HEADER_CARD @ components/AccountHeaderCard.kt
+    test_context:
+      purpose: "Summary card grouping account identity fields from OBAccount6 response."
+      required_fields: [account.AccountId, account.Nickname, account.AccountSubType]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: text
+        id: account_subtype_label
+        content: "{account.AccountSubType}"
+        style: labelMedium
+        color: "secondary"
+        accessibility_label: "{strings.account_detail_subtype_accessibility}"
+        test_tag: "accountDetail:subtypeLabel"     # AccountDetailTestTags.SUBTYPE_LABEL
+        test_context:
+          purpose: "Account sub-type label e.g. CurrentAccount or Savings."
+          required_fields: [account.AccountSubType]
+          interaction_type: display
+          data_driven: true
+
+      - type: text
+        id: account_nickname
+        content: "{account.Nickname}"
+        style: headlineMedium
+        test_tag: "accountDetail:nickname"      # AccountDetailTestTags.NICKNAME
+        test_context:
+          purpose: "User-visible account nickname from OBAccount6.Nickname."
+          required_fields: [account.Nickname]
+          interaction_type: display
+          data_driven: true
+
+      - type: text
+        id: account_identification
+        content: "{account.Account.Identification}"
+        style: bodyMedium
+        color: "onSurfaceVariant"
+        test_tag: "accountDetail:identification"   # AccountDetailTestTags.IDENTIFICATION
+        accessibility_label: "{strings.account_detail_identification_accessibility}"
+        test_context:
+          purpose: "Sort-code and account number in UK.OBIE.SortCodeAccountNumber format e.g. 40-05-15 12345678."
+          required_fields: [account.Account.Identification]
+          interaction_type: display
+          data_driven: true
+
+      - type: text
+        id: account_currency
+        content: "{account.Currency}"
+        style: labelSmall
+        color: "onSurfaceVariant"
+        test_tag: "accountDetail:currencyBadge"    # AccountDetailTestTags.CURRENCY_BADGE
+        test_context:
+          purpose: "Account currency code e.g. GBP."
+          required_fields: [account.Currency]
+          interaction_type: display
+          data_driven: true
+
+      - type: text
+        id: account_servicer
+        content: "{account.Servicer.Identification}"
+        style: bodySmall
+        color: "onSurfaceVariant"
+        test_tag: "accountDetail:servicerBadge"    # AccountDetailTestTags.SERVICER_BADGE
+        test_context:
+          purpose: "Servicer sort code from OBBranchAndFinancialInstitutionIdentification5 — e.g. 40-05-15 (HSBC branch identifier). Confirms which institution holds the account."
+          required_fields: [account.Servicer.Identification]
+          interaction_type: display
+          data_driven: true
+
+      - type: text
+        id: account_last_updated
+        content: "{strings.account_detail_last_updated} {account.StatusUpdateDateTime}"
+        style: labelSmall
+        color: "onSurfaceVariant"
+        test_tag: "accountDetail:lastUpdated"      # AccountDetailTestTags.LAST_UPDATED
+        test_context:
+          purpose: "StatusUpdateDateTime from OBAccount6 — shows when HSBC last refreshed this account record. Builds trust and transparency per OBIE CX guidelines."
+          required_fields: [account.StatusUpdateDateTime]
+          interaction_type: display
+          data_driven: true
+
+  # ── OPEN BANKING TRUST BADGE (content) ───────────────────────────
+  # Regulatory transparency per OBIE Customer Experience Guidelines:
+  # users should see clear indication their data is from a regulated
+  # Open Banking connection, not screen-scraped or password-shared.
+  - type: card
+    id: open_banking_badge
+    state_binding: [content, empty]
+    variant: outlined
+    elevation: 0
+    accessibility_label: "{strings.account_detail_open_banking_accessibility}"
+    test_context:
+      purpose: "Trust indicator confirming this account data arrives via regulated UK Open Banking AIS consent — reinforces transparency per OBIE CX guidelines. Non-interactive."
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+    children:
+      - type: text
+        id: open_banking_badge_text
+        content: "{strings.account_detail_open_banking_badge}"
+        style: labelSmall
+        color: "primary"
+        test_context:
+          purpose: "Static label confirming the Open Banking data source."
+          required_fields: []
+          interaction_type: display
+          data_driven: false
+
+  # ── ACCOUNT DESCRIPTION CARD (content) ───────────────────────────
+  # ADDED 2026-08-02 by /idea-sync (source-truth reverse pass). This component ships and was
+  # missing from the spec entirely — implementation.components already listed
+  # "components/AccountDescriptionCard.kt" (ui.yaml:21), so the idea-layer knew the FILE
+  # existed while modelling no UI for it. That is why accountDetail:descriptionCard had no
+  # anchor: the surface, not just the tag, was absent.
+  #
+  # Source (components/AccountDescriptionCard.kt): a surfaceContainer card holding a
+  # labelMedium label over the bank's raw description text, rendered between the identity card
+  # and the balances. The caller omits the card entirely when description is blank, so it never
+  # renders empty — hence visibility_condition rather than an empty variant.
+  #
+  # Worth its own surface because HSBC reports AccountTypeCode CACC for a Global Money wallet
+  # exactly as for an ordinary current account, so a description of "GLOBAL MONEY ACCOUNT" is
+  # the sole distinguishing signal — the same one HsbcProductType.resolve matches on to gate
+  # which Explore chips appear.
+  - type: card
+    id: account_description_card
+    state_binding: [content]
+    variant: filled
+    elevation: 0
+    corner_radius: radius.md
+    padding: spacing.md
+    background: "surfaceContainer"
+    visibility_condition: "{account.Description | isNotBlank}"
+    accessibility_label: "{strings.account_detail_description_accessibility}"
+    test_tag: "accountDetail:descriptionCard"     # AccountDetailTestTags.DESCRIPTION_CARD
+    test_context:
+      purpose: "The bank's own product description — frequently the only signal distinguishing a Global Money wallet from an ordinary current account, since both report AccountTypeCode CACC."
+      required_fields: [account.Description]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: text
+        id: account_description_label
+        content: "{strings.account_detail_description_label}"
+        style: labelMedium
+        color: "onSurfaceVariant"
+        test_context:
+          purpose: "Static label above the bank-supplied description text."
+          required_fields: []
+          interaction_type: display
+          data_driven: false
+      - type: text
+        id: account_description_value
+        content: "{account.Description}"
+        style: bodyMedium
+        color: "onSurface"
+        test_context:
+          purpose: "Raw AccountDescription string as returned by HSBC, unmodified."
+          required_fields: [account.Description]
+          interaction_type: display
+          data_driven: true
+
+  # ── BALANCES SECTION HEADER (content) ────────────────────────────
+  - type: section_header
+    id: balances_header
+    state_binding: [content]
+    label: "{strings.account_detail_section_balances}"
+    accessibility_label: "{strings.account_detail_section_balances_accessibility}"
+    test_tag: "accountDetail:balancesHeader"       # AccountDetailTestTags.BALANCES_HEADER @ AccountDetailContent.kt
+    test_context:
+      purpose: "Section separator labelling the balances list."
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  # ── BALANCES LIST (content) ───────────────────────────────────────
+  - type: list
+    id: balances_list
+    state_binding: [content]
+    items_source: "{balances}"
+    accessibility_label: "{strings.account_detail_balances_list_accessibility}"
+    test_tag: "accountDetail:balancesList"         # AccountDetailTestTags.BALANCES_LIST
+    test_context:
+      purpose: "Scrollable list of OBCashBalance3 rows from GET /accounts/{AccountId}/balances — renders each balance type (InterimAvailable, InterimBooked, OpeningBooked, etc.)."
+      required_fields: [balances]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: list_item
+        id: balance_row
+        headline: "{item.Type}"
+        trailing_content: "{item.Amount.Amount} {item.Amount.Currency}"
+        trailing_style: titleMedium
+        accessibility_label: "{strings.account_detail_balance_row_accessibility}"
+        # Per-row, built by AccountDetailTestTags.balanceRow(type) — not a flat const.
+        test_tag: "accountDetail:balanceRow:{item.Type}"
+        test_context:
+          purpose: "Single balance type row showing OBIE Type enum and signed Amount with Currency. CreditDebitIndicator not shown by default — negative values surfaced by signed Amount string from API."
+          required_fields: [item.Type, item.Amount.Amount, item.Amount.Currency]
+          interaction_type: display
+          data_driven: true
+
+  # ── EMPTY STATE — ZERO BALANCES ───────────────────────────────────
+  - type: empty_state
+    id: balances_empty_state
+    variant: info
+    state_binding: [empty]
+    icon: account_balance_wallet
+    title: "{strings.account_detail_balances_empty_title}"
+    body: "{strings.account_detail_balances_empty_body}"
+    accessibility_label: "{strings.account_detail_balances_empty_accessibility}"
+    test_tag: "accountDetail:balancesEmptyState"   # AccountDetailTestTags.BALANCES_EMPTY_STATE
+    test_context:
+      purpose: "Shown when account metadata loaded but GET /balances returned an empty array. Rare with HSBC sandbox but must be handled (e.g. Global Wallet sub-accounts)."
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  # ── EXPLORE / NAV CHIPS SECTION HEADER (content) ─────────────────
+  - type: section_header
+    id: actions_header
+    state_binding: [content]
+    label: "{strings.account_detail_section_explore}"
+    accessibility_label: "{strings.account_detail_section_explore_accessibility}"
+    test_tag: "accountDetail:exploreHeader"        # AccountDetailTestTags.EXPLORE_HEADER
+    test_context:
+      purpose: "Section separator labelling the horizontal action chip row."
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  # ── ACTION CHIPS ROW (content) ────────────────────────────────────
+  - type: chip_row
+    id: action_chips
+    state_binding: [content]
+    scroll_direction: horizontal
+    accessibility_label: "{strings.account_detail_chip_row_accessibility}"
+    test_tag: "accountDetail:chipRow"              # AccountDetailTestTags.CHIP_ROW @ components/ExploreOptionsColumn.kt
+    test_context:
+      purpose: "Horizontal scrollable row of quick-nav chips to related AIS sub-screens. Each chip passes accountId as route param."
+      required_fields: [account.AccountId]
+      interaction_type: navigate
+      data_driven: true
+    children:
+      - type: chip
+        keyboard:
+          focusable: true
+        id: chip_transactions
+        # Chip tags come from AccountDetailTestTags.chip(destination), which renders
+        # "accountDetail:chip:${destination.name}" — so the suffix is the AccountDetailChip
+        # ENUM CASE verbatim, not the component id and not a lowercased slug.
+        test_tag: "accountDetail:chip:Transactions"
+        label: "{strings.nav_chip_transactions}"
+        icon: receipt_long
+        on_click:
+          action: navigate_transactions
+          target: transactions
+          params:
+            accountId: "{account.AccountId}"
+          action_contract:
+            effect: navigate
+            description: "Navigates to the transaction history screen for this account, passing accountId as a route parameter."
+        accessibility_label: "{strings.nav_chip_transactions_accessibility}"
+        test_context:
+          purpose: "Navigate to transaction history for this account."
+          required_fields: [account.AccountId]
+          interaction_type: navigate
+          data_driven: true
+
+      - type: chip
+        keyboard:
+          focusable: true
+        id: chip_statements
+        test_tag: "accountDetail:chip:Statements"
+        label: "{strings.nav_chip_statements}"
+        icon: description
+        on_click:
+          action: navigate_statements
+          target: statements
+          params:
+            accountId: "{account.AccountId}"
+          action_contract:
+            effect: navigate
+            description: "Navigates to the statements list screen for this account, passing accountId as a route parameter."
+        accessibility_label: "{strings.nav_chip_statements_accessibility}"
+        test_context:
+          purpose: "Navigate to statements list for this account."
+          required_fields: [account.AccountId]
+          interaction_type: navigate
+          data_driven: true
+
+      - type: chip
+        keyboard:
+          focusable: true
+        id: chip_standing_orders
+        test_tag: "accountDetail:chip:StandingOrders"
+        label: "{strings.nav_chip_standing_orders}"
+        icon: autorenew
+        on_click:
+          action: navigate_standing_orders
+          target: standing-orders
+          params:
+            accountId: "{account.AccountId}"
+          action_contract:
+            effect: navigate
+            description: "Navigates to the standing orders screen for this account, passing accountId as a route parameter."
+        accessibility_label: "{strings.nav_chip_standing_orders_accessibility}"
+        test_context:
+          purpose: "Navigate to standing orders for this account."
+          required_fields: [account.AccountId]
+          interaction_type: navigate
+          data_driven: true
+
+      - type: chip
+        keyboard:
+          focusable: true
+        id: chip_direct_debits
+        test_tag: "accountDetail:chip:DirectDebits"
+        label: "{strings.nav_chip_direct_debits}"
+        icon: subscriptions
+        on_click:
+          action: navigate_direct_debits
+          target: direct-debits
+          params:
+            accountId: "{account.AccountId}"
+          action_contract:
+            effect: navigate
+            description: "Navigates to the direct debits screen for this account, passing accountId as a route parameter."
+        accessibility_label: "{strings.nav_chip_direct_debits_accessibility}"
+        test_context:
+          purpose: "Navigate to direct debits for this account."
+          required_fields: [account.AccountId]
+          interaction_type: navigate
+          data_driven: true
+
+      - type: chip
+        keyboard:
+          focusable: true
+        id: chip_scheduled_payments
+        test_tag: "accountDetail:chip:ScheduledPayments"
+        label: "{strings.nav_chip_scheduled}"
+        icon: schedule
+        on_click:
+          action: navigate_scheduled_payments
+          target: scheduled-payments
+          params:
+            accountId: "{account.AccountId}"
+          action_contract:
+            effect: navigate
+            description: "Navigates to the scheduled payments screen for this account, passing accountId as a route parameter."
+        accessibility_label: "{strings.nav_chip_scheduled_accessibility}"
+        test_context:
+          purpose: "Navigate to scheduled payments for this account."
+          required_fields: [account.AccountId]
+          interaction_type: navigate
+          data_driven: true
+
+      - type: chip
+        keyboard:
+          focusable: true
+        id: chip_beneficiaries
+        test_tag: "accountDetail:chip:Beneficiaries"
+        label: "{strings.nav_chip_beneficiaries}"
+        icon: people
+        on_click:
+          action: navigate_beneficiaries
+          target: beneficiaries
+          params:
+            accountId: "{account.AccountId}"
+          action_contract:
+            effect: navigate
+            description: "Navigates to the beneficiaries screen for this account, passing accountId as a route parameter."
+        accessibility_label: "{strings.nav_chip_beneficiaries_accessibility}"
+        test_context:
+          purpose: "Navigate to beneficiaries for this account."
+          required_fields: [account.AccountId]
+          interaction_type: navigate
+          data_driven: true
+
+      # Reconciled 2026-07-30 (/idea-sync stale reconciliation). Two defects fixed, and
+      # the chip deliberately KEPT:
+      #   1. `target: atm-locator` pointed at an idea-layer screen deleted in the
+      #      2026-07-28 reverse sync — a dangling nav target. Now bound explicitly to the
+      #      placeholder route the chip actually reaches.
+      #   2. `params: {accountId}` overstated source: AtmLocatorRoute is an arg-less
+      #      `@Serializable data object` and navigateFromChip calls `navigate(AtmLocatorRoute)`
+      #      with no arguments. flow.yaml already recorded `params: []`; ui.yaml disagreed.
+      # The chip is NOT removed: AccountDetailChip.AtmLocator is member 7 of 9 in source,
+      # it renders and it navigates. Deleting it would make the idea-layer understate the
+      # app and would break the suites asserting all nine chips in declaration order.
+      - type: chip
+        keyboard:
+          focusable: true
+        id: chip_atm_locator
+        test_tag: "accountDetail:chip:AtmLocator"
+        label: "{strings.account_detail.nav_chip_atm_label}"
+        icon: atm
+        implementation_status: placeholder
+        source_binding: "AccountDetailChip.AtmLocator -> AtmLocatorRoute -> PlaceholderScreen(\"ATM locator\")"
+        on_click:
+          action: navigate_atm_locator
+          # `_placeholder:` is a PROJECT-LOCAL prefix, not a registered framework
+          # nav-target convention — no evaluator resolves it (verified 2026-07-31:
+          # INC-1 click-incomplete-nav reports 0 findings here, i.e. the target is
+          # not validated at all rather than validated-and-accepted). The
+          # authoritative, machine-readable declaration is now
+          # idea-plan.yaml#deferred_routes[] -> AtmLocatorRoute (NAV-2). Keep the two
+          # in sync; if the prefix is ever registered framework-side, this comment
+          # and the deferred_routes entry are the migration anchors.
+          target: _placeholder:atm-locator
+          params: {}
+          action_contract:
+            effect: navigate
+            description: >-
+              Navigates to the ATM and branch locator, which is an arg-less stub route
+              in cmp-navigation rather than a built screen; no accountId is passed because
+              AtmLocatorRoute is a data object that takes no arguments.
+        accessibility_label: "{strings.account_detail.nav_chip_atm_accessibility}"
+        test_context:
+          purpose: "Navigate to the ATM / branch locator placeholder route; asserts the chip renders and dispatches."
+          required_fields: []
+          interaction_type: navigate
+          data_driven: true
+
+      - type: chip
+        keyboard:
+          focusable: true
+        id: chip_product
+        test_tag: "accountDetail:chip:Product"
+        label: "{strings.nav_chip_product}"
+        icon: description
+        on_click:
+          action: navigate_product
+          target: product
+          params:
+            accountId: "{account.AccountId}"
+          action_contract:
+            effect: navigate
+            description: "Navigates to the product terms and features screen for this account (GET /accounts/{AccountId}/product), passing accountId as a route parameter."
+        accessibility_label: "{strings.nav_chip_product_accessibility}"
+        test_context:
+          purpose: "Navigate to the account's product terms & features (GET /accounts/{AccountId}/product)."
+          required_fields: [account.AccountId]
+          interaction_type: navigate
+          data_driven: true
+
+      - type: chip
+        keyboard:
+          focusable: true
+        id: chip_party
+        test_tag: "accountDetail:chip:Party"
+        label: "{strings.nav_chip_party}"
+        icon: person
+        on_click:
+          action: navigate_party
+          # Retargeted 2026-07-30 (/idea-sync): was `target: party`, a screen renamed to
+          # account-holder in the 2026-07-28 reverse sync. flow.yaml already recorded the
+          # correct binding (AccountDetailChip.Party -> AccountHolderRoute); ui.yaml did not.
+          # The chip's enum member is still named Party in source — only the screen was renamed.
+          target: account-holder
+          params:
+            accountId: "{account.AccountId}"
+          action_contract:
+            effect: navigate
+            description: >-
+              Navigates to the account-holder screen (GET /accounts/{AccountId}/party), passing
+              accountId as a route parameter. Because the chip carries account-detail's own
+              nav-arg the id is always valid — unlike the deleted Settings entry, which passed an
+              empty selectedAccountId and produced a malformed GET /accounts//party.
+        accessibility_label: "{strings.nav_chip_party_accessibility}"
+        test_context:
+          purpose: "Navigate to the account holder / party details (GET /accounts/{AccountId}/party)."
+          required_fields: [account.AccountId]
+          interaction_type: navigate
+          data_driven: true
+
+  # ── ERROR STATE ────────────────────────────────────────────────────
+  - type: error_state
+    id: error_state
+    state_binding: [error]
+    icon: error_outline
+    title: "{strings.account_detail_error_title}"
+    body: "{error.message}"
+    accessibility_label: "{strings.account_detail_error_accessibility}"
+    test_tag: "accountDetail:errorState"           # AccountDetailTestTags.ERROR_STATE @ AccountDetailError.kt
+    # ERROR_TITLE / ERROR_BODY tag the two Text nodes INSIDE this surface. The idea-layer
+    # models them as `title:` / `body:` fields rather than child components, so they have no
+    # component of their own to carry a tag. Recorded in test_tags.unbound below.
+    test_context:
+      purpose: "Fallback error surface for 401 token expired (recoverable — show Retry), 403 consent withdrawn (non-recoverable — show Back only), 404 account not found (non-recoverable), or network failure (recoverable — show Retry)."
+      required_fields: [error.message]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: button
+        keyboard:
+          focusable: true
+        id: retry_button
+        variant: filled
+        label: "{strings.account_detail_retry}"
+        accessibility_label: "{strings.account_detail_retry_accessibility}"
+        test_tag: "accountDetail:retryButton"      # AccountDetailTestTags.RETRY_BUTTON
+        on_click:
+          action: retry_load
+          action_contract:
+            effect: call_api
+            reads_from: [account-detail, balances]
+            external_library_refs: [ktorfit, "hsbc-obie-ais-v4.0:accounts", "hsbc-obie-ais-v4.0:balances"]
+            description: "Re-issues the parallel account and balances fetch (GET /accounts/{AccountId} and GET /accounts/{AccountId}/balances) after a recoverable 401 or network error, transitioning to loading then content state on success."
+        test_context:
+          purpose: "Trigger retry of concurrent account and balances API fetch. Shown only when error.recoverable == true (401 or network failure). Hidden by ViewModel for 403/404."
+          required_fields: []
+          interaction_type: action
+          data_driven: false

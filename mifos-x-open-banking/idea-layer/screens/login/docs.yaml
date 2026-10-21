@@ -1,0 +1,177 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: login
+
+feature: consent-onboarding
+contract_version: "2.0.0"
+status: approved
+approve_hash: "sha256:2a3525a6a7c1d260e2a71438c16dc91483bd8484ab68115224dd1cea1ffc628f"
+approved_at: "2026-08-05T05:15:00Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+score: 95
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. Added 2026-08-07 (/idea-sync).
+quality_score: 95
+cluster: consent
+acceptance_refs:
+  - FR-001
+  - FR-002
+scaffolded_by: /idea-heal
+archetype: login
+# flow_ref backfilled 2026-08-02 (/idea-sync) from flows/*.yaml#screens[] membership.
+# login appears in TWO flows. onboarding-consent is primary (first-run consent journey);
+# consent-expired re-enters this same screen on the 90-day reconfirmation path.
+flow_ref: onboarding-consent
+secondary_flow_refs: [consent-expired]
+description: >-
+  OAuth/FAPI initiation screen. Displays the 10 OBIE read permissions being staged in OBReadConsent1 so the PSU
+  understands what HSBC will ask them to approve. On 'Continue to HSBC', the app POSTs consent-create
+  (client_credentials grant), builds a PS256-signed FAPI 1.0 Advanced /authorize URL (response_type=code id_token),
+  and launches an app-to-app redirect to HSBC for SCA and account selection. Screen transitions to the authorising
+  holding state once the redirect fires. Returns to consent-callback on the deep-link redirect leg.
+has_ui: true
+has_server: false
+# has_system_integration: OAuth redirect out to the bank and back (deep_link).
+# NOT is_auth_feature. That capability means the feature IS signin/signup/OTP and its
+# sub-checks demand auth_screens[], OTP code TTL, resend rate limit and account-lockout
+# policy. This app has none of those and cannot: the PSU authenticates AT their bank under
+# the OBIE redirect model, so there is no password, no OTP and no lockout to declare here.
+capabilities: [has_ui, has_api, has_flow, has_system_integration]
+# RULE-CAP-HAS-SYSTEM-INTEGRATION-001 V1. V2/V3 (permission rationale + denied-state UX)
+# are N/A across this app: it requests ZERO device permissions — no api.yaml declares
+# requires_permission, and every "permission" reference in the idea-layer is an OBIE
+# consent SCOPE (ReadAccountsDetail etc.) the PSU grants at their bank, not an OS grant.
+system_capabilities:
+  - kind: deep_link
+    detail: "Outbound redirect to the bank's authorisation endpoint, inbound return on the registered redirect URI."
+metadata:
+  category: composite
+  implementation_ready: true
+  impl_ready_at: '2026-06-29T12:00:00Z'
+  impl_ready_schema: v2
+contracts: []
+libraries:
+  - capability: rest-client
+    library: ktorfit
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+      - web
+  - capability: jwt-signing
+    library: jose4j
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+      - web
+vm_actions:
+  - name: LoadPermissionsConfig
+    signature: 'fun loadPermissionsConfig(): Unit'
+    state_mutations:
+      - uiState=Content(permissions=OBReadConsent1.Permissions, consentExpiryLabel=formatted)
+    side_effects:
+      - Reads static OBReadConsent1.Permissions enum to build requested_permissions list
+      - Computes consentExpiryLabel = DateFormatter.format(now + 90.days, 'd MMM yyyy', prefix='Expires ')
+    error_handling: {}
+  - name: StartOAuth
+    signature: 'suspend fun startOAuth(): Unit'
+    state_mutations:
+      - uiState=Loading
+      - uiState=Authorising
+      - uiState=Error(user_message)
+    side_effects:
+      - >-
+        ConsentService.createConsent(OBReadConsent1 with 10 Permissions, ExpirationDateTime, TransactionFromDateTime,
+        TransactionToDateTime)
+      - LocalStorage.storeConsentId(staged_consent.Data.ConsentId)
+      - >-
+        FapiAuthBuilder.buildAuthorizeUrl(consentId, responseType='code id_token', scope='openid accounts', nonce,
+        state, request_object_alg=PS256)
+      - LocalStorage.storeStateAndNonce(state, nonce)
+      - Navigator.launchAppToAppRedirect(authorizeUrl)
+    error_handling:
+      NetworkException: uiState=Error(user_message='Unable to reach HSBC. Check your connection and try again.')
+      HttpException(400): uiState=Error(user_message='HSBC rejected the consent request. Please try again.')
+      HttpException(401): uiState=Error(user_message='Authorisation failed. The app may need to re-register with HSBC.')
+      HttpException(500): uiState=Error(user_message='HSBC is temporarily unavailable. Try again in a moment.')
+      FapiRedirectException: >-
+        uiState=Error(user_message='Could not open HSBC. Ensure the HSBC Mobile Banking app is installed, or try
+        again.')
+
+nav_callbacks:
+  # RELOCATED 2026-08-01 (/idea-sync) from vm_actions. ui.yaml#implementation.removed_in_sync:
+  # "navigateBack action — LoginAction has no such member; back is a nav-host onBack callback".
+  - signature: "onBack -> Navigator.navigateBack() returning to user-onboarding"
+    surfaces: ["cancel_button", "empty-state go_back button"]
+
+error_cases:
+  - NetworkException
+  - ConsentCreateBadRequest
+  - ConsentCreateUnauthorised
+  - ConsentCreateServerError
+  - FapiRedirectFailed
+test_fixtures:
+  source: screens/login/tests.yaml
+  # Corrected 2026-08-01 (/idea-sync, from /idea-verify XS-1): was 7 / high:3 medium:4.
+  # tests.yaml holds 8 scenarios (TC-LOGIN-001..008). The 8th is TC-LOGIN-008, the empty-state
+  # test this file's own status_history records adding on 2026-07-14 — added without updating
+  # the count in the same edit.
+  scenario_count: 8
+  priority_distribution:
+    high: 4
+    medium: 4
+capability_completeness:
+  answered_at: "2026-07-14"
+  answered_by: "/idea-enrich"
+  CC1_storage_location: "ConsentId stored in encrypted LocalStorage under key `consent-id-{state}` immediately after successful consent-create POST. OAuth state and nonce parameters stored under `oauth-state-{state}` for callback validation. Both are ephemeral session values cleared after successful callback or explicit revocation. No account/balance/transaction data is stored on this screen — it is consent initiation only."
+  CC2_destructive_action_safety: "No destructive user actions. Cancel navigates back without side-effects. The consent-create POST is server-side only; if the PSU abandons in the loading state, the staged consent remains AwaitingAuthorisation on HSBC and expires per ExpirationDateTime without requiring app-side cleanup (OBIE-compliant behaviour)."
+  CC3_nav_callback_wiring: "Cancel → user-onboarding via Navigator.navigateBack(). Empty-state Go Back → user-onboarding. Post-FAPI-redirect return → consent-callback screen via OS deep-link registered in AndroidManifest under the TPP redirect_uri scheme; not an in-app NavController transition."
+  CC4_user_data_export: "No user-generated data created. ConsentId and OAuth state/nonce are AISP infrastructure values, not user content. Not subject to GDPR Article 20 data portability — no export mechanism required."
+  CC5_permission_visibility: "Full OBReadConsent1.Permissions list (10 OBIE read scopes) is rendered in permissions_list with per-row human-readable label and description. PSU reviews every scope before tapping 'Continue to HSBC'. No additional OS runtime permissions are required for this screen."
+  CC6_storage_budget_awareness: "ConsentId: 36-char UUID. OAuth state + nonce: two ~32-char random strings. Total LocalStorage footprint: <500 bytes. OBReadConsent1 request payload (~300 bytes JSON) is not cached locally; it is sent in-flight and discarded after a 201 response."
+  CC7_network_data_policy: "Single authenticated POST to /account-access-consents using a client_credentials bearer token (no PSU token at consent-create stage). Response contains ConsentId only — no PSU account data. Response is consumed transiently to extract ConsentId and then garbage-collected; not persisted to disk. Ktorfit timeout: 15 seconds."
+  CC8_cache_lifecycle: "ConsentId and OAuth state/nonce persist for the 90-day OBIE consent window. All are cleared by the consent-callback screen on successful authorisation exchange, or by the consent-detail revoke flow. A subsequent consent-create (re-authorisation flow) overwrites the stored ConsentId."
+  CC9_error_recovery: "Five named error paths with distinct user messages: NetworkException, HttpException(400), HttpException(401), HttpException(500), FapiRedirectException. All surface error state with 'Could not connect to HSBC' title and error-specific body text, plus 'Try again' retry CTA re-triggering startOAuth(). Empty state (zero permissions) blocks consent-create and shows 'Go back' only — prevents submitting a zero-scope OBReadConsent1 that HSBC would reject with 400."
+
+status_history:
+  - from: enriched
+    to: designed
+    at: '2026-07-01T10:52:41.613Z'
+    by: /idea-export-stitch
+  - from: designed
+    to: designed
+    at: '2026-07-14T00:00:00Z'
+    by: /idea-enrich
+    note: "score written (93); content verified stable; no regression from export"
+  - from: designed
+    to: designed
+    at: '2026-07-14T12:00:00Z'
+    by: /idea-enrich
+    note: "score 93→95: state_model (ConsentOnboardingViewModel full spec), dependencies (tier-0 with feature+library refs), screens[] registered, api.yaml errors{} contract, accessibility on card+list, TC-LOGIN-008 empty state test, capability_completeness CC1-CC9"
+  - from: designed
+    to: approved
+    at: "2026-07-14T00:00:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: ""
+  - from: approved
+    to: enriched
+    at: "2026-08-05T05:05:00Z"
+    by: "/idea approve --unapprove"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "Stored approve_hash predated the 2026-08-04 export regeneration and no longer matched the sibling set."
+  - from: enriched
+    to: approved
+    at: "2026-08-05T05:15:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "--all-ready bulk approval; predicate C1-C6 green."

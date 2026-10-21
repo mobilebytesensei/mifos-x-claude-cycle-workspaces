@@ -1,0 +1,151 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: consent-detail
+
+feature: consent-detail
+contract_version: "2.0.0"
+status: approved
+approve_hash: "sha256:5ea69be8b0144ffa4b8fda951b1c77424d0ef0811f52c578db0fd847b844bd54"
+approved_at: "2026-08-05T05:15:00Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+score: 95
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. Added 2026-08-07 (/idea-sync).
+quality_score: 95
+cluster: consent
+acceptance_refs:
+  - FR-008
+scaffolded_by: /idea-heal
+archetype: detail_screen
+# flow_ref backfilled 2026-08-02 (/idea-sync) from flows/*.yaml#screens[] membership.
+flow_ref: consent-management
+description: >-
+  Full consent detail screen showing the HSBC OBIE status badge (color-coded: primary=Authorised, warning=Expired,
+  error=Revoked/Rejected), all 11 granted permissions with human-readable labels,
+  creation/expiry/transaction-from/transaction-to dates, an expiry warning banner when within 7 days, a 90-day reconfirm
+  prompt, and a two-step destructive 'Revoke access' action (revoke_confirm dialog gate → revoking progress state →
+  DELETE consent-revoke → clear local PSU token → navigate to consent-list). 404 on DELETE is treated idempotently as
+  already-revoked.
+has_ui: true
+has_server: false
+capabilities: [has_ui, has_api, has_flow]
+metadata:
+  category: composite
+  implementation_ready: true
+  impl_ready_at: '2026-06-29T12:00:00Z'
+  impl_ready_schema: v2
+contracts: []
+libraries:
+  - capability: rest-client
+    library: ktorfit
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+      - web
+# vm_actions RELOCATED 2026-08-01 (/idea-sync): loadConsentDetail -> initial_load;
+# navigateReconfirm -> nav_callbacks. Nothing deleted. ui.yaml#state_model declares members
+# [RetryLoad, ConfirmRevoke, DismissRevokeConfirm, ExecuteRevoke] — all four retained below.
+initial_load:
+  mechanism: init-stream-collection
+  what:
+    - ConsentService.getConsentStatus(consentId)
+    - PermissionsMapper.toReadableLabels(permissions)
+    - "Compute expiryWarningDays from Data.ExpirationDateTime (null if > 7 days)"
+  states: "Loading -> Content(consent, permissionsDetail, expiryWarningDays)"
+  error_handling:
+    HttpException(401): Transition to Error(ConsentDetailErrorCode.TokenExpired)
+    HttpException(404): Transition to Error(ConsentDetailErrorCode.ConsentNotFound)
+    NetworkError: Transition to Error(ConsentDetailErrorCode.NetworkError)
+  note: >-
+    NOT a dispatched action. ui.yaml#implementation.removed_in_sync: "loadConsentDetail action —
+    the initial load is stream collection in init{}".
+
+nav_callbacks:
+  # ui.yaml#implementation.removed_in_sync: "navigateReconfirm action — reconfirm is the
+  # onReconfirm nav-host callback".
+  - signature: "onReconfirm -> navigate(Route.Login(reconfirmMode = true))"
+    surface: "reconfirm_button — shown while the consent is inside its expiry window"
+
+vm_actions:
+  - name: ConfirmRevoke
+    signature: 'fun confirmRevoke(): Unit'
+    state_mutations:
+      - uiState = RevokeConfirm(consent)
+    side_effects: []
+    error_handling: {}
+  - name: DismissRevokeConfirm
+    signature: 'fun dismissRevokeConfirm(): Unit'
+    state_mutations:
+      - uiState = Content(consent, permissionsDetail, expiryWarningDays)
+    side_effects: []
+    error_handling: {}
+  - name: ExecuteRevoke
+    signature: 'suspend fun executeRevoke(consentId: String): Unit'
+    state_mutations:
+      - uiState = Revoking(consent)
+    side_effects:
+      - ConsentService.revokeConsent(consentId)
+      - LocalStorage.clearConsentId(consentId)
+      - LocalStorage.clearPsuToken()
+      - Navigator.navigate(Route.ConsentList)
+    error_handling:
+      HttpException(401): Surface Error(ConsentDetailErrorCode.TokenExpired)
+      HttpException(404): Treat as already revoked — clear local state, navigate to consent-list (idempotent)
+      NetworkError: Surface Error(ConsentDetailErrorCode.NetworkError) with retry
+      HttpException(5xx): Surface Error(ConsentDetailErrorCode.RevokeServerError)
+  - name: RetryLoad
+    signature: 'suspend fun retryLoad(): Unit'
+    state_mutations:
+      - uiState = Loading
+    side_effects:
+      - ConsentService.getConsentStatus(consentId)
+    error_handling:
+      NetworkError: Transition to Error(ConsentDetailErrorCode.NetworkError)
+error_cases:
+  - ConsentNotFound
+  - ConsentRevoked
+  - ConsentExpired
+  - TokenExpired
+  - NetworkError
+  - RevokeServerError
+test_fixtures:
+  source: screens/consent-detail/tests.yaml
+  # Corrected 2026-08-01 (/idea-sync, from /idea-verify XS-1): was 9 / high:5 medium:3 low:1.
+  # tests.yaml holds 11 scenarios (TC-CDETAIL-001..011). Drifted upward — scenarios were added
+  # without updating the count.
+  scenario_count: 11
+  priority_distribution:
+    high: 6
+    medium: 4
+    low: 1
+status_history:
+  - from: enriched
+    to: designed
+    at: '2026-07-01T10:52:41.601Z'
+    by: /idea-export-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-14T00:00:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: ""
+  - from: approved
+    to: enriched
+    at: "2026-08-05T05:05:00Z"
+    by: "/idea approve --unapprove"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "Stored approve_hash predated the 2026-08-04 export regeneration and no longer matched the sibling set."
+  - from: enriched
+    to: approved
+    at: "2026-08-05T05:15:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "--all-ready bulk approval; predicate C1-C6 green."

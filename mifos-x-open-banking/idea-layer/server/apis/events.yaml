@@ -1,0 +1,81 @@
+# server/apis/events.yaml — OBIE event notification (aggregated polling)
+#
+# Authored 2026-08-06 by /idea-sync. NEW surface — this app has never had one.
+#
+# WHY IT EXISTS HERE AT ALL: the long-lived VRP mandate has a gap nothing else can close. A PSU
+# can revoke the mandate in the HSBC app, after which the consent GET returns 400 U011 forever
+# and can never report a revoked state. Event polling is the ONLY mechanism that surfaces the
+# revocation. Without it the app finds out by trying to pay and failing.
+
+schema_version: "2.0"
+api: "HSBC UK Open Banking — Event Notification v4.0"
+base_url: "https://secure.sandbox.ob.hsbc.co.uk/obie/open-banking/v4.0"
+api_source_ref: API-003
+auth: "client_credentials token"
+model: "aggregated polling — the TPP polls; there is no webhook to this app"
+
+endpoints:
+  - id: create_subscription
+    method: POST
+    path: "/event-subscriptions"
+    headers: [x-jws-signature]
+    description: "Subscribe to event types. Requires a detached JWS."
+    request_body:
+      Data:
+        Version: "4.0"
+        EventTypes: ["UK.OBIE.Consent-Authorization-Revoked"]
+    consumed_by: [pay-vrp-mandate, consent-list]
+
+  - id: list_subscriptions
+    method: GET
+    path: "/event-subscriptions"
+    description: "List active subscriptions. Used to avoid creating a duplicate on relaunch."
+    consumed_by: [pay-vrp-mandate]
+
+  - id: delete_subscription
+    method: DELETE
+    path: "/event-subscriptions/{EventSubscriptionId}"
+    description: "Remove a subscription — on sign-out, or when the last mandate is revoked."
+    consumed_by: [pay-vrp-mandate]
+
+  - id: poll_events
+    method: POST
+    path: "/events"
+    description: "Poll for pending events."
+    request_body:
+      returnImmediately: true
+      maxEvents: 5
+    consumed_by: [pay-vrp-mandate, consent-list]
+
+event_types:
+  - id: "UK.OBIE.Consent-Authorization-Revoked"
+    subscribed: true
+    surfaces:
+      - feature: pay-vrp-mandate
+        effect: >-
+          The mandate's health becomes `revoked` without the PSU opening it. This is the ONLY
+          pre-emptive signal — the alternative is discovering it when the consent GET starts
+          returning 400 U011, or when a payment fails.
+      - feature: consent-list
+        effect: "An AIS consent revoked at the bank is reflected without waiting for the next resource call to 403."
+
+what_this_does_not_cover:
+  trusted_beneficiary_failure: >-
+    NOT an event. When the PSU deletes the payee from their beneficiary list, VRPs are rejected
+    at fulfilment while the consent stays AUTHORISED. The only signal is StatusReason
+    UK.OBIE.ExemptionNotApplied on the individual payment — there is no subscription for it.
+  async_failure_reasons: >-
+    OBIE provides NO async failure reason when a payment fails a background check. Documented as
+    "being considered". So beyond the revocation event and the per-payment StatusReason there is
+    nothing to key on.
+  per_execution_events: >-
+    There is no event for a standing-order or scheduled-payment execution. This does not close
+    the per-execution status gap — nothing does.
+
+polling_policy:
+  when: "on app foreground, and on the mandate list's refresh path"
+  not: "a background daemon — the app polls when the PSU is present, not continuously"
+  rationale: >-
+    The events this app subscribes to are all state the PSU will see the consequences of anyway.
+    Polling them on foreground closes the window between an out-of-band revocation and the app
+    noticing, without a background process whose only job is to watch for a rare event.

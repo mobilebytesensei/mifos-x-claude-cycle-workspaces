@@ -1,0 +1,59 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: direct-debits
+
+screen_id: direct-debits
+
+on_mount:
+  - trigger: direct_debits_load
+    description: "Load direct debit mandates for the given AccountId; derive status_variant, sort Active-first, and compute Active/Inactive summary counts."
+    steps:
+      - call: direct-debits-list
+        path_params:
+          AccountId: "{params.accountId}"
+        store_as: rawDirectDebits
+        transform:
+          - field: status_variant
+            from: DirectDebitStatusCode
+            mapping: "Active=primary,Inactive=outline"
+        post_transform:
+          - op: sort
+            by: DirectDebitStatusCode
+            order: "Active first, Inactive last"
+            store_as: directDebits
+          - op: count_where
+            where: "DirectDebitStatusCode == 'Active'"
+            store_as: activeCount
+          - op: count_where
+            where: "DirectDebitStatusCode == 'Inactive'"
+            store_as: inactiveCount
+    on_loading: loading
+    on_success: content
+    on_empty: empty
+    on_error: error
+    error_classification:
+      http_401:
+        error_id: TokenExpired
+        userMessage: "Session expired. Please log in again."
+        isRetriable: true
+      http_403:
+        error_id: ConsentRevoked
+        userMessage: "Account access consent has been revoked. Re-authorise in Consents."
+        isRetriable: false
+      http_429:
+        error_id: RateLimited
+        userMessage: "Too many requests. Please wait a moment and try again."
+        isRetriable: true
+      http_500:
+        error_id: ServerError
+        userMessage: "HSBC server error. Please try again."
+        isRetriable: true   # api.yaml: transient — treat as NetworkError for retry purposes
+      network_error:
+        error_id: NetworkError
+        userMessage: "No network connection. Check your connection and retry."
+        isRetriable: true
+
+on_user_action:
+  - trigger: retry_load
+    condition: "{error.isRetriable}"
+    re_runs: [direct_debits_load]

@@ -1,0 +1,86 @@
+sibling: data-flow
+schema_version: "4.0"
+feature_id: atm-locator
+
+# ─────────────────────────────────────────────────────────────────────────
+# REWRITTEN 2026-08-06 by /idea-sync (OBP eviction)
+#
+# Was obp_get_atms / obp_get_branches against the Open Bank Project sandbox with DirectLogin,
+# and a 401 -> navigate_login error path.
+#
+# ATM and branch location is UK Open Banking OPEN DATA: no consent, no token, no mTLS. The 401
+# path was therefore not just mis-targeted but structurally impossible — there is no credential
+# to expire. Removing it matters, because a 401 handler that navigates to login on an
+# unauthenticated endpoint would eject a PSU from a screen that works fine signed out.
+# ─────────────────────────────────────────────────────────────────────────
+
+cache_strategy: memory
+cache_rationale: >-
+  Open Data is not consent-scoped, so unlike every other read in this app it does NOT need to be
+  discarded on logout or revocation. A memory cache keyed by search area is safe, and the data
+  changes on the order of weeks.
+
+entries:
+  - screen_id: atm-locator
+    trigger: on_mount
+    endpoints:
+      - get_atms
+      - get_branches
+    direction: read
+    auth: none
+    dtos:
+      - { name: AtmLocation, role: response, api_id: get_atms }
+      - { name: Branch, role: response, api_id: get_branches }
+    produces_state: content
+    error_paths:
+      - { error_code: 404, behavior: empty_state }
+      - { error_code: 500, behavior: error_state }
+      - { error_code: network, behavior: error_state }
+
+  - screen_id: atm-locator
+    trigger: on_interact
+    event: SearchLocation
+    endpoints:
+      - get_atms
+      - get_branches
+    direction: read
+    auth: none
+    dtos:
+      - { name: AtmLocation, role: response, api_id: get_atms }
+      - { name: Branch, role: response, api_id: get_branches }
+    produces_state: content
+    error_paths:
+      - { error_code: 500, behavior: error_state }
+      - { error_code: network, behavior: error_state }
+
+# ─────────────────────────────────────────────────────────────────────────
+# INVARIANTS
+# ─────────────────────────────────────────────────────────────────────────
+no_auth_invariant:
+  rule: "Neither call carries a token, and neither has a 401 or 403 path."
+  rationale: >-
+    Open Data is unauthenticated. A 401 handler here would be dead code at best, and at worst
+    would navigate a signed-out PSU to login from a screen that does not require them to sign in.
+  product_consequence: >-
+    This screen is reachable BEFORE the PSU has connected an account — the only surface in the
+    app that is. Worth designing for rather than treating as an edge case.
+  no_unauthenticated_state: >-
+    The rule covers the UI STATE as well as the error path. ui.yaml declared an `unauthenticated`
+    / session-expired state until 2026-08-07 even while this invariant forbade the 401 handler
+    that would be its only trigger — so the state was declared but unreachable, and it shipped
+    "Sign in again to find ATMs near you" to exactly the audience with no account to sign in to.
+    Removed; see ui.yaml#forbidden_states and demo-data.yaml#_removed_states.
+
+device_permission_note: >-
+  Location is a DEVICE permission, not an API one. The app declares zero device permissions
+  app-wide today, so a geolocation prompt would be the first. The search-by-area path must work
+  without it.
+
+status:
+  built: false
+  note: "Specified, not built. AtmLocatorRoute resolves to PlaceholderScreen — declared under idea-plan.yaml#deferred_routes."
+
+removed_2026_08_06:
+  - { endpoint: obp_get_atms, was: "GET /obp/v5.1.0/banks/{bankId}/atms" }
+  - { endpoint: obp_get_branches, was: "GET /obp/v5.1.0/banks/{bankId}/branches" }
+  - { error_path: "401 -> navigate_login", reason: "Open Data is unauthenticated; there is no credential to expire." }

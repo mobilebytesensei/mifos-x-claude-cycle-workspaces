@@ -1,0 +1,216 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: settings
+
+feature: settings
+contract_version: "2.0.0"
+status: approved
+approve_hash: "sha256:6943ba4fcfda1c1c429fce40ce9560d12318c494d8ddf89e297bd80c272d445f"
+approved_at: "2026-08-05T05:15:00Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+score: 95
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. Added 2026-08-07 (/idea-sync).
+quality_score: 95
+cluster: settings
+acceptance_refs: []
+scaffolded_by: /idea-heal
+archetype: settings
+# flow_ref backfilled 2026-08-02 (/idea-sync) from flows/*.yaml#screens[] membership.
+flow_ref: settings-and-profile
+# ── Description corrected 2026-07-30 (/idea-feature-export stale-artifact fix) ──
+# Listed security (biometric lock + session timeout), notifications, a Profile row and a
+# Clear Local Data row. None ships: components are appearance_header/theme_row,
+# account_header/consents_row, about_header/privacy_row/licences_row/app_version_row.
+# idea-plan.yaml already recorded the reverse-sync note ("biometric app-lock, session
+# timeout and notification preferences were specified but never built"); this prose was
+# not updated to match. The Profile row was deleted when profile became account-holder.
+description: >-
+  App settings hub — appearance (theme dropdown), a Manage Consents shortcut, and About &
+  Legal (privacy policy in a browser, in-app open-source licences, static app version).
+  Client-only: no store, no core/data banking layer, no external API. SettingsViewModel reads
+  and writes UserDataRepository and is the first production caller of setDarkThemeConfig.
+  It *is* the More tab — MoreTab points at SettingsRoute, replacing the former MoreRoute
+  placeholder.
+has_ui: true
+has_server: false
+# has_local_preferences: DataStore-backed theme preference with a defaults path.
+# No has_api: zero operations. NOT has_form_input — the single `select` is a preference
+# toggle, not a form; the rule's sub-checks (validators[], submit loading state,
+# required-field marking) describe something this screen does not have.
+capabilities: [has_ui, has_flow, has_local_preferences]
+# RULE-CAP-HAS-LOCAL-PREFERENCES-001 V1/V3. DataStore-backed, read and written by
+# SettingsViewModel via UserDataRepository.setDarkThemeConfig.
+# preferences: MOVED to ui.yaml 2026-07-31 (CROSS_LEAK repair — sibling-layout.json
+# assigns `preferences` to the ui sibling, capability_gate has_local_preferences).
+# V2 schema migration: none needed yet — dark_theme_config is the only key and has never
+# been renamed or removed. Declared explicitly so a future rename records a migration here
+# rather than silently orphaning a stored value.
+preferences_migrations: []
+# V4 cross-check (RULE-SEED-SECURITY-001 V1-AUTH-TOKEN-STORAGE): no auth tokens, credentials
+# or PII live in preferences. OBIE access/refresh tokens go to ConsentSession over
+# multiplatform-settings SECURE storage via core/datastore, never here.
+preferences_security_note: "no tokens, credentials or PII in DataStore — secure storage only"
+metadata:
+  category: settings
+  implementation_ready: true
+  impl_ready_at: '2026-07-14T20:00:00Z'
+  impl_ready_schema: v2
+contracts: []
+libraries:
+  - name: multiplatform-settings
+    module: com.russhwolf:multiplatform-settings-no-arg (+ -coroutines)
+    purpose: >-
+      Preference storage. Consume the EXISTING core/datastore UserPreferencesRepository — this feature
+      adds NO new preference keys and NO new persistence code. Its only persisted setting is the theme,
+      already served by observeDarkThemeConfig: Flow<DarkThemeConfig> / setDarkThemeConfig(...).
+      (The keys that would have been new — session_timeout, notify_consent_expiry,
+      notify_security_alerts — belonged to the Security and Notifications sections, which are out of
+      scope per the 2026-07-22 scope cut.) androidx.datastore is not in the version catalog and must
+      not be introduced.
+  - name: app design system
+    module: core/ui (KptScaffold) + core-base/designsystem (KptTheme)
+    purpose: >-
+      Settings rows are composed from the app's own design system under the one-state-per-file
+      Screen/Content/Skeleton/Empty/Error convention. No third-party settings-UI dependency —
+      com.github.alorma:compose-settings-ui-m3 is not in the version catalog.
+  - name: kotlinx-serialization
+    module: org.jetbrains.kotlinx:kotlinx-serialization-json
+    purpose: Serialization for structured preference types held in preferences
+# vm_actions REWRITTEN 2026-08-01 (/idea-sync, from /idea-verify XS-3).
+#
+# /idea-verify flagged ONE action here — clearLocalDataConfirm, caught because it named the
+# removed `clear_confirm` state. Reading the block revealed the finding was NARROWER than the
+# defect: all 12 actions described the pre-2026-07-28 design, and 8 of them drove surfaces
+# ui.yaml:29-37 explicitly records as removed in the reverse sync:
+#
+#   toggleBiometricLock, updateSessionTimeout          -> no Security section is rendered
+#   toggleConsentExpiryNotification,                   -> no Notifications section is rendered
+#     toggleSecurityAlertsNotification
+#   navigateProfile                                    -> the profile screen was never built
+#   clearLocalDataConfirm, dismissClearLocalData,      -> no destructive cache-erasure surface
+#     executeClearLocalData                               exists; clear_confirm is not a state
+#
+# The remaining four were real behaviours under the wrong shape: `updateTheme(theme: String)`
+# is the pre-sync name for SelectTheme(config: DarkThemeConfig), and navigateConsentList /
+# openExternalUrl / openOssLicences are not SettingsActions at all — they are nav-host
+# callbacks, which is why they are moved to nav_callbacks below rather than deleted.
+#
+# The block now mirrors ui.yaml#state_model.SettingsViewModel.actions verbatim: four members.
+vm_actions:
+  - name: SelectTheme
+    signature: 'fun selectTheme(config: DarkThemeConfig)'
+    state_mutations:
+      - "content.themeConfig = config; content.themeLabel re-resolved from the new config"
+    side_effects:
+      - Writes DarkThemeConfig back through UserDataRepository (androidx.datastore)
+      - The user-data stream re-emits and AppTheme retints the whole app
+    error_handling:
+      on_error: log_only
+    notes: "The only persisted mutation on this screen. Surface: ui.yaml#theme_row on_select."
+  - name: ToggleThemeMenu
+    signature: fun toggleThemeMenu()
+    state_mutations:
+      - "content.isThemeMenuExpanded = !content.isThemeMenuExpanded"
+    side_effects: []
+    error_handling: {}
+    notes: "Pure local dropdown state — nothing is persisted."
+  - name: DismissThemeMenu
+    signature: fun dismissThemeMenu()
+    state_mutations:
+      - "content.isThemeMenuExpanded = false"
+    side_effects: []
+    error_handling: {}
+    notes: "Collapses the dropdown without changing the selected theme."
+  - name: RetryLoad
+    signature: fun retryLoad()
+    state_mutations:
+      - "uiState = Content on recovery, or Error again on repeat failure"
+    side_effects:
+      - Re-reads the UserDataRepository preference stream to rebuild Content
+    error_handling: {}
+    notes: "Both SettingsErrorKind values are retriable, so this is reachable from either."
+
+nav_callbacks:
+  # Host-owned; invoked by settingsScreen, NOT members of SettingsAction. Previously misfiled
+  # in vm_actions as navigateConsentList / openExternalUrl / openOssLicences.
+  - "onNavigateToConsents -> navigate(ConsentListRoute)   [surface: consents_row]"
+  - "onNavigateToLicences -> navigate(LicencesRoute)      [surface: licences_row]"
+  - "onOpenUrl -> LocalUriHandler.openUri(url)            [surface: privacy_row]"
+error_cases:
+  - trigger: load_settings_on_mount
+    condition: DataStore preferences Flow throws IOException on initial collection (storage corruption, disk full)
+    handling: >-
+      Transition screen to Error state. Display error_outline icon, title, body, and a Retry button. Retry re-triggers
+      Flow collection (Loading → Content on recovery, or Error again on repeat failure).
+    severity: error
+  - trigger: open_external_url
+    condition: No browser app installed on device (ActivityNotFoundException on Android)
+    handling: >-
+      Show snackbar — URL not opened silently; no crash. Snackbar offers no retry (no viable action available without a
+      browser).
+    severity: warning
+  # REMOVED 2026-08-01 (/idea-sync, same XS-3 sweep as vm_actions above): the
+  # `toggle_biometric_lock` and `clear_local_data` error cases described failure modes of the
+  # two surfaces the 2026-07-28 reverse sync deleted (no Security section, no cache-erasure
+  # sheet). An error case for an action that cannot be dispatched is unreachable by
+  # construction. Swept in the SAME edit as the actions that raised them rather than left for
+  # a later pass — leaving them is how this file came to contradict its own ui.yaml.
+  #
+  # The two surviving cases below are the real ones, and they map to the two SettingsErrorKind
+  # members ui.yaml declares: PreferencesUnavailable and Unknown. Both are retriable.
+exports:
+  spec_md:
+    source_hash: regenerated-2026-07-14
+    at: "2026-07-14T12:00:00Z"
+    path: "idea-layer/exports/settings/SPEC.md"
+  api_md:
+    source_hash: regenerated-2026-07-14
+    at: "2026-07-14T12:00:00Z"
+    path: "idea-layer/exports/settings/API.md"
+    note: "Client-only feature — no server API"
+
+status_history:
+  - from: enriched
+    to: designed
+    at: "2026-07-14"
+    by: "/idea export"
+    exports: [spec_md, api_md]
+  - from: designed
+    to: approved
+    at: "2026-07-14T00:00:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: ""
+  - from: approved
+    to: enriched
+    at: "2026-08-05T05:05:00Z"
+    by: "/idea approve --unapprove"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "Stored approve_hash predated the 2026-08-04 export regeneration and no longer matched the sibling set."
+  - from: enriched
+    to: approved
+    at: "2026-08-05T05:15:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "--all-ready bulk approval; predicate C1-C6 green."
+
+test_fixtures:
+  # Corrected 2026-08-01 (/idea-sync, from /idea-verify XS-1). Was scenario_count 17 with
+  # priority_distribution high:7/medium:5/low:2 — which summed to 14, so the block did not even
+  # agree with itself. tests.yaml holds 9 scenarios (TC-SET-001..009) using the critical/normal
+  # vocabulary. The 17 counted the pre-07-28 suite for the Security, Notifications, Permissions
+  # and Storage sections that no longer exist.
+  #
+  # FakeLocalCacheRepository dropped from source: it backed executeClearLocalData, removed above.
+  source: FakeSettingsDataStore in-memory preferences
+  scenario_count: 9
+  priority_distribution:
+    critical: 4
+    normal: 5

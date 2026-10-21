@@ -1,0 +1,135 @@
+name: VrpControlParameters
+version: "1.0.0"
+source:
+  origin: external_api
+  api_ref: API-003
+  api_path: "Data.ControlParameters on POST /v4.0/pisp/domestic-vrp-consents"
+  spec: "OBIE VRP Profile v4.0"
+description: >-
+  The spending envelope a VRP mandate operates inside. Replaces BOTH MandateRelatedInformation
+  and RequestedExecutionDateTime — a VRP has neither a fixed schedule nor a fixed amount, only
+  limits. The PISP must initiate within these parameters; the ASPSP must not execute outside
+  them. Breach returns U014.
+fields:
+  - name: MaximumIndividualAmount
+    type: Object
+    required: true
+    pii: false
+    primary_key: false
+    dto_ref: ObAmount
+    description: "Ceiling on any single payment. MANDATORY — omitting it returns U004."
+    omission_error: "U004 Field is missing @ ControlParameters.MaximumIndividualAmount"
+  - name: MaximumIndividualAmount.Currency
+    type: String
+    required: true
+    pii: false
+    primary_key: false
+    description: "GBP ONLY. Anything else returns U023 'MaximumIndividualAmount.Currency is invalid. Only GBP is allowed'."
+  - name: PeriodicLimits
+    type: Array
+    required: true
+    pii: false
+    primary_key: false
+    dto_ref: VrpPeriodicLimit
+    description: >-
+      At least one. MANDATORY — omitting the array returns U004. Maximum six, one per period
+      type. CMA9 firms must support all period types and both alignments for sweeping.
+    omission_error: "U004 Field is missing @ ControlParameters.PeriodicLimits"
+  - name: VRPType
+    type: Array
+    required: true
+    pii: false
+    primary_key: false
+    enum_ref: ObVrpType
+    description: "Array of VRP type URNs. This app sends only UK.OBIE.VRPType.Sweeping."
+  - name: PSUAuthenticationMethods
+    type: Array
+    required: true
+    pii: false
+    primary_key: false
+    enum_ref: ObPsuAuthenticationMethod
+    description: >-
+      HSBC's enum contains ONLY UK.OBIE.SCANotRequired. Sending UK.OBIE.SCA returns
+      U002 Invalid value @ PSUAuthenticationMethods.0.
+  - name: PSUInteractionTypes
+    type: Array
+    required: false
+    pii: false
+    primary_key: false
+    description: "InSession or OffSession. Both stage 201."
+  - name: ValidFromDateTime
+    type: DateTime
+    required: false
+    pii: false
+    primary_key: false
+    description: "Must not be backdated."
+  - name: ValidToDateTime
+    type: DateTime
+    required: false
+    pii: false
+    primary_key: false
+    description: "May be OMITTED for an indefinite consent — this is what makes a VRP mandate long-lived."
+enums:
+  - name: ObVrpType
+    values:
+      - value: "UK.OBIE.VRPType.Sweeping"
+        accepted: true
+        description: >-
+          Same person owns source and destination, both UK sterling. Mandated FREE by the CMA
+          under the Retail Banking Market Investigation Order 2017. Declaring it carries an
+          evidentiary burden — the PISP must be able to prove it is sweeping if questioned — and
+          it locks the creditor account.
+      - value: "UK.OBIE.VRPType.CVRP1"
+        accepted: true
+        offered_in_ui: false
+        description: >-
+          Commercial VRP Wave 1. Accepted by HSBC per its Implementation Guide §28.3.1 for
+          Personal and first direct, but the enumerations sit behind the UK Payments Initiative
+          MLA and are NOT in the public OBL specification. Cannot be implemented from public
+          sources, so this app does not offer it.
+      - value: "UK.OBIE.VRPType.Other"
+        accepted: "sandbox only"
+        offered_in_ui: false
+        description: >-
+          Staged 201 in testing, but no documented rule permits it on HSBC Personal. Genuine
+          sandbox laxity — it is neither Sweeping nor CVRP1. Must not be relied on.
+  - name: ObPsuAuthenticationMethod
+    values:
+      - value: "UK.OBIE.SCANotRequired"
+        accepted: true
+        description: >-
+          NAMING TRAP: this does NOT mean no SCA. SCA is mandatory ONCE, at consent setup.
+          Individual payments then ride an ASPSP-applied exemption — usually Trusted Beneficiary,
+          or Transfer-to-Self for intra-bank sweeps.
+      - value: "UK.OBIE.SCA"
+        accepted: false
+        error: "U002 Invalid value"
+        description: >-
+          Delegated SCA — SCA carried out by the TPP, requiring a contract between ASPSP and TPP.
+          HSBC's enum does not contain it, and ecosystem-wide there have been no reported
+          examples of delegated SCA being implemented anywhere.
+pro_rating_behaviour:
+  rule: "The FIRST period of a periodic limit is pro-rated, not granted in full."
+  examples:
+    - { limit: "£300 Month/Calendar created 6 June", first_period: "£250 for 6-30 June" }
+    - { limit: "£500 Year/Calendar created 5 June", first_period: "£286.30 (500 x 209 / 365)" }
+  ui_requirement: >-
+    The create form MUST state the first period's pro-rated figure, not the headline limit.
+    This is documented as a thing that catches people out, and a PSU who sets £300 and can only
+    spend £250 will read it as the app malfunctioning.
+breach_behaviour:
+  error: "U014"
+  spec_note: >-
+    In v4.0, U014 IS UK.OBIE.Rules.FailsControlParameters — the spec re-coded every UK.OBIE.*
+    error string to a short code. HSBC is conformant here.
+  limitation: >-
+    The spec says to name the breached parameter, but HSBC points Path at
+    Data.Instruction.InstructedAmount.Amount, so a TPP cannot distinguish "over individual max"
+    from "over periodic limit". The spec is partly at fault — it instructs ASPSPs to populate a
+    Field member that does not exist on OBError1 in v4.0.
+  ui_consequence: >-
+    The limit-breach message must be generic about WHICH limit was hit, and should show the
+    mandate's parameters so the PSU can work it out themselves.
+excluded_from_totals: ["RJCT", "BLCK"]
+used_by:
+  - { feature: pay-vrp-mandate, api_id: domestic-vrp-consent-create, role: nested }

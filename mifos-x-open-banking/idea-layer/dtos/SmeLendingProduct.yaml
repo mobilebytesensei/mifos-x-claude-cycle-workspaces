@@ -1,0 +1,196 @@
+name: SmeLendingProduct
+version: "1.0.0"
+source:
+  origin: external_api
+  api_path: "GET /open-banking/v2.2/unsecured-sme-loans + /x-open-banking/v2.2/unsecured-sme-loans/segment/{segment}"
+  host: api.hsbc.com
+  host_status: resolved
+  api_ref: API-OD-PRODUCT
+  spec: "OBIE Open Data v2.2 (swagger info.version 2.2.1) — unauthenticated, no consent, no session"
+  created:
+    at: "2026-08-07"
+    by: "/idea-sync — dangling-ref closure"
+    evidence:
+      tier_1_live:
+        summary: "HTTP 200, 5.3 KB. Re-probed live 2026-08-07 (unfiltered AND /segment/Business): byte-identical, both return ONE product."
+        reproduce: 'curl -H "Accept: application/prs.openbanking.opendata.v2.2+json" "https://api.hsbc.com/open-banking/v2.2/unsecured-sme-loans"'
+        local_capture: "/home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/pf-unsecured-sme-loans.json — OUTSIDE this repository, captured 2026-08-07. Not checked in; use `reproduce` above."
+      tier_2_spec:
+        summary: "Product Finder swagger 2.0, info.version 2.2.1 — #definitions.SMELendingDefinition (note: the DEFINITION name is SMELending, the wire key is SMELoan — see corrects_products_api_yaml below)"
+        reproduce: "Download the swagger from https://develop.hsbc.com/ob-api-documentation/product-finder-uk/endpoints — public, no credential."
+        local_capture: "/home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/open-product-finder-swagger.json — OUTSIDE this repository, captured 2026-08-07. Not checked in; use `reproduce` above."
+
+description: >-
+  One unsecured SME loan in HSBC's PUBLIC catalogue. Reached at data[].Brand[].SMELoan[] — NOT
+  `SMELending`. HSBC publishes exactly one: the Small Business Loan.
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ⚠ THIS DTO CORRECTS TWO CLAIMS IN screens/products/api.yaml
+# ═══════════════════════════════════════════════════════════════════════════
+corrects_products_api_yaml:
+  correction_1_the_family_key:
+    api_yaml_says: 'envelope: "data[].Brand[].SMELending[]" and "SMELending does not match its endpoint name (unsecured-sme-loans)".'
+    ground_truth: >-
+      The live array key is **SMELoan**. There is no `SMELending` key anywhere in any response.
+    where_the_confusion_came_from: >-
+      The swagger DEFINITION is named `SMELendingDefinition` — but the Brand item inside it
+      declares properties [BrandName, **SMELoan**]. So three names are in play for one thing: the
+      endpoint (unsecured-sme-loans), the swagger definition (SMELending) and the wire key
+      (SMELoan). The previous pass read the definition name and took it for the wire key.
+    verified: >-
+      swagger .definitions.SMELendingDefinition.properties.Brand.items.properties → ["BrandName",
+      "SMELoan"]. Live brand-block keys → ["BrandName", "SMELoan"]. Both agree.
+
+  correction_2_the_family_is_not_empty:
+    api_yaml_says: >-
+      'observed: "ZERO products. HTTP 200, brand block present, SMELending array EMPTY."' and
+      'meta_total_results_is_misleading: "TotalResults appears to count BRAND blocks, not
+      products — it will report 1 for an empty catalogue."'
+    ground_truth: >-
+      The family contains ONE REAL PRODUCT — "Small Business Loan", Identification
+      "Small Business Loan", Segment [Business], with a full LoanInterest tier-band structure
+      (£1,000-£25,000, SimpleInterest, min term 1 year, max 10 years). meta.TotalResults = 1
+      because there IS one product.
+    root_cause: >-
+      Reading `.SMELending[]` on a payload whose key is `SMELoan` yields nothing, and "nothing"
+      was recorded as "the catalogue is empty" rather than as "the key is wrong". The API never
+      said the family was empty; the parser did.
+    total_results_counts_products_not_brands: >-
+      Proved by probe: GET /x-open-banking/v2.2/personal-current-accounts/segment/Packaged returns
+      TotalResults **0** with one-brand-shaped machinery behind it, and the unfiltered PCA feed
+      returns **10** across TWO brand blocks. TotalResults tracks records in the family array. The
+      "counts brand blocks" reading was inferred solely from the mis-parsed SMEL response and does
+      not survive contact with any other response.
+  consequence_for_the_screen:
+    empty_family_rule_still_applies: >-
+      screens/products/api.yaml#empty_family_rule ("HIDE a family's tab when its product array is
+      empty") remains correct AS A RULE — it is deliberately general, derived from the response at
+      runtime rather than hardcoded to SMEL. That generality is what saves it here.
+    but_the_fixture_is_gone: >-
+      api.yaml states "The empty case is a real fixture, not a hypothetical — SMEL supplies one
+      today. A four-family fetch must render three tabs." That is now FALSE. All four families
+      return products, so a four-family fetch must render FOUR tabs, and the empty-family branch
+      has NO live fixture. It needs a synthetic one (the /segment/NotASegment response, which
+      returns `data: []`, is the natural candidate).
+
+envelope:
+  shape: "{ meta, data } — both required"
+  path_to_this_dto: "data[].Brand[].SMELoan[]"
+  depth_warning: "THREE levels. `data` length 1, `Brand` length 1 (HSBC UK)."
+  family_key: "SMELoan"
+  family_key_warning: >-
+    The product array key CHANGES PER FAMILY — PCA, BCA, CCC, SMELoan — and this one matches
+    neither its endpoint (unsecured-sme-loans) nor its swagger definition (SMELendingDefinition).
+    A generic parser MUST be told the key; it cannot derive it from either. Getting it wrong is
+    silent: the response is a valid 200 and the family just looks empty.
+
+fields:
+  - name: BrandName
+    type: String
+    required: true
+    pii: false
+    primary_key: false
+    synthetic: true
+    observed: '"HSBC UK" only.'
+    description: "NOT a field on the SMELoan object — lifted from the parent data[].Brand[] during flatten."
+
+  - name: Identification
+    type: String
+    required: true
+    pii: false
+    primary_key: true
+    observed: '"Small Business Loan" — prose with spaces, like CCC and unlike PCA/BCA mnemonics.'
+
+  - name: Name
+    type: String
+    required: true
+    pii: false
+    primary_key: false
+    observed: '"Small Business Loan " — WITH A TRAILING SPACE.'
+    trailing_space_trap: >-
+      1 of 1 records. The same defect seen on Branch.BuildingNumber, AtmLocationPlace.Site.Name
+      and two BCA names. Note that Name (trailing space) and Identification (no trailing space)
+      differ ONLY by that space, so an equality check between them fails for a non-obvious reason.
+
+  - name: Segment
+    type:
+      list_of: String
+    required: true
+    pii: false
+    primary_key: false
+    enum_ref: SmeLendingSegment
+    observed: '["Business"] — 1 of 7 declared values.'
+    description: "REQUIRED on this family, as on CCC."
+
+  - name: SMELoanMarketingState
+    type:
+      list_of: SmeLoanMarketingState
+    required: true
+    pii: false
+    primary_key: false
+    observed: "Array of 1. No duplicate-state artefact here, unlike CCC."
+    description: "Note the field name follows the wire key (SMELoan…), not the definition name."
+
+  - name: OtherSegment
+    type:
+      optional: OtherSegmentCode
+    required: false
+    pii: false
+    primary_key: false
+    observed: "0/1 — never sent."
+    description: >-
+      SMELoan-ONLY. The free-text partner of Segment under the `Other` pairing rule; populated
+      when Segment contains the literal `Other`. No other family declares it.
+
+marketing_state:
+  declared_required: [Identification, MarketingState, LoanInterest, Repayment, Eligibility, FeaturesAndBenefits, CoreProduct]
+  observed_present: [CoreProduct, Eligibility, FeaturesAndBenefits, FirstMarketedDate, Identification, LoanInterest, MarketingState, Repayment, LastMarketedDate]
+  observed_absent: [Notes, OtherFeesCharges, PredecessorID, StateTenureLength, StateTenurePeriod]
+  the_one_state:
+    Identification: "Small Business Loan1"
+    MarketingState: Regular
+    FirstMarketedDate: "2024-07-24"
+    LastMarketedDate: "2099-12-31 — the INDEFINITE sentinel. Do not render."
+  loan_interest_is_unique_to_this_family:
+    path: "LoanInterest.LoanInterestTierBandSet[]"
+    observed:
+      TierBandMethod: Whole
+      Identification: "£1000-£25000"
+      CalculationMethod: SimpleInterest
+      first_band: { Identification: "£1000-£10000", TierValueMinimum: "1000.00", TierValueMaximum: "10000.00", TierValueMinTerm: 1.0, MinTermPeriod: Year, TierValueMaxTerm: 10.0 }
+    note: >-
+      Amounts arrive as STRINGS ("1000.00"), terms as NUMBERS (1.0) with a separate period unit.
+      Mixed typing inside one object — do not assume either. The band Identification is a
+      human-readable range label already, so it can be rendered without recomposing it from the
+      min/max.
+  repayment_keys: [AmountType, RepaymentFeeCharges, RepaymentFrequency, RepaymentType]
+  core_product_keys: [EarlyPaymentFeeApplicable, FullEarlyRepaymentAllowedIndicator, LoanApplicationFeeChargeType, Notes, OverPaymentFeeApplicable, OverpaymentAllowedIndicator, ProductDescription, ProductURL, SalesAccessChannels, ServicingAccessChannels, TcsAndCsURL]
+  no_on_sale_indicator: >-
+    Like CCC and unlike PCA/BCA, SMELoan declares no OnSaleIndicator at product or brand level.
+    A shared `filter { it.onSale }` drops this family entirely.
+
+catalogue_freshness:
+  meta_last_updated: "2026-01-16T09:53:01.098Z"
+  reading: >-
+    The STALEST of the four families — nearly seven months old at capture, against 2026-07-24 for
+    PCA and BCA. Combined with a single product and a 2024 FirstMarketedDate, this family is
+    maintained rarely. Do not present it as a live shop window without the date.
+
+segment_endpoint_behaviour:
+  probed: "GET /x-open-banking/v2.2/unsecured-sme-loans/segment/Business → HTTP 200, TotalResults 1, 1 product."
+  corrects_api_yaml: >-
+    api.yaml records this operation as 'Cannot return anything — the unfiltered family is empty.'
+    It returns the Small Business Loan.
+
+enums:
+  - name: SmeLendingSegment
+    declared: [AgricultureSector, Business, FlexibleBusinessLoan, FixedGroup, GovernmentScheme, Other, SectorSpecific]
+    declared_count: 7
+    observed_live: [Business]
+  - name: SmeLoanMarketingStateValue
+    declared: [Promotional, Regular]
+    observed: [Regular]
+
+used_by:
+  - { feature: products, api_id: get_unsecured_sme_loans, role: response }
+  - { feature: products, api_id: get_smel_by_segment, role: response }

@@ -1,0 +1,349 @@
+sibling: api
+schema_version: "4.0"
+feature_id: pay-domestic-standing-order
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DOMESTIC STANDING ORDER
+#   v4.0/pisp/domestic-standing-order-consents -> domestic-standing-orders
+#
+# Evidence: captures/by-type/standing-orders-domestic.md (46 scenarios),
+# captures/flow-so-domestic.md (resource 19916), flow-so-domestic-pinned.md (19936),
+# captures/round15-so-sched-probes.md (frequency enum + amount-shape crossing),
+# captures/round17-mandate-edges.md (the 12-month horizon).
+#
+# THE LARGEST DIVERGENCE FROM THE REFERENCE RAIL. This is a MANDATE, not an instruction, and
+# the payload SHRINKS as the object grows more abstract — 9 body leaves against 34.
+#
+#   + Data.Permission "Create" MANDATORY
+#   + MandateRelatedInformation { Frequency, FirstPaymentDateTime, FinalPaymentDateTime? }
+#   ~ FirstPaymentAmount REPLACES InstructedAmount    (sending InstructedAmount -> U005)
+#   - DebtorAccount DROPPED           (implied by the authorising customer)
+#   ~ RemittanceInformation IS ACCEPTED — corrected 2026-08-07, see reference_channel below.
+#     It was previously recorded as "dropped"/"not in the schema" across this whole feature.
+#     That was WRONG: R17-D01 (Unstructured) and R17-D03 (Structured) both stage 201 and echo
+#     verbatim. HSBC's sample body omits it; the schema does not refuse it.
+#   - LocalInstrument DROPPED         (the bank picks a rail per instalment)
+#   - InstructionIdentification / EndToEndIdentification DROPPED
+#   - Risk becomes {} EMPTY           (no single e-commerce context for a recurring instruction)
+#   - NO funds-confirmation
+#   ~ status ladder PDNG -> INCO
+# ═══════════════════════════════════════════════════════════════════════════
+
+base_path: "/obie/open-banking/v4.0/pisp"
+api_source_ref: API-003
+inherits_from: pay-domestic-single
+inherits: [write_header_contract]
+
+operations:
+  - id: stage_domestic_standing_order_consent
+    endpoint: "POST /domestic-standing-order-consents"
+    auth: client_credentials_payments_scope
+    headers: [x-jws-signature, x-idempotency-key]
+    request_body:
+      Data:
+        Permission: "Create"
+        Initiation:
+          MandateRelatedInformation:
+            Frequency: { Type: "WEEK | FRTN | MNTH | QURT | YEAR" }
+            FirstPaymentDateTime: "<ISO 8601>"
+            FinalPaymentDateTime: "<ISO 8601, optional, > first, within 12 months>"
+          FirstPaymentAmount: { Amount: "<major-unit string>", Currency: "GBP" }
+          RecurringPaymentAmount: { Amount: "<optional>", Currency: "GBP" }
+          FinalPaymentAmount: { Amount: "<optional>", Currency: "GBP" }
+          CreditorAccount:
+            SchemeName: "UK.OBIE.SortCodeAccountNumber"
+            Identification: "<14 digits>"
+            Name: "<payee>"
+          RemittanceInformation:
+            Unstructured: ["<reference, optional — ACCEPTED, see reference_channel>"]
+      Risk: {}
+    success: "201 with Data.ConsentId and Data.Status AWAU"
+    returns_charges: true
+    charge_observed: "0.05 GBP, Type UK.OBIE.CHAPSOut"
+    charge_type_warning: >-
+      ADDED 2026-08-07. The Type reads UK.OBIE.CHAPSOut on a STANDING ORDER — a CHAPS label on
+      a recurring domestic mandate that will not travel by CHAPS. It is the bank's own internal
+      labelling, the same value it returns on the FPS single-payment rail. NEVER render Charges[].Type
+      to the PSU: "CHAPS out" tells them something false about how their money moves. Render the
+      amount and currency only.
+    body_note: >-
+      HSBC's own sample sends Risk as an empty object. That is correct here and is NOT the
+      merchant-shape problem seen on the single-payment rails — a recurring mandate genuinely
+      has no single payment context to declare.
+    # ── ADDED 2026-08-07 from the full by-type capture read ──
+    wire_types:
+      finding: "The three value types in this body are NOT uniform, and a naive model gets two of them wrong."
+      amount: 'QUOTED 2dp STRING — "1.00". Every amount field on every rail.'
+      count_per_period: "UNQUOTED JSON NUMBER — 12, 0, 4. Not a string."
+      point_in_time: 'QUOTED ZERO-PADDED STRING — "01". Not the integer 1. (Read-side only; the write side refuses it.)'
+      consequence: >-
+        A Kotlin model declaring CountPerPeriod as String, or PointInTime as Int, produces a
+        body the bank refuses — and the U002 "Invalid value" it comes back with points at the
+        field without saying the type was the problem. Serialising an Amount as an unquoted
+        number is the same class of mistake in the other direction.
+
+  - id: get_domestic_standing_order_consent_status
+    endpoint: "GET /domestic-standing-order-consents/{ConsentId}"
+    auth: client_credentials_payments_scope
+    status_ladder: "AWAU -> AUTH -> COND"
+    polled_to: AUTH
+    critical_note: "StatusUpdateDateTime does not move on AWAU -> AUTH."
+
+  - id: submit_domestic_standing_order
+    endpoint: "POST /domestic-standing-orders"
+    auth: psu_authorization_code
+    headers: [x-jws-signature, x-idempotency-key]
+    request_body:
+      Data:
+        ConsentId: "<from stage>"
+        Initiation: "<the parsed Initiation from the AUTHORISED consent, forwarded as an object>"
+      Risk: {}
+    success: "201 with Data.DomesticStandingOrderId and Data.Status PDNG"
+    # ── CORRECTED 2026-08-07 — "byte-identical" was true of the DATE VALUES, not of the object ──
+    echo_semantics:
+      the_confusion: >-
+        This file used "byte-identical" in two places to mean two different things, and only one
+        of them was right. The mandate DATE VALUES really do echo byte-for-byte (see
+        mandate_date_contract). The Initiation OBJECT does not — the server normalises key
+        ORDER on every echo.
+      what_the_server_reorders:
+        - "Inside MandateRelatedInformation the response emits FirstPaymentDateTime, FinalPaymentDateTime, Frequency — although requests send Frequency first."
+        - "Inside Frequency the response emits CountPerPeriod BEFORE Type."
+      rule: >-
+        Forward the PARSED object. Never re-serialise the echoed Initiation and string-compare
+        it against the staged copy, and never hash it — both fail on a mandate that is
+        perfectly valid, because the bytes differ while every value matches.
+
+  - id: get_domestic_standing_order_status
+    endpoint: "GET /domestic-standing-orders/{DomesticStandingOrderId}"
+    auth: client_credentials_payments_scope
+    status_ladder: "PDNG -> INCO"
+    per_execution_status: none
+    per_execution_note: >-
+      This describes the MANDATE's setup. It says nothing about instalment N. A TPP cannot
+      learn that execution #3 failed for insufficient funds by any API means.
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE AMOUNT FIELD — proven mutually exclusive with the international shape
+# ─────────────────────────────────────────────────────────────────────────
+amount_field_contract:
+  field: FirstPaymentAmount
+  optional_siblings: [RecurringPaymentAmount, FinalPaymentAmount]
+  forbidden: InstructedAmount
+  proof:
+    - { sent: "InstructedAmount, FirstPaymentAmount removed", result: "U005 Field is not expected @ Data.Initiation.InstructedAmount" }
+    - { sent: "both FirstPaymentAmount and InstructedAmount", result: "U005 @ Data.Initiation.InstructedAmount" }
+  cross_rail_note: >-
+    The INTERNATIONAL standing order is the exact inverse — it requires InstructedAmount and
+    refuses FirstPaymentAmount with U005. Round 15 crossed the two deliberately in both
+    directions. This is the single field-level divergence between the two mandate rails, and
+    it is the most likely place for an implementation to copy the wrong shape.
+  equality_rule:
+    documented: "Guide §20.2.1 — if Recurring or Final are present they must EQUAL FirstPaymentAmount"
+    observed: >-
+      NOT ENFORCED at staging. 1.00 / 2.00 / 3.00 staged 201 with all three echoed. R15-E04 is
+      the control in the other direction — all three amounts EQUAL, also 201. So equality is
+      neither required nor rejected at staging, and the two results together rule out the
+      possibility that unequal amounts merely happened to slip past an intermittent check.
+    ui_decision: >-
+      The form offers a single amount by default and treats varying amounts as an advanced
+      option. Whether the equality rule fires at authorisation or execution is untested — no
+      unequal-amount standing order was ever authorised — so the UI follows the documented rule
+      even though staging does not enforce it. Permitting what the bank might later reject is
+      worse than a mild restriction.
+
+# ─────────────────────────────────────────────────────────────────────────
+# FREQUENCY — the enum is exactly five values, tested exhaustively
+# ─────────────────────────────────────────────────────────────────────────
+frequency_contract:
+  shape: "v4.0 nested object — MandateRelatedInformation.Frequency.Type. Never a v3.1 flat string."
+  accepted: [WEEK, FRTN, MNTH, QURT, YEAR]
+  refused:
+    - { value: ADHO, error: "U002 Invalid value" }
+    - { value: INDA, error: "U002 Invalid value", note: "named as unsupported in Guide §20.3.1" }
+    - { value: MIAN, error: "U002 Invalid value", note: "named as unsupported in Guide §20.3.1" }
+    - { value: DAIL, error: "U002 Invalid value", note: "NOT named in §20.3.1 — the Guide's exclusion list is incomplete for Personal, though §20.3.3 names it for HSBCnet" }
+  completeness: >-
+    All nine OBIE OBFrequency6Code values were tested on this rail. HSBC Personal implements
+    exactly five, matching the Guide's §20.3.1 table precisely. The picker offers five and no
+    others — a free-text or nine-value enum would let a PSU compose a mandate the bank refuses.
+  point_in_time:
+    write: "REFUSED — U005 Field is not expected @ MandateRelatedInformation.Frequency.PointInTime"
+    read: >-
+      HSBC's own AIS read side RETURNS PointInTime ({\"PointInTime\":\"01\",\"Type\":\"WEEK\"}).
+      The bank emits a field its write side refuses. Consequence: an AIS-read standing order
+      cannot be replayed as a PIS consent without first stripping this field.
+
+# ─────────────────────────────────────────────────────────────────────────
+# MANDATE DATES
+# ─────────────────────────────────────────────────────────────────────────
+mandate_date_contract:
+  first_payment_date_time:
+    # ── CORRECTED 2026-08-07. This was recorded as required: true. It is not. ──
+    required: false
+    sent_by_this_app: true
+    omitted_result:
+      observed: "R17-B01 — FirstPaymentDateTime omitted -> 201."
+      and_critically: >-
+        The RESPONSE omits the field too. The bank does not substitute a value, does not derive
+        a visible first date, and does not tell the TPP what it decided.
+      ui_consequence: >-
+        If the field is omitted, the UI CANNOT display "first payment on …" — there is nothing
+        to display, and inventing one (first-matching-frequency-from-today, say) would be a
+        guess presented as fact about the PSU's money. This app therefore ALWAYS sends it, so
+        the review and success screens always have a real date to show. The optionality is
+        recorded because the obvious "it's optional, so make it optional in the UI" move
+        silently costs the confirmation screen its most important line.
+    normalisation:
+      normalised: false
+      detail: >-
+        Echoes BYTE-IDENTICAL. The +00:00 offset is preserved rather than converted to Z, and
+        the original seconds survive — 2026-08-13T10:38:41+00:00 comes back exactly as sent.
+      contrast: >-
+        The scheduled rail's RequestedExecutionDateTime IS truncated to midnight, and so is
+        Data.Authorisation.CompletionDateTime. On THIS rail neither mandate date is touched.
+        The asymmetry is consistent across every shape in the corpus, and it means a shared
+        date-handling helper across the two rails will be wrong on one of them.
+      scope_of_the_word_byte_identical: >-
+        This applies to the DATE VALUES only. The Initiation OBJECT around them is reordered on
+        echo — see submit_domestic_standing_order#echo_semantics.
+    weekend: "Weekend first-payment dates staged 201 in round 17."
+    aspsp_caveat: >-
+      An aggregated ASPSP table claims HSBC requires a working-day commencement for weekly and
+      monthly standing orders. UNTESTED — every first-payment date in the corpus fell on a
+      Thursday. The picker allows weekends; if the bank refuses one, the error surfaces at
+      staging rather than being pre-empted by a rule we cannot confirm.
+  final_payment_date_time:
+    required: false
+    omitted_result: "201 — an open-ended 'until further notice' mandate"
+    constraints:
+      - "must be after FirstPaymentDateTime"
+      - "must be within 12 months"
+      - "cannot be today or tomorrow"
+    error: >-
+      U003 — "Sorry, We cannot process the Standing Order Instruction as the final transfer
+      date cannot be today or tomorrow, and must be within 12 months. Also the final transfer
+      date cannot be less than or equal to FirstPaymentDateTime."
+    note: >-
+      Three rules in one message, two of them previously unknown. The 12-month horizon in
+      particular is not in the Guide, and every standing order in the corpus sat inside it by
+      luck rather than design.
+    # ── SHARPENED 2026-08-07 from the full by-type capture read ──
+    error_is_undiscriminated:
+      finding: >-
+        This is ONE error carrying THREE rules in a single undifferentiated string. The response
+        gives no indication of WHICH rule fired — same code, same Path, same Message whichever
+        of the three was broken.
+      quote_verbatim: true
+      quote_note: >-
+        Reproduce the string exactly if it is ever echoed, capitalised "We" and all. It is the
+        bank's wording, and normalising the typo would make the spec disagree with the wire.
+      consequence: >-
+        The app cannot map this error to a specific field, cannot highlight the offending input,
+        and cannot write recovery copy narrower than the message itself. All three rules
+        therefore have to be enforced CLIENT-SIDE by the picker's bounds, which is what
+        final_payment_date_picker does. Reaching this error at all means the picker failed.
+      do_not: >-
+        Do not attempt to parse the message to work out which rule fired. Message text is not
+        stable for a given code anywhere in this API (U004 has four wordings), so a substring
+        match would be brittle in exactly the way dtos/ObPaymentError.yaml warns about.
+  count_per_period:
+    accepted: true
+    documented_rule: "Guide §20.2.1 — mutually exclusive with FinalPaymentDateTime; one and only one must be present"
+    observed: "NOT ENFORCED. All four combinations stage 201 — both present, either alone, neither. CountPerPeriod: 0 also accepted despite §23.2.1's 'Must be > 0'."
+    ui_decision: >-
+      Not offered. The field is accepted but its termination semantics when combined with
+      FinalPaymentDateTime are unknown and only observable over months. Offering a control
+      whose effect cannot be described to the PSU is worse than omitting it.
+
+# ─────────────────────────────────────────────────────────────────────────
+# REFERENCE CHANNEL — ADDED 2026-08-07. Corrects a claim made across this whole feature.
+# ─────────────────────────────────────────────────────────────────────────
+reference_channel:
+  what_was_recorded_before: >-
+    "RemittanceInformation is not part of the standing-order schema" — stated in this file's
+    header, in docs.yaml (rail_position + a divergence_trap), in data-flow.yaml#body_forbids,
+    in ui.yaml#no_reference_note and in TC-PSO-006. Every one of those was wrong.
+  what_is_actually_true:
+    accepted:
+      - "R17-D01 — Data.Initiation.RemittanceInformation.Unstructured -> 201, echoed verbatim."
+      - "R17-D03 — Data.Initiation.RemittanceInformation.Structured -> 201, echoed verbatim."
+    refused:
+      - "MandateRelatedInformation.Reference -> refused on the DOMESTIC rail."
+      - "MandateRelatedInformation.Reference -> refused on the INTERNATIONAL rail too."
+  the_real_finding: >-
+    The domestic standing order HAS a working reference channel. It is simply not where the
+    OBIE mandate model suggests looking: the reference belongs at Initiation level in
+    RemittanceInformation, NOT inside MandateRelatedInformation. Both rails refuse
+    MandateRelatedInformation.Reference, which is presumably why the earlier read concluded
+    that references were unavailable on this rail altogether.
+  why_the_earlier_conclusion_was_reachable: >-
+    HSBC's sample body for this endpoint omits RemittanceInformation, and the only reference
+    field anyone had probed was the mandate-level one, which is refused. Absent from the sample
+    plus refused where looked for reads convincingly as "not in the schema". It took R17-D01
+    and R17-D03 sending it at Initiation level to show otherwise.
+  structured_shape_caveat: >-
+    If Structured is used, it MUST be an ARRAY — the same rule proven on the single-payment rail
+    by R6-10 (array -> 201) against BT-07/BT-08 (bare object -> U002 "Invalid value").
+  ui_consequence: >-
+    A reference field CAN be offered on the Amount step, and no_reference_note is now a false
+    statement that must be removed rather than reworded. This is a capability the feature was
+    written as not having; whether to expose it is a product decision, but the spec must stop
+    asserting the field is impossible.
+
+amendment_prohibition:
+  permitted: false
+  basis: "OBL Customer Experience Guidelines"
+  obligation: mandatory
+  statement: >-
+    A PISP cannot amend or cancel a standing order. There is no DELETE on this family. The
+    PISP is under a MANDATORY obligation to tell the PSU to use the bank's own channel.
+  ui_requirement: "The notice appears on the Review step and the Success state."
+  alternative: "VRP is the rail the regulator points at for mutable recurring payments."
+
+ais_correlation_impossibility:
+  finding: >-
+    A PIS-created standing order carries no identifier that AIS can return. StandingOrderId is
+    absent from every element of the AIS standing-orders read, so write-to-read correlation is
+    impossible by construction.
+  tested: >-
+    Standing order 19936 was pinned to account 80200110203349 — the one account whose
+    standing-orders read returns 200. Five minutes later the read still showed only the two
+    pre-seeded 2019 fixtures. The mandate itself was healthy (INCO, consent COND).
+  ui_consequence: >-
+    Do NOT attempt to show a newly created standing order in the standing-orders list. It will
+    not be there, and the absence is not a failure to report.
+
+# ─────────────────────────────────────────────────────────────────────────
+# ERROR CONTRACT
+# ─────────────────────────────────────────────────────────────────────────
+error_contract_ref:
+  dto: dtos/ObPaymentError.yaml
+  binding: "Every 400 on every operation above deserialises to ObPaymentError. Its rules are not restated here."
+  what_this_screen_must_do:
+    render_every_error: "Errors is an ARRAY and can carry TWO entries. Rendering Errors[0] alone hides the actionable half."
+    validate_all_three_date_rules_locally: >-
+      The U003 blob carries three rules in one undiscriminated string and the app cannot tell
+      which fired. Only client-side bounds can produce a message narrower than the bank's own.
+    expect_one_shape_error_at_a_time: >-
+      R15-E01 is this rail's own proof: InstructedAmount present with FirstPaymentAmount ABSENT
+      returns ONLY the U005 for the unexpected field — the missing mandatory amount is NOT
+      reported at all. R17-B03 is the parent short-circuit: omitting MandateRelatedInformation
+      returns ONLY U004 on the parent, never the nested Frequency error. So a body with two
+      faults reports one, and fixing it reveals the next. Validate the whole body locally first.
+    key_off_code_plus_path: "U004 has four Messages for one code. Switch on ErrorCode + Path; match Path case-insensitively."
+
+consent_id_handling:
+  observed: 'ConsentIds are short sequential integers-as-strings — "45135".'
+  consequence: "Enumerable, not UUIDs. Keep them out of URLs, logs, crash reports and analytics."
+
+error_cases:
+  - { code: U004, http: 400, trigger: "Data.Permission omitted", recovery: "Implementation fault." }
+  - { code: U004, http: 400, trigger: "MandateRelatedInformation omitted", recovery: "Implementation fault. NOTE R17-B03 — only the PARENT error returns; the nested Frequency error is never emitted." }
+  - { code: U005, http: 400, trigger: "MandateRelatedInformation.Reference sent", recovery: "Implementation fault — the reference belongs in Initiation.RemittanceInformation. See reference_channel." }
+  - { code: U005, http: 400, trigger: "InstructedAmount sent on this rail", recovery: "Implementation fault — this rail uses FirstPaymentAmount." }
+  - { code: U005, http: 400, trigger: "PointInTime sent", recovery: "Implementation fault — strip it if replaying an AIS-read mandate." }
+  - { code: U002, http: 400, trigger: "frequency outside the five accepted values", recovery: "Should be unreachable — the picker offers five." }
+  - { code: U003, http: 400, trigger: "final date before first, or beyond 12 months, or today/tomorrow", recovery: "Return to the schedule step." }
+  - { code: U019, http: 400, trigger: "missing x-jws-signature", recovery: "Not user-recoverable." }
+  - { code: U009, http: 400, trigger: "consent not Authorised", recovery: "Re-authorise." }

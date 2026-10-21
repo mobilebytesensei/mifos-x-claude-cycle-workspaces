@@ -1,0 +1,348 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: pay-international-standing-order
+
+feature: pay-international-standing-order
+contract_version: "2.0.0"
+status: designed
+score: 89
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. RESTORED 2026-08-07 (/idea-sync) — this key existed before
+# and was removed in error earlier today, leaving only `score`.
+quality_score: 89
+quality_justification: >-
+  89. The lowest of the three international features, and deliberately so. Its central content —
+  the InstructedAmount-versus-FirstPaymentAmount inversion — remains the best-evidenced claim in
+  the cluster, and this pass CLOSED its highest-value open FX experiment with nine refusals
+  against three controls. But it also required the cluster's only substantive CORRECTION: the
+  "DebtorAccount is not in the standing-order schema" claim was false for this rail and had
+  propagated into five files, while this feature's own 19918 fixture contradicted it throughout.
+  A spec that carried an internal contradiction for a full revision does not deserve a 90s score
+  on the strength of one pass fixing it. Two items remain genuinely open: PaymentContextCode
+  acceptance, which may make FR-015 unsatisfiable here, and whether the 0.50 charge recurs per
+  execution — which the API never states.
+cluster: payment-initiation
+acceptance_refs: [FR-012, FR-015, FR-016, FR-017, FR-018, FR-019, FR-020, FR-021]
+scaffolded_by: /idea-sync
+archetype: form
+flow_ref: pay-international-standing-order
+description: >-
+  International standing order — a recurring overseas mandate to an IBAN. Five steps: recipient,
+  schedule, amount, charge bearer, review. No funding-account step — a deliberate simplification,
+  since DebtorAccount is optional and ACCEPTED on this rail — and no varying-amounts option,
+  which IS a schema constraint (those siblings belong to the FirstPaymentAmount shape this rail
+  refuses). Cannot be amended or cancelled through a PISP.
+has_ui: true
+has_server: false
+capabilities: [has_ui, has_api, has_flow, has_form_input, has_system_integration]
+system_capabilities:
+  - { kind: deep_link, detail: "Hands off to payment-consent for the app-to-app authorise leg." }
+
+inherits_from: pay-domestic-standing-order
+also_inherits_from: pay-international-single
+
+rail_position:
+  time_dimension: "recurrence — MandateRelatedInformation"
+  amount_field: InstructedAmount
+  creditor_scheme: UK.OBIE.IBAN
+  funds_confirmation: none
+  remittance_information: "REFUSED — U005"
+  debtor_account: "OPTIONAL and accepted — { SchemeName, Identification }, never a Name. Not sent by this form."
+  risk_block: "{} empty — neither CategoryPurposeCode nor PaymentContextCode, unlike the other two international rails"
+  mandatory_additions: [Permission, CurrencyOfTransfer, ChargeBearer]
+  charge_at_consent: none
+  charge_at_resource: "0.50 in the INSTRUCTED currency"
+  consent_ladder: "AWAU -> AUTH -> COND"
+  resource_ladder: "INCO -> INCO — never PDNG"
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE TRAP THIS SCREEN EXISTS TO AVOID
+# ─────────────────────────────────────────────────────────────────────────
+primary_divergence:
+  statement: >-
+    This screen and pay-domestic-standing-order gather nearly the same inputs and differ in
+    which amount field goes on the wire. Domestic uses FirstPaymentAmount; international uses
+    InstructedAmount; each rail refuses the other's field with U005.
+  proof: >-
+    Round 15 crossed them deliberately in both directions. InstructedAmount on a domestic SO
+    returns U005; FirstPaymentAmount on an international SO returns U005. Sending both on a
+    domestic SO also returns U005 on InstructedAmount. Proven mutually exclusive, not assumed.
+  why_it_bites: >-
+    The natural implementation route is to copy the domestic mandate screen and change the
+    endpoint. That produces a U005 on every request, and the error names a field the developer
+    is confident is correct — the failure looks like a bank problem rather than a client one.
+  consequence: >-
+    No varying-amounts switch here either. RecurringPaymentAmount and FinalPaymentAmount are
+    siblings of FirstPaymentAmount and go with it.
+
+divergence_traps:
+  - trap: "Copying the domestic mandate wholesale"
+    why_wrong: "U005 on the amount field, plus missing CurrencyOfTransfer and ChargeBearer (U004 each)."
+    correct: "InstructedAmount, plus both mandatory international fields, plus an IBAN creditor."
+  - trap: "Offering varying amounts"
+    why_wrong: "Those fields belong to the FirstPaymentAmount shape this rail refuses."
+    correct: "One amount, applied every instalment, with no_varying_amounts_note explaining it."
+  - trap: "Showing an exchange rate or a projected total"
+    why_wrong: >-
+      OBIE has NO per-execution FX model. Its three RateType values are quote-shaped and only
+      Indicative is coherent over a multi-month mandate. HSBC calls FX quoting 'not applicable'
+      here and never says what rate IS used. Any figure would be a fabricated multi-month
+      financial projection.
+    correct: "fx_not_fixed_notice at severity warning, and no rate anywhere on the screen."
+  - trap: "Expecting a PDNG stage"
+    why_wrong: "This rail reads INCO at creation and INCO on read-back."
+    correct: "The status mapper accepts INCO as a valid creation status."
+  - trap: "Assuming international means no fee"
+    why_wrong: "True of international single only. This rail charges 0.50 at resource creation."
+    correct: "deferred_charge_note at review."
+
+  - trap: "Telling the PSU the API has no debtor field"
+    why_wrong: >-
+      CORRECTED 2026-08-07. DebtorAccount IS in the international standing-order schema —
+      optional and accepted. Intl-SO scenarios staged 201 with a current account, with a savings
+      account and with the key omitted, and resource 19918 carried one as both debtor and
+      creditor. This feature's own 19918 fixture always contradicted its prose.
+    correct: >-
+      The form sends none and offers no funding-account step as a product simplification. Copy
+      says the payment comes from the account the PSU picks at their bank. If ever sent, the shape
+      is { SchemeName, Identification } — NEVER a Name.
+
+  - trap: "Defaulting Charges to an empty list"
+    why_wrong: >-
+      The consent OMITS Charges, CutOffDateTime, ExpectedExecutionDateTime and
+      ExpectedSettlementDateTime — ABSENT, not empty. A defaulted [] renders a 0.50 mandate as
+      free at the step where the PSU consents to it.
+    correct: "Nullable Charges; the fee row reads unknown, never blank and never '0.00'."
+
+  - trap: "Promising to show the fee before authorisation"
+    why_wrong: >-
+      The charge first appears at RESOURCE CREATION — absent at AWAU and at AUTH. There is no
+      earlier call to make and no endpoint to add.
+    correct: "deferred_charge_note. And say nothing about whether the 0.50 recurs — the API does not."
+
+  - trap: "Explaining the U027 creditor refusal as a scheme rule"
+    why_wrong: >-
+      SO-I07 refuses a sort-code creditor while the SAME SCHEME with Identification
+      80119770009652 (Global Money GMA) stages 201 across the intl-SO scenarios. SP-I08 / SP-I05
+      show the identical split on the scheduled rail. The scheme string is identical on both
+      sides, so the server is resolving the identifier and deciding on the resolved product.
+    correct: >-
+      The identifier must resolve to an internationally-addressable account, and only Global
+      Money does so by sort code. This also means 19918's sort-code creditor is not an anomaly to
+      be tidied away — it is the rule.
+
+  - trap: "Leaving an open-ended mandate unlabelled"
+    why_wrong: >-
+      Omitting FinalPaymentDateTime stages 201 as an OPEN-ENDED mandate, and
+      amendment_prohibition means the PSU cannot cancel it from this app. That is a materially
+      different commitment from a bounded mandate, separated by one switch.
+    correct: "open_ended_mandate_note on Review when no end date is set, saying where it can be stopped."
+
+  - trap: "Rendering Errors[0]"
+    why_wrong: >-
+      Errors is an array and can carry TWO entries. SO-I04 returns two Global Money rules
+      together; SO-I05 fixes the first and receives the second alone. On mixed faults the scheme
+      check precedes the business rule.
+    correct: "Every entry, wire order, keyed by ErrorCode + Path. See dtos/ObPaymentError.yaml."
+
+  - trap: "Verifying the submit echo by string comparison"
+    why_wrong: "The server REORDERS Initiation keys on echo. A byte comparison fails on a correct payload."
+    correct: "Echo the parsed read-back object."
+
+fx_position:
+  honest_summary: >-
+    Nobody publishes what rate applies. The standard has no model, HSBC has no statement, and
+    the convergent bank evidence (Citi, Bank of Scotland, Coutts) points to the rate prevailing
+    at each execution without any of them being authoritative for HSBC.
+  closed_experiment:
+    was: >-
+      This spec recorded "whether this endpoint accepts ExchangeRateInformation" as the
+      highest-value FX experiment available, since Lloyds does not support this family and Monzo
+      does not document it, making HSBC effectively the only bank whose answer could be observed.
+    result: >-
+      RUN, and REFUSED. All three RateType values rejected — R16-O1 (Actual), R16-O2
+      (Indicative), R16-O3 (Agreed, sent with a real ExchangeRate 1.15 and ContractIdentification
+      'FX-CONTRACT-001'). Controls R16-C1/C2/C3 with the block removed staged 201. The identical
+      refusal holds on the single (R16-P1/P2/P3) and scheduled (R16-S1/S2/S3) rails.
+    consequence: >-
+      THERE IS NO WAY TO SHOW THE CUSTOMER A RATE BEFORE AUTHORISATION — not even one the TPP
+      holds by contract. On a multi-month mandate this is the strongest possible support for
+      fx_not_fixed_notice: there is no rate at setup and no mechanism by which one could be
+      agreed. The notice is the final answer, not a placeholder for a rate source someone might
+      integrate later.
+    divergence_retained: >-
+      ExchangeRateInformation is absent from the v4.0 request dictionary but PRESENT in the
+      published usage examples. The examples describe a field this endpoint refuses. Recorded,
+      not resolved.
+  ui_position: "State that the rate is not fixed. Show no rate. Project no total."
+
+global_money_note: >-
+  Resource 19918 is the one case where a TPP may name an otherwise-refused payer on this rail:
+  Global Money as BOTH debtor and creditor, weekly, 5.00 GBP instructed, USD transfer, first
+  payment T+7, final T+120, status INCO, charge 0.50 GBP. It proves the same-account conversion
+  exists as a RECURRING instruction, not only as a single payment. Not offered by this form —
+  it is a distinct product journey — but it scopes the Global Money exclusion.
+
+error_contract_ref:
+  dto: dtos/ObPaymentError.yaml
+  note: >-
+    Envelope, Path quirks, Message instability and the rail-dependent code mapping are specified
+    once in the DTO. This feature's local addition is the SO-I04 / SO-I05 pair, which shows U002
+    business rules BATCHING — two rules returned together, then the second alone once the first
+    is fixed.
+
+corrections:
+  - correction: "DebtorAccount is NOT absent from the international standing-order schema."
+    at: "2026-08-07"
+    superseded_claim: >-
+      "No funding-account step (DebtorAccount is not in the standing-order schema)" — asserted in
+      description, rail_position, ui.yaml's header comment and di_note, data-flow.yaml's
+      body_forbids list, and TC-PISO-003's rationale.
+    evidence: >-
+      DebtorAccount is OPTIONAL and ACCEPTED. Intl-SO scenarios staged 201 with a current
+      account, with a savings account and with the key omitted entirely; resource 19918 carried
+      one as both debtor and creditor. Shape is { SchemeName, Identification } — NEVER a Name.
+    internal_inconsistency_noted: >-
+      This feature's own 19918 fixture has always carried a DebtorAccount. The fixture and the
+      prose disagreed, and the prose was the error.
+    scope: >-
+      The claim may still hold for the DOMESTIC standing-order rail. It is not re-tested here and
+      is not asserted either way. The two rails demonstrably diverge on the amount field already,
+      so shared-schema reasoning between them is not safe.
+    behavioural_impact: >-
+      NONE. The staged body is unchanged. What changes is that an "impossible" field becomes an
+      unused one — impossible fields are never revisited, unused ones can be.
+
+open_questions:
+  - question: "Does the international standing-order rail accept PaymentContextCode?"
+    status: UNTESTED
+    evidence: >-
+      Risk is {} on every observed international standing order — neither CategoryPurposeCode nor
+      PaymentContextCode — and all of them staged 201. ZERO international scenarios on ANY rail
+      sent PaymentContextCode.
+    doubly_unevidenced_here: >-
+      Unlike the single and scheduled rails, this one carries no accepted Risk member at all, so
+      there is not even an adjacent field to argue from.
+    why_it_matters: >-
+      FR-015 requires a consumer PaymentContextCode on EVERY payment. No observed international
+      standing order satisfies it.
+    consequence: >-
+      If the field is refused, FR-015 is unsatisfiable on this rail and the REQUIREMENT needs
+      amending, not the implementation. Do not add one on the strength of FR-015 alone.
+
+  - question: "Does the 0.50 charge recur per execution, or apply once at setup?"
+    status: "UNSTATED BY THE API"
+    evidence: "It appears once, on the resource. Nothing in any response describes its periodicity."
+    consequence: "The screen shows what the resource returned and claims nothing about repetition."
+
+amendment_prohibition:
+  permitted: false
+  basis: "OBL Customer Experience Guidelines — mandatory obligation to redirect the PSU"
+  ui_requirement: "amend_notice on Review AND Success, at severity warning"
+
+spec_ahead_of_source:
+  scope: feature
+  cluster: payment-initiation
+  declared_at: "2026-08-06"
+  declared_by: "/idea-sync (PISP-tests research rewrite)"
+  owed_by: /kmp-implement
+  reason: "Type brought in scope by the 2026-08-06 seven-type rewrite."
+  source_state_measured:
+    present: ["core/network/.../pisp/internationalStandingOrder request + response — NO serialization tests"]
+    absent: ["no Ktorfit service", "no store", "no repository", "no feature module"]
+  consequence_for_verification: "drift and source-test checks UNASSERTABLE, not failing. Score N/A."
+
+regulatory:
+  note: "PISP is a distinct FCA permission from AISP. Sandbox unaffected; production needs authorisation this project does not hold."
+  affects_production: true
+  affects_sandbox: false
+  adr_required: true
+
+vm_actions:
+  - name: EnterInstructedAmount
+    signature: 'fun enterInstructedAmount(minorUnits: String)'
+    state_mutations:
+      - "content.instructedAmountMinorUnits = minorUnits"
+      - "content.amountProblem = validateAmount(minorUnits)"
+    notes: >-
+      Maps to InstructedAmount on the wire. There is no FirstPaymentAmount on this rail and no
+      recurring or final sibling — the field name is the divergence.
+  - name: ConfirmAndStageConsent
+    signature: 'suspend fun confirmAndStageConsent()'
+    state_mutations:
+      - uiState = Submitting(StagingConsent)
+      - uiState = Submitting(AwaitingAuthorisation, consentId = response.Data.ConsentId)
+    side_effects:
+      - "POST /international-standing-order-consents with Permission 'Create', InstructedAmount, CurrencyOfTransfer, ChargeBearer and Risk {}"
+      - "Body carries NO FirstPaymentAmount, NO RemittanceInformation, NO DebtorAccount"
+    error_handling:
+      on_400_U005: uiState = Error(FieldNotExpected)
+      on_400_U004: uiState = Error(MissingRequiredField)
+      on_400_U003: uiState = Error(InvalidMandateDates)
+      on_400_U002: uiState = Error(InvalidFieldValue)
+      on_400_U019: uiState = Error(SignatureMissing)
+  - name: SubmitStandingOrder
+    signature: 'suspend fun submitStandingOrder(consentId: String)'
+    state_mutations:
+      - uiState = Submitting(SubmittingPayment)
+      - "uiState = Success(mandateId = response.Data.InternationalStandingOrderId, status = INCO)"
+    side_effects: ["POST /international-standing-orders echoing the AUTHORISED consent's Initiation"]
+
+error_cases:
+  - { id: FieldNotExpected, trigger: "400 U005", user_message: '{strings.error.payment.field_not_expected}', recovery: "Implementation fault — FirstPaymentAmount or RemittanceInformation was sent." }
+  - { id: MissingRequiredField, trigger: "400 U004", user_message: '{strings.error.payment.missing_field}', recovery: "Implementation fault." }
+  - { id: InvalidMandateDates, trigger: "400 U003", user_message: '{strings.error.payment.invalid_mandate_dates}', recovery: "Return to the schedule step." }
+  - { id: InvalidFieldValue, trigger: "400 U002", user_message: '{strings.error.payment.invalid_bank_code}', recovery: "Return to the recipient or schedule step." }
+  - { id: UnsupportedScheme, trigger: "400 U027", user_message: '{strings.error.payment.unsupported_scheme}', recovery: "Should be unreachable — the form takes an IBAN." }
+  - { id: SignatureMissing, trigger: "400 U019", user_message: '{strings.error.payment.signature_missing}', recovery: "Not user-recoverable." }
+  - { id: ConsentNotAuthorised, trigger: "400 U009", user_message: '{strings.error.payment.consent_not_authorised}', recovery: "Re-authorise." }
+  - { id: NetworkError, trigger: "IOException / timeout", user_message: '{strings.error.payment.network_error}', recovery: "Retry — idempotency key reused." }
+
+test_fixtures:
+  source: idea-layer/screens/pay-international-standing-order/tests.yaml
+  fixture_data: idea-layer/screens/pay-international-standing-order/demo-data.yaml
+  scenario_count: 13
+  priority_distribution: { p0: 6, p1: 6, p2: 1 }
+
+status_history:
+  - from: null
+    to: draft
+    at: "2026-08-06"
+    by: "/idea-sync — seven-type payments rewrite"
+    note: "Brought in scope. 32 scenarios in captures/by-type/standing-orders-international.md; resources 19917 and 19918 authorised."
+
+  - from: draft
+    to: enriched
+    at: "2026-08-07"
+    by: "/idea-sync"
+    note: >-
+      Corpus-derived enrichment from the full HSBC capture corpus, and the only one of the three
+      international features that required a CORRECTION rather than only additions. Corrected:
+      "DebtorAccount is not in the standing-order schema" was FALSE for this rail — the field is
+      optional and accepted, intl-SO scenarios staged 201 with a current account, a savings
+      account and none at all, and this feature's own 19918 fixture always carried one; the claim
+      had propagated into description, rail_position, ui.yaml, data-flow.yaml's body_forbids and
+      TC-PISO-003. Also corrected 19918's sort-code creditor from "an exception to the
+      IBAN-creditor rule" to the rule itself: SO-I07 refused against the Global Money GMA
+      identifier accepted under the SAME SCHEME shows U027 is RESOLVED-ACCOUNT dependent (SP-I08
+      / SP-I05 repeat the split on the scheduled rail). CLOSED the highest-value open FX
+      experiment — ExchangeRateInformation is REFUSED for all three RateTypes (R16-O1/O2/O3,
+      controls R16-C1/C2/C3), so a TPP cannot assert even a contracted rate. Added: the
+      pre-authorisation fee impossibility and the absent-not-empty Charges parse rule; the
+      open-ended mandate case (FinalPaymentDateTime omitted → 201) against amendment_prohibition;
+      the shared error contract via dtos/ObPaymentError.yaml with SO-I04 / SO-I05 as the U002
+      batching evidence; the server's Initiation key reordering on echo; and the empty-Risk
+      observation that makes PaymentContextCode doubly unevidenced here. Opened two questions:
+      PaymentContextCode acceptance versus FR-015, and whether the 0.50 charge recurs.
+
+  - from: enriched
+    to: designed
+    at: "2026-08-07"
+    by: "/idea-feature-export"
+    exports_produced: [spec_md, api_md, mockup_md, prompts_figma_md, prompts_per_state]
+    note: >-
+      /idea-feature-export --all, owner-scoped to the ten payment-initiation features. Roundtrip
+      verification PASSED on all five checks — state coverage, endpoint coverage, ViewModel
+      coverage, forbidden content, and prompt size (5 per-state prompts, all under the 4000-char
+      limit).

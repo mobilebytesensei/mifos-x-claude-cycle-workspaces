@@ -1,0 +1,178 @@
+name: CccProduct
+version: "1.0.0"
+source:
+  origin: external_api
+  api_path: "GET /open-banking/v2.2/commercial-credit-cards + /x-open-banking/v2.2/commercial-credit-cards/segment/{segment}"
+  host: api.hsbc.com
+  host_status: resolved
+  api_ref: API-OD-PRODUCT
+  spec: "OBIE Open Data v2.2 (swagger info.version 2.2.1) — unauthenticated, no consent, no session"
+  created:
+    at: "2026-08-07"
+    by: "/idea-sync — dangling-ref closure"
+    evidence:
+      tier_1_live:
+        summary: "1 product, 1 brand, HTTP 200, 8 KB. Re-probed live 2026-08-07: byte-identical."
+        reproduce: 'curl -H "Accept: application/prs.openbanking.opendata.v2.2+json" "https://api.hsbc.com/open-banking/v2.2/commercial-credit-cards"'
+        local_capture: "/home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/pf-commercial-credit-cards.json — OUTSIDE this repository, captured 2026-08-07. Not checked in; use `reproduce` above."
+      tier_2_spec:
+        summary: "Product Finder swagger 2.0, info.version 2.2.1 — #definitions.CCCDefinition"
+        reproduce: "Download the swagger from https://develop.hsbc.com/ob-api-documentation/product-finder-uk/endpoints — public, no credential."
+        local_capture: "/home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/open-product-finder-swagger.json — OUTSIDE this repository, captured 2026-08-07. Not checked in; use `reproduce` above."
+
+description: >-
+  One commercial credit card in HSBC's PUBLIC catalogue. Reached at data[].Brand[].CCC[]. The
+  smallest family by a wide margin — ONE product, 8 KB — and the one whose schema differs most
+  from the current-account families.
+
+envelope:
+  shape: "{ meta, data } — both required"
+  path_to_this_dto: "data[].Brand[].CCC[]"
+  depth_warning: "THREE levels, as always. `data` length 1, `Brand` length 1 (HSBC UK)."
+  flatten_rule: "Flatten across data[].Brand[] and carry BrandName down."
+
+# ─────────────────────────────────────────────────────────────────────────
+# WHAT THIS FAMILY DOES NOT HAVE
+# ─────────────────────────────────────────────────────────────────────────
+schema_divergence:
+  no_on_sale_indicator:
+    finding: >-
+      CCC declares NO OnSaleIndicator — not on the product and not on the brand block. The swagger
+      lists exactly four product properties: CCCMarketingState, Identification, Name, Segment.
+    evidence: "Live brand block keys are [BrandName, CCC] — no OnSaleIndicator. PCA and BCA brand blocks both carry it."
+    consequence: >-
+      A shared filter of the form `products.filter { it.onSale }` DROPS THE ENTIRE CCC FAMILY,
+      because the field is absent rather than false. Model it as absent-means-unknown and default
+      to showing, or the one commercial card silently disappears from the catalogue.
+  no_overdraft_no_credit_interest: "Neither is declared. A credit card has neither concept."
+  has_repayment_instead:
+    finding: "CCCMarketingState declares `Repayment`, which PCA and BCA do not."
+    observed_keys: [MinBalanceRepaymentAmount, MinBalanceRepaymentRate, NonRepaymentFeeCharges, RepaymentAllocation, Notes]
+  required_set_is_stricter:
+    ccc: [Identification, MarketingState, Eligibility, FeaturesAndBenefits, OtherFeesCharges, CoreProduct]
+    pca_and_bca: [Identification, MarketingState, OtherFeesCharges]
+    reading: "The card family mandates the blocks the current-account families leave optional. Parsers may rely on them here."
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE TRAP — A DUPLICATE MARKETING STATE THAT IS NOT A TIMELINE
+# ─────────────────────────────────────────────────────────────────────────
+duplicate_marketing_state:
+  finding: >-
+    The single CCC product carries TWO CCCMarketingState elements with the SAME Identification
+    ("Business CC Commercial Card"), the SAME MarketingState (Regular), and the SAME
+    FirstMarketedDate / LastMarketedDate (2017-01-01 → 2099-12-31).
+  what_actually_differs: >-
+    Exactly ONE field: FeaturesAndBenefits. CoreProduct, Eligibility, OtherFeesCharges, Repayment,
+    Identification, MarketingState and both dates are byte-identical between the two elements.
+    APR (22.00), CardScheme ([Visa]), MinCreditLimit (500) and PeriodicFee (32.00) are the same in
+    both.
+  why_this_is_worse_than_the_pca_duplicate: >-
+    PCA's duplicate is disambiguable — the two BankAcc records differ in MarketingState and offer
+    name, so a group-by produces a product plus a badge. Here there is NOTHING to disambiguate on.
+    The date windows are identical, so the "pick the state whose window contains today" rule that
+    works on BCA selects BOTH.
+  requirement: >-
+    Render ONE state. Take the first, or union the FeaturesAndBenefits lists — but do not render
+    two, and do not build a state picker. The user would be choosing between two indistinguishable
+    options that describe the same card.
+  do_not_generalise: >-
+    Do not conclude "marketing states may be duplicates" and apply that to BCA, where multiple
+    states ARE a real timeline with distinct tariffs and distinct date windows. This is a
+    CCC-specific data-quality artefact in a one-product feed, not a family-wide rule.
+
+# ─────────────────────────────────────────────────────────────────────────
+# STALENESS
+# ─────────────────────────────────────────────────────────────────────────
+catalogue_freshness:
+  meta_last_updated: "2026-03-18T09:04:41.783Z"
+  contrast:
+    PCA: "2026-07-24"
+    BCA: "2026-07-24"
+    CCC: "2026-03-18 — nearly 5 months stale at capture"
+    SMELoan: "2026-01-16 — nearly 7 months stale"
+  reading: >-
+    Freshness is per-family, not per-catalogue, and the two business-lending families are
+    maintained far less often than the current-account ones. Surface meta.LastUpdated per family
+    rather than once per screen if it is surfaced at all — a single "updated today" line taken
+    from the PCA call would misdescribe this card by five months.
+
+fields:
+  - name: BrandName
+    type: String
+    required: true
+    pii: false
+    primary_key: false
+    synthetic: true
+    observed: '"HSBC UK" only.'
+    description: "NOT a field on the CCC object — lifted from the parent data[].Brand[] during flatten."
+
+  - name: Identification
+    type: String
+    required: true
+    pii: false
+    primary_key: true
+    observed: '"Business CC Commercial Card" — a HUMAN-READABLE STRING WITH SPACES, not a mnemonic.'
+    description: >-
+      Unlike PCA (fdFirAcc, BankAcc) and BCA (BCAEBT, BCASwitcher), this family uses prose as its
+      product code. Anything that URL-encodes an Identification into a route or a cache key must
+      handle spaces. It is also identical to the marketing state's own Identification.
+
+  - name: Name
+    type: String
+    required: true
+    pii: false
+    primary_key: false
+    observed: '"HSBC UK Business Credit Card".'
+
+  - name: Segment
+    type:
+      list_of: String
+    required: true
+    pii: false
+    primary_key: false
+    enum_ref: CccSegment
+    observed: '["General"] — the only value the enum declares.'
+    description: >-
+      REQUIRED on this family (optional on PCA and BCA). The enum has exactly one member, so a
+      segment filter over commercial credit cards can only ever be a no-op. Do not render a
+      segment chip row for this tab.
+
+  - name: CCCMarketingState
+    type:
+      list_of: CccMarketingState
+    required: true
+    pii: false
+    primary_key: false
+    observed: "Array of 2 — see duplicate_marketing_state."
+
+marketing_state:
+  declared_props: [CoreProduct, Eligibility, FeaturesAndBenefits, FirstMarketedDate, Identification, LastMarketedDate, MarketingState, Notes, OtherFeesCharges, PredecessorID, Repayment, StateTenureLength, StateTenurePeriod]
+  observed_present: [CoreProduct, Eligibility, FeaturesAndBenefits, FirstMarketedDate, Identification, LastMarketedDate, MarketingState, OtherFeesCharges, Repayment]
+  observed_absent: [Notes, PredecessorID, StateTenureLength, StateTenurePeriod]
+  core_product_keys: [APR, CardScheme, ContactlessIndicator, MaxPurchaseInterestFreeLengthDays, MinCreditLimit, Notes, PeriodicFee, PeriodicFeePeriod, ProductDescription, ProductURL, SalesAccessChannels, ServicingAccessChannels, TcsAndCsURL]
+  the_comparable_numbers:
+    APR: '"22.00" — a STRING, not a number. Parse before comparing or sorting.'
+    PeriodicFee: '"32.00" with PeriodicFeePeriod alongside — never render the fee without the period.'
+    MinCreditLimit: '"500" — also a string.'
+    CardScheme: '["Visa"] — an array.'
+    note: >-
+      These four are the only fields on the whole products screen that a user can meaningfully
+      compare at a glance, and this family has exactly one product to compare. They matter as a
+      shape precedent for whatever the catalogue grows into, not as a comparison today.
+
+date_semantics:
+  sentinel: { value: "2099-12-31", meaning: "INDEFINITE — do not render", observed: "on both marketing states" }
+  first_marketed_date: '"2017-01-01" — the same bulk-backfill value PCA carries on every Regular state. Not a real launch date.'
+
+enums:
+  - name: CccSegment
+    declared: [General]
+    observed: [General]
+    note: "The only enum in the whole Product Finder that is fully exercised, because it has one member."
+  - name: CccMarketingStateValue
+    declared: [Promotional, Regular]
+    observed: [Regular]
+
+used_by:
+  - { feature: products, api_id: get_commercial_credit_cards, role: response }
+  - { feature: products, api_id: get_ccc_by_segment, role: response }

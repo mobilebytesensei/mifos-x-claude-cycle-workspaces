@@ -1,0 +1,296 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: beneficiaries
+
+screen_id: beneficiaries
+archetype: index_list
+name: "{strings.beneficiaries.screen_title}"
+# status: REMOVED 2026-08-04 (CROSS_LEAK repair — sibling-layout.json assigns `status` to
+# the docs sibling). This copy held `implemented`; docs.yaml is the single owner.
+
+# ─────────────────────────────────────────────────────────────────────
+# SOURCE BINDING — reverse-synced from source 2026-07-28
+# ─────────────────────────────────────────────────────────────────────
+implementation:
+  status: implemented
+  source_module: "feature/beneficiaries"
+  package: "org.mifosx.openbanking.feature.beneficiaries"
+  route: "BeneficiariesRoute(accountId: String)"
+  viewmodel: BeneficiariesViewModel
+  screen: BeneficiariesScreen
+  test_tags_object: BeneficiariesTestTags
+  reachable_from:
+    - "account-detail — AccountDetailChip.Beneficiaries"
+  synced_from_source_at: "2026-07-28"
+  renamed_in_sync:
+    - "filterBeneficiaries -> Search — BeneficiariesAction declares Search, not a filter action"
+  removed_in_sync:
+    - "loadBeneficiaries action — the initial load is stream collection in init{}"
+    - "navigateToConsents / navigateBack actions — both are nav-host callbacks, not action members"
+    - "AisApiService DI — the view model injects BeneficiariesRepository, not the raw API service"
+quality_score: 95
+initial_state: loading
+
+capability_tags:
+  - rest-client
+  - list-display
+  - search-filter
+  - error-recovery
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  top_app_bar_title: "{strings.beneficiaries.screen_title}"
+  top_app_bar_leading: back
+  fab_visible: false
+
+states: [loading, content, empty, error]
+
+# TEST TAGS — reconciled against source 2026-08-02 by /idea-sync (source-truth pass).
+# Values copied VERBATIM from BeneficiariesTestTags.kt; do not normalise the string form.
+test_tags:
+  source: "feature/beneficiaries/src/commonMain/kotlin/org/mifosx/openbanking/feature/beneficiaries/BeneficiariesTestTags.kt"
+  declared_in_source: 16         # 14 const val + 2 builder fns (row, avatar)
+  bound: 10
+  interpolated:
+    - { tag: "beneficiaries:row:{item.BeneficiaryId}",    builder: "fun row(beneficiaryId: String)" }
+    - { tag: "beneficiaries:avatar:{item.BeneficiaryId}", builder: "fun avatar(beneficiaryId: String)" }
+  unbound:
+    # All six are Text nodes the idea-layer models as the parent empty_state / error_state
+    # component's `title:` / `body:` FIELDS rather than as child components, so none has an
+    # anchor. Recorded rather than synthesising child components, which would inflate the
+    # inventory that TRAINING_MASTER and design-validate both count.
+    - { tag: "beneficiaries:searchEmptyTitle", parent: search_no_results }
+    - { tag: "beneficiaries:searchEmptyBody",  parent: search_no_results }
+    - { tag: "beneficiaries:emptyTitle",       parent: empty_beneficiaries }
+    - { tag: "beneficiaries:emptyBody",        parent: empty_beneficiaries }
+    - { tag: "beneficiaries:errorTitle",       parent: error_state }
+    - { tag: "beneficiaries:errorBody",        parent: error_state }
+
+business_logic:
+  kind: crud
+  description: "Calls GET /accounts/{AccountId}/beneficiaries via ktorfit to retrieve OBReadBeneficiary5. Maps each Data.Beneficiary using CreditorAccount.SchemeName (mapped to a human-readable label: UK.OBIE.SortCodeAccountNumber→Sort Code, UK.OBIE.IBAN→IBAN, UK.OBIE.Paym→Paym), Identification, Name, and Reference into list rows. An avatar with initials is derived from CreditorAccount.Name for visual identity. Supports client-side search filtering by Name or Reference (no extra API call). Surfaces typed errors: TokenExpired 401 (retry CTA re-fetches), ConsentRevoked 403 (View Consents CTA navigates to consent-list), RateLimited 429 (retry with back-off), NetworkError (retry). On empty list shows no-payees state."
+  external_library_refs:
+    - "ktorfit"
+    - "hsbc-obie-ais-v4.0:beneficiaries"
+  description_author: claude
+  description_authored_at: "2026-06-29T12:00:00Z"
+
+state_model:
+  BeneficiariesViewModel:
+    state:
+      name: BeneficiariesState
+      fields:
+        - name: accountId
+          type: String
+        - name: uiState
+          type: BeneficiariesUiState
+    screen_state:
+      sealed_class: BeneficiariesUiState
+      members:
+        - Loading
+        - Content    # beneficiaries: List<OBBeneficiary>, beneficiariesFiltered: List<OBBeneficiary>, searchQuery: String (default "")
+        - Empty
+        - Error      # type: ErrorType(TokenExpired|ConsentRevoked|RateLimited|NetworkError|ServerError), message: String
+    errors:
+      types:
+        - TokenExpiredError     # HTTP 401
+        - ConsentRevokedError   # HTTP 403 — recovery: View Consents → consent-list
+        - RateLimitedError      # HTTP 429 — exponential back-off
+        - NetworkError          # IOException / timeout
+        - ServerError           # HTTP 500
+    actions:
+      members:
+        - RetryLoad             # refreshes the beneficiaries stream
+        - Search                # data class — client-side filter by payee name or reference
+    nav_callbacks:
+      # Navigation is host-owned; neither is a BeneficiariesAction member.
+      - "onBack -> popBackStack() returning to account-detail"
+      - "onNavigateToConsents -> navigate(ConsentListRoute)"
+    di:
+      - SavedStateHandle        # supplies the accountId route arg
+      - BeneficiariesRepository # Koin single; beneficiaries stream
+
+# dependencies: MOVED to flow.yaml 2026-07-31 — sibling-layout.json#section_ownership
+# assigns `dependencies` to the flow sibling (capability_gate: has_flow). Holding it
+# here was a CROSS_LEAK (SIBLING_LOADER error taxonomy): the loader routes by FILE, so
+# this block surfaced as view.ui.dependencies and every consumer reading the sanctioned
+# view.flow.dependencies saw null.
+
+components:
+  - type: progress_circular
+    state_binding: [loading]
+    accessibility_label: "{strings.beneficiaries.loading_label}"
+    test_tag: "beneficiaries:loading"
+    test_context:
+      purpose: "Indicate async fetch of OBReadBeneficiary5 from HSBC AIS endpoint"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  - type: icon_button
+    keyboard:
+      focusable: true
+    id: back_button
+    icon: arrow_back
+    accessibility_label: "{strings.beneficiaries.back_label}"
+    on_click:
+      action: navigate_back
+      target: account-detail
+      action_contract:
+        effect: navigate
+        description: "Returns the PSU to the account-detail screen, exiting the beneficiaries list for the current AccountId without any state changes."
+    test_context:
+      purpose: "Return user to account-detail screen"
+      required_fields: []
+      interaction_type: navigate
+      data_driven: false
+
+  - type: search_bar
+    id: beneficiary_search
+    test_tag: "beneficiaries:searchField"
+    state_binding: [content]
+    placeholder: "{strings.beneficiaries.search_placeholder}"
+    accessibility_label: "{strings.beneficiaries.search_a11y}"
+    on_change:
+      action: filter_beneficiaries
+      param: query
+    test_context:
+      purpose: "Client-side filter of beneficiaries by CreditorAccount.Name or Reference — no API call"
+      required_fields: []
+      interaction_type: action
+      data_driven: false
+
+  - type: list
+    id: beneficiaries_list
+    test_tag: "beneficiaries:contentList"
+    state_binding: [content]
+    scroll_direction: vertical
+    items_source: "{beneficiaries_filtered}"
+    accessibility_label: "{strings.beneficiaries.list_label}"
+    test_context:
+      purpose: "Render filtered OBReadBeneficiary5 Data.Beneficiary array for the account"
+      required_fields: ["beneficiaries_filtered"]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: list_item
+        id: beneficiary_row
+        test_tag: "beneficiaries:row:{item.BeneficiaryId}"    # fun row(beneficiaryId)
+        variant: two_line
+        leading:
+          type: avatar
+          id: beneficiary_avatar
+          decorative: true   # initials monogram; a reader announcing 'J L' before the name it abbreviates is noise
+          test_tag: "beneficiaries:avatar:{item.BeneficiaryId}"   # fun avatar(beneficiaryId)
+          variant: sm
+          initials: "{item.CreditorAccount.Name | initials}"
+          color_seed: "{item.BeneficiaryId}"
+          accessibility_label: ""
+          aria_hidden: true
+        headline: "{item.CreditorAccount.Name}"
+        supporting_text: "{item.CreditorAccount.SchemeName | schemeShortLabel} · {item.CreditorAccount.Identification}"
+        trailing_content: "{item.Reference}"
+        trailing_style: labelSmall
+        accessibility_label: "{item.CreditorAccount.Name}, {item.CreditorAccount.SchemeName | schemeShortLabel} account, {item.CreditorAccount.Identification}"
+        test_context:
+          purpose: "Show one beneficiary: initials avatar, creditor name headline, scheme-type·identifier as supporting, payment reference as trailing label"
+          required_fields: ["item.CreditorAccount.Name", "item.CreditorAccount.Identification", "item.CreditorAccount.SchemeName", "item.Reference", "item.BeneficiaryId"]
+          interaction_type: display
+          data_driven: true
+
+  - type: empty_state
+    id: search_no_results
+    test_tag: "beneficiaries:searchEmptyState"
+    state_binding: [content]
+    visibility_condition: "{beneficiaries_filtered | isEmpty}"
+    icon: search_off
+    title: "{strings.beneficiaries.search_empty_title}"
+    body: "{strings.beneficiaries.search_empty_body}"
+    accessibility_label: "{strings.beneficiaries.search_empty_title}"
+    test_context:
+      purpose: "Shown within content state when search query matches zero beneficiaries"
+      required_fields: ["beneficiaries_filtered"]
+      interaction_type: display
+      data_driven: true
+
+  - type: empty_state
+    id: empty_beneficiaries
+    test_tag: "beneficiaries:emptyState"
+    state_binding: [empty]
+    icon: people_outline
+    title: "{strings.beneficiaries.empty_title}"
+    body: "{strings.beneficiaries.empty_body}"
+    accessibility_label: "{strings.beneficiaries.empty_title}"
+    test_context:
+      purpose: "Zero-result state when Data.Beneficiary[] is empty in OBIE response"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  - type: error_state
+    id: error_state
+    test_tag: "beneficiaries:errorState"
+    state_binding: [error]
+    icon: error_outline
+    title: "{strings.beneficiaries.error_title}"
+    body: "{error.message}"
+    accessibility_label: "{strings.beneficiaries.error_title}"
+    test_context:
+      purpose: "Surface typed API errors with differentiated recovery CTAs: Retry for 401/429/network, View Consents for 403"
+      required_fields: ["error.message", "error.type"]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: button
+        keyboard:
+          focusable: true
+        id: retry_button
+        test_tag: "beneficiaries:retryButton"
+        variant: filled
+        label: "{strings.beneficiaries.retry}"
+        visibility_condition: "{error.type | isRetryable}"
+        accessibility_label: "{strings.beneficiaries.retry_a11y}"
+        on_click:
+          action: retry_load
+          action_contract:
+            effect: call_api
+            reads_from: beneficiaries-list
+            external_library_refs: [ktorfit, "hsbc-obie-ais-v4.0:beneficiaries"]
+            description: "Re-fetches GET /accounts/{AccountId}/beneficiaries via ktorfit to recover from a transient failure (HTTP 401 TokenExpired, 429 RateLimited, or NetworkError), resetting the screen to Loading then Content."
+        test_context:
+          purpose: "Re-trigger LoadBeneficiaries after transient failure (401 TokenExpired, 429 RateLimited, NetworkError)"
+          required_fields: []
+          interaction_type: action
+          data_driven: false
+      - type: button
+        keyboard:
+          focusable: true
+        id: view_consents_button
+        test_tag: "beneficiaries:viewConsentsButton"
+        variant: tonal
+        label: "{strings.beneficiaries.view_consents}"
+        visibility_condition: "{error.type | isConsentRevoked}"
+        accessibility_label: "{strings.beneficiaries.view_consents_a11y}"
+        on_click:
+          action: navigate
+          target: consent-list
+          action_contract:
+            effect: navigate
+            description: "Navigates to consent-list when HTTP 403 ConsentRevoked is returned, allowing the PSU to review and re-authorise the account-access-consent to restore the ReadBeneficiariesDetail permission."
+        test_context:
+          purpose: "Route to consent-list when consent is revoked (HTTP 403 ConsentRevoked)"
+          required_fields: []
+          interaction_type: navigate
+          data_driven: false
+
+status_history:
+  - from: draft
+    to: enriched
+    at: "2026-06-29"
+    by: "/idea-enrich"
+  - from: enriched
+    to: enriched
+    at: "2026-06-29"
+    by: "/idea-enrich"
+    note: "Quality lift: i18n strings (14 keys), search_bar + client-side filter, avatar initials in list rows, scheme-type label in supporting_text, dual error CTA (Retry vs View Consents), search_no_results empty state, enriched business_logic description."

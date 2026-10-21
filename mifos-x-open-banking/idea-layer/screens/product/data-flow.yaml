@@ -1,0 +1,51 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: product
+
+screen_id: product
+
+on_mount:
+  - trigger: product_load
+    description: "Load product terms for the given accountId. Transitions to empty state if OBReadProduct2.Data is empty or both PCA and BCA fields are null (e.g. GlobalMoney, Savings, CreditCard account types)."
+    steps:
+      - call: product
+        path_params:
+          AccountId: "{accountId}"
+        store_as: product
+    on_loading: loading
+    on_success: content    # OBReadProduct2.Data non-empty AND PCA/BCA non-null
+    on_empty: empty        # OBReadProduct2.Data empty list OR (product.PCA == null AND product.BCA == null)
+    on_error:
+      # Typed error routing reflecting api.yaml error_responses (enriched 2026-07-14)
+      error_type_routing:
+        - code: 401
+          error_id: SessionExpired
+          userMessage: "Session expired. Please re-authenticate."
+          recovery_action: navigate_to_login
+          isRetriable: false
+          state: error
+        - code: 403
+          error_id: ConsentDenied
+          userMessage: "Consent does not include ReadProducts."
+          recovery_action: navigate_to_consent_list
+          isRetriable: false
+          state: error
+        - code: 404
+          error_id: NoProductData
+          userMessage: "No product data available for this account."
+          isRetriable: false
+          state: empty    # treat as empty (content absent, not a failure) per api.yaml error_responses
+        - type: NetworkError
+          error_id: NetworkError
+          userMessage: "{error.localizedMessage}"
+          isRetriable: true
+          state: error
+
+on_user_action:
+  - trigger: retry_load
+    re_runs: [product_load]
+
+cache_strategy: none
+# Product terms data sourced directly from OBIE GET /accounts/{AccountId}/product on every mount.
+# No local caching: product terms can be updated by the bank; stale cached data could mislead PSU
+# about current charges. Network calls are lightweight (single OBReadProduct2 response).

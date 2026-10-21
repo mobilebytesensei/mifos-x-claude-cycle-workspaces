@@ -1,0 +1,97 @@
+sibling: data-flow
+schema_version: "4.0"
+feature_id: direct-debit-detail
+
+# ═══════════════════════════════════════════════════════════════════════════
+# REWRITTEN 2026-08-06 by /idea-sync (OBP eviction)
+#
+# Was obp_get_mandate_detail + obp_cancel_mandate against the Open Bank Project mandate model,
+# with the MandateDetail and CancelMandateResponse DTOs — all four now deleted.
+#
+# TWO STRUCTURAL CHANGES, and the second is a capability loss:
+#
+#   1. NO SINGLE-MANDATE ENDPOINT. OBIE has GET /aisp/accounts/{AccountId}/direct-debits, a
+#      LIST. The detail screen filters that response by DirectDebitId; it does not fetch one.
+#
+#   2. NO CANCELLATION. OBIE provides no direct-debit cancel of any kind. The OnCancelClicked
+#      write path is not deferred or unbacked-pending-an-endpoint — it is impossible. Cancelling
+#      a direct debit is done at the bank, or with the originator.
+#
+# The OnEditClicked path was already a no-op and stays one, for the same reason.
+# ═══════════════════════════════════════════════════════════════════════════
+
+cache_strategy: memory
+cache_rationale: "Consent-scoped, like every AIS read. Must not outlive the consent that permitted it."
+store_shape: "reuses the direct-debits list store; this screen selects from it rather than fetching"
+
+entries:
+  - screen_id: direct-debit-detail
+    trigger: on_mount
+    event: LoadMandate
+    endpoints:
+      - get_direct_debits
+    direction: read
+    selection: "filter the list response by DirectDebitId from the nav param"
+    dtos:
+      - { name: DirectDebit, role: response, api_id: get_direct_debits }
+    produces_state: loading
+    error_paths:
+      - { error_code: 401, behavior: redirect_to_login }
+      - error_code: 403
+        behavior: show_error_state
+        note: >-
+          Consent revoked, OR the SCA-recency gate — direct-debits is one of the five resources
+          that returns 403 with an EMPTY BODY on a stale-SCA token. Indistinguishable from a
+          permission failure, so treat it as "re-authentication needed".
+      - error_code: 400
+        behavior: show_not_available_state
+        note: >-
+          The direct-debits resource returns 400 on savings, Global Money and the credit card.
+          That is the expected state for those account types, not a fault.
+      - { error_code: 404, behavior: show_not_found_state }
+
+  - screen_id: direct-debit-detail
+    trigger: on_interact
+    event: OnRetryClicked
+    endpoints:
+      - get_direct_debits
+    direction: read
+    dtos:
+      - { name: DirectDebit, role: response, api_id: get_direct_debits }
+    produces_state: loading
+
+  - screen_id: direct-debit-detail
+    trigger: on_interact
+    event: OnEditClicked
+    endpoints: []
+    direction: none
+    dtos: []
+    produces_state: content
+    note: "Already a no-op. OBIE has no direct-debit write."
+
+# ─────────────────────────────────────────────────────────────────────────
+# REMOVED — the capability does not exist, rather than not being wired
+# ─────────────────────────────────────────────────────────────────────────
+removed_2026_08_06:
+  - endpoint: obp_get_mandate_detail
+    reason: "No single-mandate resource in OBIE. The detail screen filters the list."
+    dto_deleted: MandateDetail
+  - endpoint: obp_cancel_mandate
+    reason: >-
+      OBIE provides NO direct-debit cancellation. This was a write path to an endpoint that
+      does not exist in the standard — not deferred, not pending, absent.
+    dto_deleted: CancelMandateResponse
+    entry_removed: OnCancelClicked
+    ui_consequence: >-
+      Any Cancel control on this screen is a dead clickable. It must be removed, or rendered
+      disabled with an explanation that cancelling a direct debit is done through the HSBC app
+      or with the originator. This was the same class as the freeze switch that card-detail
+      shipped; that screen was deleted on 2026-08-07, so this is now the last surviving instance
+      of the pattern rather than one of two.
+
+capability_loss_note: >-
+  This is the second surface in the app where an OBP-era WRITE turned out to have no OBIE
+  counterpart — the others being card freeze/limits and standing-order amendment. The pattern
+  is consistent: OBIE's AIS surface is read-only, and its write surface is payment initiation
+  only. Any remaining "manage" affordance inherited from the OBP era should be assumed
+  unbacked until proven otherwise.

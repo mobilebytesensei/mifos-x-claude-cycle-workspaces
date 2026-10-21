@@ -1,0 +1,144 @@
+sibling: docs
+schema_version: '4.0'
+feature_id: branch-locator
+name: Branch Locator
+feature: branch-locator
+flavor: consumer
+status: enriched
+quality_score: 88
+contract_version: "2.0.0"
+capabilities:
+  - has_ui
+  - has_api
+
+summary: >-
+  Find an HSBC UK branch by location, postcode, town or sort code. Unauthenticated Open Data —
+  the screen works before the PSU has connected an account, with no consent and no session.
+
+the_three_things_that_will_break_this_screen:
+  note: "Ordered by likelihood of shipping. Each is measured, not theorised, and each fails SILENTLY — there is no exception to catch for any of them."
+  one_missing_sunday: >-
+    A closed day is ABSENT from Availability.StandardAvailability.Day[], not marked closed. Zero
+    of 327 UK branches publish a Sunday. A renderer that iterates what it receives drops Sunday
+    from every branch in the country and leaves the user unable to distinguish 'closed' from 'no
+    data'. Build the week from a fixed Mon-Sun list.
+  two_the_shuttered_branch: >-
+    Branch 401118 is closed until 2027-03-21 and still publishes a normal Mon-Sat schedule. The
+    closure lives in NonStandardAvailability, which only 1 of 327 branches carries and which no
+    London-based test will ever encounter. Read it FIRST and suppress the weekly pattern.
+  three_the_sort_code_round_trip: >-
+    The API returns sort codes hyphenated and accepts them only as six digits. Feeding its own
+    output back into its own input returns an empty result with HTTP 200 and no error, which is
+    indistinguishable from 'branch not found'. Strip non-digits at every call site.
+
+created_2026_08_07:
+  by: "/idea-sync — develop.hsbc.com Open Data research"
+  decision_by: "repository owner, 2026-08-07"
+  rationale: >-
+    Branches were a deferred second operation inside atm-locator against an unresolved host.
+    The Branch Locator is a separate HSBC API product with a materially richer payload —
+    opening hours, 11 services, 8 customer segments, a sort code, a phone number and real
+    accessibility data, all populated 25/25 where the ATM feed populates none of its optional
+    fields. Two capabilities, two screens.
+
+status_history:
+  - status: draft
+    at: "2026-08-07T00:00:00Z"
+    by: "/idea-sync"
+    note: "Net-new feature. Specified from live captures + the HSBC-published swagger; never enriched, never exported, no source."
+  - status: enriched
+    at: "2026-08-07T00:00:00Z"
+    by: "/idea-sync"
+    quality_score: 88
+    note: >-
+      Enriched against the FULL 327-branch HSBC UK estate rather than the original 25-branch
+      London sample, plus targeted probes on the sortcode, radius and namespace behaviours. Both
+      open questions closed. Five sample-scale claims were disproved and corrected in place —
+      see api.yaml#corrections_from_population_scan. One new required fixture added (branch
+      401118) and one new screen state (temporarily_closed).
+
+quality_score_justification:
+  score: 88
+  scale_reference: "Payment features scored 86-94 after a comparable pass; atm-locator, the closest sibling in maturity, scored 84."
+  what_earns_it:
+    - "Evidence is population-scale, not sampled — every N/327 figure is a full census of the UK estate, so the claims are not extrapolations."
+    - "Both previously-open questions are closed by live probe, with the exact requests recorded so any reader can re-verify."
+    - "Five incorrect claims inherited from the sample were found and corrected rather than left to be discovered during implementation."
+    - "The fixture set now covers the one production case (1-in-327) that no local test would ever surface."
+    - "Every screen decision — filter membership, radius default, contact placement, the closure banner — is tied to a measured frequency rather than an assumption."
+  what_holds_it_back:
+    - "NEVER IMPLEMENTED. There is no source, no ViewModel, no Compose screen — nothing here has survived contact with a compiler or a device."
+    - "No mockup and no export. The feature has not been through /idea-feature-render or /idea-feature-stitch, so the layout is specified in prose and has never been seen."
+    - "Three genuine unknowns remain (see tests.yaml#still_untested): split-day rendering is guarded but unobserved, the 429 threshold is inferred rather than measured, and NonStandardAvailability has only ever been seen as an object on a single record."
+    - "The evidence directory the original spec cited does not exist, so provenance rests on live reproducibility rather than a checked-in capture."
+  why_not_higher: >-
+    A spec this well-evidenced would justify the low 90s once it had been rendered and
+    implemented. Neither has happened, and a screen whose layout has never been seen cannot be
+    scored as though its design were settled. 88 reflects strong, unusually well-verified
+    analysis attached to zero delivery.
+  why_not_lower: >-
+    It is materially better evidenced than atm-locator at 84 — that feature's claims rest on a
+    single sample where these rest on a census, and this pass actively disproved five of its own
+    inherited assumptions. Scoring it at or below its sibling would misreport the difference.
+
+screens:
+  - id: branch_locator_main
+    name: Branch Locator
+    archetype: index_list
+    route: /branch-locator
+
+dependencies:
+  tier: consumer
+  features:
+    - branch-locator
+
+related_features:
+  atm-locator:
+    relationship: sibling
+    join: "ATM.Branch.Identification → Branch.Identification"
+    note: >-
+      The two share a host and an auth model (none) but not a payload. Deliberately NOT merged
+      into one screen with a toggle — see api.yaml#why_separate_from_atm_locator.
+
+resolved_questions:
+  resolved_at: "2026-08-07, by live probe"
+  items:
+    - question: "Does /x-open-banking/v2.2/branches/sortcode/{sortcode} accept the hyphenated form (40-01-06), the 6-digit form, or both?"
+      answer: "SIX DIGITS ONLY."
+      evidence: "/sortcode/400106 → TotalResults 1. /sortcode/40-01-06 → TotalResults 0. /sortcode/99-99-99 → TotalResults 0, byte-identical to the hyphenated valid code."
+      consequence: >-
+        Worse than a formatting nicety: the API returns SortCode hyphenated on all 327 branches,
+        so its own output cannot be fed back into its own input. A wrongly-formatted code and a
+        non-existent one are indistinguishable, both HTTP 200 with an empty body, so the failure
+        is silent. Normalisation at the call site is now a hard requirement in ui.yaml,
+        data-flow.yaml and flow.yaml, covered by TC-BRANCH-014.
+    - question: "Does first direct appear in the branch feed?"
+      answer: "No — and this is structural, not a sampling artefact."
+      evidence: >-
+        The full 327-branch estate contains exactly one BrandName occurrence, 'HSBC UK'. Two
+        first direct sort codes (404784, 402406) returned zero results.
+      consequence: >-
+        first direct is a branchless telephone and internet bank with no branch estate, so its
+        absence from a BRANCH feed is correct and permanent. The brand split that is genuinely
+        real in the Product Finder feed does not apply here. The Brand[] loop should still be
+        traversed rather than flattened away, because the same envelope is shared with feeds
+        where the split does occur.
+
+open_questions:
+  - question: "Does HSBC ever publish a split OpeningHours day (e.g. a lunchtime closure)?"
+    status: "unobserved — all 1802 Day entries across the estate carry exactly one range"
+    why_it_matters: >-
+      OpeningHours IS a list in the contract, so a client reading [0] is conformant-looking and
+      works today. TC-BRANCH-012 guards it synthetically. Low risk, cheap insurance, no action
+      needed beyond keeping the guard.
+  - question: "Is NonStandardAvailability ever an array, or always a single object?"
+    status: "only one instance exists nationally (branch 401118) and it is an object"
+    why_it_matters: >-
+      A branch with two closure windows would need array handling. Cannot be settled from live
+      data because there is only one example in the country.
+  - question: "At what request rate does the 429 actually fire?"
+    status: "not probed — deliberately"
+    why_it_matters: >-
+      The rate-limit risk is inferred from the API being unauthenticated and origin-limited, not
+      measured. Provoking it against a public production endpoint would be abusive, so the
+      caching and no-refetch-on-pan guidance is precautionary by design.

@@ -1,0 +1,213 @@
+sibling: demo-data
+schema_version: "4.0"
+feature_id: pay-international-standing-order
+
+inherits_fixtures_from: pay-international-single
+inherits: [charge_bearer_options, bic_probes]
+also_inherits_from: pay-domestic-standing-order
+also_inherits: [frequency_options]
+
+content:
+  amount_shape_crossing:
+    note: >-
+      The proof that the two mandate rails are mutually exclusive. Round 15 sent each rail the
+      other's amount field, in both directions, and both were refused.
+    probes:
+      - { rail: international, sent: "FirstPaymentAmount, InstructedAmount removed", result: "U005 Field is not expected @ Data.Initiation.FirstPaymentAmount" }
+      - { rail: domestic, sent: "InstructedAmount, FirstPaymentAmount removed", result: "U005 Field is not expected @ Data.Initiation.InstructedAmount" }
+      - { rail: domestic, sent: "both FirstPaymentAmount and InstructedAmount", result: "U005 @ Data.Initiation.InstructedAmount" }
+    conclusion: "Proven mutually exclusive, not assumed. No test ever produced an acceptance of the wrong field."
+
+  staged_consent_response:
+    note: "Consent 45173 -> resource 19917 (flow-so-international.md)."
+    Data:
+      ConsentId: "45173"
+      CreationDateTime: "2026-08-06T10:36:21+00:00"
+      Status: "AWAU"
+      StatusUpdateDateTime: "2026-08-06T10:36:21+00:00"
+      Permission: "Create"
+      Initiation:
+        MandateRelatedInformation:
+          Frequency: { Type: "MNTH" }
+          FirstPaymentDateTime: "2026-08-13T10:36:18+00:00"
+          FinalPaymentDateTime: "2027-02-24T10:36:18+00:00"
+        InstructedAmount: { Amount: "1.02", Currency: "USD" }
+        CreditorAccount:
+          SchemeName: "UK.OBIE.IBAN"
+          Identification: "FR29NWBK60161331926819"
+          Name: "Mr Mark"
+        CurrencyOfTransfer: "USD"
+        ChargeBearer: "BorneByCreditor"
+    Risk: {}
+    charges_note: "NO Charges on the consent."
+    absent_keys_note: >-
+      Charges, CutOffDateTime, ExpectedExecutionDateTime and ExpectedSettlementDateTime are ALL
+      ABSENT — the keys are missing, not empty. The domestic rails return all four. A parser that
+      defaults Charges to [] renders this consent as a free mandate; the resource below proves it
+      costs 0.50.
+    key_order_note: >-
+      Initiation keys are in the SERVER's echo order — ChargeBearer, CurrencyOfTransfer,
+      InstructedAmount, MandateRelatedInformation, [CreditorAgent], [DebtorAccount],
+      CreditorAccount — not the request's. Never string-compare a re-serialised local model
+      against this fixture.
+    risk_note: >-
+      Risk {} — empty. This rail carries neither CategoryPurposeCode nor PaymentContextCode, and
+      staged 201 that way. The single and scheduled rails carry CategoryPurposeCode 'EPAY' in 25
+      of 25 scenarios. Whether this endpoint would ACCEPT a PaymentContextCode is UNTESTED, which
+      is why FR-015 is carried as an open question rather than as satisfied.
+    debtor_account_note: >-
+      This consent omits DebtorAccount. That is a choice, not a constraint — the field is optional
+      and accepted on this rail. See the 19918 fixture below, which carries one.
+    consent_id_note: '"45173" — a short sequential integer-as-string. Enumerable, not a UUID. Never logged or deep-linked.'
+    date_note: "Mandate dates echo BYTE-IDENTICAL with the time intact — unlike RequestedExecutionDateTime on the scheduled rails."
+
+  authorised_consent_response:
+    Data: { ConsentId: "45173", Status: "AUTH", StatusUpdateDateTime: "2026-08-06T10:36:21+00:00" }
+    note: "StatusUpdateDateTime unchanged, as on every family."
+
+  submit_response:
+    note: "INCO at CREATION — this rail never emits PDNG. Charge appears here, 0.50 in the INSTRUCTED currency (USD)."
+    Data:
+      InternationalStandingOrderId: "19917"
+      ConsentId: "45173"
+      Status: "INCO"
+      CreationDateTime: "2026-08-06T10:37:45+00:00"
+      Charges:
+        - { ChargeBearer: "BorneByCreditor", Type: "UK.OBIE.CHAPSOut", Amount: { Amount: "0.50", Currency: "USD" } }
+
+  status_readback_response:
+    Data: { InternationalStandingOrderId: "19917", Status: "INCO" }
+
+  charge_currency_evidence:
+    note: "The charge follows the INSTRUCTED currency, not the transfer currency."
+    resources:
+      - { id: "19917", instructed: USD, transfer: USD, charge: "0.50 USD" }
+      - { id: "19918", instructed: GBP, transfer: USD, charge: "0.50 GBP", note: "The decisive case — the two currencies differ and the charge follows instructed." }
+
+  global_money_conversion_resource:
+    note: >-
+      Resource 19918. The ONE case where a TPP may name an otherwise-refused payer on this rail —
+      Global Money as both debtor and creditor. Proves the same-account conversion exists as a
+      RECURRING instruction. Not offered by this form; recorded to scope the GM exclusion.
+    Data:
+      InternationalStandingOrderId: "19918"
+      Status: "INCO"
+      Initiation:
+        MandateRelatedInformation:
+          Frequency: { Type: "WEEK" }
+          FirstPaymentDateTime: "2026-08-13T10:38:41+00:00"
+          FinalPaymentDateTime: "2026-12-04T10:38:41+00:00"
+        InstructedAmount: { Amount: "5.00", Currency: "GBP" }
+        DebtorAccount: { SchemeName: "UK.OBIE.SortCodeAccountNumber", Identification: "80119770009652" }
+        CreditorAccount: { SchemeName: "UK.OBIE.SortCodeAccountNumber", Identification: "80119770009652" }
+        CurrencyOfTransfer: "USD"
+      Charges:
+        - { Type: "UK.OBIE.CHAPSOut", Amount: { Amount: "0.50", Currency: "GBP" } }
+    anomaly_note: >-
+      The CreditorAccount here is SortCodeAccountNumber, not IBAN. CORRECTED 2026-08-07: this is
+      NOT an "exception to the IBAN-creditor rule" — there was never a scheme rule to except.
+      U027 @ CreditorAccount.SchemeName is RESOLVED-ACCOUNT dependent: SO-I07 refuses a sort-code
+      creditor, while the SAME SCHEME with Identification 80119770009652 (Global Money GMA)
+      stages 201 across the intl-SO scenarios with debtor current, savings and none. SP-I08 and
+      SP-I05 show the identical split on the scheduled rail. Global Money is simply the only
+      account addressable as an international creditor by sort code.
+    debtor_account_note: >-
+      Note also that this fixture carries a DebtorAccount. That is NOT anomalous either:
+      DebtorAccount is an OPTIONAL, ACCEPTED member of the international standing-order Initiation
+      — intl-SO scenarios staged 201 with a current account, with a savings account and with the
+      key omitted. It never carries a Name. The prose in this feature previously said the field
+      was not in the schema; this fixture always contradicted it, and the fixture was right.
+
+  fx_absence:
+    note: >-
+      No response on this family carries ExchangeRateInformation, a rate, or a projected total.
+      This fixture records the ABSENCE so a renderer cannot bind to a field that is never present.
+    exchange_rate_information: null
+    projected_total: null
+    per_instalment_received_amount: null
+    closed_experiment:
+      was: >-
+        Recorded here as untested and as the highest-value FX experiment available — Lloyds does
+        not support this family and Monzo does not document it. It has now been run.
+      result: "REFUSED, all three RateType values."
+      probes:
+        - { scenario: "R16-O1", rate_type: Actual, result: refused }
+        - { scenario: "R16-O2", rate_type: Indicative, result: refused }
+        - { scenario: "R16-O3", rate_type: Agreed, sent: "ExchangeRate 1.15 + ContractIdentification 'FX-CONTRACT-001'", result: refused }
+      controls: ["R16-C1 → 201", "R16-C2 → 201", "R16-C3 → 201"]
+      breadth: "Same refusal on the single (R16-P1/P2/P3) and scheduled (R16-S1/S2/S3) rails."
+      conclusion: >-
+        No rate can be shown before authorisation, and a TPP cannot assert even one it holds by
+        contract. The request field is rejected, so this is settled rather than merely
+        unavailable.
+      divergence_retained: >-
+        ExchangeRateInformation is absent from the v4.0 request dictionary but PRESENT in the
+        published usage examples. Recorded, not resolved.
+
+  debtor_account_probes:
+    note: >-
+      CORRECTED 2026-08-07. DebtorAccount is OPTIONAL and ACCEPTED on the international
+      standing-order rail — it is not absent from the schema. All of these staged 201.
+    accepted:
+      - { debtor: "a current account", result: 201 }
+      - { debtor: "a savings account", result: 201 }
+      - { debtor: "none — key omitted entirely", result: 201 }
+      - { debtor: "Global Money, 80119770009652 (resource 19918, as both debtor and creditor)", result: "201, INCO" }
+    shape:
+      permitted: [SchemeName, Identification]
+      forbidden: Name
+    what_this_form_sends: "None. A product simplification, not a schema constraint."
+
+  creditor_resolution_probes:
+    note: >-
+      U027 @ CreditorAccount.SchemeName is decided by the RESOLVED ACCOUNT, not the scheme string
+      — the same scheme appears on both sides of this split.
+    refused:
+      - { scenario: "SO-I07", creditor_scheme: "UK.OBIE.SortCodeAccountNumber", error: "U027 @ Data.Initiation.CreditorAccount.SchemeName" }
+    accepted:
+      - { scenario: "intl-SO, debtor current / savings / none", creditor_scheme: "UK.OBIE.SortCodeAccountNumber", identification: "80119770009652", account: "Global Money GMA", result: 201 }
+    same_split_on_the_scheduled_rail: "SP-I08 refused against SP-I05 accepted."
+    conclusion: "Global Money is the only account addressable as an international creditor by sort code."
+
+  open_ended_mandate_probe:
+    note: "FinalPaymentDateTime is genuinely optional on the wire."
+    omitted: { field: "MandateRelatedInformation.FinalPaymentDateTime", result: "201 — an open-ended mandate with no end date" }
+    ui_consequence: >-
+      Combined with amendment_prohibition, an open-ended mandate is a recurring overseas payment
+      the PSU cannot stop from this app. open_ended_mandate_note says where it can be stopped.
+
+  charge_visibility_timeline:
+    note: "The fee is INVISIBLE until after the PSU has authorised. A PISP cannot show it earlier."
+    stages:
+      - { stage: "consent staged (AWAU)", charges: "key ABSENT", fee_row: "unknown" }
+      - { stage: "consent authorised (AUTH)", charges: "key ABSENT", fee_row: "unknown" }
+      - { stage: "resource created", charges: "0.50 in the INSTRUCTED currency", fee_row: "0.50 USD (19917) / 0.50 GBP (19918)" }
+    forbidden_rendering: ["blank", "0.00", "free", "no fee"]
+    unstated_by_the_api: "Whether the 0.50 recurs per execution or applies once at setup. The screen must not answer either way."
+
+  error_responses:
+    envelope_ref: "dtos/ObPaymentError.yaml"
+    two_entry_error:
+      note: >-
+        Errors is an array and can carry TWO entries. SO-I04 returns two Global Money rules
+        together; SO-I05 fixes the first and receives the second alone, which is the batching
+        behaviour of U002 business rules. On mixed faults the SCHEME check (U027) precedes the
+        business rule.
+      scenarios: ["SO-I04", "SO-I05"]
+      http: 400
+    first_payment_amount_on_international:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U005", Message: "Field is not expected", Path: "Data.Initiation.FirstPaymentAmount" }] }
+    charge_bearer_omitted:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U004", Message: "Field is missing", Path: "Data.Initiation.ChargeBearer" }] }
+    remittance_information_sent:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U005", Message: "Field is not expected", Path: "Data.Initiation.RemittanceInformation" }] }
+    invalid_frequency:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U002", Message: "Invalid value", Path: "Data.Initiation.MandateRelatedInformation.Frequency.Type" }] }
+    daily_frequency:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U002", Message: "Invalid value", Path: "Data.Initiation.MandateRelatedInformation.Frequency.Type" }] }
+      note: "DAIL is the one refusal tested on BOTH rails. ADHO, INDA and MIAN were refused domestically and never sent internationally."

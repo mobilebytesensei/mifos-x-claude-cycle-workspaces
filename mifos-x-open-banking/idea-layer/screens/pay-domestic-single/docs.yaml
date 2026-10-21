@@ -1,0 +1,262 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: pay-domestic-single
+
+feature: pay-domestic-single
+contract_version: "2.1.0"
+status: designed
+score: 94
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. Added 2026-08-07 (/idea-sync).
+quality_score: 94
+cluster: payment-initiation
+acceptance_refs: [FR-012, FR-015, FR-016, FR-017, FR-018, FR-021]
+scaffolded_by: /idea-sync
+archetype: form
+flow_ref: pay-domestic-single
+description: >-
+  Domestic single payment — pay a person now, in sterling, to a UK sort code and account
+  number. Four steps in one route: funding account, payee, amount, review. Stages a
+  domestic-payment-consent, hands off to payment-consent for the bank authorisation, runs
+  funds-confirmation, then submits and hands the result to payment-status.
+
+  This is the REFERENCE rail. The other five PIS types are documented as deltas from it, so
+  every divergence stated in their specs is measured against this contract.
+has_ui: true
+has_server: false
+capabilities: [has_ui, has_api, has_flow, has_form_input, has_system_integration]
+system_capabilities:
+  - kind: deep_link
+    detail: "Hands off to payment-consent for the app-to-app authorise leg, then resumes to submit."
+
+metadata:
+  category: form
+  implementation_ready: true
+  quality_score: 94
+  scaffold_origin: "/idea-sync — seven-type payments rewrite, 2026-08-06"
+
+# ─────────────────────────────────────────────────────────────────────────
+# WHAT THIS RAIL IS, AGAINST THE OTHER SIX
+# ─────────────────────────────────────────────────────────────────────────
+rail_position:
+  time_dimension: none
+  amount_field: InstructedAmount
+  creditor_scheme: UK.OBIE.SortCodeAccountNumber
+  funds_confirmation: "GET — the only verb form shared with international single"
+  remittance_information: accepted
+  charge_at_staging: "0.05 GBP UK.OBIE.CHAPSOut"
+  consent_ladder: "AWAU -> AUTH -> COND"
+  resource_ladder: "ACSP -> ACCC"
+  risk_block: "consumer PaymentContextCode, no merchant fields"
+  structural_note: >-
+    The richest payload of the three domestic shapes — 34 body leaves against 9 for a standing
+    order. The payload SHRINKS as the object grows more abstract: a standing order drops
+    DebtorAccount, LocalInstrument and the identity fields, and empties Risk. A mandate does not
+    pick a rail (the bank picks one per instalment) and has no single e-commerce context to
+    attach.
+    CORRECTED 2026-08-07: RemittanceInformation was previously listed among the dropped fields.
+    It is not dropped — the standing-order rail accepts it at Initiation level (R17-D01,
+    R17-D03). Only MandateRelatedInformation.Reference is refused there. See
+    pay-domestic-standing-order/api.yaml#reference_channel.
+
+# ─────────────────────────────────────────────────────────────────────────
+# SUPERSEDES
+# ─────────────────────────────────────────────────────────────────────────
+supersedes:
+  screens: [send-money, send-money-amount, send-money-confirm, payment-result]
+  deleted_at: "2026-08-06"
+  reason: >-
+    send-money described this same rail as a three-screen form. It is replaced rather than
+    renamed because the old set carried OBP-era structure that survived the 2026-08-06
+    reconciliation only in its derived artifacts — the preview HTML still rendered an
+    "Estimated fee: Free (SEPA)" banner and a payment-rail chip group, neither of which exists
+    under OBIE. payment-result was reached from sca-challenge, a screen that cannot exist when
+    the bank performs SCA in its own browser.
+  what_carried_over:
+    - "The minor-units-in-state / major-units-on-the-wire amount discipline"
+    - "The state-transition-unmount submit guard"
+    - "The consumer-context constraint (now binding all seven types, not just this one)"
+    - "The 66 shared send_money.* string keys, owed a rename to payment.*"
+
+spec_ahead_of_source:
+  scope: feature
+  cluster: payment-initiation
+  declared_at: "2026-08-06"
+  declared_by: "/idea-sync (PISP-tests research rewrite)"
+  owed_by: /kmp-implement
+  reason: "New per-type surface from the seven-type rewrite. No feature module exists yet."
+  source_state_measured:
+    present:
+      - "130 PISP wire DTOs under core/network/.../model/pisp/ (24 of them domesticPayment request+response, serialization-tested)"
+    absent:
+      - "no Ktorfit service — zero @POST /domestic-payment-consents in core/network"
+      - "no Store5 store, no repository"
+      - "no feature module, so no TestTags.kt to bind test_tag against"
+  consequence_for_verification: "drift and source-test checks are UNASSERTABLE, not failing. Score N/A."
+
+regulatory:
+  note: >-
+    PISP is a distinct FCA permission from AISP. Sandbox operation is unaffected; production
+    payment initiation needs authorisation this project does not hold.
+  affects_production: true
+  affects_sandbox: false
+  adr_required: true
+
+vm_actions:
+  - name: LoadPaymentSources
+    signature: 'suspend fun loadPaymentSources()'
+    state_mutations:
+      - uiState = Loading
+      - "uiState = Content(step = Account, eligibleDebtorAccounts = accounts.filter { it.scheme == SortCodeAccountNumber }, hiddenAccountCount = accounts.size - eligible.size)"
+      - "uiState = Content(step = Account) with no eligible accounts -> content_no_eligible_accounts"
+    side_effects:
+      - "GET /accounts via AccountsRepository"
+      - "GET /accounts/{AccountId}/beneficiaries via BeneficiariesRepository"
+    error_handling:
+      on_401: uiState = Error(TokenExpired)
+      on_403: uiState = Error(ConsentRevoked)
+      on_network: uiState = Error(NetworkError)
+
+  - name: ConfirmAndStageConsent
+    signature: 'suspend fun confirmAndStageConsent()'
+    state_mutations:
+      - uiState = Submitting(StagingConsent)
+      - uiState = Submitting(AwaitingAuthorisation, consentId = response.Data.ConsentId)
+    side_effects:
+      - "POST /domestic-payment-consents, client-credentials payments-scope token"
+      - "Attaches x-jws-signature (detached PS256, b64:false + crit)"
+      - "Attaches x-idempotency-key, stable across retries"
+      - "Emits NavigateToPaymentConsent"
+    error_handling:
+      on_400_U019: uiState = Error(SignatureMissing)
+      on_400_U002: uiState = Error(IneligibleAccount)
+      on_401: uiState = Error(TokenExpired)
+      on_network: uiState = Error(NetworkError)
+
+  - name: ConfirmFunds
+    signature: 'suspend fun confirmFunds(consentId: String)'
+    state_mutations:
+      - uiState = Submitting(ConfirmingFunds)
+    side_effects:
+      - "GET /domestic-payment-consents/{ConsentId}/funds-confirmation on the PSU token"
+    error_handling:
+      on_funds_unavailable: "uiState = Error(InsufficientFunds); returns to the Amount step"
+
+  - name: SubmitPayment
+    signature: 'suspend fun submitPayment(consentId: String)'
+    state_mutations:
+      - uiState = Submitting(SubmittingPayment)
+      - "uiState = Success(paymentId, status) -> emits NavigateToPaymentStatus"
+    side_effects:
+      - "POST /domestic-payments on the PSU token"
+      - "Echoes the Initiation read back from the AUTHORISED consent, not the local staged copy"
+      - "Reuses the SAME x-idempotency-key"
+    error_handling:
+      on_400_U009: uiState = Error(ConsentNotAuthorised)
+      on_400_U008: uiState = Error(InitiationMismatch)
+      on_400_U019: uiState = Error(SignatureMissing)
+      on_403: uiState = Error(ConsentRevoked)
+      on_network: uiState = Error(NetworkError)
+
+  - name: RetrySubmit
+    signature: 'fun retrySubmit()'
+    visibility_condition: "error.type in {NetworkError, TokenExpired}"
+    notes: >-
+      Idempotency-key-safe: the same key plus the same body returns the original result rather
+      than creating a second payment.
+
+error_cases:
+  - id: SignatureMissing
+    trigger: "400 U019"
+    user_message: '{strings.error.payment.signature_missing}'
+    recovery: "Not user-recoverable. Support reference (the OB envelope Id), not a Retry."
+  - id: ConsentNotAuthorised
+    trigger: "400 U009"
+    user_message: '{strings.error.payment.consent_not_authorised}'
+    recovery: "Re-authorise CTA restarts the app-to-app leg."
+  - id: InitiationMismatch
+    trigger: "400 U008"
+    user_message: '{strings.error.payment.initiation_mismatch}'
+    recovery: "Not user-recoverable. Re-read the authorised consent and resubmit from its Initiation."
+  - id: IneligibleAccount
+    trigger: "400 U002 or U027 on debtor/creditor"
+    user_message: '{strings.error.payment.ineligible_account}'
+    recovery: "Return to the account step. Should be unreachable — the picker prevents it."
+  - id: InsufficientFunds
+    trigger: "funds-confirmation returns FundsAvailable false"
+    user_message: '{strings.error.payment.insufficient_funds}'
+    recovery: "Return to the amount step; the payment is not submitted."
+  - id: ConsentRevoked
+    trigger: "403"
+    user_message: '{strings.error.payment.consent_revoked}'
+    recovery: "View Consents CTA navigates to consent-list."
+  - id: TokenExpired
+    trigger: "401"
+    user_message: '{strings.error.payment.token_expired}'
+    recovery: "Retry after refreshing the token."
+  - id: NetworkError
+    trigger: "IOException / timeout"
+    user_message: '{strings.error.payment.network_error}'
+    recovery: "Retry — safe because the idempotency key is reused."
+
+test_fixtures:
+  source: idea-layer/screens/pay-domestic-single/tests.yaml
+  fixture_data: idea-layer/screens/pay-domestic-single/demo-data.yaml
+  scenario_count: 16
+  priority_distribution: { p0: 9, p1: 6, p2: 1 }
+
+# ─────────────────────────────────────────────────────────────────────────
+# ERROR CONTRACT
+# ─────────────────────────────────────────────────────────────────────────
+error_contract_ref:
+  dto: dtos/ObPaymentError.yaml
+  note: >-
+    The envelope shape, the Errors[]-is-an-array finding, the fail-fast U005-before-U004
+    ordering, the unstable Path casing and the four U004 wordings are stated ONCE there and
+    shared by all seven PIS rails. The error_cases block below maps only what THIS screen
+    surfaces to the PSU; it does not restate the contract.
+  binding_consequences_for_this_screen:
+    - "error_panel iterates the whole Errors[] array — Errors[0] alone hides the actionable half (R13-10, R9-11)."
+    - "Copy is selected from ErrorCode + Path, never Message, and the Path match is case-insensitive (R2-05)."
+    - "IneligibleAccount cannot say WHY: U002 @ DebtorAccount.Identification means three different things. Pre-filter instead (FR-018)."
+    - "U021 is NOT mapped on this screen — it never occurs in the 139 single-payment scenarios."
+
+status_history:
+  - from: null
+    to: draft
+    at: "2026-08-06"
+    by: "/idea-sync — seven-type payments rewrite"
+    note: "Materialized from the pisp-tests corpus. Supersedes send-money."
+  - from: draft
+    to: enriched
+    at: "2026-08-07"
+    by: "/idea-sync"
+    note: >-
+      Folded in the full by-type capture corpus (139 single-payment scenarios) and bound the
+      screen to the new shared dtos/ObPaymentError.yaml. Added: RemittanceInformation.Structured
+      must be an ARRAY (R6-10 vs BT-07/BT-08); CreditorAccount.Name mandatory while
+      DebtorAccount.Name is not (R9-07); a partial Creditor party block needs BuildingNumber
+      (R3-09) so the block is omitted entirely; UK.OBIE.PAN refused as CREDITOR under every
+      LocalInstrument including BalanceTransfer (BT-01..BT-09, R6-08), which widens the
+      eligibility invariant to both pickers; the undiagnosable overloaded U002 on the debtor;
+      x-fapi-interaction-id; enumerable integer ConsentIds. CORRECTED two contradictions: the
+      submit echo is field-for-field, NOT byte-for-byte (the server reorders keys, so the old
+      assertion in TC-PDS-006 and data-flow was unsatisfiable on a valid payment); and U021 is
+      VRP-only despite two scenario TITLES claiming otherwise. Declared error_panel, which
+      states.error had referenced since 2026-08-06 without it ever being defined.
+      quality_score 94: every claim carries a scenario id, both contradictions are resolved
+      rather than papered over, and the shared error contract is referenced not duplicated.
+      Held below 96 because the eligibility set is proven only for the schemes actually tried
+      and no on-device run exists — this rail has no feature module yet (see
+      spec_ahead_of_source).
+  - from: enriched
+    to: designed
+    at: "2026-08-07"
+    by: "/idea-feature-export"
+    exports_produced: [spec_md, api_md, mockup_md, prompts_figma_md, prompts_per_state]
+    note: >-
+      /idea-feature-export --all, owner-scoped to the ten payment-initiation features. Roundtrip
+      verification PASSED on all five checks — state coverage, endpoint coverage, ViewModel
+      coverage, forbidden content, and prompt size (6 per-state prompts, all under the 4000-char
+      limit).

@@ -1,0 +1,282 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: pay-domestic-standing-order
+
+id: pay-domestic-standing-order
+name: Standing order
+feature: pay-domestic-standing-order
+flavor: consumer
+quality_score: 88
+contract_version: "2.1.0"
+capabilities: [has_ui, has_api]
+
+# ─────────────────────────────────────────────────────────────────────────
+# Four steps: Payee -> Schedule -> Amount -> Review.
+#
+# NOTE THE MISSING FIRST STEP. There is no funding-account step on this rail, because
+# DebtorAccount is not part of the standing-order schema at all — the mandate is implied by
+# whichever customer authorises it at the bank. Copying the reference rail's five-step shape
+# would produce an account picker whose value has nowhere to go.
+# ─────────────────────────────────────────────────────────────────────────
+
+inherits_from: pay-domestic-single
+inherits_components: [beneficiary_list, enter_manually_button, sort_code_field, account_number_field, payee_name_field]
+
+screens:
+  - id: pay-domestic-standing-order
+    name: Standing order
+    archetype: form
+    shell:
+      top_bar:
+        title: "{strings.pay_domestic_standing_order.title}"
+        navigation_icon: back
+        actions: []
+      bottom_nav: true
+
+components:
+  - type: stepper
+    id: step_indicator
+    steps: 4
+    labels:
+      - "{strings.payment.step.payee}"
+      - "{strings.payment.step.schedule}"
+      - "{strings.payment.step.amount}"
+      - "{strings.payment.step.review}"
+    test_context:
+      tag: payDomesticStandingOrder:stepIndicator
+
+  - type: banner
+    id: no_debtor_note
+    content: "{strings.payment.so_no_debtor_note}"
+    severity: info
+    visibility: "step == Payee"
+    test_context:
+      tag: payDomesticStandingOrder:noDebtorNote
+    note: >-
+      Explains that the account the standing order comes from is chosen when the PSU approves
+      at the bank, not here. Without this a PSU wonders why they were never asked. The schema
+      genuinely has no DebtorAccount field on this rail.
+
+  # ── Step 2: schedule ────────────────────────────────────────────────────
+  - type: dropdown
+    id: frequency_picker
+    label: "{strings.payment.frequency_label}"
+    options:
+      - { value: WEEK, label: "{strings.payment.frequency.week}" }
+      - { value: FRTN, label: "{strings.payment.frequency.frtn}" }
+      - { value: MNTH, label: "{strings.payment.frequency.mnth}" }
+      - { value: QURT, label: "{strings.payment.frequency.qurt}" }
+      - { value: YEAR, label: "{strings.payment.frequency.year}" }
+    visibility: "step == Schedule"
+    test_context:
+      tag: payDomesticStandingOrder:frequencyPicker
+    action_contract:
+      on_click: SelectFrequency(type)
+      effect: "sets content.frequency"
+      writes_to: "PayDomesticStandingOrderUiState.Content.frequency"
+    note: >-
+      Exactly five options. All nine OBIE OBFrequency6Code values were tested on this rail and
+      HSBC Personal accepts exactly these five; ADHO, INDA, MIAN and DAIL all return U002. The
+      labels are consumer words (Weekly, Every 2 weeks, Monthly, Every 3 months, Yearly), with
+      the OBIE code sent on the wire.
+
+  - type: date_picker
+    id: first_payment_date_picker
+    label: "{strings.payment.first_payment_date_label}"
+    min_date: "today + 1 day"
+    allow_weekends: true
+    visibility: "step == Schedule"
+    test_context:
+      tag: payDomesticStandingOrder:firstPaymentDatePicker
+    note: >-
+      Weekends are selectable. Weekend first-payment dates staged 201 in round 17. An
+      aggregated ASPSP table claims HSBC requires a working-day commencement, but that was
+      never tested here — every date in the corpus fell on a Thursday — so the picker does not
+      enforce a rule we cannot confirm.
+
+  - type: switch
+    id: has_end_date_switch
+    label: "{strings.payment.has_end_date_label}"
+    default: false
+    visibility: "step == Schedule"
+    test_context:
+      tag: payDomesticStandingOrder:hasEndDateSwitch
+    note: "Off by default — omitting FinalPaymentDateTime stages 201 as an open-ended mandate."
+
+  - type: date_picker
+    id: final_payment_date_picker
+    label: "{strings.payment.final_payment_date_label}"
+    min_date: "firstPaymentDate + 1 day"
+    max_date: "today + 12 months"
+    visibility: "step == Schedule AND hasEndDate"
+    test_context:
+      tag: payDomesticStandingOrder:finalPaymentDatePicker
+    note: >-
+      Bounded by the three rules HSBC returned in a single U003: after the first payment date,
+      within 12 months, and not today or tomorrow. The 12-month horizon is not in the
+      Implementation Guide — it came out of the error message.
+
+  # ── Step 3: amount ──────────────────────────────────────────────────────
+  - type: text_field
+    id: amount_field
+    label: "{strings.payment.so_amount_label}"
+    keyboard: number
+    visibility: "step == Amount"
+    test_context:
+      tag: payDomesticStandingOrder:amountField
+    note: "Goes out as FirstPaymentAmount. InstructedAmount is never sent on this rail — it returns U005."
+
+  - type: switch
+    id: varying_amounts_switch
+    label: "{strings.payment.varying_amounts_label}"
+    default: false
+    visibility: "step == Amount"
+    test_context:
+      tag: payDomesticStandingOrder:varyingAmountsSwitch
+    note: >-
+      Advanced, off by default. HSBC's Guide §20.2.1 requires the recurring and final amounts
+      to EQUAL the first if present. Staging does not enforce it — 1.00/2.00/3.00 staged 201 —
+      but no unequal mandate was ever authorised, so whether the rule fires later is unknown.
+      Defaulting to a single amount follows the documented rule; the switch exposes the
+      observed latitude for anyone who needs it.
+
+  - type: text_field
+    id: recurring_amount_field
+    label: "{strings.payment.recurring_amount_label}"
+    keyboard: number
+    visibility: "step == Amount AND varyingAmounts"
+    test_context:
+      tag: payDomesticStandingOrder:recurringAmountField
+
+  - type: text_field
+    id: final_amount_field
+    label: "{strings.payment.final_amount_label}"
+    keyboard: number
+    visibility: "step == Amount AND varyingAmounts AND hasEndDate"
+    test_context:
+      tag: payDomesticStandingOrder:finalAmountField
+
+  # ── CORRECTED 2026-08-07. no_reference_note was REMOVED — it stated something untrue. ──
+  - type: text_field
+    id: reference_field
+    label: "{strings.payment.reference_label}"
+    helper_text: "{strings.payment.reference_helper}"
+    max_length: 35
+    optional: true
+    visibility: "step == Amount"
+    test_context:
+      tag: payDomesticStandingOrder:referenceField
+    note: >-
+      REPLACES no_reference_note, which told the PSU a reference was unavailable on this rail.
+      That was wrong. R17-D01 stages 201 with Data.Initiation.RemittanceInformation.Unstructured
+      and echoes it verbatim; R17-D03 does the same for .Structured. The domestic standing order
+      has a working reference channel — it is just not where the mandate model suggests looking.
+      MandateRelatedInformation.Reference IS refused, on both the domestic and the international
+      rail, and probing only that field is how the earlier "not in the schema" conclusion was
+      reached.
+    wire_mapping: "Data.Initiation.RemittanceInformation.Unstructured[0]. Omitted entirely when blank."
+    structured_caveat: >-
+      If Structured is ever used instead, it MUST be an ARRAY of objects — a bare object returns
+      U002 "Invalid value" (BT-07, BT-08 on the single-payment rail; the shape rule is shared).
+
+  # ── Step 4: review ──────────────────────────────────────────────────────
+  - type: summary_card
+    id: review_card
+    visibility: "step == Review"
+    rows:
+      - { label: "{strings.payment.review.to}", value: creditorLabel }
+      - { label: "{strings.payment.review.frequency}", value: frequencyLabel }
+      - { label: "{strings.payment.review.first_payment}", value: firstPaymentDateLabel }
+      - { label: "{strings.payment.review.final_payment}", value: finalPaymentDateLabel, visibility: "hasEndDate" }
+      - { label: "{strings.payment.review.amount}", value: firstPaymentAmountLabel }
+      - { label: "{strings.payment.review.reference}", value: referenceLabel, visibility: "reference is not blank" }
+      - { label: "{strings.payment.review.fee}", value: feeLabel }
+    test_context:
+      tag: payDomesticStandingOrder:reviewCard
+    fee_note: >-
+      ADDED 2026-08-07. feeLabel renders the Charges[] AMOUNT and CURRENCY only. Charges[].Type
+      comes back as UK.OBIE.CHAPSOut on this rail — a CHAPS label on a recurring domestic
+      mandate that will not travel by CHAPS. Rendering Type would tell the PSU something false
+      about how their money moves.
+    first_payment_row_note: >-
+      firstPaymentDateLabel is always populated because this screen always SENDS
+      FirstPaymentDateTime. The field is in fact optional (R17-B01 stages 201 without it) but
+      when omitted the response omits it too — the bank reveals no derived first date — so
+      omitting it would leave this row with nothing truthful to show.
+
+  - type: banner
+    id: amend_notice
+    content: "{strings.payment.amend_notice_standing_order}"
+    severity: warning
+    visibility: "step == Review OR uiState is Success"
+    test_context:
+      tag: payDomesticStandingOrder:amendNotice
+    note: >-
+      MANDATORY under OBL CEG. Severity is warning rather than info here because a standing
+      order is open-ended — committing to an unchangeable recurring debit is a heavier decision
+      than a single dated payment.
+
+  - type: button
+    id: confirm_button
+    label: "{strings.payment.confirm_standing_order}"
+    style: { variant: filled_pill }
+    visibility: "step == Review AND uiState is Content"
+    test_context:
+      tag: payDomesticStandingOrder:confirmButton
+    action_contract:
+      on_click: ConfirmAndStageConsent
+      effect: "POST /domestic-standing-order-consents with Risk {}, then hands off to payment-consent"
+      writes_to: "PayDomesticStandingOrderUiState -> Submitting(StagingConsent)"
+
+  - type: progress
+    id: submitting_indicator
+    visibility: "uiState is Submitting"
+    labels:
+      StagingConsent: "{strings.payment.staging}"
+      AwaitingAuthorisation: "{strings.payment.awaiting_authorisation}"
+      SubmittingPayment: "{strings.payment.creating_mandate}"
+    test_context:
+      tag: payDomesticStandingOrder:submittingIndicator
+
+responsive: { mobile_only: false, baseline_width: 390 }
+
+states:
+  initial_state: loading
+  loading: { layout: { visible_components: [step_indicator] } }
+  content: { layout: { visible_components: [step_indicator, no_debtor_note, beneficiary_list] } }
+  submitting: { layout: { visible_components: [step_indicator, submitting_indicator] } }
+  error: { layout: { visible_components: [step_indicator, error_panel] } }
+
+state_model:
+  view_model: PayDomesticStandingOrderViewModel
+  ui_state_type: PayDomesticStandingOrderUiState
+  states: ["Loading", "Content(step)", "Submitting(stage)", "Error(type)"]
+  actions:
+    - LoadBeneficiaries
+    - SelectCreditor
+    - SelectFrequency
+    - SelectFirstPaymentDate
+    - ToggleEndDate
+    - SelectFinalPaymentDate
+    - EnterFirstPaymentAmount
+    - ToggleVaryingAmounts
+    - EnterRecurringAmount
+    - EnterFinalAmount
+    - EnterReference
+    - ReviewMandate
+    - ConfirmAndStageConsent
+    - SubmitStandingOrder
+    - RetrySubmit
+    - BackStep
+    - CancelMandate
+  events: [NavigateToPaymentConsent, NavigateToPaymentStatus]
+  di: [BeneficiariesRepository, PaymentInitiationRepository]
+  di_note: >-
+    AccountsOverviewRepository is deliberately NOT injected. This rail has no debtor-account
+    step, so there is nothing for it to supply.
+
+form_submit_guard: state-transition-unmount
+
+dependencies:
+  tier: feature
+  features: [beneficiaries, payment-consent, payment-status]

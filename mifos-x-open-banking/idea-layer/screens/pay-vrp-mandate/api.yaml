@@ -1,0 +1,360 @@
+sibling: api
+schema_version: "4.0"
+feature_id: pay-vrp-mandate
+
+# ═══════════════════════════════════════════════════════════════════════════
+# VARIABLE RECURRING PAYMENTS
+#   v4.0/pisp/domestic-vrp-consents -> domestic-vrps
+#
+# Evidence: captures/by-type/vrp.md (18 scenarios), captures/round14-vrp.md,
+# captures/flow-vrp-debtor-current.md, flow-vrp-debtor-savings.md, flow-vrp-bankpick-gm.md,
+# flow-vrp-bankpick-card.md (three authorised runs, eight settled payments),
+# captures/vrp-status-readback.md, captures/VRP-RESEARCH.md.
+#
+# STRUCTURALLY DISTINCT FROM ALL SIX PIS FAMILIES:
+#   ~ ControlParameters replace BOTH MandateRelatedInformation AND RequestedExecutionDateTime
+#   ~ funds-confirmation is a POST carrying an explicit amount, NOT a GET
+#   + DELETE consent — the ONLY delete in the entire payment surface
+#   ~ consent NEVER reaches COND; it stays AUTH and funds many payments
+#   ~ resource status returned in the v3.1 LONG form, unlike every other endpoint
+#   ~ GBP only; UK.OBIE.SortCodeAccountNumber required on BOTH sides
+#   - domestic only — there is no international VRP
+# ═══════════════════════════════════════════════════════════════════════════
+
+base_path: "/obie/open-banking/v4.0/pisp"
+api_source_ref: API-003
+inherits_from: pay-domestic-single
+inherits: [write_header_contract]
+
+scope_note: >-
+  VRP is a separate SPECIFICATION but not a separate product. There is no VRP OAuth scope and no
+  VRP TPP role — OBIE states a PISP calls VRP APIs using the `payments` scope, and HSBC's
+  production well-known config advertises exactly five scopes with no VRP one. The SSA carries
+  software_roles [AISP, PISP]; a VRP role does not exist. Our scope=payments result was correct
+  behaviour, not sandbox laxity.
+
+  The subtlety worth designing around: OBIE permits the SCOPE ITSELF to be the gate — "the ASPSP
+  may use the scope to limit functionality to sweeping or non-sweeping usage" — and there is NO
+  DISCOVERY MECHANISM for which. A payments token may or may not carry VRP rights, and the app
+  cannot find out except by trying.
+
+operations:
+
+  # ── 1. Create the mandate (ONCE) ────────────────────────────────────────
+  - id: create_vrp_consent
+    endpoint: "POST /domestic-vrp-consents"
+    auth: client_credentials_payments_scope
+    headers: [x-jws-signature, x-idempotency-key]
+    request_body:
+      Data:
+        ReadRefundAccount: "Yes | No"
+        ControlParameters: "<see VrpControlParameters DTO>"
+        Initiation:
+          DebtorAccount: { SchemeName: "UK.OBIE.SortCodeAccountNumber", Identification: "<14 digits>" }
+          CreditorAccount: { SchemeName: "UK.OBIE.SortCodeAccountNumber", Identification: "<14 digits>", Name: "<payee>" }
+          RemittanceInformation:
+            Unstructured: ["<optional — see reference_immutability_trap>"]
+      Risk:
+        PaymentContextCode: "<VRP-specific; see risk_block_note>"
+    success: "201 with Data.ConsentId and Data.Status AWAU"
+    mandatory_blocks:
+      - { field: "Data.ControlParameters", omission_error: "U004 Field is missing @ Data.ControlParameters" }
+      - { field: "ControlParameters.PeriodicLimits", omission_error: "U004 Field is missing @ ControlParameters.PeriodicLimits" }
+      - { field: "ControlParameters.MaximumIndividualAmount", omission_error: "U004 Field is missing @ ControlParameters.MaximumIndividualAmount" }
+    risk_block_note: >-
+      HSBC's Postman body for this endpoint sends PaymentContextCode "PispPayee" plus
+      MerchantCategoryCode, MerchantCustomerIdentification, BeneficiaryPrepopulatedIndicator,
+      PaymentPurposeCode, BeneficiaryAccountType and a DeliveryAddress. The merchant fields are
+      forbidden here exactly as on the six PIS families — this is a consumer app. The VRP Risk
+      block uses a different context vocabulary from OBInternalPaymentContext1Code, and only the
+      minimum is sent.
+
+  # ── 2. Consent status ───────────────────────────────────────────────────
+  - id: get_vrp_consent_status
+    endpoint: "GET /domestic-vrp-consents/{ConsentId}"
+    auth: client_credentials_payments_scope
+    status_ladder: "AWAU -> AUTH, and stays AUTH"
+    no_consumed_state: >-
+      The VRP consent state model explicitly OMITS Consumed. Every other family moves its consent
+      to COND on first use; this one does not. Verified on three runs — two payments each on a
+      single authorisation, with the consent still AUTH afterwards — and again on a cold read
+      hours later.
+    after_delete: "400 U011 'Resource cannot be found'. See revocation_contract."
+    critical_note: "StatusUpdateDateTime does not move on AWAU -> AUTH, as on every family."
+
+  # ── 3. Revoke ───────────────────────────────────────────────────────────
+  - id: delete_vrp_consent
+    endpoint: "DELETE /domestic-vrp-consents/{ConsentId}"
+    auth: client_credentials_payments_scope
+    headers: []
+    success: "204 with an empty body"
+    uniqueness: >-
+      The ONLY DELETE in the entire payment surface. PSD2 Article 80 forbids a PSU revoking an
+      authorised payment-order consent, while the VRP profile explicitly grants revocation "at
+      any point in time". That asymmetry is why this endpoint exists here and nowhere else.
+
+  # ── 4. Funds confirmation — a POST, not a GET ───────────────────────────
+  - id: vrp_funds_confirmation
+    endpoint: "POST /domestic-vrp-consents/{ConsentId}/funds-confirmation"
+    auth: psu_authorization_code
+    headers: [x-jws-signature, x-idempotency-key]
+    request_body:
+      Data:
+        ConsentId: "<the mandate>"
+        Reference: "<free text>"
+        InstructedAmount: { Amount: "<the amount about to be paid>", Currency: "GBP" }
+    success: "201 with Data.FundsAvailableResult.FundsAvailable"
+    verb_rationale: >-
+      A POST because a VRP consent has NO fixed amount — the TPP must supply the one it is about
+      to pay. A PISP consent carries one fixed amount already, so a GET suffices there. The verb
+      inverts with the presence of an amount, not arbitrarily.
+    token_requirement:
+      required: psu_authorization_code
+      client_credentials_result: "401"
+      note: >-
+        Reproduced on all three authorised runs. OBIE and the shipped Postman collection both
+        specify the authorisation-code token. A locally-generated yaml claimed client-credentials
+        and was wrong — one of the reasons that file is marked never-cite.
+
+  # ── 5. Pay under the mandate ────────────────────────────────────────────
+  - id: create_vrp_payment
+    endpoint: "POST /domestic-vrps"
+    auth: psu_authorization_code
+    headers: [x-jws-signature, x-idempotency-key]
+    request_body:
+      Data:
+        ConsentId: "<the mandate>"
+        Initiation: "<taken from the AUTHORISED consent — see initiation_source_rule>"
+        VRPType: "UK.OBIE.VRPType.Sweeping"
+        Instruction:
+          InstructionIdentification: "<generated>"
+          EndToEndIdentification: "<generated>"
+          InstructedAmount: { Amount: "<this payment's amount>", Currency: "GBP" }
+          CreditorAccount: "<same as the Initiation's>"
+          RemittanceInformation: "<see reference_immutability_trap>"
+        PSUAuthenticationMethod: "UK.OBIE.SCANotRequired"
+      Risk: "<minimum consumer shape>"
+    success: "201 with Data.DomesticVRPId and Data.Status ACSP"
+    no_reauthentication: >-
+      The defining VRP property. Two payments per run on a single authorisation with NO PSU
+      re-authentication, on all three runs. This is the observable difference between a mandate
+      and a one-shot consent.
+    breach_error: "400 U014"
+
+  # ── 6. Payment status ───────────────────────────────────────────────────
+  - id: get_vrp_payment_status
+    endpoint: "GET /domestic-vrps/{DomesticVRPId}"
+    auth: client_credentials_payments_scope
+    status_ladder: "ACSP -> ACCC"
+    encoding_warning: >-
+      CRITICAL. This endpoint returns the v3.1 LONG status name
+      'AcceptedCreditSettlementCompleted' where every other endpoint in the entire surface
+      returns the v4.0 short 'ACCC'. HSBC serves both spec generations side by side. A
+      short-code-only mapper reads every VRP payment as an unrecognised status and, per the
+      fail-open rule, renders a completed payment as permanently in progress.
+    status_reason: >-
+      Populated on failures. UK.OBIE.ExemptionNotApplied is the trusted-beneficiary failure —
+      see silent_failure_mode.
+
+# ─────────────────────────────────────────────────────────────────────────
+# ELIGIBILITY — scheme-based, stated in prose ONLY on this endpoint
+# ─────────────────────────────────────────────────────────────────────────
+eligibility:
+  rule: "UK.OBIE.SortCodeAccountNumber required on BOTH sides. No IBAN, no PAN."
+  errors:
+    - { shape: "credit card as debtor", error: "U021 'Sorry, We cannot process the Payment Instruction as the Debtor Identification is not a UK.OBIE.SortCodeAccountNumber account.'" }
+    - { shape: "IBAN creditor", error: "U021 '…the Creditor Identification is not a UK.OBIE.SortCodeAccountNumber account.'" }
+    - { shape: "Global Money as TPP-named debtor", error: "U002 Invalid Field @ DebtorAccount.Identification" }
+  prose_note: >-
+    This is the ONLY endpoint that states the scheme rule in words. The same constraint appears
+    elsewhere as a bare U027 'Unsupported scheme' with no explanation. The underlying rule is
+    identical everywhere; only VRP articulates it.
+  guide_divergence:
+    documented: "Guide §28.8 — PCA only, with a 'hard-stop error' for anything else."
+    observed: >-
+      Savings authorised and settled two payments (19931, 19932). Global Money funded two more
+      when the BANK nominated it (19933, 19934). Neither is a Personal Current Account. The
+      documented restriction is not the one implemented.
+  card_is_absolute: >-
+    The credit card is refused by BOTH routes — TPP-named AND bank-selected. When the PSU
+    selected the card at the bank, the bank wrote a UK.OBIE.PAN debtor into the authorised
+    consent and POST /domestic-vrps then rejected that exact payload. Bank-selection rescues the
+    card on all six PIS families and fails here. It is the one place the escape hatch does not work.
+
+currency:
+  rule: "GBP only, stated explicitly."
+  errors:
+    - "U023 MaximumIndividualAmount.Currency is invalid. Only 'GBP' is allowed @ Data.ControlParameters.MaximumIndividualAmount.Currency"
+    - "U005 Invalid Currency @ Data.ControlParameters.PeriodicLimits[0].Currency"
+  note: "U023 appears nowhere else in the testing and nowhere in the 160-page Implementation Guide."
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE INITIATION SOURCE RULE — fatal on this family
+# ─────────────────────────────────────────────────────────────────────────
+initiation_source_rule:
+  rule: "The payment's Initiation MUST be read back from the AUTHORISED consent, never from what was staged."
+  why: >-
+    When the TPP omits DebtorAccount, the bank OVERWRITES Initiation.DebtorAccount with the PSU's
+    choice. Consent 45223 staged with debtor null came back with Global Money written in. On the
+    six PIS families echoing the stale local copy merely blocks re-use; here the payment itself
+    is refused.
+  necessary_but_not_sufficient: >-
+    Reading it back is required but does not guarantee a payable value. The bank may write an
+    account whose scheme its own payment endpoint refuses — that is exactly what happens with the
+    credit card. So the app must ALSO handle a U021 on a payload it took verbatim from the
+    bank's own authorised consent.
+  field_note: "Data.DebtorAccount (outside Initiation) is NEVER populated on VRP, in any run."
+
+# ─────────────────────────────────────────────────────────────────────────
+# REVOCATION — the API forgets, so the app must remember
+# ─────────────────────────────────────────────────────────────────────────
+revocation_contract:
+  delete_result: "204, empty body"
+  subsequent_get: "400 with U011 'Resource cannot be found'"
+  spec_basis: >-
+    OBIE mandates exactly this: "The ASPSP must delete the resource and respond to subsequent GET
+    requests with an HTTP status of 400."
+  consequence: >-
+    There is NO revoked STATUS. Once deleted the consent can never report anything again. The app
+    MUST persist its own revoked record, and MUST map U011 on a consent GET to "you revoked this"
+    rather than to a generic error — otherwise a revoked mandate renders as a broken one.
+  payments_survive: "Payments already made under a revoked mandate still read back correctly on GET /domestic-vrps/{id}."
+  in_flight: "OBIE states in-flight behaviour on revocation is explicitly non-deterministic across ASPSPs."
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE TWO SILENT FAILURE MODES
+# ─────────────────────────────────────────────────────────────────────────
+silent_failure_mode:
+  trusted_beneficiary:
+    mechanism: >-
+      HSBC documents that VRPs are rejected at the point of fulfilment if the Trusted Beneficiary
+      exemption check fails — which happens if the customer deletes the beneficiary from their
+      beneficiary list in the HSBC app.
+    symptom: "The consent stays AUTHORISED while payments silently start failing."
+    signal: "StatusReason UK.OBIE.ExemptionNotApplied on the payment."
+    ui_requirement: >-
+      A mandate whose recent payments carry this StatusReason must render as
+      authorised-but-failing, NOT as healthy. The consent status alone cannot distinguish them.
+  out_of_band_revocation:
+    mechanism: "The PSU revokes the mandate in the HSBC app."
+    symptom: "The consent GET starts returning 400 U011 with no prior warning."
+    signal: "Event polling — UK.OBIE.Consent-Authorization-Revoked via POST /v4.0/events."
+    ui_requirement: "Reflect the revocation without the PSU having to open the mandate. FR-024."
+  no_async_failure_reason: >-
+    OBIE provides no async failure reason when a payment fails a background check. Documented as
+    "being considered". So beyond the two signals above there is nothing to key on.
+
+operational_hazards:
+  evening_fraud_window: >-
+    HSBC documents that payment requests received between 18:00 and 23:45 may be rejected or
+    declined if identified as requiring additional fraud checks. Not a client bug; surface the
+    rejection plainly rather than retrying into it.
+  hsbc_destination_restriction: >-
+    HSBC describes its Personal VRP API as "from HSBC UK Personal current accounts to non HSBC UK
+    accounts" — a restriction absent from the OBIE standard and not tested here.
+
+reference_immutability_trap:
+  # CORRECTED 2026-08-07 after a full read of captures/by-type/vrp.md. The previous version of
+  # this block asserted the trap as established fact and drove a UI requirement off it. The
+  # capture corpus does not support it, and for the one field actually tested it shows the
+  # OPPOSITE. Both halves are recorded rather than resolved.
+  status: contradicted-for-unstructured-untested-for-reference
+  documented_claim: >-
+    OBIE/VRP guidance holds that a Reference fixed on the consent binds every payment under it,
+    so a per-payment reference requires omitting it at consent time.
+  what_was_actually_observed:
+    finding: "Per-payment remittance is INDEPENDENT of the consent's, and the payment's value is honoured."
+    evidence: >-
+      The consent carried RemittanceInformation.Unstructured ["VRP20260806"]; the payments
+      carried ["VRP-5.00"] and settled. The consent's Initiation.RemittanceInformation does not
+      propagate into the payment at all — Data.Initiation on a VRP payment has no
+      RemittanceInformation member.
+  what_remains_untested: >-
+    Only `Unstructured` was ever sent on VRP. `RemittanceInformation.Reference` and `Structured`
+    were NEVER tested on this family, so the documented rule is neither confirmed nor refuted for
+    the field it actually names.
+  ui_requirement: >-
+    WITHDRAWN as a hard requirement. Do NOT build a create-form question asking whether one
+    reference applies to every payment and warning it cannot be changed — that would encode a
+    constraint the evidence contradicts for Unstructured and has never tested for Reference.
+    Let each payment carry its own reference, which is what was observed to work.
+  if_building_reference_support: "Probe Reference on a VRP consent first. One staging call, no authorisation needed."
+
+# ─────────────────────────────────────────────────────────────────────────
+# PAYMENT BODY — Instruction and Initiation are DIFFERENT objects
+# ─────────────────────────────────────────────────────────────────────────
+instruction_vs_initiation:
+  finding: >-
+    A VRP payment carries BOTH Data.Initiation and Data.Instruction, and they hold different
+    things. No other family splits them this way.
+  Data_Initiation: [DebtorAccount, CreditorAccount, "RegulatoryReporting[] (observed empty)"]
+  Data_Instruction: [InstructionIdentification, EndToEndIdentification, InstructedAmount, CreditorAccount, RemittanceInformation]
+  creditor_is_duplicated: >-
+    CreditorAccount appears in BOTH objects. Observed identical in every capture. Send it twice;
+    do not assume one is derived from the other.
+  remittance_lives_in_instruction_only: "Initiation has no RemittanceInformation on a payment — which is why the consent's does not bind it."
+  identifier_pattern: >-
+    InstructionIdentification and EndToEndIdentification share the same 16-hex suffix in all 8
+    observed payments (VRP<hex> / E2E<hex>). A convention of the test harness, not a bank rule —
+    do not depend on it.
+  caveat: >-
+    Derived from GET read-backs. No POST /domestic-vrps REQUEST body exists in the corpus, so
+    field PLACEMENT is inferred from response echoes rather than from a captured request.
+
+# ─────────────────────────────────────────────────────────────────────────
+# NO PRO-RATING IS EXPOSED — the app must do the arithmetic
+# ─────────────────────────────────────────────────────────────────────────
+periodic_limit_tracking:
+  finding: >-
+    The consent response echoes PeriodicLimits BYTE-FOR-BYTE. There is NO computed period start
+    or end, NO remaining or consumed amount, and no PeriodicLimitsUsed member — on the consent or
+    on any payment.
+  consequence: >-
+    The app MUST track spend against each limit locally. Nothing in the API will tell it how much
+    of a weekly limit is left, and the U014 breach error does not name which limit was hit.
+  pro_rating_status: >-
+    VRP-RESEARCH.md describes first-period pro-rating with worked figures, but that is documented
+    behaviour — NO pro-rating was observed in any response here. Treat the pro-rated first period
+    as a documented expectation to verify, not as a value to display as fact.
+  period_alignment_observed: [Calendar, Consent]
+  max_limits_observed: >-
+    TWO (VRP-15, Week 50.00 + Month 150.00, staged 201). The documented maximum is six, one per
+    period type. More than two was never tried — unknown, not proven unlimited.
+
+settling_window:
+  observed: >-
+    ExpectedExecutionDateTime and ExpectedSettlementDateTime are identical and are exactly
+    CreationDateTime + 30 SECONDS on all 8 VRP payments (e.g. 15:12:26 → 15:12:56).
+  use: >-
+    The one place in the payment surface where these fields carry usable information — on the
+    deferred families they are stubs equal to CreationDateTime. A 30-second settling indicator is
+    honest here.
+
+bank_selected_debtor_default:
+  observed: >-
+    When no DebtorAccount was staged, the bank filled in 80122590953695 ("ACCNT SHORT") — the
+    SAVINGS account, not a current account.
+  consequence: "Do not assume bank selection lands on a PCA. It did not."
+
+no_redirect_link_in_the_response:
+  finding: "The consent response carries only Links.Self and Meta.TotalPages. There is NO authorisation or redirect link."
+  consequence: >-
+    The app must CONSTRUCT the authorisation URL itself from the ConsentId. Nothing in the
+    response hands it over — a reasonable implementer looking for a redirect URL in the body will
+    not find one.
+
+consent_ids_are_enumerable:
+  observed: 'Short sequential integers-as-strings — "45205", "45206", "45207"… shared across all families.'
+  consequence: >-
+    Not UUIDs. Do not size storage or validation for a UUID, and do not expose a ConsentId in a
+    URL, log or share sheet — they are trivially enumerable.
+
+error_cases:
+  - { code: U004, http: 400, trigger: "ControlParameters, PeriodicLimits or MaximumIndividualAmount omitted", recovery: "Implementation fault — all three are always sent." }
+  - { code: U023, http: 400, trigger: "MaximumIndividualAmount in a non-GBP currency", recovery: "Implementation fault — VRP is GBP only." }
+  - { code: U005, http: 400, trigger: "PeriodicLimits currency invalid", recovery: "Implementation fault." }
+  - { code: U002, http: 400, trigger: "PSUAuthenticationMethods UK.OBIE.SCA, or a TPP-named Global Money debtor", recovery: "Implementation fault for the former; account step for the latter." }
+  - { code: U021, http: 400, trigger: "debtor or creditor not on UK.OBIE.SortCodeAccountNumber", recovery: "Return to the account step. May also fire on a bank-written card debtor the app did not choose." }
+  - { code: U014, http: 400, trigger: "payment breaches a control parameter", recovery: "Show the mandate's limits and let the PSU lower the amount. The bank does not say WHICH limit." }
+  - { code: U011, http: 400, trigger: "consent GET after DELETE", recovery: "NOT an error — render as revoked from the local record." }
+  - { code: U019, http: 400, trigger: "missing x-jws-signature", recovery: "Not user-recoverable." }

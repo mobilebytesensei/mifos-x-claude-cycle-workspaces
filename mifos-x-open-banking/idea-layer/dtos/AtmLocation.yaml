@@ -1,0 +1,227 @@
+name: AtmLocation
+version: "2.1.0"
+source:
+  origin: external_api
+  api_path: "GET /open-banking/v2.2/atms and the four /x-open-banking/v2.2/atms/… extensions"
+  host: api.hsbc.com
+  host_status: resolved
+  host_resolved:
+    at: "2026-08-07"
+    by: "/idea-sync — develop.hsbc.com Open Data research"
+    evidence:
+      summary: "HSBC's published ATM Locator swagger — swagger 2.0, info.version 2.2.1, host api.hsbc.com."
+      reproduce: "Download the swagger from https://develop.hsbc.com/ob-api-documentation/atm-locator-uk/endpoints — public, no credential. Live cross-check: curl -H \"Accept: application/prs.openbanking.opendata.v2.2+json\" \"https://api.hsbc.com/x-open-banking/v2.2/atms/geo-location/lat/51.5074/long/-0.1278?radius=5\""
+      local_capture: "/home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/open-atm-locator-swagger.json — OUTSIDE this repository, captured 2026-08-07. Not checked in; use `reproduce` above."
+    supersedes: >-
+      The 2026-08-06 `host_status: unresolved` marker, which itself withdrew an invented
+      "GET /open-banking/atms" against www.hsbc.co.uk. Both the host and the path are now read
+      from an HSBC-published machine-readable spec rather than inferred.
+  api_ref: API-OD-ATM
+  spec: "OBIE Open Data v2.2 — outside the OBIE consent surface, unauthenticated"
+
+description: >-
+  One ATM as published by HSBC UK Open Data. Rewritten 2026-08-07 from the HSBC swagger; v1.0.0
+  described the OBP sandbox shape (snake_case id/bank_id/name/is_accessible) and shares no field
+  name with what the API actually returns. Every field below is PascalCase OBIE.
+
+# ─────────────────────────────────────────────────────────────────────────
+# ENVELOPE — this DTO is a LEAF, two levels down
+# ─────────────────────────────────────────────────────────────────────────
+envelope:
+  shape: "{ meta, data } — both required"
+  path_to_this_dto: "data[].Brand[].ATM[]"
+  depth_warning: >-
+    THREE levels. `data` is itself an array (swagger: type array, items $ref) observed with
+    length 1 on every capture. Reading `data.Brand` fails outright; reading `data[0].Brand` works
+    today and silently drops records if HSBC ever returns a second element. Iterate all three.
+  flatten_rule: >-
+    Flatten across data[].Brand[] and carry BrandName down onto each ATM. BrandName is the ONLY
+    place the HSBC-vs-first-direct distinction is recorded and a naive flatten destroys it.
+  meta_fields: [LastUpdated, TotalResults, Agreement, License, TermsOfUse]
+  evidence: "135 live ATMs captured 2026-08-07 across five UK geographies; see screens/atm-locator/api.yaml#response_envelope."
+
+fields:
+  - name: BrandName
+    type: String
+    required: true
+    pii: false
+    primary_key: false
+    synthetic: true
+    description: >-
+      NOT a field on the ATM object — lifted from the parent data.Brand[] during flatten. Carried
+      here because it is the HSBC / first direct distinction and there is no other source for it.
+
+  - name: Identification
+    type: String
+    required: true
+    pii: false
+    primary_key: true
+    description: >-
+      The ATM number. The ONLY stable key, and the only required identifier — there is NO name
+      field on an ATM. A UI that wants a title must compose one from the postal address.
+
+  - name: SupportedCurrencies
+    type:
+      list_of: String
+    required: true
+    pii: false
+    primary_key: false
+    constraint: "minItems 1"
+    description: >-
+      ISO currency codes dispensed. Required with at least one entry, so always renderable.
+      Multi-currency ATMs are a real differentiator at airports and city centres.
+
+  - name: Location
+    type:
+      dto_ref: AtmLocationPlace
+    required: true
+    pii: false
+    primary_key: false
+    description: "Site and postal address, including the geo-coordinates. See AtmLocationPlace."
+
+  - name: ATMServices
+    type:
+      list_of: String
+    required: false
+    pii: false
+    primary_key: false
+    enum_ref: AtmServiceCode
+    observed: "135/135 present. 8 of the 17 declared values occur live."
+    description: >-
+      What the machine can do, and the ONLY optional field rich enough to filter on.
+      CashDeposits and ChequeDeposits are what people actually search for — most machines
+      dispense but do not accept. Build any picker from the 8 OBSERVED values, not the 17
+      declared ones; offering CharityDonation or MobilePhoneTopUp returns nothing.
+
+  - name: SupportedLanguages
+    type:
+      list_of: String
+    required: false
+    pii: false
+    primary_key: false
+    observed: "135/135 present. Observed set: en, fr, es, de."
+    description: "Language codes offered at the machine."
+
+  - name: Branch
+    type:
+      optional:
+        dto_ref: BranchRef
+    required: false
+    pii: false
+    primary_key: false
+    observed: "135/135 present, but ONLY as {Identification}."
+    description: >-
+      A REFERENCE STUB, not an embedded branch. The observed shape carries an id and nothing
+      else. This is the only join between the two Open Data APIs, and resolving it to a name,
+      address or opening hours costs a SEPARATE Branch Locator call. A UI that says "at HSBC
+      Baker Street" is making a second network request to learn that string.
+
+  # ── DECLARED BUT NEVER POPULATED — see never_populated below ─────────
+  - name: Access24HoursIndicator
+    type:
+      optional: Boolean
+    required: false
+    pii: false
+    primary_key: false
+    observed: "0/135 — never sent."
+    description: "Declared in the swagger; absent from every live record. Parse if present, never depend on it. NOT filterable."
+
+  - name: Accessibility
+    type:
+      list_of: String
+    required: false
+    pii: false
+    primary_key: false
+    enum_ref: AtmAccessibilityCode
+    observed: "0/135 — never sent. Populated 25/25 on BRANCHES."
+    description: "Declared; absent at ATM granularity. The accessibility filter belongs on branch-locator, where the data actually exists."
+
+  - name: MinimumPossibleAmount
+    type:
+      optional: String
+    required: false
+    pii: false
+    primary_key: false
+    observed: "0/135 — never sent."
+    description: "Declared; absent from every live record."
+
+  - name: Note
+    type:
+      list_of: String
+    required: false
+    pii: false
+    primary_key: false
+    observed: "0/135 — never sent."
+    description: "Free-text notes about the machine."
+
+  - name: OtherATMServices
+    type:
+      list_of: String
+    required: false
+    pii: false
+    primary_key: false
+    observed: "0/135 — never sent."
+    description: "Free-text service names. Populated when ATMServices contains the literal `Other`."
+
+  - name: OtherAccessibility
+    type:
+      list_of: String
+    required: false
+    pii: false
+    primary_key: false
+    observed: "0/135 — never sent."
+    description: "Free-text accessibility features. Populated when Accessibility contains `Other`."
+
+# ─────────────────────────────────────────────────────────────────────────
+# NEVER POPULATED — measured, not assumed
+# ─────────────────────────────────────────────────────────────────────────
+never_populated:
+  measured_over: "135 ATMs across five UK geographies, 2026-08-07"
+  fields: [Access24HoursIndicator, Accessibility, MinimumPossibleAmount, Note, OtherATMServices]
+  rule: >-
+    Model them — they are in the contract and may be populated later — but never let a screen
+    control, filter or sort depend on them. A filter over a field HSBC never sends returns zero
+    results for every user, and reads to that user as "there are none near you" rather than
+    "we don't have this data".
+  withdrawn_claims: >-
+    Version 2.0.0 of this DTO, written from the swagger alone, described Access24HoursIndicator
+    as "the single most useful filter" and Accessibility as deserving "a first-class filter".
+    Both were wrong. Corrected at 2.1.0 after calling the live API.
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE `Other` PAIRING RULE — applies to three enums here
+# ─────────────────────────────────────────────────────────────────────────
+other_pairing_rule:
+  pairs:
+    - { enum: ATMServices, free_text: OtherATMServices }
+    - { enum: Accessibility, free_text: OtherAccessibility }
+    - { enum: "Location.LocationCategory", free_text: "Location.OtherLocationCategory" }
+  rule: >-
+    Each enum carries an `Other` member plus a sibling `Other…` array holding the human-readable
+    value. When the enum reads `Other`, the label to show the user is in the sibling array.
+  failure_mode: >-
+    Rendering the enum alone shows the user the literal word "Other" — a visible, silly-looking
+    bug that ships easily because it only appears on the subset of records that use it.
+
+enums:
+  - name: AtmServiceCode
+    count: 17
+    values: [Balance, BillPayments, CashDeposits, CharityDonation, ChequeDeposits, CashWithdrawal, EnvelopeDeposit, FastCash, MobileBankingRegistration, MobilePaymentRegistration, MobilePhoneTopUp, OrderStatement, Other, PINActivation, PINChange, PINUnblock, MiniStatement]
+  - name: AtmAccessibilityCode
+    count: 9
+    values: [AudioCashMachine, AutomaticDoors, ExternalRamp, InductionLoop, InternalRamp, LevelAccess, LowerLevelCounter, Other, WheelchairAccess]
+
+used_by:
+  - { feature: atm-locator, api_id: get_all_atms, role: response }
+  - { feature: atm-locator, api_id: get_atms_by_geolocation, role: response }
+  - { feature: atm-locator, api_id: get_atms_by_postcode, role: response }
+  - { feature: atm-locator, api_id: get_atms_by_town, role: response }
+  - { feature: atm-locator, api_id: get_atms_by_country, role: response }
+
+replaced_2026_08_07:
+  was_version: "1.0.0"
+  was_shape: "OBP snake_case — id, bank_id, name, address, location, opening_time, closing_time, is_accessible, services"
+  reason: >-
+    Not a rename. The OBP model had a `name` and flat `opening_time`/`closing_time`; Open Data has
+    neither — an ATM is identified by number and its hours are a single boolean. Every field
+    changed name, type or existence, so the old DTO could not be migrated field-by-field.

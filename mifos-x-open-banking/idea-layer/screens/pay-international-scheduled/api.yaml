@@ -1,0 +1,258 @@
+sibling: api
+schema_version: "4.0"
+feature_id: pay-international-scheduled
+
+# ═══════════════════════════════════════════════════════════════════════════
+# INTERNATIONAL SCHEDULED PAYMENT
+#   v4.0/pisp/international-scheduled-payment-consents -> international-scheduled-payments
+#
+# Evidence: captures/by-type/scheduled-international.md (25 scenarios),
+# captures/flow-sched-international.md (authorised, resource 19921),
+# captures/round11-scheduled-payments.md, round15-so-sched-probes.md.
+#
+# This rail is the INTERSECTION of two contracts already specified:
+#   - the international field contract   (see pay-international-single/api.yaml)
+#   - the scheduled date contract        (see pay-domestic-scheduled/api.yaml)
+# Its only genuinely new behaviours are the status ladder and the charge timing.
+#
+# DELTA FROM pay-international-single:
+#   + Data.Permission "Create"        MANDATORY
+#   + RequestedExecutionDateTime      MANDATORY, T+1..T+365, normalised to midnight
+#   + optional Authorisation and SCASupportData blocks (both stage 201 here)
+#   - NO funds-confirmation
+#   ~ status: INCO at creation AND on read-back — this rail NEVER emits PDNG
+#   ~ charges: NONE at consent, then 0.50 at RESOURCE creation, in the INSTRUCTED currency
+# ═══════════════════════════════════════════════════════════════════════════
+
+base_path: "/obie/open-banking/v4.0/pisp"
+api_source_ref: API-003
+inherits_from: pay-international-single
+inherits:
+  - write_header_contract
+  - consumer_context_constraint
+  - refused_fields
+  - creditor_scheme_contract
+  - creditor_agent_contract
+  - debtor_scheme_contract
+  - currency_contract
+  - fx_disclosure
+  - error_contract
+  - echo_contract
+  - absent_response_keys
+  - accepted_optional_fields
+  - risk_block_contract
+
+inherited_contract_notes:
+  creditor_agent_contract: >-
+    The partial-object trap applies unchanged. Sending CreditorAgent at all makes Identification
+    mandatory (R8-01/02/03/09/10, R3-08; control R8-11 removes the key and gets 201), and the
+    8-character refusal is LENGTH-driven, not country-mismatch-driven (R2-07 vs R3-04).
+  echo_contract: >-
+    Same reordering. This rail echoes ChargeBearer, CurrencyOfTransfer, InstructedAmount,
+    MandateRelatedInformation, [CreditorAgent], [DebtorAccount], CreditorAccount regardless of
+    request order — so the submit body echoes the PARSED read-back, never a re-serialised local
+    model, and never a string comparison against one.
+  error_contract: >-
+    dtos/ObPaymentError.yaml. Errors is an array and can carry TWO entries; the scheme check
+    (U027) precedes the business rule (U002); U004/U005 arrive one at a time while U002 batches;
+    copy is keyed off ErrorCode + Path, never Message. SP-I04 is this rail's own two-entry case,
+    and it is the reason a first-error-only panel fails here: its first entry names the creditor
+    and its second names the currency, and fixing only the first leaves the payment refused.
+  risk_block_contract: >-
+    CategoryPurposeCode 'EPAY' throughout; ZERO scenarios on any international rail sent
+    PaymentContextCode, so its acceptance here is UNTESTED. See docs.yaml#open_questions — this
+    matters because FR-015 requires one on every payment.
+  absent_response_keys: >-
+    Inherited, and it BITES HERE in a way it does not on the single rail. See
+    charge_visibility_contract below.
+
+operations:
+  - id: stage_international_scheduled_consent
+    endpoint: "POST /international-scheduled-payment-consents"
+    auth: client_credentials_payments_scope
+    headers: [x-jws-signature, x-idempotency-key]
+    request_body:
+      Data:
+        Permission: "Create"
+        ReadRefundAccount: "No"
+        Initiation:
+          InstructionIdentification: "<generated>"
+          EndToEndIdentification: "<generated>"
+          LocalInstrument: "UK.OBIE.SWIFT"
+          RequestedExecutionDateTime: "<ISO 8601, strictly > today, <= T+365>"
+          InstructedAmount: { Amount: "<major-unit string>", Currency: "<ISO 4217>" }
+          DebtorAccount: { SchemeName: "UK.OBIE.SortCodeAccountNumber", Identification: "<14 digits>" }
+          CreditorAccount: { SchemeName: "UK.OBIE.IBAN", Identification: "<IBAN>", Name: "<payee>" }
+          CurrencyOfTransfer: "<ISO 4217>"
+          ChargeBearer: "BorneByCreditor | Shared | BorneByDebtor"
+      Risk:
+        CategoryPurposeCode: "EPAY"
+    success: "201 with Data.ConsentId and Data.Status AWAU"
+    returns_charges: false
+    charge_note: >-
+      NO Charges at consent staging, matching the international single rail. But UNLIKE that
+      rail, a charge DOES appear at resource creation — 0.50 in the INSTRUCTED currency. So the
+      international-single "no charge ever" property does not generalise to the deferred
+      international shapes, and this is the evidence that the single-payment behaviour is not a
+      consent-versus-resource timing effect.
+
+  - id: get_international_scheduled_consent_status
+    endpoint: "GET /international-scheduled-payment-consents/{ConsentId}"
+    auth: client_credentials_payments_scope
+    status_ladder: "AWAU -> AUTH -> COND"
+    polled_to: AUTH
+    critical_note: "StatusUpdateDateTime does not move on AWAU -> AUTH."
+
+  - id: submit_international_scheduled_payment
+    endpoint: "POST /international-scheduled-payments"
+    auth: psu_authorization_code
+    headers: [x-jws-signature, x-idempotency-key]
+    request_body:
+      Data:
+        ConsentId: "<from stage>"
+        Initiation: "<byte-identical echo of the AUTHORISED consent's Initiation>"
+      Risk: "<byte-identical echo>"
+    success: "201 with Data.InternationalScheduledPaymentId and Data.Status INCO"
+    charge_at_creation: "0.50 in the INSTRUCTED currency"
+
+  - id: get_international_scheduled_payment_status
+    endpoint: "GET /international-scheduled-payments/{InternationalScheduledPaymentId}"
+    auth: client_credentials_payments_scope
+    status_ladder: "INCO -> INCO"
+    ladder_note: >-
+      This rail NEVER emits PDNG. It reads INCO at creation and INCO on read-back. The domestic
+      deferred rails pass through PDNG first; both converge on INCO. A status mapper that expects
+      a PDNG stage on every deferred family will simply never see one here — harmless — but one
+      that treats INCO-at-creation as anomalous will mis-flag every payment on this rail.
+    per_execution_status: none
+    per_execution_note: >-
+      As on every deferred family: this describes the INSTRUCTION's setup, not the payment that
+      will happen on the execution date.
+
+# ─────────────────────────────────────────────────────────────────────────
+# CHARGE VISIBILITY — the fee cannot be shown before the PSU authorises
+# ─────────────────────────────────────────────────────────────────────────
+charge_visibility_contract:
+  timeline:
+    - { stage: "consent staged (AWAU)", charges: "key ABSENT" }
+    - { stage: "consent authorised (AUTH)", charges: "key ABSENT" }
+    - { stage: "resource created", charges: "0.50, in the INSTRUCTED currency" }
+  finding: >-
+    International fees are INVISIBLE until AFTER the PSU has authorised. The charge first appears
+    at RESOURCE CREATION — never on the consent at AWAU and never at AUTH.
+  consequence_for_a_pisp: >-
+    A PISP CANNOT show an international deferred fee at ANY point before authorisation. Not on
+    review, not on the consent hand-off, not on the return leg before submit. The one moment the
+    PSU is asked to approve the payment is the one moment the fee is unknowable.
+  currency_rule: "The charge is denominated in InstructedAmount.Currency, not CurrencyOfTransfer."
+  currency_proof: >-
+    19918 is decisive — GBP instructed, USD transfer, charge 0.50 GBP. 19921 (GBP -> EUR, 0.50
+    GBP) agrees; 19917 (USD -> USD, 0.50 USD) alone would not distinguish the rule.
+  parse_rule:
+    critical: >-
+      Charges is ABSENT on the consent, not an empty array. A model that defaults it to [] cannot
+      tell 'no charge' from 'no charge information' — and at consent time on this rail the second
+      is what is true.
+    failure_mode: >-
+      A defaulted [] renders the review fee row as 'free' or '0.00' for a payment that costs
+      0.50. That is not a cosmetic bug: it is a false statement about the PSU's money, made at
+      the exact step where they consent to it.
+  ui_requirement: >-
+    The review fee row reads UNKNOWN — never blank, never zero — and deferred_charge_note states
+    that a fee applies but is not quoted until setup. The row is populated only from the
+    RESOURCE response.
+
+no_funds_confirmation:
+  reason: "No funds-confirmation request exists for this family in HSBC's collection, and OBIE defines none."
+  ui_consequence: "Same as the domestic scheduled rail — the Review step says the app cannot check future-dated availability."
+
+mandatory_fields:
+  - { field: "Data.Permission", value: "Create", omission_error: "U004" }
+  - { field: "Data.Initiation.RequestedExecutionDateTime", omission_error: "U004 Initiation.RequestedExecutionDateTime is missing" }
+  - { field: "Data.Initiation.CurrencyOfTransfer", omission_error: "U004" }
+  - { field: "Data.Initiation.ChargeBearer", omission_error: "U004" }
+
+requested_execution_date_rules:
+  inherits_from: pay-domestic-scheduled
+  measured_on_this_rail:
+    - { value: "T-1", result: "U003 date in the past (SP-I13)" }
+    - { value: "T+7", result: "201 AWAU" }
+    - { value: "T+365", result: "201 AWAU — the upper bound is identical on both rails" }
+    - { value: "T+370, T+400", result: "U002" }
+    - { value: "omitted", result: "U004 Initiation.RequestedExecutionDateTime is missing" }
+  normalisation: "Truncated to midnight, UTC offset preserved — same as the domestic rail."
+
+optional_blocks_accepted:
+  note: >-
+    Authorisation and SCASupportData together stage 201 on this rail. Prior research had
+    reported HSBC rejecting SCASupportData on international payments; that is not what this
+    endpoint does.
+  blocks: ["Authorisation { AuthorisationType, CompletionDateTime }", "SCASupportData"]
+
+# ─────────────────────────────────────────────────────────────────────────
+# U027 ON THE CREDITOR IS RESOLVED-ACCOUNT DEPENDENT, NOT SCHEME DEPENDENT
+# ─────────────────────────────────────────────────────────────────────────
+creditor_scheme_resolution:
+  finding: >-
+    U027 @ CreditorAccount.SchemeName is NOT decided by the scheme string. The SAME scheme is
+    refused for one identifier and accepted for another.
+  evidence_on_this_rail:
+    - "SP-I08 — sort-code creditor refused, U027 @ Data.Initiation.CreditorAccount.SchemeName."
+    - >-
+      SP-I05 — the SAME scheme with Identification 80119770009652 ('Global Money GMA') accepted,
+      201.
+  same_split_elsewhere: "SO-I07 refused against the intl-SO Global Money scenarios accepted — the identical pattern on the standing-order rail."
+  conclusion: >-
+    The server resolves the identifier and decides on the resolved PRODUCT. Global Money is the
+    only account addressable as an international creditor by sort code.
+  ui_consequence: >-
+    Do NOT gate the international creditor picker on scheme alone. This form takes an IBAN only,
+    so the distinction is unreachable in practice — but 'sort-code creditors are refused on
+    international' is the WRONG EXPLANATION, and a wrong explanation is what gets copied into the
+    next screen. The right statement is that the identifier must resolve to an
+    internationally-addressable account, and only Global Money does so by sort code.
+
+# ─────────────────────────────────────────────────────────────────────────
+# FX — the request cannot carry a rate either
+# ─────────────────────────────────────────────────────────────────────────
+exchange_rate_information_refused:
+  finding: "Sending ExchangeRateInformation is REFUSED on this rail, for all three RateType values."
+  observed: "R16-S1, R16-S2, R16-S3 — one per RateType."
+  agreed_variant: >-
+    The Agreed form was sent with a real ExchangeRate 1.15 and ContractIdentification
+    'FX-CONTRACT-001' and was refused too — so a TPP cannot assert even a rate it holds by
+    contract.
+  controls: "R16-C1/C2/C3 — the same bodies with the block removed, all 201."
+  breadth: "The same refusal holds on the single (R16-P1/P2/P3) and standing-order (R16-O1/O2/O3) rails."
+  conclusion: >-
+    THERE IS NO WAY TO SHOW THE CUSTOMER A RATE BEFORE AUTHORISATION. Combined with
+    charge_visibility_contract, the PSU authorises this payment without a rate AND without a fee.
+    Both absences are the API's, not the app's, and the form must say so rather than leave two
+    blank rows that read as zero.
+  divergence_note: >-
+    ExchangeRateInformation is absent from the v4.0 request dictionary but PRESENT in the
+    published usage examples. Recorded as a documentation-versus-observation divergence.
+
+currency_independence:
+  finding: "InstructedAmount.Currency and CurrencyOfTransfer are INDEPENDENT — do not force them equal in the UI."
+  observed:
+    - { instructed: "1.00 GBP", transfer: "USD", result: 201 }
+    - { instructed: "5.00 GBP", transfer: "EUR", result: 201 }
+  ui_consequence: >-
+    Two separate controls, no coupling and no auto-sync. The common overseas case is paying in
+    sterling so the recipient receives their own currency, and a single control cannot express it.
+
+amendment_prohibition:
+  permitted: false
+  basis: "OBL Customer Experience Guidelines"
+  obligation: mandatory
+  ui_requirement: "The notice appears on the Review step and the Success state."
+
+error_cases:
+  - { code: U004, http: 400, trigger: "Permission, date, CurrencyOfTransfer or ChargeBearer omitted", recovery: "Implementation fault — all four are always sent." }
+  - { code: U005, http: 400, trigger: "RemittanceInformation sent", recovery: "Implementation fault — refused on every international shape." }
+  - { code: U003, http: 400, trigger: "date is today or in the past", recovery: "Return to the date step." }
+  - { code: U002, http: 400, trigger: "date beyond T+365, or an invalid BIC", recovery: "Return to the relevant step." }
+  - { code: U027, http: 400, trigger: "sort-code creditor", recovery: "Should be unreachable — the form takes an IBAN." }
+  - { code: U019, http: 400, trigger: "missing x-jws-signature", recovery: "Not user-recoverable." }
+  - { code: U009, http: 400, trigger: "consent not Authorised", recovery: "Re-authorise." }

@@ -1,0 +1,601 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: transactions
+
+screen_id: transactions
+archetype: index_list
+name: "{strings.transactions.title}"
+# status: REMOVED 2026-08-04 (CROSS_LEAK repair — sibling-layout.json assigns `status` to
+# the docs sibling). This copy held `implemented`; docs.yaml is the single owner.
+initial_state: loading
+quality_score: 95
+
+status_history:
+  - from: draft
+    to: enriched
+    at: "2026-06-29"
+    by: "/idea-enrich"
+  - from: enriched
+    to: enriched
+    at: "2026-06-29"
+    by: "/idea-enrich (re-enrichment: i18n coverage, pagination affordance, pending badge, period summary strip)"
+
+business_logic:
+  kind: crud
+  description: >
+    Fetches OBReadTransaction6 via GET /accounts/{AccountId}/transactions using ktorfit;
+    transparently pages via Links.Next cursor (each page appended to in-memory list) until
+    all transactions are loaded or user requests the next page via load_more_transactions;
+    applies client-side CreditDebitIndicator filtering, kotlinx-datetime LocalDate grouping
+    by BookingDateTime, and case-insensitive search over TransactionInformation and
+    MerchantDetails.MerchantName; derives PFM Category from ProprietaryBankTransactionCode.Code
+    or MerchantCategoryCode via an MCC lookup map; computes period totals (sum of Credit
+    amounts, sum of Debit amounts) from the currently-filtered result set for the summary strip;
+    distinguishes Pending vs Booked Status to render a badge on unsettled transactions.
+  external_library_refs:
+    - "ktorfit"
+    - "hsbc-obie-ais-v4.0:transactions"
+    - "kotlinx-datetime"
+  description_author: claude
+  description_authored_at: "2026-06-29T14:00:00Z"
+
+# ─────────────────────────────────────────────────────────────────────
+# STATE MODEL — TransactionsViewModel contract
+# Derived from docs.yaml#vm_actions + error_cases for implementation.
+# Satisfies QUALITY_FORMULA.md Category 10 (State Model, 5 pts).
+# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
+# SOURCE BINDING — reverse-synced from source 2026-07-28
+# ─────────────────────────────────────────────────────────────────────
+implementation:
+  status: implemented
+  source_module: "feature/transactions"
+  package: "org.mifosx.openbanking.feature.transactions"
+  route: "TransactionsRoute(accountId: String)"
+  viewmodel: TransactionsViewModel
+  screen: TransactionsScreen
+  test_tags_object: TransactionsTestTags
+  nav_callbacks:
+    - "onNavigateToTransactionDetail(transactionId, accountId) -> TransactionDetailRoute(...)"
+    - "onBack -> popBackStack()"
+  reachable_from:
+    - "home — onNavigateToTransactions(accountId)"
+    - "account-detail — AccountDetailChip.Transactions"
+  components:
+    - "components/TransactionRow.kt"
+    - "components/TransactionFilterChips.kt"
+    - "components/TransactionSearchField.kt"
+    - "components/PeriodSummary.kt"
+    - "components/LoadMoreButton.kt"
+  synced_from_source_at: "2026-07-28"
+  added_in_sync:
+    - "DismissDateRangePicker action — ships in source; the idea-layer declared only OpenDateRangePicker and SetDateRange"
+    - "dateFrom / dateTo / showDateRangePicker state fields"
+  removed_in_sync:
+    - "navigateTransactionDetail action — TransactionsAction has no such member; row taps go through the nav-host callback"
+    - "NavigationController DI — navigation is callback-based"
+  note_placeholder_collision: "cmp-navigation/placeholder/BankingDestinations.kt also declares a TransactionsRoute (arg-less data object) bound to PlaceholderScreen. The live route is this arg-carrying TransactionsRoute(accountId) in feature/transactions."
+
+state_model:
+  TransactionsViewModel:
+    state:
+      name: TransactionsState
+      fields:
+        - name: accountId
+          type: String
+        - name: uiState
+          type: TransactionsUiState
+        - name: activeFilter
+          type: TransactionFilter
+        - name: query
+          type: String
+        - name: dateFrom
+          type: LocalDate?
+        - name: dateTo
+          type: LocalDate?
+        - name: showDateRangePicker
+          type: Boolean
+        - name: hasNextPage
+          type: Boolean
+        - name: isPaginating
+          type: Boolean
+    screen_state:
+      sealed_class: TransactionsUiState
+      members:
+        - Loading
+        - Content
+        - Empty      # active filter / search / date-range yields zero matching rows
+        - Error
+    actions:
+      members:
+        - LoadTransactions
+        - RetryLoad
+        - LoadMore                # OBIE Links.Next pagination
+        - FilterTransactions      # data class
+        - SearchTransactions      # data class
+        - OpenDateRangePicker
+        - SetDateRange            # data class
+        - DismissDateRangePicker
+        - ClearFilters
+    di:
+      - SavedStateHandle         # supplies the accountId route arg
+      - TransactionsRepository   # Koin single; transactions stream + Links.Next pagination
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  top_app_bar_title: "{strings.transactions.title}"
+  top_app_bar_leading: back
+  fab_visible: false
+
+states: [loading, content, empty, error]
+
+# ─────────────────────────────────────────────────────────────────────
+# TEST TAGS — reconciled against source 2026-08-02 by /idea-sync (source-truth pass)
+# ─────────────────────────────────────────────────────────────────────
+# Copied VERBATIM from TransactionsTestTags.kt. This feature uses snake_case; account-detail
+# and account-holder use `feature:camelCase`. Both are source truth — do NOT harmonise.
+test_tags:
+  source: "feature/transactions/src/commonMain/kotlin/org/mifosx/openbanking/feature/transactions/TransactionsTestTags.kt"
+  declared_in_source: 20         # 17 public const val + 3 private prefixes behind 3 builder fns
+  bound: 19                      # 17 on components + 2 on period_summary.stats[] entries
+  unbound_count: 3
+  interpolated:
+    - tag: "transactions_row_{item.rowKey}"
+      builder: "fun row(key: String)"
+    - tag: "transactions_pending_{item.rowKey}"
+      builder: "fun pendingBadge(key: String)"
+    - tag: "transactions_filter_{all|money_in|money_out}"
+      builder: "fun filterChip(filter: TransactionFilter) = FILTER_PREFIX + filter.name.lowercase()"
+      note: >-
+        Suffix is the enum case LOWERCASED. TransactionFilter is { ALL, MONEY_IN, MONEY_OUT }
+        only — the date-range chip is NOT a member and carries the separate flat const
+        FILTER_DATE_RANGE.
+  row_key_contract: >-
+    rowKey = transactionId.ifBlank { "txn-$index" } (TransactionsViewModel.kt:228). OBIE makes
+    OBTransaction6.TransactionId optional and HSBC omits it on some pending entries, so the
+    tag suffix is the derived key, never the raw id.
+  unbound:
+    - tag: "transactions_content"
+      source_ref: "TransactionsScreen.kt:120"
+      why: "Tags the content Column wrapping period_summary + filter_chips + search_field + transactions_list. The idea-layer models those as siblings bound to [content] with no wrapper."
+    - tag: "transactions_search_clear"
+      source_ref: "components/TransactionSearchField.kt:52"
+      why: "The clear affordance is a `trailing_icon:` PROPERTY of the search_bar component here, not a child component of its own."
+    - tag: "transactions_error_status"
+      source_ref: "TransactionsError.kt:117"
+      why: "Text node modelled as the error_state component's `body:` field, not a child component."
+
+components:
+  # ─── Loading ───────────────────────────────────────────────────────────────
+
+  - type: progress_circular
+    id: loading_spinner
+    state_binding: [loading]
+    accessibility_label: "{strings.transactions.a11y.loading}"
+    test_tag: "transactions_skeleton"        # TransactionsTestTags.SKELETON @ TransactionsSkeleton.kt:37
+    test_context:
+      purpose: "Full-screen visual feedback while GET /accounts/{AccountId}/transactions first page is in flight"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  # ─── Content: period summary strip ─────────────────────────────────────────
+
+  - type: stat_block
+    id: period_summary
+    state_binding: [content]
+    accessibility_label: "{strings.transactions.a11y.summary}"
+    test_tag: "transactions_period_summary"  # TransactionsTestTags.PERIOD_SUMMARY @ components/PeriodSummary.kt:42
+    stats:
+      - id: total_credit
+        label: "{strings.transactions.filter.money_in}"
+        value: "+£{period.totalCredit}"
+        value_color: primary
+        test_tag: "transactions_money_in"    # TestTags.MONEY_IN @ PeriodSummary.kt:49
+      - id: total_debit
+        label: "{strings.transactions.filter.money_out}"
+        value: "-£{period.totalDebit}"
+        value_color: error
+        test_tag: "transactions_money_out"   # TestTags.MONEY_OUT @ PeriodSummary.kt:57
+    test_context:
+      purpose: "Period totals computed client-side from currently-filtered OBTransaction6 result set; credit sum in primary, debit sum in error colour"
+      required_fields: [period.totalCredit, period.totalDebit]
+      interaction_type: display
+      data_driven: true
+
+  # ─── Content: filter chips ─────────────────────────────────────────────────
+
+  - type: chip_row
+    id: filter_chips
+    state_binding: [content, empty]
+    scroll_direction: horizontal
+    test_tag: "transactions_filter_row"      # TestTags.FILTER_ROW @ components/TransactionFilterChips.kt:49
+    test_context:
+      purpose: "Client-side filter controls applied to in-memory OBReadTransaction6 result set"
+      required_fields: []
+      interaction_type: action
+      data_driven: false
+    children:
+      - type: chip
+        keyboard:
+          focusable: true
+        id: filter_all
+        # filterChip(filter) renders FILTER_PREFIX + filter.name.lowercase(), so the suffix is
+        # the TransactionFilter enum case LOWERCASED: ALL/MONEY_IN/MONEY_OUT -> all/money_in/money_out.
+        # FILTER_DATE_RANGE is a separate flat const, not part of that enum.
+        test_tag: "transactions_filter_all"
+        label: "{strings.transactions.filter.all}"
+        variant: filter
+        selected: true
+        accessibility_label: "{strings.transactions.a11y.filter_all}"
+        on_click:
+          action: filter_transactions
+          params:
+            filter: "all"
+          action_contract:
+            effect: transform_state
+            external_library_refs: [kotlinx-coroutines]
+            description: "Resets the CreditDebitIndicator filter to show all transactions, recomputes period totals from the full in-memory OBReadTransaction6 list, and updates the UI state without re-fetching."
+        test_context:
+          purpose: "Reset CreditDebitIndicator filter to show all transactions; restores period totals to full set"
+          required_fields: []
+          interaction_type: action
+          data_driven: false
+
+      - type: chip
+        keyboard:
+          focusable: true
+        id: filter_money_in
+        test_tag: "transactions_filter_money_in"
+        label: "{strings.transactions.filter.money_in}"
+        variant: filter
+        icon: arrow_downward
+        accessibility_label: "{strings.transactions.a11y.filter_money_in}"
+        on_click:
+          action: filter_transactions
+          params:
+            filter: "credit"
+          action_contract:
+            effect: transform_state
+            external_library_refs: [kotlinx-coroutines]
+            description: "Filters the in-memory OBReadTransaction6 list to CreditDebitIndicator=Credit rows only and recomputes period totals without issuing any network request."
+        test_context:
+          purpose: "Filter transactions list to CreditDebitIndicator=Credit rows only"
+          required_fields: []
+          interaction_type: action
+          data_driven: false
+
+      - type: chip
+        keyboard:
+          focusable: true
+        id: filter_money_out
+        test_tag: "transactions_filter_money_out"
+        label: "{strings.transactions.filter.money_out}"
+        variant: filter
+        icon: arrow_upward
+        accessibility_label: "{strings.transactions.a11y.filter_money_out}"
+        on_click:
+          action: filter_transactions
+          params:
+            filter: "debit"
+          action_contract:
+            effect: transform_state
+            external_library_refs: [kotlinx-coroutines]
+            description: "Filters the in-memory OBReadTransaction6 list to CreditDebitIndicator=Debit rows only and recomputes period totals without issuing any network request."
+        test_context:
+          purpose: "Filter transactions list to CreditDebitIndicator=Debit rows only"
+          required_fields: []
+          interaction_type: action
+          data_driven: false
+
+      - type: chip
+        keyboard:
+          focusable: true
+        id: filter_date_range
+        test_tag: "transactions_filter_date_range"   # flat const FILTER_DATE_RANGE @ TransactionFilterChips.kt:80
+        label: "{strings.transactions.filter.date_range}"
+        variant: filter
+        icon: date_range
+        accessibility_label: "{strings.transactions.a11y.filter_date_range}"
+        on_click:
+          action: open_date_range_picker
+          action_contract:
+            effect: transform_state
+            external_library_refs: [kotlinx-coroutines]
+            description: "Opens the date-range picker bottom sheet as a local UI state transition; on confirm the picker resets the pagination cursor and re-fetches with fromBookingDateTime and toBookingDateTime bounds."
+        test_context:
+          purpose: "Opens date range picker; on confirm re-fetches with fromBookingDateTime/toBookingDateTime and resets pagination cursor"
+          required_fields: []
+          interaction_type: action
+          data_driven: false
+
+  # ─── Content: search field ─────────────────────────────────────────────────
+
+  # search_bar, not text_field: RULE-CAP-HAS-SEARCH-001 V1 requires a dedicated search-type
+  # input rather than a repurposed text input, so the platform renders the search affordance
+  # and assistive tech announces it as a search field. Matches beneficiaries#beneficiary_search.
+  # Fires on_change, not on_click — this is live substring filtering as the PSU types, which
+  # is what the component's own interaction_type: input already declared.
+  - type: search_bar
+    id: search_field
+    state_binding: [content, empty]
+    test_tag: "transactions_search_field"    # TestTags.SEARCH_FIELD @ components/TransactionSearchField.kt:45
+    # trailing_icon: clear carries TestTags.SEARCH_CLEAR (TransactionSearchField.kt:52) in
+    # source. It is an icon PROPERTY here rather than a child component, so it has no anchor —
+    # recorded under test_tags.unbound.
+    label: "{strings.transactions.search.label}"
+    placeholder: "{strings.transactions.search.placeholder}"
+    leading_icon: search
+    trailing_icon: clear
+    accessibility_label: "{strings.transactions.a11y.search}"
+    on_change:
+      action: search_transactions
+      param: query
+    test_context:
+      purpose: >-
+        Case-insensitive substring match over TransactionInformation and
+        MerchantDetails.MerchantName against the in-memory OBReadTransaction6 list.
+        Client-side only — no re-fetch, no API call.
+      required_fields: []
+      interaction_type: input
+      data_driven: false
+
+  # ─── Content: transaction list ─────────────────────────────────────────────
+
+  - type: list
+    id: transactions_list
+    state_binding: [content]
+    scroll_direction: vertical
+    items_source: "{transactions_by_date}"
+    test_tag: "transactions_list"            # TestTags.LIST @ TransactionsScreen.kt:162
+    test_context:
+      purpose: "Date-grouped list of OBTransaction6 rows after client-side filter and search applied"
+      required_fields: [transactions_by_date]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: section_header
+        id: date_group_header
+        label: "{group.date}"
+        test_context:
+          purpose: "BookingDateTime date header derived via kotlinx-datetime LocalDate grouping; formatted as 'EEE d MMM yyyy' by ViewModel"
+          required_fields: [group.date]
+          interaction_type: display
+          data_driven: true
+
+      - type: list_item
+        keyboard:
+          focusable: true
+        id: transaction_row
+        # fun row(key) = ROW_PREFIX + key @ components/TransactionRow.kt:73. The key is NOT
+        # raw TransactionId: TransactionsViewModel.kt:228 builds it as
+        # `transactionId.ifBlank { "txn-$index" }`, because OBTransaction6.TransactionId is
+        # optional in the OBIE schema and HSBC omits it on some pending entries. A test that
+        # assumed the raw id would miss exactly those rows.
+        test_tag: "transactions_row_{item.rowKey}"
+        leading_content_type: icon
+        leading_icon: "{item.CreditDebitIndicator == 'Credit' ? 'arrow_downward' : 'arrow_upward'}"
+        supporting_text: "{item.Category}"
+        trailing_content: "{item.CreditDebitIndicator == 'Credit' ? '+' : '-'}£{item.Amount.Amount}"
+        trailing_color: "{item.CreditDebitIndicator == 'Credit' ? 'primary' : 'error'}"
+        trailing_style: titleMedium
+        # Both a11y keys were undeclared until 2026-08-02 — see _strings/strings.yaml. The
+        # composed single-label shape here is a deliberate MODELLING divergence from source,
+        # recorded rather than restructured: source (components/TransactionRow.kt:83-90) puts
+        # "Money in"/"Money out" on the direction icon's contentDescription and leaves the
+        # description, category and amount as separate nodes, so a screen reader walks four
+        # nodes where this models one. Collapsing the spec to match would change the component
+        # inventory design-validate counts; re-modelling the row's a11y granularity is a
+        # design decision, not an i18n repair, so it is left for /idea-feature-enrich.
+        accessibility_label: "{item.TransactionInformation}, {item.CreditDebitIndicator == 'Credit' ? strings.transactions.a11y.credit : strings.transactions.a11y.debit}, £{item.Amount.Amount} {item.Amount.Currency}{item.Status == 'Pending' ? ', ' + strings.transactions.status.pending : ''}"
+        on_click:
+          action: navigate_transaction_detail
+          target: transaction-detail
+          params:
+            transactionId: "{item.TransactionId}"
+            accountId: "{item.AccountId}"
+          action_contract:
+            effect: navigate
+            description: "Pushes the transaction-detail route with the tapped OBTransaction6 TransactionId and AccountId as route params."
+        test_context:
+          purpose: "Tappable transaction row with merchant name, PFM category chip, colour-coded amount, and conditional Pending badge; navigates to transaction-detail on tap"
+          required_fields: [item.TransactionId, item.TransactionInformation, item.CreditDebitIndicator, item.Amount.Amount, item.Category, item.Status]
+          interaction_type: navigate
+          data_driven: true
+        children:
+          - type: text
+            id: tx_merchant
+            supporting_text: "{item.TransactionInformation}"
+            style: bodyMedium
+            test_context:
+              purpose: "Transaction merchant or narrative from OBTransaction6.TransactionInformation"
+              required_fields: [item.TransactionInformation]
+              interaction_type: display
+              data_driven: true
+
+          - type: chip
+            id: tx_category_tag
+            headline: "{item.Category}"
+            variant: assist
+            style: labelSmall
+            test_context:
+              purpose: "Client-derived PFM category tag from ProprietaryBankTransactionCode.Code / MCC lookup"
+              required_fields: [item.Category]
+              interaction_type: display
+              data_driven: true
+
+          # badge -> status_chip 2026-08-04 (/idea-sync, N-1-SYSTEMIC). variant `warning` was not
+          # a declared badge variant and this palette ships no warning hue anyway; a Pending
+          # transaction is an unsettled one, which is the payment-disposition vocabulary's
+          # in_progress. (Written when that vocabulary was a triad; it became FOUR values
+          # 2026-08-07. in_progress remains correct here — an AIS pending transaction is money
+          # actually in flight, not a deferred instruction, so instruction_established does not
+          # apply to this badge.)
+          - type: status_chip
+            id: tx_pending_badge
+            # Same rowKey as the parent row — fun pendingBadge(key) @ TransactionRow.kt:142.
+            test_tag: "transactions_pending_{item.rowKey}"
+            label: "{strings.transactions.status.pending}"
+            variant: in_progress
+            visible_when: "{item.Status == 'Pending'}"
+            accessibility_label: "{strings.transactions.a11y.pending_status}"
+            test_context:
+              purpose: "Warning badge shown only when OBTransaction6.Status=Pending; distinguishes unsettled from booked transactions"
+              required_fields: [item.Status]
+              interaction_type: display
+              data_driven: true
+
+  # ─── Content: pagination footer ────────────────────────────────────────────
+
+  - type: button
+    keyboard:
+      focusable: true
+    id: load_more_button
+    test_tag: "transactions_load_more"       # TestTags.LOAD_MORE @ components/LoadMoreButton.kt:38
+    variant: text
+    label: "{strings.transactions.load_more}"
+    state_binding: [content]
+    visible_when: "{has_next_page && !is_paginating}"
+    accessibility_label: "{strings.transactions.a11y.load_more}"
+    on_click:
+      action: load_more_transactions
+      action_contract:
+        effect: call_api
+        reads_from: [transactions]
+        external_library_refs: [ktorfit, "hsbc-obie-ais-v4.0:transactions"]
+        description: "Fetches the next transactions page using the Links.Next cursor stored in next_link, appends returned OBTransaction6 rows to the in-memory list, and updates has_next_page and next_link from the new response."
+    test_context:
+      purpose: "Triggers next-page fetch using Links.Next cursor from OBIE pagination response; shown only when has_next_page=true and not already paginating"
+      required_fields: [has_next_page, is_paginating]
+      interaction_type: action
+      data_driven: true
+
+  - type: progress_linear
+    id: pagination_loader
+    test_tag: "transactions_pagination_loader"   # TestTags.PAGINATION_LOADER @ LoadMoreButton.kt:51
+    state_binding: [content]
+    visible_when: "{is_paginating}"
+    accessibility_label: "{strings.transactions.a11y.loading_more}"
+    test_context:
+      purpose: "Linear progress bar at list bottom while next-page fetch is in flight; replaces load_more_button during pagination"
+      required_fields: [is_paginating]
+      interaction_type: display
+      data_driven: true
+
+  # ─── Empty state ───────────────────────────────────────────────────────────
+
+  - type: empty_state
+    id: empty_transactions
+    test_tag: "transactions_empty"           # TestTags.EMPTY @ TransactionsEmpty.kt:47
+    state_binding: [empty]
+    icon: receipt_long
+    title: "{strings.transactions.empty.title}"
+    body: "{strings.transactions.empty.body}"
+    accessibility_label: "{strings.transactions.a11y.empty_no_match}"
+    test_context:
+      purpose: "Empty state shown when active filter, search, or date range yields zero matching OBTransaction6 rows"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+    children:
+      - type: button
+        keyboard:
+          focusable: true
+        id: clear_filters_button
+        test_tag: "transactions_clear_filters"   # TestTags.CLEAR_FILTERS @ TransactionsEmpty.kt:71
+        variant: outlined
+        label: "{strings.transactions.empty.clear_filters}"
+        accessibility_label: "{strings.transactions.a11y.clear_filters}"
+        on_click:
+          action: clear_filters
+          action_contract:
+            effect: transform_state
+            external_library_refs: [kotlinx-coroutines]
+            description: "Resets the CreditDebitIndicator filter, date range, and search query to defaults, transitioning the screen from empty back to content if transactions remain in the in-memory list."
+        test_context:
+          purpose: "Reset CreditDebitIndicator filter, date range, and search query; transitions to content if transactions exist"
+          required_fields: []
+          interaction_type: action
+          data_driven: false
+
+  # ─── Error state ───────────────────────────────────────────────────────────
+
+  - type: error_state
+    id: error_state
+    test_tag: "transactions_error"           # TestTags.ERROR @ TransactionsError.kt:68
+    state_binding: [error]
+    icon: error_outline
+    title: "{strings.transactions.error.title}"
+    # ── Re-modelled 2026-08-02 (/idea-sync). Was `body: "{error.message}"` plus a
+    # test_context describing a per-HTTP-status message the catalogue no longer held,
+    # because the 2026-07-28 pass pruned those keys as unused. Source shows the opposite:
+    # TransactionsError.kt renders a status CHIP, a FIXED title, a per-kind BODY, a
+    # standing consent hint, and a retry gated on kind.recoverable — five surfaces, not
+    # one interpolated message. Bound to the restored status/body pairs.
+    # Keyed by TransactionsErrorKind, following this project's established map idiom
+    # (consent-detail#status_chip icon_map / color_map) rather than an indexed lookup —
+    # every key resolves literally, which an index expression would hide from the i18n gate.
+    body_map:
+      SESSION_EXPIRED: "{strings.transactions.error.body.session_expired}"
+      CONSENT_WITHDRAWN: "{strings.transactions.error.body.consent_withdrawn}"
+      RATE_LIMITED: "{strings.transactions.error.body.rate_limited}"
+      NETWORK: "{strings.transactions.error.body.network}"
+    accessibility_label: "{strings.transactions.a11y.error}"
+    test_context:
+      purpose: >
+        Contextual error surface driven by TransactionsUiState.Error(kind: TransactionsErrorKind).
+        The kind selects both the status-chip label (statusRes) and the body paragraph (bodyRes);
+        the title and consent hint are fixed; retry visibility follows kind.recoverable —
+        SESSION_EXPIRED / RATE_LIMITED / NETWORK true, CONSENT_WITHDRAWN false.
+      required_fields: [error.kind, error.recoverable]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: chip
+        id: error_status_chip
+        test_tag: "transactions_error_status"     # TestTags.ERROR_STATUS @ TransactionsError.kt:117
+        variant: assist
+        color: "errorContainer"
+        icon: warning_amber
+        label_map:
+          SESSION_EXPIRED: "{strings.transactions.error.status.session_expired}"
+          CONSENT_WITHDRAWN: "{strings.transactions.error.status.consent_withdrawn}"
+          RATE_LIMITED: "{strings.transactions.error.status.rate_limited}"
+          NETWORK: "{strings.transactions.error.status.network}"
+        test_context:
+          purpose: "StatusChip(kind) — surfaces the HTTP status verbatim (401/403/429) or 'No connection' so the failure is legible rather than generic."
+          required_fields: [error.kind]
+          interaction_type: display
+          data_driven: true
+      - type: text
+        id: error_consent_hint
+        content: "{strings.transactions.error.consent_hint}"
+        style: bodySmall
+        color: "onSurfaceVariant"
+        test_context:
+          purpose: "Standing hint rendered for every kind (TransactionsError.kt:97), not gated on the error kind."
+          required_fields: []
+          interaction_type: display
+          data_driven: false
+      - type: button
+        keyboard:
+          focusable: true
+        id: retry_button
+        test_tag: "transactions_error_retry"     # TestTags.ERROR_RETRY @ TransactionsError.kt:106
+        variant: filled
+        label: "{strings.transactions.error.retry}"
+        visible_when: "{error.recoverable}"
+        accessibility_label: "{strings.transactions.a11y.retry}"
+        on_click:
+          action: retry_load
+          action_contract:
+            effect: call_api
+            reads_from: [transactions]
+            external_library_refs: [ktorfit, "hsbc-obie-ais-v4.0:transactions"]
+            description: "Re-issues GET /accounts/{AccountId}/transactions from page one after a recoverable error (401 or network failure), resetting the pagination cursor before the fetch."
+        test_context:
+          purpose: "Retry GET /accounts/{AccountId}/transactions via ktorfit; hidden when error.recoverable=false (403 consent withdrawn)"
+          required_fields: [error.recoverable]
+          interaction_type: action
+          data_driven: true

@@ -1,0 +1,101 @@
+# server/apis/payments-context.yaml — AIS read surfaces in the payments context
+#
+# Authored 2026-08-06 by /idea-sync. These four reads previously resolved against the Open Bank
+# Project counterparty and standing-order model. They are OBIE AIS resources.
+#
+# NOTE ON NAMING: OBIE has no "counterparty" concept. The read-side equivalent of a saved payee
+# is `beneficiaries`, and it is READ-ONLY — there is no create, update or delete. The OBP-era
+# counterparty CRUD in the deleted server/apis/payments.yaml has no OBIE counterpart at all.
+
+schema_version: "2.0"
+api: "HSBC UK Open Banking — Account & Transaction API v4.0"
+base_url: "https://secure.sandbox.ob.hsbc.co.uk/obie/open-banking/v4.0/aisp"
+api_source_ref: API-001
+auth: "PSU authorization_code token on scope=accounts"
+
+endpoints:
+  - id: get_beneficiaries
+    method: GET
+    path: "/accounts/{AccountId}/beneficiaries"
+    permission: [ReadBeneficiariesBasic, ReadBeneficiariesDetail]
+    description: "Saved payees. Per-ACCOUNT, not per-customer."
+    consumed_by: [beneficiaries, pay-domestic-single, pay-domestic-scheduled, pay-domestic-standing-order]
+    availability: { current: 200, savings: 200, global_money: 200, credit_card: 400 }
+    write_side: >-
+      NONE. This resource is read-only in OBIE. A payee entered manually in a payment form is
+      sent inline on that payment's CreditorAccount and is never saved back here.
+
+  - id: get_standing_orders
+    method: GET
+    path: "/accounts/{AccountId}/standing-orders"
+    permission: [ReadStandingOrdersBasic, ReadStandingOrdersDetail]
+    description: "Existing standing orders on the account."
+    consumed_by: [standing-orders, standing-order-detail]
+    availability: { current: 200, savings: 400, global_money: 400, credit_card: 400 }
+    frequency_shape: "v4.0 NESTED object, matching the write side. No v3.1 flat string anywhere."
+    structural_findings:
+      standing_order_id_absent: >-
+        StandingOrderId is absent from EVERY element. Conformant (0..1), but it means an AIS-read
+        standing order carries no resource identifier, and there is no field that could ever hold
+        a PIS DomesticStandingOrderId. Write-to-read correlation is impossible BY CONSTRUCTION,
+        not merely delayed.
+      point_in_time_asymmetry: >-
+        This read RETURNS Frequency.PointInTime ({"PointInTime":"01","Type":"WEEK"} on the live
+        fixtures). The PIS write side REFUSES that field with U005. The bank emits a field its
+        own write side rejects, so an AIS-read mandate cannot be replayed as a PIS consent
+        without stripping it first.
+      pis_created_orders_do_not_appear: >-
+        Tested directly. Standing order 19936 was pinned to 80200110203349 — the one account whose
+        read returns 200 — and five minutes later the read still returned only the two pre-seeded
+        2019 fixtures. The mandate was healthy (INCO, consent COND). Do NOT build a
+        post-creation list refresh.
+      scoped: >-
+        Untested once a PIS-created mandate becomes ACTIVE. Both pre-seeded fixtures carry
+        StandingOrderStatusCode ACTV and 19936's first payment was 2026-08-13, so re-running the
+        check after that date is a cheap open experiment.
+
+  - id: get_scheduled_payments
+    method: GET
+    path: "/accounts/{AccountId}/scheduled-payments"
+    permission: [ReadScheduledPaymentsBasic, ReadScheduledPaymentsDetail]
+    description: "Future-dated one-off payments on the account."
+    consumed_by: [scheduled-payments]
+    availability: { current: 200, savings: 200, global_money: 400, credit_card: 400 }
+    unsupported_error: "U000 'This action is not allowed on the account type in the request' — HSBC-proprietary, absent from the Implementation Guide."
+
+  - id: get_direct_debits
+    method: GET
+    path: "/accounts/{AccountId}/direct-debits"
+    permission: [ReadDirectDebits]
+    description: "Direct-debit mandates on the account."
+    consumed_by: [direct-debits, direct-debit-detail]
+    availability: { current: 200, savings: 400, global_money: 400, credit_card: 400 }
+    write_side: >-
+      NONE. OBIE provides no direct-debit cancellation. The OBP-era MandateDetail and
+      CancelMandateResponse DTOs backing a cancel action were deleted 2026-08-06.
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE SCA-RECENCY GATE — affects every endpoint in this file
+# ─────────────────────────────────────────────────────────────────────────
+sca_recency_gate:
+  finding: >-
+    Access to these four resources (plus `party`) depends on how recently SCA happened, not on
+    the consent's permissions. A token whose SCA was ~7.4 hours old returned 403 with an EMPTY
+    BODY on all of them, while balances and transactions returned 200 on the same token.
+  boundary: "Exactly the PSD2 RTS Article 10 split — balance and transaction data is the SCA-exempt set."
+  enforcement: "The 403 carries NO body at all, not HSBC's usual JSON with an ErrorCode, which suggests a gateway rather than the API."
+  refresh_does_not_help: "Refreshing is not the trigger — the fresh token was also refreshed. SCA age is."
+  confound: "The two tokens came from different consents, so consent identity and SCA age both changed. What the observation supports is an SCA-recency gate with the window somewhere under 7.4 hours."
+  provenance_warning: >-
+    PROVISIONAL. The 200 column is captured (ais-sca-recency-probe.md, SCA age 0.21h, all eight
+    resources). The 403 column is prose — the run that recorded it was overwritten before a
+    clobbering bug in the harness was fixed.
+  ui_consequence: >-
+    A long-running integration on refresh tokens loses five of seven account resources silently.
+    There is no error code to key on, so the app must treat an empty-bodied 403 on these
+    endpoints as "re-authentication needed", not as a permission failure.
+
+removed_2026_08_06:
+  - { concept: counterparty, reason: "No OBIE equivalent. Beneficiaries is the read-side analogue and is read-only." }
+  - { endpoint: "POST /obp/.../counterparties", reason: "OBP counterparty creation. No OBIE counterpart." }
+  - { endpoint: "POST /obp/v4.0.0/account/check/scheme/iban", reason: "OBP IBAN pre-check. IBANs are validated locally by checksum instead." }

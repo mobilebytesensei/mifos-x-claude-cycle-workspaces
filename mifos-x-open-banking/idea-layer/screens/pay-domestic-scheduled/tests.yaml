@@ -1,0 +1,212 @@
+sibling: tests
+schema_version: "4.0"
+feature_id: pay-domestic-scheduled
+
+feature: pay-domestic-scheduled
+scenario_count: 14
+
+error_contract_ref:
+  dto: dtos/ObPaymentError.yaml
+  note: >-
+    TC-PSCH-013 asserts this screen's obligations under the shared contract. The envelope shape,
+    the fail-fast U005-before-U004 ordering, the four U004 wordings and the unstable Path casing
+    are stated ONCE there.
+
+scenarios:
+  - id: TC-PSCH-001
+    priority: p0
+    title: "Happy path — Data.Permission Create is always sent"
+    given: "An eligible account, a payee, an amount and a date at T+7"
+    when: "The PSU confirms"
+    then:
+      - "POST /domestic-scheduled-payment-consents carries Data.Permission == 'Create'"
+      - "Data.Initiation.RequestedExecutionDateTime is present"
+      - "x-jws-signature and x-idempotency-key are both present"
+      - "The consent stages 201 AWAU"
+    rationale: "Omitting Permission returns U004. It is never optional on this family."
+
+  - id: TC-PSCH-002
+    priority: p0
+    title: "Today is not selectable"
+    given: "The Date step is rendered"
+    when: "The date picker is inspected"
+    then:
+      - "The minimum selectable date is tomorrow"
+      - "Today and all earlier dates are disabled"
+    rationale: >-
+      T+0 is refused with U003 'a date in the past' — measured. Today counting as past is
+      counter-intuitive enough that a picker allowing it would look correct and fail at submit.
+
+  - id: TC-PSCH-003
+    priority: p0
+    title: "The upper bound is exactly T+365"
+    given: "The Date step is rendered"
+    when: "The date picker is inspected"
+    then:
+      - "T+365 is selectable"
+      - "T+366 is not selectable"
+    rationale: "Measured exactly on both rails: T+365 stages 201, T+366 returns U002."
+
+  - id: TC-PSCH-004
+    priority: p1
+    title: "Weekends are selectable"
+    given: "The Date step is rendered"
+    when: "A Saturday within range is tapped"
+    then:
+      - "The date is accepted by the picker"
+      - "The consent stages successfully"
+    rationale: >-
+      HSBC's Guide §22.2.1 requires a working day; observation contradicts it — 2026-09-05, a
+      Saturday, staged 201. Filtering weekends would refuse dates the bank accepts.
+
+  - id: TC-PSCH-005
+    priority: p0
+    title: "No funds-availability call is made"
+    given: "A network interceptor recording all outbound requests"
+    when: "The full flow runs from staging through submission"
+    then:
+      - "No request path contains 'funds-confirmation'"
+      - "The Review step displays no_funds_check_note"
+      - "No balance comparison is presented to the PSU as a funds check"
+    rationale: >-
+      The family has no funds-confirmation endpoint. Synthesising one from today's balance
+      would assert something about a future execution date that cannot be known.
+
+  - id: TC-PSCH-006
+    priority: p0
+    title: "PDNG and INCO are never rendered as paid"
+    given: "A submitted scheduled payment returning PDNG, later INCO"
+    when: "The status is displayed"
+    then:
+      - "No rendered string contains 'paid', 'sent', 'complete' or 'successful'"
+      - "The status reads as the instruction being set up or scheduled"
+      - "PDNG maps to in_progress; INCO maps to instruction_established, not terminal_success"
+      - "The INCO chip is the neutral event_repeat variant — never a tick, never a clock"
+    rationale: >-
+      OBIE has no per-execution status. The resource describes the instruction's setup, never
+      the payment that will happen on the execution date. FR-021.
+      The two INCO assertions were added 2026-08-07 with the fourth disposition: forbidding the
+      WORD 'paid' is not enough on its own, because a green tick makes the same claim without
+      using it.
+
+  - id: TC-PSCH-007
+    priority: p0
+    title: "The amendment notice appears before AND after confirming"
+    given: "The flow reaches the Review step, then Success"
+    when: "Each screen is inspected"
+    then:
+      - "amend_notice is displayed on the Review step"
+      - "amend_notice is displayed on the Success state"
+    rationale: >-
+      OBL Customer Experience Guidelines make telling the PSU mandatory. Showing it only after
+      confirmation removes the chance to reconsider, which defeats the purpose of the
+      obligation.
+
+  - id: TC-PSCH-008
+    priority: p1
+    title: "None of the five stub timestamps is rendered"
+    given: >-
+      A submit response in which CutOffDateTime, CreationDateTime, StatusUpdateDateTime,
+      ExpectedExecutionDateTime and ExpectedSettlementDateTime all carry the SAME value
+    when: "The success state renders"
+    then:
+      - "The screen shows the REQUESTED execution date"
+      - "ExpectedExecutionDateTime is not rendered"
+      - "ExpectedSettlementDateTime is not rendered"
+      - "CutOffDateTime is not rendered, and no submit-by deadline is derived from it"
+      - "StatusUpdateDateTime is not rendered, and nothing polls it"
+    rationale: >-
+      WIDENED 2026-08-07 from two fields to four. All five come back as the creation timestamp
+      on every domestic 201, so none is a clock. Rendering the Expected* pair would tell a PSU
+      their payment dated a week out arrives today. CutOffDateTime is worse: it reads as "submit
+      before this time or it slips a day", and being a copy of the creation timestamp it is
+      always already in the past — the app would display an expired deadline for a payment that
+      is fine. StatusUpdateDateTime being the same value is the mechanism behind TC-PSCH-014's
+      status-only polling rule.
+
+  - id: TC-PSCH-009
+    priority: p2
+    title: "The review shows the normalised date without a time"
+    given: "A date selected and echoed back normalised to midnight"
+    when: "The Review step renders"
+    then:
+      - "The date is displayed without a time component"
+    rationale: "The bank discards the time. Showing one implies a precision the API does not offer."
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # ADDED 2026-08-07 from the full by-type capture read
+  # Error contract: dtos/ObPaymentError.yaml
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: TC-PSCH-010
+    priority: p2
+    title: "No countdown is built from an echoed CompletionDateTime"
+    given: "An Authorisation block sent with CompletionDateTime 2027-09-10T10:28:58+00:00 and echoed as 2027-09-10T00:00:00+00:00"
+    when: "The screen displays or computes anything from the authorisation deadline"
+    then:
+      - "No time-of-day is displayed from the echoed value"
+      - "No remaining-time countdown is computed from the echoed value"
+    rationale: >-
+      SP-D11 and SP-I14 both show CompletionDateTime midnight-truncated on echo — the second
+      field on this rail whose VALUE changes, alongside RequestedExecutionDateTime. A countdown
+      driven off the response silently loses the time of day and reads as midnight, which is
+      up to 24 hours wrong in the direction that makes the deadline look nearer than it is.
+
+  - id: TC-PSCH-011
+    priority: p1
+    title: "ExchangeRateInformation is never sent"
+    given: "Any staged consent on this family"
+    when: "The request body is inspected"
+    then:
+      - "Data.Initiation contains no ExchangeRateInformation block"
+      - "No RateType value appears anywhere in the body"
+    rationale: >-
+      U005 "Field is not expected" for all three RateTypes — Indicative, Actual and Agreed, the
+      last refused even carrying a concrete ExchangeRate of 1.15 and a ContractIdentification.
+      No rate can be requested or pinned at consent anywhere in the corpus. Sending it
+      speculatively is worse than useless: U005 fires before U004, so an unexpected block MASKS
+      a genuinely missing mandatory field and the next round trip reports a different error.
+
+  - id: TC-PSCH-012
+    priority: p1
+    title: "An SCA exemption request does not shorten the flow"
+    given: 'A consent staged with SCASupportData carrying RequestedSCAExemptionType "BillPayment", returning 201'
+    when: "The response is handled"
+    then:
+      - "The consent status is read as AWAU"
+      - "The app navigates to payment-consent for the app-to-app authorisation leg"
+      - "No branch treats the echoed exemption as authorisation having been granted"
+    rationale: >-
+      The block is echoed back verbatim with no observable effect — the status stays AWAU.
+      Acceptance is not honouring; the echo proves only that the field parsed. A skip-auth
+      branch keyed off the 201 would strand the PSU on a consent that is never authorised, and
+      the subsequent submit would return U009.
+
+  - id: TC-PSCH-013
+    priority: p0
+    title: "Every entry in Errors[] is rendered, and copy is keyed off code plus path"
+    given: "A 400 whose Errors array carries two entries"
+    when: "The error state renders"
+    then:
+      - "Both entries are displayed"
+      - "The screen does not render Errors[0] alone"
+      - "Copy is selected from ErrorCode + Path, and no branch reads Message"
+      - "The Path match is case-insensitive"
+    rationale: >-
+      Errors is an array and has been observed carrying two unrelated faults at once. U004 has
+      four Messages for one code, one of which — "Field is missing" (SO-I11) — says nothing at
+      all, so Message-keyed copy is both unstable and sometimes empty. R2-05 proves Path casing
+      varies. See dtos/ObPaymentError.yaml.
+
+  - id: TC-PSCH-014
+    priority: p1
+    title: "The consent poll reads Data.Status and nothing else"
+    given: "A consent moving AWAU -> AUTH with StatusUpdateDateTime unchanged"
+    when: "The consent-status poll runs"
+    then:
+      - "The poll observes AUTH from Data.Status and proceeds"
+      - "The poll does not compare StatusUpdateDateTime between reads"
+    rationale: >-
+      StatusUpdateDateTime is one of the five stub timestamps — it is a copy of
+      CreationDateTime, not a clock, so it never moves. A timestamp-keyed poll hangs forever.
+      FR-021.

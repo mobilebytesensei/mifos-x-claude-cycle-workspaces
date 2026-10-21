@@ -1,0 +1,296 @@
+sibling: api
+schema_version: "4.0"
+feature_id: pay-domestic-scheduled
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DOMESTIC SCHEDULED PAYMENT
+#   v4.0/pisp/domestic-scheduled-payment-consents -> domestic-scheduled-payments
+#
+# Evidence: captures/by-type/scheduled-domestic.md (27 scenarios),
+# captures/flow-sched-domestic.md (authorised, resource 19919),
+# captures/round15-so-sched-probes.md (the date-boundary measurements).
+#
+# DELTA FROM pay-domestic-single (the reference rail):
+#   + Data.Permission "Create" is MANDATORY            (U004 if omitted)
+#   + RequestedExecutionDateTime is MANDATORY          (U004 if omitted)
+#   + optional Authorisation and SCASupportData blocks
+#   - NO funds-confirmation endpoint on this family
+#   ~ status ladder becomes PDNG -> INCO instead of ACSP -> ACCC
+# Everything else — headers, consumer Risk, eligibility, creditor scheme, RemittanceInformation,
+# the 0.05 GBP staging charge — is identical to the reference rail.
+# ═══════════════════════════════════════════════════════════════════════════
+
+base_path: "/obie/open-banking/v4.0/pisp"
+api_source_ref: API-003
+inherits_from: pay-domestic-single
+inherits: [write_header_contract, consumer_context_constraint, debtor_eligibility, creditor_eligibility]
+
+operations:
+  - id: stage_domestic_scheduled_consent
+    endpoint: "POST /domestic-scheduled-payment-consents"
+    auth: client_credentials_payments_scope
+    headers: [x-jws-signature, x-idempotency-key]
+    request_body:
+      Data:
+        Permission: "Create"
+        ReadRefundAccount: "No"
+        Initiation:
+          InstructionIdentification: "<generated>"
+          EndToEndIdentification: "<generated>"
+          LocalInstrument: "UK.OBIE.FPS"
+          RequestedExecutionDateTime: "<ISO 8601, strictly > today, <= T+365>"
+          InstructedAmount: { Amount: "<major-unit string>", Currency: "GBP" }
+          DebtorAccount: { SchemeName: "UK.OBIE.SortCodeAccountNumber", Identification: "<14 digits>" }
+          CreditorAccount: { SchemeName: "UK.OBIE.SortCodeAccountNumber", Identification: "<14 digits>", Name: "<payee>" }
+          RemittanceInformation: { Unstructured: ["<reference>"] }
+      Risk:
+        PaymentContextCode: "TransferToThirdParty | TransferToSelf"
+    success: "201 with Data.ConsentId and Data.Status AWAU"
+    returns_charges: true
+    charge_observed: "0.05 GBP UK.OBIE.CHAPSOut — same as the reference rail"
+
+  - id: get_domestic_scheduled_consent_status
+    endpoint: "GET /domestic-scheduled-payment-consents/{ConsentId}"
+    auth: client_credentials_payments_scope
+    status_ladder: "AWAU -> AUTH -> COND"
+    polled_to: AUTH
+    critical_note: "StatusUpdateDateTime does not move on AWAU -> AUTH. Read Data.Status only."
+
+  - id: submit_domestic_scheduled_payment
+    endpoint: "POST /domestic-scheduled-payments"
+    auth: psu_authorization_code
+    headers: [x-jws-signature, x-idempotency-key]
+    request_body:
+      Data:
+        ConsentId: "<from stage>"
+        Initiation: "<the parsed Initiation from the AUTHORISED consent, forwarded as an object>"
+      Risk: "<forwarded from the authorised consent>"
+    success: "201 with Data.DomesticScheduledPaymentId and Data.Status PDNG"
+    # ── CORRECTED 2026-08-07 from the full by-type capture read ──
+    echo_is_not_bytewise:
+      finding: >-
+        "Byte-identical echo" was the wrong description and would produce a broken client. The
+        server REORDERS Initiation keys on every echo — LocalInstrument lands after
+        EndToEndIdentification in SP-I07 but after RequestedExecutionDateTime in SP-D06, from
+        requests built the same way.
+      rule: >-
+        Forward the PARSED object read back from the authorised consent. Never re-serialise it
+        and string-compare against the staged copy, and never hash it for comparison — both fail
+        on a payment that is perfectly valid.
+      values_are_preserved: "Only ORDER changes. See date_echo_normalisation for the two fields whose VALUE changes."
+
+  - id: get_domestic_scheduled_payment_status
+    endpoint: "GET /domestic-scheduled-payments/{DomesticScheduledPaymentId}"
+    auth: client_credentials_payments_scope
+    status_ladder: "PDNG -> INCO"
+    status_meanings:
+      PDNG: "Pending — the instruction is set up and waiting for its execution date."
+      INCO: "InitiationCompleted — the instruction is established. NOT 'the money moved'."
+    per_execution_status: none
+    per_execution_note: >-
+      CRITICAL. There is no per-execution status anywhere in OBIE. This resource describes the
+      INSTRUCTION's setup, not the payment that will happen on the execution date. A TPP cannot
+      learn by any API means whether the scheduled payment actually executed — the only route is
+      AIS transaction polling plus inference. The UI must never say "paid".
+
+no_funds_confirmation:
+  reason: >-
+    HSBC ships no funds-confirmation request for this family, and OBIE defines none. The
+    rationale is sound: today's balance says nothing about the balance on the execution date.
+  ui_consequence: >-
+    The Review step must not promise the payment will succeed. Do NOT substitute a balance
+    check against today's figure and present it as a funds check — that would be a stronger
+    claim than the data supports.
+
+# ─────────────────────────────────────────────────────────────────────────
+# DATE RULES — measured precisely, both boundaries
+# ─────────────────────────────────────────────────────────────────────────
+requested_execution_date_rules:
+  mandatory: true
+  omission_error: "U004 Initiation.RequestedExecutionDateTime is missing"
+  measured:
+    - value: "T+0 (today)"
+      result: "U003 — 'You cannot trigger a Payment request for a date in the past'"
+      note: "Today counts as past. The rule is STRICTLY greater than today."
+    - value: "T-1"
+      result: "U003 date in the past"
+    - value: "T+7"
+      result: "201 AWAU — the LOWEST accepted value anyone actually sent"
+    - value: "T+30, T+90, T+180, T+364"
+      result: "201 AWAU"
+    - value: "T+365"
+      result: "201 AWAU — the exact upper bound, identical on both rails"
+    - value: "T+366, T+370, T+400"
+      result: "U002 Initiation.RequestedExecutionDateTime is invalid"
+  unmeasured:
+    - range: "T+1 through T+6"
+      note: >-
+        Never sent. T+0 is refused and T+7 accepted, so the lower bound is somewhere between.
+        HSBC's Guide §22.2.1 says 'Today +1'. The UI uses tomorrow as the floor, which follows
+        the documentation rather than an observation — recorded so the distinction is not lost.
+      # ── SHARPENED 2026-08-07 from the full by-type capture read ──
+      status: "OPEN — the lower bound of this rail is DOCUMENTATION, not observation."
+      what_is_actually_known: >-
+        The corpus proves exactly two points: T+0 is refused and T+7 is accepted. Every value
+        between them is unprobed. "Strictly after today" is therefore an inference from §22.2.1
+        plus the T+0 refusal — it is not measured, and if the real floor were T+3 the app's
+        picker would offer two dates that stage a 400.
+      how_to_close_it: "Send T+1, then bisect. Six requests settle it permanently."
+      do_not: "Do not quietly upgrade this to a measured boundary. The T+365 ceiling IS measured; this floor is not, and the asymmetry is the point."
+  normalisation: >-
+    Sent as 2026-08-13T10:38:41+00:00, echoed as 2026-08-13T00:00:00+00:00. The time component
+    is discarded and the date kept, with the UTC offset preserved. The Review step must show
+    the DATE only, since the time the PSU implicitly chose is not honoured.
+  working_day_rule:
+    documented: "Guide §22.2.1 — 'Execution date must also be a valid working day'"
+    observed: "DOES NOT HOLD. R15-A02 sent 2026-09-05, a Saturday, and staged 201 AWAU."
+    ui_consequence: "Weekends are selectable. Do not implement a working-day filter the bank does not enforce."
+
+optional_blocks_accepted:
+  - block: "Authorisation { AuthorisationType, CompletionDateTime }"
+    result: "201"
+    quirk: >-
+      CompletionDateTime accepts a far-future literal (2027-09-10) that is REFUSED as
+      RequestedExecutionDateTime on the same request. The far-future guard is scoped to one field.
+    # ── ADDED 2026-08-07 from the full by-type capture read ──
+    also_midnight_truncated:
+      finding: >-
+        Data.Authorisation.CompletionDateTime is truncated exactly like
+        RequestedExecutionDateTime. It is the SECOND field whose value changes on echo, and it
+        was previously undocumented.
+      observed: "SP-D11 and SP-I14 both send 2027-09-10T10:28:58+00:00 and receive 2027-09-10T00:00:00+00:00."
+      consequence: >-
+        Any countdown, deadline or "authorise before HH:MM" copy built off the ECHOED value
+        loses the time of day and silently reads as midnight. If a completion deadline is ever
+        shown, drive it from the value the app SENT, not the value returned — or show a date
+        only, which is what the API can actually support.
+
+  - block: "SCASupportData { RequestedSCAExemptionType, AppliedAuthenticationApproach, ReferencePaymentOrderId }"
+    result: "201"
+    # ── ADDED 2026-08-07 from the full by-type capture read ──
+    echoed_but_inert:
+      finding: >-
+        The block is echoed back VERBATIM — including RequestedSCAExemptionType "BillPayment" —
+        with NO observable effect. The consent still lands AWAU and still requires the full
+        app-to-app authorisation leg.
+      consequence: >-
+        Acceptance is not honouring. Do NOT build a "no authorisation needed" path on the
+        strength of a 201 carrying an exemption request; the echo proves only that the field
+        was parsed. Treat SCASupportData as documentation of intent, and always route through
+        payment-consent.
+
+  - block: "ReadRefundAccount: Yes"
+    result: "201"
+    # ── ADDED 2026-08-07 from the full by-type capture read ──
+    response_key_is_Debtor_not_DebtorAccount:
+      finding: >-
+        The refund account comes back under a top-level key named `Data.Debtor` — NOT
+        `Data.DebtorAccount`. A deserialiser looking for DebtorAccount finds nothing and
+        silently reports "no refund account".
+      shape: "{ SchemeName, Identification } — there is NO Name member."
+      what_it_actually_is: >-
+        It mirrors the request's DebtorAccount. It carries no information the app did not
+        already send, so asking for it buys nothing on this rail. Setting ReadRefundAccount to
+        "No" costs the PSU nothing.
+      consequence: >-
+        If it is ever rendered, there is no name to render — only a scheme and an identifier —
+        so a "refund to: <name>" row cannot be built from this response.
+
+# ─────────────────────────────────────────────────────────────────────────
+# EXCHANGE RATE — ADDED 2026-08-07. Refused outright, on every RateType.
+# ─────────────────────────────────────────────────────────────────────────
+exchange_rate_information:
+  accepted: false
+  error: 'U005 "Field is not expected" @ Data.Initiation.ExchangeRateInformation'
+  refused_for_all_three_rate_types:
+    - { RateType: Indicative, result: U005 }
+    - { RateType: Actual, result: U005 }
+    - { RateType: Agreed, result: U005, note: "Refused even carrying a concrete ExchangeRate of 1.15 and a ContractIdentification — a fully-specified Agreed rate is no more acceptable than an empty Indicative one." }
+  finding: >-
+    There is no way to request, quote or PIN a rate at consent time — not on this rail, and not
+    anywhere in the corpus. The refusal is total rather than conditional, so this is not a
+    field that becomes available under some other combination of inputs.
+  ui_consequence: >-
+    A domestic-only app is unaffected, but the reasoning matters for the international sibling:
+    there is no "lock this rate" affordance to build, and no quote to display at review. If
+    conversion is ever surfaced, it can only be described as unknown until execution.
+  do_not: "Do not send the block speculatively. U005 fires before U004, so an unexpected ExchangeRateInformation will MASK a genuinely missing mandatory field in the same body."
+
+# ─────────────────────────────────────────────────────────────────────────
+# RESPONSE TIMESTAMPS — ADDED 2026-08-07. Five stubs, not four.
+# ─────────────────────────────────────────────────────────────────────────
+response_timestamp_stubs:
+  finding: >-
+    On every domestic 201, FIVE timestamps are the same value:
+    CutOffDateTime == CreationDateTime == StatusUpdateDateTime == ExpectedExecutionDateTime ==
+    ExpectedSettlementDateTime.
+  do_not_display: [CutOffDateTime, StatusUpdateDateTime, ExpectedExecutionDateTime, ExpectedSettlementDateTime]
+  previously_known: "ExpectedExecutionDateTime and ExpectedSettlementDateTime were already flagged (TC-PSCH-008)."
+  newly_added: >-
+    CutOffDateTime joins the list. It is the most dangerous of the five because it LOOKS like a
+    real deadline — "submit before this time or it slips a day" is exactly the copy it invites —
+    and it is a copy of the creation timestamp, so it is always already in the past by the time
+    it is read. StatusUpdateDateTime is the same value again, which is the mechanism behind the
+    "StatusUpdateDateTime does not move on AWAU -> AUTH" note above: it was never a real clock.
+  what_to_show_instead: "The REQUESTED execution date the PSU chose. It is the only date on this response that means what it appears to mean."
+
+amendment_prohibition:
+  permitted: false
+  basis: "OBL Customer Experience Guidelines"
+  obligation: mandatory
+  statement: >-
+    A PISP cannot amend or cancel a future-dated payment, and is under a MANDATORY obligation
+    to tell the PSU to use the bank's own channel. There is no DELETE on this family.
+  ui_requirement: "The success state and the review step both carry the notice."
+
+# ─────────────────────────────────────────────────────────────────────────
+# RISK BLOCK — ADDED 2026-08-07. The two rails carry DIFFERENT members.
+# ─────────────────────────────────────────────────────────────────────────
+risk_block_by_rail:
+  domestic:
+    always_carries: PaymentContextCode
+    observed: "Every domestic scheduled scenario in the corpus. This is the shape this screen sends."
+  international:
+    always_carries: 'CategoryPurposeCode "EPAY"'
+    observed: "25 of 25 international scheduled scenarios — never PaymentContextCode."
+  untested:
+    question: "Does the INTERNATIONAL rail accept PaymentContextCode?"
+    status: "NEVER SENT. Unknown."
+    why_it_matters: >-
+      It is tempting to read the 25/25 CategoryPurposeCode observation as "the international
+      rail requires CategoryPurposeCode and refuses PaymentContextCode". The corpus does not
+      support the second half — nobody tried. The two rails may simply have been exercised with
+      different reference bodies. Do not carry this screen's Risk shape across to the
+      international sibling as if the difference were proven mandatory, and do not assume the
+      reverse either.
+  consequence_for_this_screen: "None — send PaymentContextCode. Recorded because the delta is a trap for the international sibling, which inherits from this file."
+
+# ─────────────────────────────────────────────────────────────────────────
+# ERROR CONTRACT
+# ─────────────────────────────────────────────────────────────────────────
+error_contract_ref:
+  dto: dtos/ObPaymentError.yaml
+  binding: "Every 400 on every operation above deserialises to ObPaymentError. Its rules are not restated here."
+  what_this_screen_must_do:
+    render_every_error: "Errors is an ARRAY and can carry TWO entries. Rendering Errors[0] alone hides the actionable half."
+    validate_the_date_client_side: >-
+      The date rules cannot be discovered from the API one request at a time — U005 'not
+      expected' fires before U004 'missing', so an unexpected field masks a missing mandatory
+      one entirely. Bound the picker locally and treat U003/U002 on the date as unreachable.
+    key_off_code_plus_path: >-
+      U004 has FOUR observed Messages for the one code, including the bare "Field is missing"
+      (SO-I11), which says nothing at all. Switch on ErrorCode + Path, match Path
+      case-insensitively, and never parse Message.
+
+consent_id_handling:
+  observed: 'ConsentIds are short sequential integers-as-strings — "45135".'
+  consequence: "Enumerable, not UUIDs. Keep them out of URLs, logs, crash reports and analytics."
+
+error_cases:
+  - { code: U004, http: 400, trigger: "Data.Permission omitted", recovery: "Implementation fault — Permission is always 'Create'." }
+  - { code: U004, http: 400, trigger: "RequestedExecutionDateTime omitted", recovery: "Return to the date step." }
+  - { code: U003, http: 400, trigger: "date is today or in the past", recovery: "Return to the date step; the picker should have prevented it." }
+  - { code: U002, http: 400, trigger: "date beyond T+365", recovery: "Return to the date step; the picker should have prevented it." }
+  - { code: U019, http: 400, trigger: "missing x-jws-signature", recovery: "Not user-recoverable." }
+  - { code: U009, http: 400, trigger: "consent not Authorised", recovery: "Re-authorise." }
+  - { code: U008, http: 400, trigger: "Initiation mismatch", recovery: "Re-read the authorised consent." }

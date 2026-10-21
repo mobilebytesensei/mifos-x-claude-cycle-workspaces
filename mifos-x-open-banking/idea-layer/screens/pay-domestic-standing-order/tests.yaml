@@ -1,0 +1,245 @@
+sibling: tests
+schema_version: "4.0"
+feature_id: pay-domestic-standing-order
+
+feature: pay-domestic-standing-order
+scenario_count: 15
+
+error_contract_ref:
+  dto: dtos/ObPaymentError.yaml
+  note: >-
+    TC-PSO-015 asserts this screen's obligations under the shared contract. R15-E01 and R17-B03
+    are this rail's own proof of the fail-fast ordering and the parent short-circuit; both are
+    recorded there.
+
+scenarios:
+  - id: TC-PSO-001
+    priority: p0
+    title: "Happy path — mandate stages with Permission Create and an empty Risk"
+    given: "A payee, WEEK frequency, a first payment date at T+7, and an amount"
+    when: "The PSU confirms"
+    then:
+      - "POST /domestic-standing-order-consents carries Data.Permission == 'Create'"
+      - "Risk is the empty object {}"
+      - "x-jws-signature and x-idempotency-key are present"
+      - "The consent stages 201 AWAU"
+    rationale: >-
+      Risk {} is correct here and is NOT the merchant-shape problem seen on the single-payment
+      rails — a recurring mandate genuinely has no payment context to declare.
+
+  - id: TC-PSO-002
+    priority: p0
+    title: "FirstPaymentAmount is sent; InstructedAmount never is"
+    given: "Any staged or submitted standing order"
+    when: "The request body is inspected"
+    then:
+      - "Data.Initiation.FirstPaymentAmount is present"
+      - "Data.Initiation.InstructedAmount is absent"
+    rationale: >-
+      Round 15 crossed the two shapes deliberately. InstructedAmount returns U005 on this rail
+      whether or not FirstPaymentAmount is also present. The international standing order is the
+      exact inverse, which makes this the likeliest place to copy the wrong shape. FR-019.
+
+  - id: TC-PSO-003
+    priority: p0
+    title: "The frequency picker offers exactly five values"
+    given: "The Schedule step is rendered"
+    when: "The frequency dropdown is opened"
+    then:
+      - "Exactly five options are present: WEEK, FRTN, MNTH, QURT, YEAR"
+      - "ADHO, INDA, MIAN and DAIL are absent"
+    rationale: >-
+      All nine OBIE OBFrequency6Code values were tested; HSBC Personal accepts five. Offering
+      the full enum would let a PSU compose a mandate the bank refuses with U002. FR-020.
+
+  - id: TC-PSO-004
+    priority: p0
+    title: "Final payment date is bounded by all three observed rules"
+    given: "A first payment date is selected and the end-date switch is on"
+    when: "The final date picker is inspected"
+    then:
+      - "Dates at or before the first payment date are not selectable"
+      - "Dates beyond 12 months from today are not selectable"
+      - "Today and tomorrow are not selectable"
+    rationale: >-
+      All three rules arrived in one U003 message. The 12-month horizon appears in no published
+      HSBC document and every mandate in the corpus sat inside it by luck.
+
+  - id: TC-PSO-005
+    priority: p0
+    title: "There is no funding-account step and no DebtorAccount is sent"
+    given: "The full flow from entry to submit"
+    when: "The steps and the request body are inspected"
+    then:
+      - "The stepper shows four steps, beginning at Payee"
+      - "No account picker is presented"
+      - "Data.Initiation.DebtorAccount is absent from the staged body"
+      - "no_debtor_note is displayed on the Payee step"
+    rationale: >-
+      DebtorAccount is not in this schema. A picker whose value has nowhere to go implies a
+      choice the PSU does not have here, and the note prevents them wondering why they were
+      never asked.
+
+  - id: TC-PSO-006
+    priority: p1
+    title: "A reference IS offered, and it goes in RemittanceInformation"
+    given: "The Amount step is rendered"
+    when: "A reference is entered and the mandate is staged"
+    then:
+      - "reference_field is present on the Amount step"
+      - "no_reference_note is NOT present anywhere"
+      - "Data.Initiation.RemittanceInformation.Unstructured[0] carries the entered value"
+      - "Data.Initiation.MandateRelatedInformation.Reference is absent"
+      - "The staged consent echoes the reference verbatim"
+    rationale: >-
+      REVERSED 2026-08-07. This scenario previously asserted the opposite — that no reference
+      input exists because "RemittanceInformation is not in the standing-order schema". That was
+      wrong. R17-D01 stages 201 with RemittanceInformation.Unstructured and echoes it verbatim;
+      R17-D03 does the same for .Structured. What IS refused is
+      MandateRelatedInformation.Reference, on both the domestic and the international rail — and
+      because that mandate-level field was the only one probed, its refusal was generalised into
+      "no reference channel on this rail". The channel exists; it is one level up.
+      no_reference_note told the PSU something untrue and has been removed rather than reworded.
+
+  - id: TC-PSO-007
+    priority: p0
+    title: "Submit echoes the bank's DebtorAccount, not the absent staged one"
+    given: "An authorised consent into which the bank wrote a UK.OBIE.PAN DebtorAccount"
+    when: "The mandate is submitted"
+    then:
+      - "The consent is re-read after authorisation"
+      - "The submitted Initiation includes the bank-written DebtorAccount verbatim"
+      - "The comparison against the authorised consent is field-by-field, never a string or hash comparison"
+      - "No U008 is returned"
+    rationale: >-
+      Observed on 19916. The bank writes a DebtorAccount the TPP cannot send — and one its own
+      endpoint would refuse on a fresh consent. Echo what the bank wrote.
+      Added 2026-08-07: forward the PARSED object. The server normalises Initiation key order on
+      every echo — MandateRelatedInformation comes back FirstPaymentDateTime,
+      FinalPaymentDateTime, Frequency although requests send Frequency first, and Frequency
+      itself comes back CountPerPeriod before Type. A re-serialise-and-compare check therefore
+      fails on a mandate that is perfectly valid.
+
+  - id: TC-PSO-008
+    priority: p0
+    title: "PDNG and INCO are never rendered as a payment having been made"
+    given: "A created mandate returning PDNG, later INCO"
+    when: "The status is displayed"
+    then:
+      - "No rendered string contains 'paid', 'sent' or 'completed'"
+      - "The status reads as the standing order being set up"
+    rationale: >-
+      OBIE has no per-execution status. The resource describes the mandate's setup and can never
+      report on instalment N. FR-021.
+
+  - id: TC-PSO-009
+    priority: p1
+    title: "The app does not try to show the new mandate in the standing-orders list"
+    given: "A mandate is created successfully"
+    when: "The success state renders and the app is left idle"
+    then:
+      - "No AIS standing-orders read is triggered as a result of the creation"
+      - "The success state does not claim the mandate will appear in the standing orders list"
+    rationale: >-
+      StandingOrderId is absent from every AIS element, so correlation is impossible by
+      construction. Tested directly with 19936 on the one account that returns 200 — the read
+      still showed only the 2019 fixtures.
+
+  - id: TC-PSO-010
+    priority: p2
+    title: "The amendment notice appears before and after, at warning severity"
+    given: "The flow reaches Review, then Success"
+    then:
+      - "amend_notice is displayed on both, at severity warning"
+      - "Neither screen offers an Edit or Cancel action"
+    rationale: >-
+      Mandatory under OBL CEG. Warning rather than info because an open-ended unchangeable
+      recurring debit is a heavier commitment than a single dated payment.
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # ADDED 2026-08-07 from the full by-type capture read
+  # Error contract: dtos/ObPaymentError.yaml
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: TC-PSO-011
+    priority: p0
+    title: "FirstPaymentDateTime is always sent, so the confirmation always has a real first date"
+    given: "Any staged mandate"
+    when: "The request body and the review card are inspected"
+    then:
+      - "Data.Initiation.MandateRelatedInformation.FirstPaymentDateTime is present"
+      - "The review card's first-payment row shows the date that was sent"
+      - "No first-payment date is ever computed locally from the frequency"
+    rationale: >-
+      The field is OPTIONAL to the bank — R17-B01 omits it and stages 201 — but the response
+      OMITS it too. The bank substitutes nothing and reveals no derived first date, so a mandate
+      staged without it leaves the UI with no truthful value for "first payment on …". The only
+      alternatives would be a blank row on a recurring commitment the PSU is about to authorise,
+      or a locally computed guess presented as fact. Always sending the field is what makes the
+      row honest.
+
+  - id: TC-PSO-012
+    priority: p1
+    title: "Mandate dates round-trip unchanged, and the object around them does not"
+    given: "A mandate staged with FirstPaymentDateTime 2026-08-13T10:38:41+00:00"
+    when: "The staged consent is read back"
+    then:
+      - "FirstPaymentDateTime is returned character-for-character as sent"
+      - "The +00:00 offset is preserved and not converted to Z"
+      - "The seconds component is preserved and not truncated to midnight"
+      - "The app does not assume the surrounding Initiation key order is unchanged"
+    rationale: >-
+      Mandate dates are NOT normalised on this rail, unlike RequestedExecutionDateTime on the
+      scheduled rail which IS truncated to midnight, and unlike
+      Data.Authorisation.CompletionDateTime which is truncated the same way. A date helper
+      shared across the two rails will be wrong on one of them. Only key ORDER is normalised
+      here — the values survive intact.
+
+  - id: TC-PSO-013
+    priority: p1
+    title: "A reference is never placed in MandateRelatedInformation"
+    given: "A mandate carrying a reference"
+    when: "The request body is inspected"
+    then:
+      - "Data.Initiation.RemittanceInformation carries the reference"
+      - "Data.Initiation.MandateRelatedInformation.Reference is absent"
+      - "If Structured is used it is serialised as an ARRAY, never a bare object"
+    rationale: >-
+      MandateRelatedInformation.Reference is refused on BOTH the domestic and the international
+      rail — it is the natural-looking place for a mandate reference and the wrong one. The
+      working channel is Initiation.RemittanceInformation (R17-D01 Unstructured, R17-D03
+      Structured). The array rule for Structured is shared with the single-payment rail, where
+      R6-10 succeeds as an array and BT-07/BT-08 fail as bare objects.
+
+  - id: TC-PSO-014
+    priority: p1
+    title: "The three wire types are serialised exactly"
+    given: "A staged mandate body"
+    when: "The raw JSON is inspected"
+    then:
+      - 'FirstPaymentAmount.Amount is a QUOTED string with two decimal places — "1.00"'
+      - "CountPerPeriod, if ever sent, is an UNQUOTED JSON number — 12, not \"12\""
+      - 'PointInTime, when read from an AIS mandate, is a QUOTED zero-padded string — "01", not the integer 1'
+    rationale: >-
+      The three types are not uniform and two of them are counter-intuitive enough that a
+      hand-written model gets them wrong. The bank answers a type mistake with U002 "Invalid
+      value" naming the field, which does not say the TYPE was the problem — so the mistake is
+      expensive to diagnose from the response alone.
+    note: "PointInTime is read-side only; the write side refuses it with U005."
+
+  - id: TC-PSO-015
+    priority: p0
+    title: "Every entry in Errors[] is rendered, and the U003 blob is never parsed"
+    given: "A 400 whose Errors array carries two entries, and separately a U003 final-date rejection"
+    when: "The error state renders"
+    then:
+      - "Both entries of the two-error response are displayed"
+      - "Copy is selected from ErrorCode + Path, and no branch reads Message"
+      - "The Path match is case-insensitive"
+      - "The U003 message is not substring-matched to decide which of its three rules fired"
+    rationale: >-
+      Errors is an array and has been observed carrying two unrelated faults at once. The U003
+      on this rail is one undiscriminated string carrying three rules with no indication of
+      which broke, so parsing it is both unreliable and unnecessary — the picker's bounds
+      enforce all three locally. Message text is not stable for a given code anywhere in this
+      API. See dtos/ObPaymentError.yaml.

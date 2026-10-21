@@ -1,0 +1,146 @@
+sibling: tests
+schema_version: "4.0"
+feature_id: pay-international-scheduled
+
+feature: pay-international-scheduled
+scenario_count: 12
+
+scenarios:
+  - id: TC-PISCH-001
+    priority: p0
+    title: "Happy path — all four mandatory fields present, no funds check"
+    given: "An eligible account, a French IBAN, GBP instructed with EUR transfer, a date at T+7 and a charge bearer"
+    when: "The PSU confirms"
+    then:
+      - "The staged body carries Permission 'Create', RequestedExecutionDateTime, CurrencyOfTransfer and ChargeBearer"
+      - "No request path contains 'funds-confirmation'"
+      - "POST /international-scheduled-payments returns INCO"
+
+  - id: TC-PISCH-002
+    priority: p0
+    title: "RemittanceInformation is never sent"
+    given: "Any staged or submitted body"
+    then:
+      - "Data.Initiation.RemittanceInformation is absent"
+      - "No reference input exists on the form"
+    rationale: "U005 on every international shape, this one included. FR-019."
+
+  - id: TC-PISCH-003
+    priority: p0
+    title: "Date bounds match the domestic scheduled rail exactly"
+    given: "The Date step"
+    then:
+      - "Today and earlier are not selectable"
+      - "T+365 is selectable"
+      - "T+366 is not selectable"
+    rationale: "The upper edge was measured at exactly T+365 on BOTH rails; T-1 returns U003 here (SP-I13)."
+
+  - id: TC-PISCH-004
+    priority: p0
+    title: "The fee is unknown at review and 0.50 in the INSTRUCTED currency afterwards"
+    given: "GBP instructed with EUR transfer"
+    when: "The Review step renders, then the resource is created"
+    then:
+      - "At review the fee row reads unknown, and deferred_charge_note is displayed"
+      - "After creation the fee shows 0.50 GBP, not 0.50 EUR"
+    rationale: >-
+      The consent carries no Charges but the resource does. Three resources separating the two
+      currencies all agree the charge follows the INSTRUCTED currency. An empty fee row with no
+      note would read as "free" — true of international single, false here.
+
+  - id: TC-PISCH-005
+    priority: p0
+    title: "INCO at creation is accepted, not flagged as anomalous"
+    given: "A submit response with Status INCO"
+    when: "The status is mapped"
+    then:
+      - "The disposition resolves without falling through to the unknown branch"
+      - "No PDNG stage is expected or waited for"
+    rationale: >-
+      This rail goes straight to INCO; the domestic deferred rails pass through PDNG first. A
+      mapper written against the domestic ladder would mis-flag every payment here. FR-021.
+
+  - id: TC-PISCH-006
+    priority: p1
+    title: "INCO is never rendered as paid"
+    given: "A created international scheduled payment reading INCO"
+    when: "The status is displayed"
+    then:
+      - "No rendered string contains 'paid', 'sent' or 'completed'"
+      - "The status reads as the payment being scheduled"
+    rationale: "OBIE has no per-execution status on any deferred family."
+
+  - id: TC-PISCH-007
+    priority: p1
+    title: "An 8-character BIC is rejected before submit"
+    given: "The Recipient step with an 8-character BIC entered"
+    then:
+      - "bic_length_error is displayed and advance is blocked"
+    rationale: "Inherited from the international single rail — 8-character BICs return 'Invalid Bank Code'."
+
+  - id: TC-PISCH-008
+    priority: p2
+    title: "The amendment notice appears before and after confirming"
+    given: "The flow reaches Review, then Success"
+    then:
+      - "amend_notice is displayed on both"
+    rationale: "Mandatory under OBL CEG for future-dated payments."
+
+  - id: TC-PISCH-009
+    priority: p0
+    title: "No fee is shown at any point before authorisation, and the row never reads zero"
+    given: "A consent response that OMITS Charges, CutOffDateTime, ExpectedExecutionDateTime and ExpectedSettlementDateTime"
+    when: "The Review step renders, the consent hands off, and the app returns before submit"
+    then:
+      - "Charges parses as null/absent, not as an empty collection"
+      - "The fee row reads unknown at every one of those three points"
+      - "The fee row never renders as blank, '0.00', 'free' or 'no fee'"
+      - "deferred_charge_note is displayed at review"
+    rationale: >-
+      The charge first appears at RESOURCE CREATION — absent at AWAU and absent at AUTH — so a
+      PISP structurally cannot show an international deferred fee before the PSU authorises.
+      There is no earlier call to make. And the four keys are ABSENT, not empty: a model
+      defaulting Charges to [] cannot distinguish 'no charge' from 'no charge information', and
+      would render this 0.50 payment as free at the exact step where the PSU consents to it.
+      FR-021.
+
+  - id: TC-PISCH-010
+    priority: p0
+    title: "Both entries of a two-error response are rendered, in wire order"
+    given: "A 400 whose Errors array carries a creditor error followed by a currency error"
+    when: "The error panel renders"
+    then:
+      - "Two rows are displayed"
+      - "The order matches the wire, unsorted and unmerged"
+      - "Row copy is keyed by ErrorCode + Path, not Message"
+    rationale: >-
+      SP-I04 is this rail's own two-entry case and the clearest argument for the rule: the first
+      error names the CREDITOR and the second names the CURRENCY. A panel bound to Errors[0]
+      sends the PSU back to fix the recipient, after which the payment is still refused for a
+      reason they were never shown. See dtos/ObPaymentError.yaml.
+
+  - id: TC-PISCH-011
+    priority: p1
+    title: "No ExchangeRateInformation is sent and no rate control exists"
+    given: "Any staged body, and every step of the form"
+    then:
+      - "Data.Initiation.ExchangeRateInformation is absent from every request"
+      - "No RateType control, no rate entry and no ContractIdentification field exists"
+    rationale: >-
+      Refused for all three RateType values on this rail — R16-S1, R16-S2, R16-S3 — including the
+      Agreed form with a real ExchangeRate 1.15 and ContractIdentification 'FX-CONTRACT-001'.
+      Controls R16-C1/C2/C3 with the block removed staged 201. A TPP cannot assert even a
+      contracted rate, so there is nothing to build a rate control against.
+
+  - id: TC-PISCH-012
+    priority: p1
+    title: "Instructed and transfer currency are not coupled"
+    given: "The Amount step"
+    when: "GBP is chosen as instructed and USD, then EUR, as transfer"
+    then:
+      - "Neither control changes the other"
+      - "Both combinations reach Review and stage successfully"
+    rationale: >-
+      The two fields are INDEPENDENT — 1.00 GBP with CurrencyOfTransfer USD staged 201, and 5.00
+      GBP with EUR staged 201. Forcing them equal would remove the ordinary overseas case of
+      paying in sterling so the recipient receives their own currency.

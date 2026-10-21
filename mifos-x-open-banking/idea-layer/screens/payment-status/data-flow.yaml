@@ -1,0 +1,166 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: payment-status
+
+screen_id: payment-status
+
+# Rewritten 2026-08-06 (/idea-sync, PISP-tests research). Previously domestic-payments only.
+
+cache_strategy: memory
+cache_rationale: >-
+  A short-lived in-memory cache is fine and useful — back-navigating to a payment should not
+  re-hit the network. Room persistence is deliberately NOT used: a payment status written to
+  disk could outlive the consent that permitted the read and be shown to a PSU as current when
+  it is hours stale. Matches every other consent-scoped store in the app.
+
+  The ONE exception in the payments cluster is the VRP mandate record, which IS persisted —
+  see pay-vrp-mandate/data-flow.yaml. That stores the app's own knowledge of what it created,
+  not bank-supplied status.
+store_shape: "createMemoryStore(fetcher) keyed by (paymentFamily, paymentId)"
+
+on_mount:
+  - trigger: payment_status_load
+    description: "Resolve the family, read the resource, and map its status onto a disposition."
+    steps:
+      - compute:
+          resourcePath: "resourcePathFor(params.paymentFamily)"
+          idField: "idFieldFor(params.paymentFamily)"
+          ladder: "ladderFor(params.paymentFamily)"
+      - call: payment-resource-read
+        path_template: "{resourcePath}/{params.paymentId}"
+        auth: client_credentials_payments_scope
+        store_as: payment
+      - compute:
+          rawStatus: "{payment.Data.Status}"
+          # dispositionFor returns one of FOUR values (changed 2026-08-07): in_progress,
+          # terminal_success, terminal_failure, instruction_established. INCO maps EXPLICITLY to
+          # instruction_established — it must not reach the unknown branch. Fail-open is a safety
+          # net for codes nobody anticipated, not a substitute for mapping an enum member.
+          disposition: "dispositionFor(rawStatus, ladder)   # accepts BOTH v4.0 short and v3.1 long forms; every ObStatusCode member maps explicitly; genuinely-unknown -> in_progress"
+          statusLabel: "statusLabelFor(rawStatus, ladder)"
+          isMandate: "params.paymentFamily in {domestic-scheduled-payment, domestic-standing-order, international-scheduled-payment, international-standing-order}"
+          amountLabel: "formatMoney(instructedAmountFor(payment, params.paymentFamily))"
+          creditorName: "{payment.Data.Initiation.CreditorAccount.Name}"
+          scheduleLabel: "scheduleLabelFor(payment, params.paymentFamily)   # execution date, or frequency + first payment"
+          feeLabel: "formatCharges(payment.Data.Charges)   # absent on international single; 0.50 on deferred international"
+      - branch:
+          when: "params.paymentFamily == 'domestic-vrp'"
+          then: "also read the consent — the mandate's health lives there, not on the payment"
+    on_loading: loading
+    on_success: content
+    on_error: error
+    error_type_mapping:
+      - { http_status: 404, error_type: PaymentNotFound, message_key: "error.payment_status.not_found" }
+      - { http_status: 400, error_code: U011, error_type: MandateRevoked, message_key: "error.vrp.revoked" }
+      - { http_status: 401, error_type: TokenExpired, message_key: "error.payment_status.token_expired" }
+      - { http_status: 403, error_type: ConsentRevoked, message_key: "error.payment_status.consent_revoked" }
+      - { default: NetworkError, message_key: "error.payment_status.network_error" }
+
+  - trigger: consent_status_load
+    description: >-
+      Read the consent alongside the resource. On the six PIS families this distinguishes a
+      normally-consumed consent from a rejected one. On VRP it is the PRIMARY read.
+    condition: "consentId is present in the local record"
+    steps:
+      - call: payment-consent-read
+        path_template: "{consentPathFor(params.paymentFamily)}/{consentId}"
+        auth: client_credentials_payments_scope
+        store_as: consent
+      - compute:
+          consentStatus: "{consent.Data.Status}"
+          consentDisposition: >-
+            consumed  if COND
+            active    if AUTH        # normal steady state on VRP, transient elsewhere
+            rejected  if RJCT
+            revoked   if the read returned 400 U011
+    on_400_U011: "mandate revoked — render from the local record, NOT as an error"
+
+  - trigger: auto_poll
+    description: >-
+      Re-read on a backing-off interval while the payment is still moving. Starts only if the
+      first read returned an in_progress disposition, and stops the instant ANY resting
+      disposition arrives — terminal_success, terminal_failure or instruction_established.
+    condition: "disposition == in_progress"
+    re_runs: [payment_status_load]
+    interval_ms: 3000
+    backoff_multiplier: 1.5
+    max_interval_ms: 30000
+    max_duration_ms: 600000
+    # CORRECTED 2026-08-07 with the fourth disposition. The previous stop set was
+    # {terminal_success, terminal_failure} only — written when INCO still mapped to
+    # terminal_success. Under the four-value vocabulary INCO resolves to instruction_established,
+    # which was in NEITHER stop value, so a domestic deferred payment (PDNG -> INCO) would start
+    # the poll on PDNG and then never stop: it would re-read a dormant standing order every 3s
+    # backing off to 30s for the full 600000ms max_duration, and render it as live the whole time.
+    # instruction_established is a RESTING disposition and belongs in the stop set.
+    stop_when: "disposition in {terminal_success, terminal_failure, instruction_established}"
+    on_429: "double the current interval; keep the last known status rendered"
+    deferred_note: >-
+      On the four deferred families the resource reaches INCO almost immediately and stays there,
+      so the poll stops on the first instruction_established read. There is nothing further to
+      observe — the execution date may be a year away and no API will report on it. On the two
+      international deferred rails the first read is already INCO, so the poll never starts at all.
+
+on_user_action:
+  - { trigger: refresh_status, description: "Manual re-read, offered while in_progress and as the error-state Retry.", re_runs: [payment_status_load] }
+  - { trigger: navigate_back, description: "Leave the tracker. Read-only, so departure has no effect on settlement.", navigates_to: payments }
+  - trigger: navigate_to_new_payment
+    description: "Start a fresh payment of the same type after a Rejected status."
+    navigates_to: "{originating type screen, from paymentFamily}"
+    condition: "disposition == terminal_failure"
+    notes: "Deliberately a NEW instruction rather than a resubmit — a rejected payment must not be retried against the same consent."
+
+# ─────────────────────────────────────────────────────────────────────────
+# INVARIANTS
+# ─────────────────────────────────────────────────────────────────────────
+truthfulness_invariant:
+  rule: "The UI must never describe an in_progress payment as sent, complete or successful."
+  rationale: >-
+    HSBC returns AcceptedSettlementInProcess on a successful submit. That means accepted, not
+    settled. Collapsing the disposition to a boolean tells a PSU their money has moved when it
+    has not — a false statement about their finances, not a cosmetic bug.
+  enforced_by: "TC-PSTAT-002, TC-PSTAT-003"
+
+mandate_truthfulness_invariant:
+  rule: >-
+    For the four deferred families the screen reports the INSTRUCTION's setup and states
+    explicitly that individual future payments cannot be tracked here.
+  forbidden: ["'paid'", "'sent'", "'completed'", "any instalment counter or progress bar"]
+  rationale: >-
+    OBIE exposes no per-execution status. A progress indicator implying instalments are being
+    counted would be fabricated — the app has no source for it.
+  disposition: >-
+    These four families resolve to instruction_established, the fourth disposition added
+    2026-08-07 for exactly this reason. It is neither terminal_success (which would tick a
+    payment that has not happened) nor in_progress (which would imply live activity on something
+    dormant), and its neutral hue-less chip is what makes the invariant renderable rather than
+    merely asserted.
+  enforced_by: "TC-PSTAT-005"
+
+dual_encoding_invariant:
+  rule: "dispositionFor accepts both the v4.0 short code and the v3.1 long form for every status."
+  rationale: >-
+    domestic-vrps returns 'AcceptedCreditSettlementCompleted' where every other endpoint returns
+    'ACCC'. A short-code-only mapper renders every completed VRP payment as permanently in
+    progress, because fail-open sends unknowns to in_progress.
+  fail_open_scope: >-
+    Fail-open is a SAFETY NET for codes nobody anticipated, never a substitute for mapping a
+    status that is in the enum. Both failure modes this file guards against are cases where a
+    KNOWN status reached the unknown branch — a long-form ACCC, and INCO before the fourth
+    disposition existed. Every ObStatusCode member must have an explicit arm.
+  enforced_by: "TC-PSTAT-004"
+
+status_field_only_invariant:
+  rule: "Transitions are detected from Data.Status. StatusUpdateDateTime is never used as a change signal."
+  evidence: "All five authorised consents transitioned to AUTH with StatusUpdateDateTime unchanged."
+  enforced_by: "TC-PSTAT-006"
+
+stub_field_invariant:
+  rule: "ExpectedExecutionDateTime and ExpectedSettlementDateTime are never rendered as an arrival date."
+  evidence: "Both come back as the CREATION timestamp on the deferred families."
+  correct_source: "The requested execution date from the Initiation."
+  enforced_by: "TC-PSTAT-007"
+
+u011_invariant:
+  rule: "400 U011 renders as a revoked mandate, from the local record. Never as a generic failure."
+  enforced_by: "TC-PSTAT-008"

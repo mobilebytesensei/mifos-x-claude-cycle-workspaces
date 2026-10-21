@@ -1,0 +1,321 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: pay-international-single
+
+feature: pay-international-single
+contract_version: "2.0.0"
+status: designed
+score: 93
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. RESTORED 2026-08-07 (/idea-sync) — this key existed before
+# and was removed in error earlier today, leaving only `score`.
+quality_score: 93
+quality_justification: >-
+  93. The field contract is measured rather than inferred at every point that matters — the
+  CreditorAgent partial-object trap has an explicit control (R8-11), the BIC refusal has a
+  matching-country counter-example (R2-07) that separates length from country, and the FX
+  question is closed by nine refusals against three controls. The error contract is factored into
+  a shared DTO rather than duplicated. Held below 95 by two genuinely open items: whether the
+  rail accepts PaymentContextCode is UNTESTED and FR-015 may be unsatisfiable here, and no
+  amount ceiling has been probed above 300000.00. Both are recorded as open questions rather
+  than papered over, which is why the score is honest rather than higher.
+cluster: payment-initiation
+acceptance_refs: [FR-012, FR-015, FR-016, FR-017, FR-018, FR-019, FR-021]
+scaffolded_by: /idea-sync
+archetype: form
+flow_ref: pay-international-single
+description: >-
+  International single payment — pay an overseas account now, to an IBAN. Five steps: funding
+  account, recipient, amount and currencies, charge bearer, review. Stages an
+  international-payment-consent, authorises, runs funds-confirmation, submits. The only shape in
+  the whole payment surface that returns no charge at any stage.
+has_ui: true
+has_server: false
+capabilities: [has_ui, has_api, has_flow, has_form_input, has_system_integration]
+system_capabilities:
+  - { kind: deep_link, detail: "Hands off to payment-consent for the app-to-app authorise leg." }
+
+inherits_from: pay-domestic-single
+
+rail_position:
+  time_dimension: none
+  amount_field: InstructedAmount
+  creditor_scheme: UK.OBIE.IBAN
+  funds_confirmation: "GET"
+  remittance_information: "REFUSED — U005"
+  mandatory_additions: [CurrencyOfTransfer, ChargeBearer]
+  charge_at_any_stage: "NONE — unique across all seven types"
+  consent_ladder: "AWAU -> AUTH -> COND"
+  resource_ladder: "ACSP -> ACCC"
+  risk_block: "CategoryPurposeCode"
+
+divergence_traps:
+  - trap: "Offering saved beneficiaries as recipients"
+    why_wrong: >-
+      Beneficiaries carry sort-code identifiers. A sort-code creditor returns U027 on this rail
+      across every currency combination tried. The list would render with every entry unusable.
+    correct: "IBAN entry only. BeneficiariesRepository is not injected."
+
+  - trap: "Reusing the domestic reference field"
+    why_wrong: "RemittanceInformation returns U005 Field is not expected."
+    correct: "No field, plus no_reference_note so the absence is explained."
+
+  - trap: "Accepting an 8-character BIC"
+    why_wrong: >-
+      8-character BICs are refused with 'Invalid Bank Code' — NWBKFRPP and COBADEFF both failed,
+      while COBADEFFXXX and HSBCDEFF325 staged 201. 8 characters is the form most bank
+      directories publish, so it is exactly what a PSU will paste.
+    correct: "Optional field validated to exactly 11 characters, with helper text saying so."
+
+  - trap: "Collapsing instructed currency and transfer currency into one control"
+    why_wrong: >-
+      They are separate fields and need not match. GBP instructed with USD transfer stages 201.
+      A single control cannot express the common case of paying in sterling so the recipient
+      receives euros.
+    correct: "Two dropdowns, labelled by who is affected — charged in / arrives as."
+
+  - trap: "Showing an estimated fee or an exchange rate"
+    why_wrong: >-
+      This rail returns NO Charges at any stage (0 of 33 consents, and none on any of the four
+      authorised resources), and no observed response carries a quoted rate. Any figure shown
+      would be invented, and it would be a financial claim.
+    correct: "no_charge_note states HSBC quotes no fee; fx_disclosure states the bank sets the rate."
+
+  - trap: "Racing the documented 40-second FX window"
+    why_wrong: >-
+      Guide §21.10.1 gives the TPP 5 seconds to POST and tells TPPs not to call
+      funds-confirmation. Observed: both authorised FX flows called it and submitted minutes
+      later without rejection.
+    correct: "No countdown, no timer. The window was not enforced."
+
+  - trap: "Offering a partial Creditor postal address"
+    why_wrong: "Creditor { Country, TownName } returns U004 on the missing BuildingNumber. It is all-or-nothing."
+    correct: "The block is omitted entirely, which stages 201."
+
+  - trap: "Collecting the recipient's bank country or bank name to 'help find the BIC'"
+    why_wrong: >-
+      Sending CreditorAgent AT ALL makes Identification MANDATORY. R8-01, R8-02, R8-03, R8-09 and
+      R8-10 each sent {"CreditorAgent":{"PostalAddress":{"Country":"DE"|"FR"}}} and each returned
+      U004 @ Data.Initiation.CreditorAgent.Identification; R3-08 sent { Name, PostalAddress.Country }
+      and failed identically. R8-11 — the same body with the key REMOVED — stages 201. So a
+      half-populated CreditorAgent is WORSE than none at all, and a bank-lookup UI is exactly
+      what builds one.
+    correct: >-
+      One BIC field, nothing else feeding CreditorAgent. The block is emitted whole or omitted
+      entirely, and the serialiser never produces an empty-but-present object.
+
+  - trap: "Validating the BIC against the IBAN's country"
+    why_wrong: >-
+      The 8-character refusal is LENGTH-driven, not country-mismatch-driven. R2-07 paired a
+      MATCHING French BIC 'NWBKFRPP' with a French IBAN and was still refused; R3-04's 11-character
+      'COBADEFFXXX' passed. A country correlation both rejects valid cross-border routings and
+      lets the matching-country 8-character form through.
+    correct: "Length only — exactly 11 characters or blank."
+
+  - trap: "Rendering Errors[0]"
+    why_wrong: >-
+      Errors is an ARRAY and can carry TWO entries. R13-10 and R9-11 both return U027 @
+      CreditorAccount.SchemeName THEN U002 'Debtor and Creditor Account cannot be same', and the
+      SECOND is the actionable one. INT-05 and INT-06 return two Global Money rules together.
+    correct: "Every entry, in wire order, keyed by ErrorCode + Path. See dtos/ObPaymentError.yaml."
+
+  - trap: "Verifying the submit echo by re-serialising the local model and string-comparing"
+    why_wrong: >-
+      The server REORDERS Initiation keys on echo — international returns ChargeBearer,
+      CurrencyOfTransfer, InstructedAmount, MandateRelatedInformation, [CreditorAgent],
+      [DebtorAccount], CreditorAccount regardless of request order. A byte comparison fails on a
+      CORRECT payload and aborts a journey the bank accepts.
+    correct: "Echo the parsed read-back object. Compare field-by-field or not at all."
+
+  - trap: "Defaulting Charges to an empty list"
+    why_wrong: >-
+      Every international 201 OMITS Charges, CutOffDateTime, ExpectedExecutionDateTime and
+      ExpectedSettlementDateTime. The keys are ABSENT, not empty. A defaulted [] cannot
+      distinguish 'no charge' from 'no charge information' — harmless on this rail, wrong on the
+      deferred international rails the same parser serves.
+    correct: "Nullable/absent Charges."
+
+  - trap: "Assuming HSBC's own local-account schemes work for US or India"
+    why_wrong: >-
+      R8-06 (US) and R8-07 (India) both sent CreditorAccount 'UK.HSBC.LocalAccountNumber' with a
+      'UK.HSBC.LCC' agent and both returned U027 'Unsupported scheme'. Implementation Guide
+      §21.3.1 tabulates exactly that row.
+    correct: >-
+      IBAN only. The Guide's local-account row is recorded as a documentation-versus-observation
+      divergence, not resolved.
+
+  - trap: "Hardcoding two decimal places, or a maximum IBAN length, from the European examples"
+    why_wrong: >-
+      INT-14 staged Amount '1000' with CurrencyOfTransfer JPY — no decimals — at 201. R8-04 (AE,
+      23-char IBAN) and R8-05 (TR, 26-char IBAN) both staged 201. A two-decimal formatter shows
+      JPY a decimal place it does not have; a 22-character IBAN cap silently rejects two
+      accepted corridors.
+    correct: "Currency-aware decimals; mod-97 plus per-country length for the IBAN."
+
+  - trap: "Enforcing a client-side amount ceiling"
+    why_wrong: >-
+      INT-13 staged '300000.00' USD at 201 — titled as a 250k-limit probe, and no ceiling fired
+      at consent staging. Whether one applies later is untested.
+    correct: "No advertised limit and no client-side block. A bank-side limit surfaces at authorisation."
+
+global_money_note: >-
+  Global Money is a conversion product on this rail, not a payment product. Three distinct U002
+  rules apply: debtor and creditor must be the SAME account, InstructedAmount.Currency must be
+  GBP, and CurrencyOfTransfer must be EUR or USD. GM -> GM with GBP instructed and USD or EUR
+  transfer stages 201 and is the ONE case where a TPP may name an otherwise-refused payer. GM ->
+  third party is refused on every shape. This form does not offer the conversion journey; it is
+  a distinct product surface, and the debtor filter excludes GM accordingly.
+
+spec_ahead_of_source:
+  scope: feature
+  cluster: payment-initiation
+  declared_at: "2026-08-06"
+  declared_by: "/idea-sync (PISP-tests research rewrite)"
+  owed_by: /kmp-implement
+  reason: "Type brought in scope by the 2026-08-06 seven-type rewrite."
+  source_state_measured:
+    present: ["core/network/.../pisp/internationalPayment request + response — NO serialization tests, unlike the domestic models"]
+    absent: ["no Ktorfit service", "no store", "no repository", "no feature module"]
+  consequence_for_verification: "drift and source-test checks UNASSERTABLE, not failing. Score N/A."
+
+error_contract_ref:
+  dto: dtos/ObPaymentError.yaml
+  note: >-
+    The envelope, the Path case and array-notation quirks, the four U004 wordings, the overloaded
+    U002 @ DebtorAccount.Identification and the rail-dependent code mapping are specified ONCE in
+    that DTO and are not restated here. What this feature adds locally is only the rendering
+    consequence: every Errors entry is displayed, in wire order, keyed by ErrorCode + Path.
+
+open_questions:
+  - question: "Does the international rail accept PaymentContextCode?"
+    status: UNTESTED
+    evidence: >-
+      International Risk carried CategoryPurposeCode 'EPAY' in 25 of 25 scenarios. ZERO sent
+      PaymentContextCode — so there is neither an acceptance nor a refusal to cite.
+    why_it_matters: >-
+      FR-015 requires a consumer PaymentContextCode on EVERY payment. No international scenario
+      satisfies it as written, and the domestic rail's acceptance cannot be read across — this
+      rail refuses RemittanceInformation, which the domestic rail takes, so field-level agreement
+      between the two is demonstrably unsafe.
+    consequence: >-
+      If the field is refused with U005 — the fate of every other domestic-only field tried here
+      — then FR-015 is unsatisfiable on the international rails and the REQUIREMENT needs
+      amending, not the implementation. Do NOT ship a PaymentContextCode on this rail on the
+      strength of FR-015 alone.
+    resolves_with: "One staging call sending PaymentContextCode 'TransferToThirdParty'."
+
+  - question: "Does an amount ceiling exist above 300000.00?"
+    status: "UNTESTED above staging"
+    evidence: "INT-13 staged '300000.00' USD at 201; the scenario was titled as a 250k-limit probe and no limit fired."
+    consequence: "The form advertises no limit. If one exists it applies after staging, where the app cannot pre-empt it."
+
+closed_questions:
+  - question: "Would this endpoint accept ExchangeRateInformation?"
+    was: "Recorded as the highest-value open FX experiment available, on the standing-order rail."
+    now: >-
+      CLOSED — REFUSED. All three RateType values are refused on all three international rails
+      (R16-P1/P2/P3 single, R16-S1/S2/S3 scheduled, R16-O1/O2/O3 standing order), including the
+      Agreed form carrying a real ExchangeRate 1.15 and ContractIdentification 'FX-CONTRACT-001'.
+      Controls R16-C1/C2/C3 with the block removed all staged 201.
+    consequence: >-
+      There is NO WAY to show the customer a rate before authorisation — not even one the TPP
+      holds by contract. The FX banner is the final answer, not a placeholder awaiting a better
+      data source.
+    divergence_retained: >-
+      ExchangeRateInformation is absent from the v4.0 request dictionary but PRESENT in the
+      published usage examples. The examples describe a field this endpoint refuses. Recorded,
+      not resolved.
+
+regulatory:
+  note: "PISP is a distinct FCA permission from AISP. Sandbox unaffected; production needs authorisation this project does not hold."
+  affects_production: true
+  affects_sandbox: false
+  adr_required: true
+
+vm_actions:
+  - name: EnterBic
+    signature: 'fun enterBic(bic: String)'
+    state_mutations:
+      - "content.bic = bic"
+      - "content.bicProblem = if (bic.isNotBlank() && bic.length != 11) WrongLength else null"
+    notes: "Optional field. Blank is valid — omitting CreditorAgent entirely stages 201."
+  - name: SelectTransferCurrency
+    signature: 'fun selectTransferCurrency(code: String)'
+    state_mutations: ["content.currencyOfTransfer = code"]
+    notes: "Mandatory on the wire. Separate from the instructed currency; the two need not match."
+  - name: SelectChargeBearer
+    signature: 'fun selectChargeBearer(value: ChargeBearer)'
+    state_mutations: ["content.chargeBearer = value"]
+    notes: "Mandatory — U004 if omitted. All three values stage 201, so there is no bank default to fall back on."
+  - name: ConfirmAndStageConsent
+    signature: 'suspend fun confirmAndStageConsent()'
+    state_mutations:
+      - uiState = Submitting(StagingConsent)
+      - uiState = Submitting(AwaitingAuthorisation, consentId = response.Data.ConsentId)
+    side_effects:
+      - "POST /international-payment-consents with CurrencyOfTransfer and ChargeBearer"
+      - "Body carries NO RemittanceInformation"
+    error_handling:
+      on_400_U004: uiState = Error(MissingRequiredField)
+      on_400_U005: uiState = Error(FieldNotExpected)
+      on_400_U027: uiState = Error(UnsupportedScheme)
+      on_400_U002: uiState = Error(InvalidFieldValue)
+      on_400_U019: uiState = Error(SignatureMissing)
+
+error_cases:
+  - { id: MissingRequiredField, trigger: "400 U004", user_message: '{strings.error.payment.missing_field}', recovery: "Implementation fault — ChargeBearer and CurrencyOfTransfer are always sent." }
+  - { id: FieldNotExpected, trigger: "400 U005", user_message: '{strings.error.payment.field_not_expected}', recovery: "Implementation fault — RemittanceInformation must not be sent on this rail." }
+  - { id: UnsupportedScheme, trigger: "400 U027", user_message: '{strings.error.payment.unsupported_scheme}', recovery: "Should be unreachable — the form takes an IBAN." }
+  - { id: InvalidFieldValue, trigger: "400 U002", user_message: '{strings.error.payment.invalid_bank_code}', recovery: "Return to the recipient step — most often an 8-character BIC." }
+  - { id: SignatureMissing, trigger: "400 U019", user_message: '{strings.error.payment.signature_missing}', recovery: "Not user-recoverable." }
+  - { id: ConsentNotAuthorised, trigger: "400 U009", user_message: '{strings.error.payment.consent_not_authorised}', recovery: "Re-authorise." }
+  - { id: ConsentRejected, trigger: "consent status RJCT", user_message: '{strings.error.payment.consent_rejected}', recovery: "The PSU denied it at the bank. Offer a fresh payment, not a resubmit." }
+  - { id: InsufficientFunds, trigger: "funds-confirmation FundsAvailable false", user_message: '{strings.error.payment.insufficient_funds}', recovery: "Return to the amount step." }
+  - { id: NetworkError, trigger: "IOException / timeout", user_message: '{strings.error.payment.network_error}', recovery: "Retry — idempotency key reused." }
+
+test_fixtures:
+  source: idea-layer/screens/pay-international-single/tests.yaml
+  fixture_data: idea-layer/screens/pay-international-single/demo-data.yaml
+  scenario_count: 17
+  priority_distribution: { p0: 10, p1: 6, p2: 1 }
+
+status_history:
+  - from: null
+    to: draft
+    at: "2026-08-06"
+    by: "/idea-sync — seven-type payments rewrite"
+    note: >-
+      Brought in scope. 81 scenarios in captures/by-type/payments-international.md — the largest
+      per-type set — with four authorised resources (19906, 19907, 19910, 19911).
+
+  - from: draft
+    to: enriched
+    at: "2026-08-07"
+    by: "/idea-sync"
+    note: >-
+      Corpus-derived enrichment from the full HSBC capture corpus. Folded in: the CreditorAgent
+      partial-object trap with its R8-11 control (sending the block half-populated is worse than
+      omitting it); the length-versus-country separation of the BIC refusal (R2-07 / R3-04); the
+      shared error contract via dtos/ObPaymentError.yaml, including the two-entry Errors array
+      (R13-10, R9-11) and scheme-before-business-rule ordering; the server's Initiation key
+      reordering on echo and the ban on re-serialise-and-compare; the four response keys the
+      international rails OMIT; ExchangeRateInformation refused on all three rails
+      (R16-P/S/O against controls R16-C1/C2/C3), which CLOSES the standing-order rail's
+      highest-value open FX experiment; the U027 resolved-account finding; rail-dependent debtor
+      schemes (R4-04 vs R4-07); the refusal of HSBC's own local-account schemes against Guide
+      §21.3.1 (R8-06, R8-07); non-EEA IBAN lengths (R8-04 AE-23, R8-05 TR-26); zero-decimal JPY
+      amounts (INT-14); the absent 250k ceiling (INT-13); and four accepted optional fields
+      (R2-10, R2-11, INT-01). Opened two honest questions: PaymentContextCode acceptance is
+      UNTESTED and may make FR-015 unsatisfiable on this rail.
+
+  - from: enriched
+    to: designed
+    at: "2026-08-07"
+    by: "/idea-feature-export"
+    exports_produced: [spec_md, api_md, mockup_md, prompts_figma_md, prompts_per_state]
+    note: >-
+      /idea-feature-export --all, owner-scoped to the ten payment-initiation features. Roundtrip
+      verification PASSED on all five checks — state coverage, endpoint coverage, ViewModel
+      coverage, forbidden content, and prompt size (6 per-state prompts; this feature's error
+      prompt at 4000 chars is the largest in the scoped set and sits exactly on the limit).

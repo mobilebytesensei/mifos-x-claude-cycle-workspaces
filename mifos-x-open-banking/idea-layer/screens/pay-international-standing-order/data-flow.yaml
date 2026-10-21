@@ -1,0 +1,190 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: pay-international-standing-order
+
+screen_id: pay-international-standing-order
+
+cache_strategy: none
+cache_rationale: >-
+  Nothing to cache. This screen reads neither accounts nor beneficiaries — there is no debtor
+  field on the standing-order schema, and sort-code payees are refused on the international
+  rails. The form opens directly on manual IBAN entry.
+store_shape: none
+
+on_mount:
+  - trigger: initialise_form
+    description: "No network read. Compute the picker bounds and open on the Recipient step."
+    steps:
+      - compute:
+          minFirstPaymentDate: "today + 1 day"
+          maxFinalPaymentDate: "today + 12 months"
+          frequencyOptions: "[WEEK, FRTN, MNTH, QURT, YEAR]"
+    on_success: content
+
+on_user_action:
+  - trigger: stage_consent
+    description: "Stage the international-standing-order-consent."
+    steps:
+      - compute:
+          idempotencyKey: "stableKeyFor(stagedMandate)   # once, reused on every retry"
+          instructedAmountMajor: "toMajorUnitString(instructedAmountMinor)"
+      - call: international-standing-order-consent-create
+        auth: client_credentials_payments_scope
+        headers: [x-jws-signature, x-idempotency-key]
+        body_requires:
+          - "Data.Permission == 'Create'"
+          - "Data.Initiation.InstructedAmount"
+          - "Data.Initiation.CurrencyOfTransfer"
+          - "Data.Initiation.ChargeBearer"
+          - "Data.Initiation.MandateRelatedInformation.Frequency.Type in the five accepted values"
+          - "Data.Initiation.MandateRelatedInformation.FirstPaymentDateTime"
+          - "Data.Initiation.CreditorAccount.SchemeName == 'UK.OBIE.IBAN'"
+          - "Risk == {}"
+        body_forbids:
+          - "Data.Initiation.FirstPaymentAmount      # U005 — this rail uses InstructedAmount"
+          - "Data.Initiation.RecurringPaymentAmount  # sibling of FirstPaymentAmount"
+          - "Data.Initiation.FinalPaymentAmount      # sibling of FirstPaymentAmount"
+          - "Data.Initiation.RemittanceInformation   # U005 on every international shape"
+          - "Data.Initiation.ExchangeRateInformation # REFUSED, all three RateTypes (R16-O1/O2/O3)"
+          - "MandateRelatedInformation.Frequency.PointInTime   # U005 on write"
+        body_omits_by_choice:
+          - field: "Data.Initiation.DebtorAccount"
+            status: "OPTIONAL and ACCEPTED — omitted because this form has no funding-account step"
+            correction: >-
+              CORRECTED 2026-08-07. This entry previously sat under body_forbids with the reason
+              "not in the standing-order schema". That was WRONG for the international rail.
+              Intl-SO scenarios staged 201 with a current account, with a savings account and with
+              the key absent, and 19918 carried one as both debtor and creditor. The distinction
+              matters: a forbidden field is never revisited, an omitted one can be.
+            shape_if_ever_sent: "{ SchemeName, Identification } — NEVER a Name."
+        store_as: stagedConsent
+      - navigate: payment-consent
+        params: { consentId: "{stagedConsent.Data.ConsentId}", paymentFamily: "international-standing-order" }
+
+  - trigger: resume_after_authorisation
+    description: "Re-read the authorised consent, then submit."
+    steps:
+      - call: international-standing-order-consent-read
+        auth: client_credentials_payments_scope
+        store_as: authorisedConsent
+        note: >-
+          Mandatory — when the TPP omits DebtorAccount the bank writes the account the PSU picked
+          during authorisation, so the read-back is the only place the funding account is known.
+          (Corrected: the TPP CAN send one on this rail — it is optional and accepted — this form
+          simply does not.)
+        echo_note: >-
+          The server REORDERS Initiation keys on echo. Take the parsed object from here into the
+          submit body; never re-serialise the local model and string-compare against it.
+      - call: international-standing-order-create
+        auth: psu_authorization_code
+        headers: [x-jws-signature, x-idempotency-key]
+        body:
+          Data:
+            ConsentId: "{authorisedConsent.Data.ConsentId}"
+            Initiation: "{authorisedConsent.Data.Initiation}"
+          Risk: {}
+        store_as: mandate
+      - compute:
+          feeLabel: >-
+            mandate.Data.Charges?.firstOrNull()?.let { formatMoney(it.Amount) } ?: FEE_UNKNOWN
+            # 0.50 in the INSTRUCTED currency. Charges is NULLABLE — ABSENT on the consent,
+            # present only from the RESOURCE. Never default it to an empty list.
+      - navigate: payment-status
+        params: { paymentId: "{mandate.Data.InternationalStandingOrderId}", paymentFamily: "international-standing-order" }
+
+  - trigger: retry_submit
+    re_runs: [resume_after_authorisation]
+
+# ─────────────────────────────────────────────────────────────────────────
+# INVARIANTS
+# ─────────────────────────────────────────────────────────────────────────
+amount_field_invariant:
+  rule: "InstructedAmount is sent. FirstPaymentAmount, RecurringPaymentAmount and FinalPaymentAmount are NEVER sent."
+  proof: "FirstPaymentAmount on an international SO returns U005 Field is not expected. The domestic mandate is the exact inverse."
+  why_it_matters: >-
+    This screen and the domestic mandate gather nearly identical inputs. Copying that screen and
+    changing the endpoint yields a U005 on every request, naming a field the developer believes
+    is right.
+  enforced_by: "TC-PISO-001"
+
+inherited_invariants:
+  from_pay_domestic_standing_order: [frequency_invariant, mandate_date_invariant, truthfulness_invariant]
+  from_pay_international_single:
+    - mandatory_field_invariant
+    - forbidden_field_invariant
+    - creditor_scheme_invariant
+    - bic_length_invariant
+    - creditor_agent_wholeness_invariant
+    - error_rendering_invariant
+    - echo_fidelity_invariant
+    - absent_key_parse_invariant
+    - consent_id_handling_invariant
+  dropped:
+    - invariant: no_debtor_invariant
+      from: pay-domestic-standing-order
+      reason: >-
+        CORRECTED 2026-08-07. That invariant rests on DebtorAccount being absent from the
+        standing-order schema, which is FALSE on the international rail — it is optional and
+        accepted, and intl-SO scenarios staged 201 with a current account, a savings account and
+        none at all. Replaced by no_debtor_sent_invariant below, which asserts the same wire
+        behaviour on an accurate reason.
+
+no_debtor_sent_invariant:
+  rule: "This form sends no DebtorAccount, and presents no funding-account step."
+  reason: "A product choice, NOT a schema constraint."
+  evidence: >-
+    DebtorAccount is OPTIONAL and ACCEPTED on this rail. Intl-SO scenarios staged 201 with a
+    current account, with a savings account and with the key omitted; 19918 carried one as both
+    debtor and creditor.
+  shape_if_ever_sent: "{ SchemeName, Identification } — NEVER a Name."
+  why_the_distinction_matters: >-
+    The previous wording made the field impossible. Impossible fields are never revisited;
+    unused ones can be. Nothing about the request changes — only what a future reader concludes
+    from it.
+
+open_ended_mandate_invariant:
+  rule: >-
+    When the PSU sets no end date, FinalPaymentDateTime is omitted and open_ended_mandate_note is
+    displayed on Review.
+  proof: "Omitting FinalPaymentDateTime stages 201 — an open-ended mandate."
+  why_it_matters: >-
+    Combined with amendment_prohibition, an open-ended mandate is a recurring overseas payment
+    the PSU cannot stop from this app. The Review copy must say where it CAN be stopped.
+  enforced_by: "TC-PISO-011"
+
+pre_authorisation_fee_impossibility:
+  rule: "No fee figure is displayed before the PSU has authorised, and the fee row never reads blank or '0.00'."
+  rationale: >-
+    The charge first appears at RESOURCE CREATION — absent at AWAU and absent at AUTH. There is
+    no earlier call to make. And Charges is ABSENT on the consent, not empty, so a defaulted []
+    would render a 0.50 mandate as free at the step where the PSU consents to it.
+  additional_silence: >-
+    Nothing in the API states whether the 0.50 recurs per execution or applies once at setup. The
+    screen shows what the resource returned and claims nothing further.
+  enforced_by: "TC-PISO-010"
+
+no_exchange_rate_information_invariant:
+  rule: "ExchangeRateInformation is never sent, and no rate control exists on the form."
+  proof: >-
+    REFUSED for all three RateType values — R16-O1, R16-O2, R16-O3 — including the Agreed form
+    with ExchangeRate 1.15 and ContractIdentification 'FX-CONTRACT-001'. Controls R16-C1/C2/C3
+    with the block removed staged 201. The same refusal holds on the single and scheduled rails.
+  significance: >-
+    This CLOSES what this feature previously recorded as the highest-value open FX experiment.
+    A TPP cannot assert even a contracted rate, so fx_not_fixed_notice is the final answer.
+  enforced_by: "TC-PISO-012"
+
+no_fx_projection_invariant:
+  rule: >-
+    The screen displays no exchange rate, no projected total across the mandate, and no
+    estimated per-instalment received amount. fx_not_fixed_notice is shown at severity warning.
+  rationale: >-
+    OBIE has no per-execution FX model at all. HSBC calls FX quoting 'not applicable' for this
+    family and never states what rate is used. Any figure would be a fabricated multi-month
+    financial projection about the PSU's money.
+  enforced_by: "TC-PISO-004, TC-PISO-005"
+
+charge_timing_invariant:
+  rule: "The fee reads unknown until the resource exists, then shows 0.50 in the INSTRUCTED currency."
+  evidence: "19918 (GBP instructed, USD transfer) charged 0.50 GBP; 19917 (USD -> USD) charged 0.50 USD."
+  enforced_by: "TC-PISO-006"

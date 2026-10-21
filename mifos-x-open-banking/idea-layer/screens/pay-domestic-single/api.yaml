@@ -1,0 +1,341 @@
+sibling: api
+schema_version: "4.0"
+feature_id: pay-domestic-single
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DOMESTIC SINGLE PAYMENT — v4.0/pisp/domestic-payment-consents -> domestic-payments
+#
+# Evidence: pisp-tests captures/by-type/payments-domestic.md (58 scenarios),
+# captures/flow-card-money-transfer.md + flow-domestic-no-debtor.md (authorised runs),
+# captures/payment-status-readback.md (19901, 19902, 19908, 19909 all ACCC).
+# Request shape from the HSBC-shipped Postman collection, UK Personal > Domestic Payment.
+#
+# One of only TWO families with funds-confirmation, and it is a GET — a PISP consent carries
+# one fixed amount, so the bank needs no body to answer the question.
+# ═══════════════════════════════════════════════════════════════════════════
+
+base_path: "/obie/open-banking/v4.0/pisp"
+api_source_ref: API-003
+
+# ─────────────────────────────────────────────────────────────────────────
+# HEADER CONTRACT — observed, not documented (captures/OBSERVATIONS.md)
+# ─────────────────────────────────────────────────────────────────────────
+write_header_contract:
+  x-jws-signature:
+    required_on: [stage_consent, submit_payment]
+    forbidden_on: [get_consent_status, funds_confirmation, get_payment_status]
+    algorithm: PS256
+    b64: false
+    crit: [iat, iss, tan]
+    typ: JOSE
+    cty: application/json
+    omission_error: "400 U019"
+    note: >-
+      Sending this header on an AIS consent is REJECTED with
+      UK.OBIE.Header.Unexpected — PISP writes only. Verified by R18-A01 with control R18-A02.
+  x-idempotency-key:
+    required_on: [stage_consent, submit_payment]
+    max_length: 40
+    format: "UUID — every value in the corpus is a v4 UUID, which fits the 40-char ceiling."
+    generated: "once per staged payment"
+    reused_across: "the consent stage, the submit, and every retry of either"
+  x-fapi-interaction-id:
+    required_on: [stage_consent, submit_payment]
+    added: "2026-08-07 from the full by-type capture read"
+    note: >-
+      Present on every write in the corpus alongside x-jws-signature and x-idempotency-key.
+      Unlike x-idempotency-key it is per-CALL, not per-payment — it is a correlation id, so a
+      retry gets a NEW one while reusing the same idempotency key. Echo it into support
+      references and crash reports; it is the only safe correlator on this rail (ConsentId is
+      not — see consent_id_handling).
+  x-fapi-financial-id:
+    sent: false
+    note: "Not sent on any call in the entire capture corpus; nothing rejected its absence."
+
+operations:
+
+  # ── 1. Stage the consent ────────────────────────────────────────────────
+  - id: stage_domestic_payment_consent
+    endpoint: "POST /domestic-payment-consents"
+    auth: client_credentials_payments_scope
+    headers: [x-jws-signature, x-idempotency-key]
+    request_body:
+      Data:
+        Initiation:
+          InstructionIdentification: "<generated, <=35 chars>"
+          EndToEndIdentification: "<generated, <=35 chars>"
+          LocalInstrument: "UK.OBIE.FPS"
+          InstructedAmount:
+            Amount: "<major-unit decimal string>"
+            Currency: "GBP"
+          DebtorAccount:
+            SchemeName: "UK.OBIE.SortCodeAccountNumber"
+            Identification: "<14 digits: 6 sort code + 8 account number>"
+            Name: "<account display name>"
+          CreditorAccount:
+            SchemeName: "UK.OBIE.SortCodeAccountNumber"
+            Identification: "<14 digits>"
+            Name: "<payee name>   # MANDATORY on this rail — see initiation_field_rules"
+          RemittanceInformation:
+            Unstructured: ["<reference, <=35 chars>"]
+            Structured: ["<ARRAY of objects — see initiation_field_rules>"]
+      Risk:
+        PaymentContextCode: "TransferToThirdParty | TransferToSelf"
+    success: "201 with Data.ConsentId and Data.Status AWAU"
+    returns_charges: true
+    charge_observed: "0.05 GBP, Type UK.OBIE.CHAPSOut"
+    charge_note: >-
+      Domestic consents carry a charge at STAGING, unlike the international rail which carries
+      none until resource creation. The Type is CHAPSOut even though LocalInstrument is FPS —
+      observed on all 14 domestic consents, so it is the bank's own labelling, not ours.
+
+    # ── ADDED 2026-08-07 from the full by-type capture read ──
+    initiation_field_rules:
+      remittance_information_structured_is_an_array:
+        finding: "RemittanceInformation.Structured MUST be a JSON ARRAY, not an object."
+        accepted:
+          - 'R6-10 — Structured: [ { CreditorReferenceInformation: { Reference: "BT20260806" } } ] -> 201'
+        refused:
+          - 'BT-07, BT-08 — Structured sent as a bare OBJECT -> U002 "Invalid value" @ Data.Initiation.RemittanceInformation.Structured'
+        consequence: >-
+          The refusal is a shape error, not a content error, and the U002 wording gives no hint
+          of that. A client that models Structured as a single object will get "Invalid value"
+          on every payment and have nothing to debug against.
+      creditor_account_name_is_mandatory:
+        finding: "CreditorAccount.Name is MANDATORY on the domestic rail."
+        observed: 'R9-07 — omitted -> U004 "CreditorAccount.Name is missing" @ Data.Initiation.CreditorAccount.Name'
+        contrast: "DebtorAccount.Name is OPTIONAL — no scenario rejects its absence."
+        consequence: "payee_name_field cannot be optional in the manual-entry form, and a beneficiary with no name cannot be paid without one being supplied."
+      creditor_party_block_needs_building_number:
+        finding: >-
+          A full `Creditor` party block (the payee's name + postal address, distinct from
+          CreditorAccount) is not satisfied by a partial address.
+        observed: 'R3-09 — Creditor.PostalAddress carrying only { Country, TownName } -> U004 @ Data.Initiation.Creditor.PostalAddress.BuildingNumber'
+        consequence: >-
+          BuildingNumber specifically is required once the block is present at all. Since this
+          app never collects a payee postal address, the correct handling is to OMIT `Creditor`
+          entirely rather than send a partial one — a partial block is worse than no block.
+
+  # ── 2. Consent status ───────────────────────────────────────────────────
+  - id: get_domestic_payment_consent_status
+    endpoint: "GET /domestic-payment-consents/{ConsentId}"
+    auth: client_credentials_payments_scope
+    headers: []
+    success: "200 with Data.Status"
+    status_ladder: "AWAU -> AUTH -> COND"
+    status_meanings:
+      AWAU: "AwaitingAuthorisation — staged, PSU has not yet approved"
+      AUTH: "Authorised — approved, may now be submitted"
+      COND: "Consumed — a payment resource has been created from it; single-use"
+      RJCT: "Rejected — the PSU denied it at the bank"
+    polled_to: AUTH
+    gating_rule: >-
+      Submit is GATED on AUTH. Submitting against a non-Authorised consent returns 400 U009.
+    critical_note: >-
+      StatusUpdateDateTime does NOT move on AWAU -> AUTH. All five authorised consents in the
+      corpus transitioned with StatusUpdateDateTime still equal to CreationDateTime. A client
+      polling that field will never observe authorisation landing. Read Data.Status only.
+
+  # ── 3. Funds confirmation ───────────────────────────────────────────────
+  - id: funds_confirmation
+    endpoint: "GET /domestic-payment-consents/{ConsentId}/funds-confirmation"
+    auth: psu_authorization_code
+    headers: []
+    requires: "an Authorised consent"
+    success: "200 with Data.FundsAvailableResult.FundsAvailable"
+    verb_rationale: >-
+      A GET, unlike VRP's POST. A PISP consent has ONE fixed amount already staged, so there is
+      nothing for the TPP to supply. VRP consents have no fixed amount, which is why that family
+      inverts the verb.
+    on_false: "Block submit and return the PSU to the amount step. The payment is not staged."
+
+  # ── 4. Submit ───────────────────────────────────────────────────────────
+  - id: submit_domestic_payment
+    endpoint: "POST /domestic-payments"
+    auth: psu_authorization_code
+    headers: [x-jws-signature, x-idempotency-key]
+    request_body:
+      Data:
+        ConsentId: "<from stage>"
+        Initiation: "<the parsed Initiation read back from the AUTHORISED consent, forwarded as an object — see match_semantically_not_bytewise>"
+      Risk: "<forwarded from the authorised consent>"
+    success: "201 with Data.DomesticPaymentId and Data.Status ACSP"
+    initiation_echo_rule:
+      rule: >-
+        The Initiation must match the authorised consent's Initiation FIELD FOR FIELD. It does
+        NOT have to match byte for byte, and cannot — the server reorders keys on every echo.
+      mismatch_error: "U008"
+      caveat: >-
+        Take the Initiation from the AUTHORISED CONSENT, not from what was staged locally. When
+        the TPP omits DebtorAccount the bank writes the PSU's own choice into
+        Initiation.DebtorAccount, and echoing the local copy will not match. The bank enriches
+        an omitted debtor with a Name but never touches one the TPP supplied.
+      # ── ADDED 2026-08-07 from the full by-type capture read ──
+      match_semantically_not_bytewise:
+        finding: >-
+          "Byte-identical" is the WRONG mental model and will produce a broken implementation.
+          The server NORMALISES key order on every echo — it does not return what you sent.
+        observed:
+          - "International Initiation echoes as ChargeBearer, CurrencyOfTransfer, InstructedAmount, MandateRelatedInformation, [CreditorAgent], [DebtorAccount], CreditorAccount — regardless of request order."
+          - "LocalInstrument lands after EndToEndIdentification in SP-I07 but after RequestedExecutionDateTime in SP-D06."
+          - "Inside MandateRelatedInformation the response emits FirstPaymentDateTime, FinalPaymentDateTime, Frequency although requests send Frequency first."
+          - "Inside Frequency the response emits CountPerPeriod BEFORE Type."
+          - "VRP ControlParameters echoes as VRPType, PSUAuthenticationMethods, PSUInteractionTypes, MaximumIndividualAmount, PeriodicLimits regardless of the order sent."
+        consequence: >-
+          NEVER re-serialise the echoed Initiation and compare strings, and never hash it for
+          comparison. Compare field by field, or simply forward the parsed object. A string
+          comparison against the staged copy fails on a payment that is perfectly valid.
+        values_are_preserved: >-
+          Only ORDER changes. Date values echo character-for-character on the mandate fields —
+          the +00:00 offset and original seconds are kept, never converted to Z. The one field
+          whose VALUE changes is RequestedExecutionDateTime, truncated to midnight, and
+          Data.Authorisation.CompletionDateTime, truncated the same way.
+
+  # ── 5. Payment status ───────────────────────────────────────────────────
+  - id: get_domestic_payment_status
+    endpoint: "GET /domestic-payments/{DomesticPaymentId}"
+    auth: client_credentials_payments_scope
+    headers: []
+    success: "200 with Data.Status"
+    status_ladder: "ACSP -> ACCC"
+    status_meanings:
+      ACSP: "AcceptedSettlementInProcess — accepted, NOT settled. Never render as sent."
+      ACCC: "AcceptedCreditSettlementCompleted — terminal success."
+      RJCT: "Rejected — terminal failure."
+    settlement_note: >-
+      Settlement is asynchronous and batched. All seven authorised payments in the corpus read
+      back ACCC, but only after a delay — the submit response is always ACSP.
+
+# ─────────────────────────────────────────────────────────────────────────
+# ELIGIBILITY — observed, and it contradicts HSBC's own Implementation Guide
+# ─────────────────────────────────────────────────────────────────────────
+debtor_eligibility:
+  rule: "Scheme-based, not product-based."
+  accepted:
+    - scheme: "UK.OBIE.SortCodeAccountNumber"
+      accounts: "current, savings"
+      result: "201 AWAU"
+  refused:
+    - scheme: "UK.OBIE.PAN"
+      account: "credit card"
+      result: "U027 Unsupported scheme @ DebtorAccount.SchemeName"
+      note: >-
+        The DOMESTIC rail rejects the scheme itself. The international rail rejects the VALUE
+        instead (U002 @ Identification), having accepted PAN at the scheme level. Same outcome,
+        different error, and worth knowing when mapping messages.
+    - account: "Global Money"
+      result: "U002 Invalid Field @ DebtorAccount.Identification"
+      note: >-
+        Means 'a TPP may not NAME it', not 'it cannot pay'. Global Money successfully funded
+        domestic payment 19909 when the BANK selected it. Omitting DebtorAccount entirely lets
+        the PSU pick it at the bank.
+  # ── ADDED 2026-08-07 — why the picker cannot be driven by the API response ──
+  debtor_error_is_undiagnosable:
+    finding: >-
+      U002 @ Data.Initiation.DebtorAccount.Identification is OVERLOADED across three distinct
+      causes, with identical code, identical Message and identical Path for all three.
+    the_three_causes:
+      - "Global Money named as a domestic debtor"
+      - "A credit card addressed by SORT CODE"
+      - "A credit card addressed by PAN on the INTERNATIONAL rail"
+    consequence: >-
+      The app CANNOT tell them apart from the response, and therefore cannot write a recovery
+      message that says anything true. This is the reason FR-018 pre-filters the debtor picker
+      CLIENT-SIDE rather than relying on the 400 — the error is not diagnostic enough to build
+      a recovery on. See dtos/ObPaymentError.yaml#overloaded_debtor_error.
+  ui_consequence: >-
+    The debtor picker offers only SortCodeAccountNumber accounts. Choosing an ineligible
+    account must be impossible in the UI rather than surfaced as a 400 after submit (FR-018).
+
+creditor_eligibility:
+  accepted: ["UK.OBIE.SortCodeAccountNumber"]
+  refused:
+    - scheme: "UK.OBIE.IBAN"
+      result: "U027"
+      note: "An IBAN creditor belongs on the international rail. This is the mirror of the sort-code-creditor refusal there."
+    # ── ADDED 2026-08-07 from the full by-type capture read ──
+    - scheme: "UK.OBIE.PAN"
+      result: "U027"
+      observed: "BT-01, BT-02, BT-03, BT-04, BT-05, BT-06, BT-09, R6-08 — eight scenarios, all U027."
+      note: >-
+        A card is refused as a CREDITOR regardless of LocalInstrument. BT-09 is the decisive
+        one: it sends LocalInstrument UK.OBIE.BalanceTransfer with a valid sort-code DEBTOR and
+        is still refused. So BalanceTransfer does NOT unlock a PAN creditor — there is no
+        pay-your-credit-card path on this rail under any instrument tried.
+      ui_consequence: "The payee picker must exclude PAN destinations too, not just the debtor picker."
+
+# ─────────────────────────────────────────────────────────────────────────
+# CONSUMER CONTEXT — carried forward from the 2026-07-30 constraint
+# ─────────────────────────────────────────────────────────────────────────
+consumer_context_constraint:
+  allowed_payment_context_codes: [TransferToThirdParty, TransferToSelf]
+  forbidden_payment_context_codes:
+    - EcommerceMerchantInitiatedPayment
+    - BillingGoodsAndServicesInAdvance
+    - BillingGoodsAndServicesInArrears
+    - FaceToFacePointOfSale
+  forbidden_risk_fields: [MerchantCategoryCode, MerchantCustomerIdentification, DeliveryAddress]
+  warning: >-
+    HSBC's own Postman body for this endpoint sends PaymentContextCode
+    EcommerceMerchantInitiatedPayment with MerchantCategoryCode 5432 and a DeliveryAddress.
+    It is a wire-format reference only. Copying it would model a merchant checkout, which this
+    app is not.
+
+# ─────────────────────────────────────────────────────────────────────────
+# ERROR CONTRACT — the envelope shape, ordering and Path rules live in ONE place
+# ─────────────────────────────────────────────────────────────────────────
+error_contract_ref:
+  dto: dtos/ObPaymentError.yaml
+  binding: "Every 400 on every operation above deserialises to ObPaymentError. Do not restate its rules here."
+  # ── ADDED 2026-08-07 — the four consequences that bind THIS screen's form ──
+  what_this_screen_must_do:
+    render_every_error: >-
+      Errors is an ARRAY and observed carrying TWO entries (R13-10, R9-11). A screen that shows
+      Errors[0] hides the actionable half. error_panel iterates.
+    do_not_expect_a_full_fault_list: >-
+      Shape validation is FAIL-FAST — U005 "not expected" strictly PRECEDES U004 "missing", and
+      only one shape error comes back per round trip. The form CANNOT collect its faults from
+      the API. Validate every field client-side first; treat the 400 as a last line of defence.
+    key_off_code_plus_path: >-
+      U004 has FOUR different Messages for the one code. Never switch on Message. And match Path
+      CASE-INSENSITIVELY — R2-05 returns a lowercase "identification".
+    u021_is_not_ours:
+      finding: >-
+        U021 NEVER appears in the 139 single-payment scenarios, despite DOM-04 and INT-08 being
+        TITLED as reproducing "the app's U021". Both actually returned U002.
+      consequence: >-
+        U021 is VRP-only in this corpus. Do not map it on this screen. If the shipped app
+        surfaces U021 on a single payment it is not coming from these request shapes, and
+        chasing it through this rail's error map will not find it.
+
+consent_id_handling:
+  observed: 'ConsentIds are short sequential integers-as-strings — "45135".'
+  consequence: >-
+    Enumerable, not UUIDs. Never place a ConsentId in a URL, a log line, a crash report or an
+    analytics event. Treat it as a bearer-adjacent identifier even though it is not a token.
+
+error_cases:
+  - code: U019
+    http: 400
+    trigger: "missing or invalid x-jws-signature"
+    recovery: "Not user-recoverable — an implementation fault. Surface a support reference, not a Retry."
+  - code: U009
+    http: 400
+    trigger: "consent is not in Authorised status"
+    recovery: "Re-authorise CTA restarts the app-to-app leg via payment-consent."
+  - code: U008
+    http: 400
+    trigger: "submitted Initiation does not match the staged one"
+    recovery: "Not user-recoverable. Re-read the authorised consent and resubmit from its Initiation."
+  - code: U014
+    http: 400
+    trigger: "payment outside control parameters"
+    recovery: "Return to the amount step."
+  - code: U027
+    http: 400
+    trigger: "unsupported scheme on debtor or creditor"
+    recovery: "Should be unreachable — the pickers prevent it. Treat as an implementation fault."
+  - code: U002
+    http: 400
+    trigger: "invalid field value, e.g. a TPP-named Global Money debtor"
+    recovery: "Return to the account step."

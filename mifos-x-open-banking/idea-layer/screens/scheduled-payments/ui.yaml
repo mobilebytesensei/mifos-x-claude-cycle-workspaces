@@ -1,0 +1,413 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: scheduled-payments
+
+screen_id: scheduled-payments
+archetype: index_list
+name: "{strings.sp_screen_title}"
+# status: REMOVED 2026-08-04 (CROSS_LEAK repair — sibling-layout.json assigns `status` to
+# the docs sibling). This copy held `implemented`; docs.yaml is the single owner.
+initial_state: loading
+quality_score: 96
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  top_app_bar_title: "{strings.sp_screen_title}"
+  top_app_bar_leading: back
+  fab_visible: false
+
+states: [loading, content, empty, unsupported, error]
+
+# TEST TAGS — reconciled against source 2026-08-02 by /idea-sync (source-truth pass).
+test_tags:
+  source: "feature/scheduled-payments/src/commonMain/kotlin/org/mifosx/openbanking/feature/scheduledpayments/ScheduledPaymentsTestTags.kt"
+  declared_in_source: 11         # 9 const val + 2 builder fns (card, typeChip)
+  bound: 7
+  interpolated:
+    - { tag: "scheduledPayments:card:{item.ScheduledPaymentId}",     builder: "fun card(scheduledPaymentId: String)" }
+    - { tag: "scheduledPayments:typeChip:{item.ScheduledPaymentId}", builder: "fun typeChip(scheduledPaymentId: String)" }
+  ahead_of_source:
+    - tag: "scheduledPayments:unsupportedState"
+      component: unsupported_scheduled_payments
+      why: >-
+        NOT in ScheduledPaymentsTestTags.kt — there is no UNSUPPORTED_* const here, unlike
+        DirectDebitsTestTags and StandingOrdersTestTags which both declare STATE / TITLE / BODY.
+        This is the tag half of the spec_ahead_of_source carve-out declared at the head of this
+        file: the state is specified before source renders it, so its tag is specified too. It
+        must land in TestTags.kt in the same /implement pass that adds the Unsupported branch.
+  unbound:
+    - { tag: "scheduledPayments:emptyTitle", parent: empty_scheduled_payments, why: "Text node modelled as the parent's `title:` field." }
+    - { tag: "scheduledPayments:emptyBody",  parent: empty_scheduled_payments, why: "Text node modelled as the parent's `body:` field." }
+    - { tag: "scheduledPayments:errorTitle", parent: error_state,              why: "Text node modelled as the parent's `title:` field." }
+    - { tag: "scheduledPayments:errorBody",  parent: error_state,              why: "Text node modelled as the parent's `body:` field." }
+
+# ─────────────────────────────────────────────────────────────────────
+# SPEC AHEAD OF SOURCE — declared 2026-08-02 by /idea-sync (source-truth pass)
+# ─────────────────────────────────────────────────────────────────────
+# The 2026-08-02 reverse pass aligned this idea-layer to source everywhere EXCEPT
+# here. `unsupported` is deliberately kept ahead of source rather than pruned to
+# match it, because deleting it would erase the specification of a live defect.
+spec_ahead_of_source:
+  scope: "state:unsupported"
+  declared_at: "2026-08-02"
+  declared_by: "/idea-sync (source-truth reverse pass)"
+  owed_by: /implement
+  verified_against_source_at: "2026-08-02"
+  why_not_pruned: >-
+    Source reaching this screen ALREADY records the U000 refusal — BankingStores.kt:377
+    (scheduledPaymentsStore) calls result.error.recordIfUnsupported(endpoint =
+    AccountEndpoint.ScheduledPayments) before rethrowing, exactly as directDebitsStore:234
+    and standingOrdersStore:344 do. What source lacks is the UI branch that lands it. So the
+    idea-layer is not describing an imagined feature; it is describing the half of a
+    product-gate that source already started and did not finish.
+  source_gap:
+    site: "feature/scheduled-payments/.../ui/ScheduledPaymentsViewModel.kt:64"
+    observed: >-
+      `is ScreenState.Error -> ScheduledPaymentsUiState.Error(classifyScheduledPaymentsError(error))`
+      — every error, including a U000 product refusal, is routed to a retryable error kind.
+      There is no isUnsupportedForProduct() pre-check and no Unsupported member on
+      ScheduledPaymentsUiState.
+    mirror: >-
+      feature/direct-debits/.../ui/DirectDebitsViewModel.kt:64 holds the shape to copy —
+      `if (error.isUnsupportedForProduct()) DirectDebitsUiState.Unsupported(error.obieMessage().orEmpty())`
+      guarded AHEAD of classification. Its own comment states the reason: "a U000 refusal is a
+      statement about the product, not a failure, so it must not be routed to a retryable error kind."
+    helpers_already_present:
+      - "core/data/.../util/ObieErrorCodes.kt:35 — NetworkError.isUnsupportedForProduct()"
+      - "core/data/.../util/ObieErrorCodes.kt:39 — Throwable.isUnsupportedForProduct()"
+    user_visible_consequence: >-
+      A PSU whose account product cannot serve scheduled payments (a credit card) sees the
+      generic error surface with a Retry button that can never succeed, instead of the
+      "not available for this account" readout the two sibling screens already give.
+  source_owes:
+    - "Add Unsupported(message) to ScheduledPaymentsUiState (mirror DirectDebitsUiState)."
+    - "Guard isUnsupportedForProduct() ahead of classifyScheduledPaymentsError() at ScheduledPaymentsViewModel.kt:64."
+    - "Add ScheduledPaymentsUnsupported.kt rendering it (mirror DirectDebitsUnsupported.kt)."
+    - "Declare the U000 refusal in api.yaml for all three gated features — the CONDITION is still modelled nowhere."
+
+business_logic:
+  kind: crud
+  description: "Calls GET /accounts/{AccountId}/scheduled-payments via ktorfit to retrieve OBReadScheduledPayment3. ViewModel maps each Data.ScheduledPayment to a UiModel: CreditorAccount.Name (payee display name); InstructedAmount.Amount + InstructedAmount.Currency formatted as currency string (e.g. GBP 842.00); ScheduledPaymentDateTime (ISO-8601) formatted as 'EEE d MMM yyyy' (e.g. Thu 31 Jul 2026); ScheduledType enum mapped to human-readable chip label: Execution → 'Execution date' (money leaves account on that date), Arrival → 'Arrival date' (funds arrive at beneficiary on that date); CreditorAccount.Identification (UK sort code + account number, e.g. 08-32-00 12001039) shown as destination account; Reference as payment narrative. Read-only under AISP consent using ReadScheduledPaymentsDetail permission. ScheduledType icon: calendar_today for Execution, arrow_downward for Arrival."
+  external_library_refs:
+    - "ktorfit"
+    - "hsbc-obie-ais-v4.0:scheduled-payments"
+  description_author: claude
+  description_authored_at: "2026-06-29T14:00:00Z"
+
+components:
+  - type: progress_circular
+    state_binding: [loading]
+    accessibility_label: "{strings.sp_loading_a11y}"
+    test_tag: "scheduledPayments:loading"
+    test_context:
+      purpose: "Indicate async fetch of OBReadScheduledPayment3 from HSBC AIS endpoint"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  - type: icon_button
+    keyboard:
+      focusable: true
+    id: back_button
+    icon: arrow_back
+    accessibility_label: "{strings.sp_back_a11y}"
+    on_click:
+      action: navigate_back
+      target: account-detail
+      action_contract:
+        effect: navigate
+        description: "Pops the scheduled-payments screen from the back stack, returning the user to account-detail."
+    test_context:
+      purpose: "Return user to account-detail screen, discarding scheduled-payments context"
+      required_fields: []
+      interaction_type: navigate
+      data_driven: false
+
+  - type: list
+    id: scheduled_payments_list
+    test_tag: "scheduledPayments:contentList"
+    state_binding: [content]
+    scroll_direction: vertical
+    items_source: "{scheduledPayments}"
+    api_id: scheduled-payments-list
+    test_context:
+      purpose: "Render full OBReadScheduledPayment3 Data.ScheduledPayment array for the account"
+      required_fields: ["scheduledPayments"]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: card
+        id: scheduled_payment_card
+        test_tag: "scheduledPayments:card:{item.ScheduledPaymentId}"     # fun card(scheduledPaymentId)
+        elevation: 1
+        accessibility_label: "{strings.sp_card_a11y_prefix} {item.InstructedAmount.Amount} {item.InstructedAmount.Currency} {strings.sp_card_a11y_to} {item.CreditorAccount.Name}"
+        test_context:
+          purpose: "Container per scheduled payment; groups all payment fields for one future-dated instruction"
+          required_fields: ["item"]
+          interaction_type: display
+          data_driven: true
+        children:
+          - type: text
+            id: sp_payee_name
+            role: title
+            content: "{item.CreditorAccount.Name}"
+            style: titleMedium
+            i18n: skip
+            test_context:
+              purpose: "Payee name from CreditorAccount.Name in OBReadScheduledPayment3"
+              required_fields: ["item.CreditorAccount.Name"]
+              interaction_type: display
+              data_driven: true
+
+          - type: text
+            id: sp_amount
+            role: amount
+            content: "{item.InstructedAmount.Currency} {item.InstructedAmount.Amount}"
+            style: headlineSmall
+            color: error
+            i18n: skip
+            accessibility_label: "{item.InstructedAmount.Amount} {item.InstructedAmount.Currency} {strings.sp_amount_a11y_suffix}"
+            test_context:
+              purpose: "Payment amount and currency from InstructedAmount OB object; 'GBP 842.00'"
+              required_fields: ["item.InstructedAmount.Amount", "item.InstructedAmount.Currency"]
+              interaction_type: display
+              data_driven: true
+
+          - type: text
+            id: sp_scheduled_date
+            role: body
+            content: "{strings.sp_due_prefix} {item.scheduledDateFormatted}"
+            style: bodySmall
+            color: onSurfaceVariant
+            test_context:
+              purpose: "ISO-8601 ScheduledPaymentDateTime formatted by ViewModel as 'Due: Thu 31 Jul 2026'"
+              required_fields: ["item.scheduledDateFormatted"]
+              interaction_type: display
+              data_driven: true
+
+          - type: chip
+            id: sp_type_chip
+            test_tag: "scheduledPayments:typeChip:{item.ScheduledPaymentId}"  # fun typeChip(scheduledPaymentId)
+            variant: assist
+            label: "{item.scheduledTypeLabel}"
+            icon: "{item.scheduledTypeIcon}"
+            color: secondaryContainer
+            accessibility_label: "{item.scheduledTypeA11y}"
+            state_binding: [content]
+            test_context:
+              purpose: "ScheduledType chip: 'Execution date' (calendar_today) or 'Arrival date' (arrow_downward); ViewModel maps OBIE enum to label, icon, and a11y string"
+              required_fields: ["item.scheduledTypeLabel", "item.scheduledTypeIcon", "item.scheduledTypeA11y"]
+              interaction_type: display
+              data_driven: true
+
+          - type: text
+            id: sp_account_id
+            role: caption
+            content: "{strings.sp_account_prefix} {item.CreditorAccount.Identification}"
+            style: labelSmall
+            color: onSurfaceVariant
+            i18n: skip
+            test_context:
+              purpose: "Destination account sort code + account number from CreditorAccount.Identification (e.g. 08-32-00 12001039) so user can verify payment destination"
+              required_fields: ["item.CreditorAccount.Identification"]
+              interaction_type: display
+              data_driven: true
+
+          - type: text
+            id: sp_reference
+            role: caption
+            content: "{strings.sp_ref_prefix} {item.Reference}"
+            style: labelSmall
+            color: onSurfaceVariant
+            test_context:
+              purpose: "Payment reference from Reference field for user identification"
+              required_fields: ["item.Reference"]
+              interaction_type: display
+              data_driven: true
+
+  - type: empty_state
+    id: empty_scheduled_payments
+    test_tag: "scheduledPayments:emptyState"
+    state_binding: [empty]
+    icon: schedule
+    title: "{strings.sp_empty_title}"
+    body: "{strings.sp_empty_body}"
+    accessibility_label: "{strings.sp_empty_a11y}"
+    test_context:
+      purpose: "Zero-result state when Data.ScheduledPayment[] is empty in OBIE response"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  # ── UNSUPPORTED STATE ───────────────────────────────────────────────
+  # Added 2026-07-30 (/idea-heal -> enrich loop), closing
+  # DISCOVERY:scheduled-payments:missing-unsupported-state.
+  #
+  # This feature is product-gated exactly like direct-debits and standing-orders —
+  # its store fetcher calls recordIfUnsupported() on an OBIE U000 refusal before
+  # rethrowing (source BankingStores.kt:377). Both siblings declared `unsupported`;
+  # this one did not, because the 2026-07-28 reverse sync back-filled the state into
+  # them from source (see direct-debits/ui.yaml:46) and missed this feature.
+  #
+  # Distinct from empty: empty means the bank answered "none scheduled"; unsupported
+  # means the account's product does not expose the resource at all, so there is
+  # NOTHING to retry. Without this state the refusal falls through to the retryable
+  # error path and a PSU on a credit card gets a Retry that can never succeed.
+  - type: empty_state
+    id: unsupported_scheduled_payments
+    variant: info
+    state_binding: [unsupported]
+    icon: info_outline
+    title: "{strings.sp_unsupported_title}"
+    body: "{uiState.message}"
+    test_tag: "scheduledPayments:unsupportedState"
+    accessibility_label: "{strings.sp_unsupported_a11y}"
+    test_context:
+      purpose: "Servicer does not support the scheduled-payments resource for this account. No retry CTA — the capability registry refused the call rather than the network failing."
+      required_fields: ["uiState.message"]
+      interaction_type: display
+      data_driven: true
+
+  - type: error_state
+    id: error_state
+    test_tag: "scheduledPayments:errorState"
+    state_binding: [error]
+    icon: error_outline
+    title: "{strings.sp_error_title}"
+    body: "{error.message}"
+    accessibility_label: "{strings.sp_error_a11y}"
+    test_context:
+      purpose: "Surface typed API errors (401/403/429/network) with actionable message"
+      required_fields: ["error.message"]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: button
+        keyboard:
+          focusable: true
+        id: retry_button
+        test_tag: "scheduledPayments:retryButton"
+        variant: filled
+        label: "{strings.action_retry}"
+        accessibility_label: "{strings.sp_retry_a11y}"
+        on_click:
+          action: retry_load
+          action_contract:
+            effect: call_api
+            reads_from: ["scheduled-payments-list"]
+            external_library_refs: ["ktorfit", "hsbc-obie-ais-v4.0:scheduled-payments"]
+            description: "Re-triggers LoadScheduledPayments ViewModel action after a transient failure (401, 429, or network error), issuing GET /accounts/{AccountId}/scheduled-payments and returning to Loading then Content or Empty."
+        test_context:
+          purpose: "Re-trigger LoadScheduledPayments ViewModel action after transient failure"
+          required_fields: []
+          interaction_type: action
+          data_driven: false
+
+# api: MOVED to api.yaml 2026-07-31 (CROSS_LEAK repair — sibling-layout.json assigns
+# `api` to the api sibling). This block described the SAME operation already declared
+# as api.yaml#endpoints[scheduled-payments-list], so it was not copied wholesale: the
+# duplicate identity fields were dropped and only the two things api.yaml lacked —
+# response.data_path + response.fields[] and the errors[] recovery table — were folded
+# into the existing endpoint. Nothing was lost and no second declaration was created.
+
+state_model:
+  ScheduledPaymentsViewModel:
+    state:
+      name: ScheduledPaymentsState
+      fields:
+        - name: accountId
+          type: String
+        - name: uiState
+          type: ScheduledPaymentsUiState
+    screen_state:
+      sealed_class: ScheduledPaymentsUiState
+      members:
+        - Loading
+        - Content      # payments: List<ScheduledPaymentUiModel>
+        - Empty
+        # Added 2026-08-02 (/design-validate F-006). `states:` above lists unsupported and a
+        # component binds to it, but this members list omitted it — so the file declared a state
+        # its own ViewModel contract could not emit. Both sibling screens declare it
+        # (direct-debits/ui.yaml:93, standing-orders/ui.yaml:96), and this file's own
+        # spec_ahead_of_source.source_owes[] says to add it. The rest of the file was written in
+        # the OWED tense; this block was the one part left describing current source.
+        - Unsupported  # message: String — servicer does not expose scheduled payments for this account
+        - Error        # kind: ScheduledPaymentsError
+    row_model:
+      name: ScheduledPaymentUiModel
+      fields:
+        - name: scheduledPaymentId
+          type: String
+        - name: payeeName
+          type: String
+        - name: amountLabel
+          type: String
+        - name: scheduledDateLabel
+          type: String
+        - name: scheduledType
+          type: ScheduledPaymentType
+        - name: creditorIdentification
+          type: String
+        - name: reference
+          type: String
+    errors:
+      types:
+        - TokenExpired
+        - ConsentRevoked
+        - RateLimited
+        - NetworkError
+    actions:
+      members:
+        - RetryLoad
+    nav_callbacks:
+      - "onBack -> popBackStack() returning to account-detail"
+    di:
+      - SavedStateHandle              # supplies the accountId route arg
+      - ScheduledPaymentsRepository   # Koin single; scheduled-payments stream
+
+# ─────────────────────────────────────────────────────────────────────
+# SOURCE BINDING — reverse-synced from source 2026-07-28
+# ─────────────────────────────────────────────────────────────────────
+implementation:
+  status: implemented
+  source_module: "feature/scheduled-payments"
+  package: "org.mifosx.openbanking.feature.scheduledpayments"
+  route: "ScheduledPaymentsRoute(accountId: String)"
+  viewmodel: ScheduledPaymentsViewModel
+  screen: ScheduledPaymentsScreen
+  test_tags_object: ScheduledPaymentsTestTags
+  domain_model: ScheduledPaymentItem
+  reachable_from:
+    - "account-detail — AccountDetailChip.ScheduledPayments"
+  synced_from_source_at: "2026-07-28"
+  removed_in_sync:
+    - "LoadScheduledPayments action — the initial load is stream collection in init{}"
+    - "NavigateBack action — back is a nav-host onBack callback"
+    - "AisApiService / ScheduledPaymentUiModelMapper DI — the view model injects ScheduledPaymentsRepository"
+
+# dependencies: MOVED to flow.yaml 2026-07-31 (CROSS_LEAK repair —
+# sibling-layout.json assigns `dependencies` to the flow sibling).
+
+screens:
+  - id: scheduled-payments
+    name: "Scheduled Payments"
+    viewmodel: ScheduledPaymentsViewModel
+    route: "accounts/{accountId}/scheduled-payments"
+    entry_point: account-detail
+
+status_history:
+  - from: draft
+    to: enriched
+    at: "2026-06-29"
+    by: "/idea-enrich"
+  - from: enriched
+    to: enriched
+    at: "2026-06-29"
+    by: "/idea-enrich"
+    notes: "Quality 83→92: i18n wrapping (18 keys), ScheduledType chip, CreditorAccount.Identification field, comprehensive card a11y, richer business_logic description with formatting semantics"
+  - from: enriched
+    to: enriched
+    at: "2026-07-14"
+    by: "/idea-enrich"
+    notes: "Quality 92→96: Added api[] with response+errors contracts (Cat 8), api_id on list component (Cat 3), state_model block (Cat 10), dependencies block (Cat 11), screens[] (Cat 12), capability_completeness in docs.yaml"

@@ -1,0 +1,258 @@
+name: PcaProduct
+version: "1.0.0"
+source:
+  origin: external_api
+  api_path: "GET /open-banking/v2.2/personal-current-accounts + /x-open-banking/v2.2/personal-current-accounts/segment/{segment}"
+  host: api.hsbc.com
+  host_status: resolved
+  api_ref: API-OD-PRODUCT
+  spec: "OBIE Open Data v2.2 (swagger info.version 2.2.1) — unauthenticated, no consent, no session"
+  created:
+    at: "2026-08-07"
+    by: "/idea-sync — dangling-ref closure"
+    evidence:
+      tier_1_live:
+        summary: "10 records, 2 brands, HTTP 200, 83 KB. Re-probed live 2026-08-07: byte-identical."
+        reproduce: 'curl -H "Accept: application/prs.openbanking.opendata.v2.2+json" "https://api.hsbc.com/open-banking/v2.2/personal-current-accounts"'
+        local_capture: "/home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/pca-probe.json — OUTSIDE this repository, captured 2026-08-07. Not checked in; use `reproduce` above."
+      tier_2_spec:
+        summary: "Product Finder swagger 2.0, info.version 2.2.1 — #definitions.PCADefinition"
+        reproduce: "Download the swagger from https://develop.hsbc.com/ob-api-documentation/product-finder-uk/endpoints — public, no credential."
+        local_capture: "/home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/open-product-finder-swagger.json — OUTSIDE this repository, captured 2026-08-07. Not checked in; use `reproduce` above."
+
+description: >-
+  One personal current account in HSBC's PUBLIC catalogue — what the bank sells, not what the PSU
+  holds. Reached at data[].Brand[].PCA[]. Needs no token. The per-account terms of an account the
+  PSU actually holds are a different thing entirely and live on ProductTerms /
+  screens/product/api.yaml.
+
+envelope:
+  shape: "{ meta, data } — both required"
+  path_to_this_dto: "data[].Brand[].PCA[]"
+  depth_warning: >-
+    THREE levels, same as the ATM and Branch feeds. `data` is an array (observed length 1);
+    `Brand` is an array (observed length 2 — this is the ONE feed where it is not 1).
+  flatten_rule: >-
+    Flatten across data[].Brand[] and carry BrandName down onto each product. See brand_split
+    below — losing BrandName here is worse than losing it on the locator feeds.
+  meta_fields: [LastUpdated, TotalResults, Agreement, License, TermsOfUse]
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE TRAP — Identification IS NOT UNIQUE
+# ─────────────────────────────────────────────────────────────────────────
+identification_is_not_a_key:
+  finding: >-
+    Product `Identification` REPEATS within a brand. `fdFirAcc`, `BankAcc` and `PremAcc` each
+    appear TWICE — 10 records for 7 distinct products.
+  what_differs: >-
+    Not the product. The MARKETING STATE. The two `BankAcc` records are the same Bank Account in
+    two states — one Regular, one Promotional.
+  worked_example:
+    - { Identification: BankAcc, state: Regular, PCAMarketingState_Identification: "Regular - No Offer", FirstMarketedDate: "2017-01-01", LastMarketedDate: "2099-12-31" }
+    - { Identification: BankAcc, state: Promotional, PCAMarketingState_Identification: "HSBC Bank £220 Switch and Spend", FirstMarketedDate: "2026-06-15", LastMarketedDate: absent }
+  all_three_duplicates:
+    - { id: fdFirAcc, name: "1st Account", brand: "first direct", promo: "£175 Switch Incentive" }
+    - { id: BankAcc, name: "Bank Account", brand: "HSBC UK", promo: "HSBC Bank £220 Switch and Spend" }
+    - { id: PremAcc, name: "HSBC Premier Account", brand: "HSBC UK", promo: "HSBC Premier £500 Welcome Reward" }
+  consequence: >-
+    A list keyed on Identification renders "Bank Account" twice, "HSBC Premier Account" twice and
+    "1st Account" twice, with NO visible difference between the rows — Name, Segment and
+    OnSaleIndicator are identical on both. This is the single most likely bug on the products
+    screen and it is present in the very first response.
+  correct_model: >-
+    GROUP BY Identification. One product, one row. The promotional state is an OFFER on that
+    product — "£220 when you switch" is a badge, not a second account. That is also the better UI:
+    the offer is the reason a person is on this screen at all.
+  grouping_key: "(BrandName, Identification) — Identification is not proven unique ACROSS brands either."
+
+# ─────────────────────────────────────────────────────────────────────────
+# FIELDS
+# ─────────────────────────────────────────────────────────────────────────
+fields:
+  - name: BrandName
+    type: String
+    required: true
+    pii: false
+    primary_key: false
+    synthetic: true
+    description: >-
+      NOT a field on the PCA object — lifted from the parent data[].Brand[] during flatten.
+      Observed "HSBC UK" (8 products) and "first direct" (2).
+
+  - name: Identification
+    type: String
+    required: true
+    pii: false
+    primary_key: false
+    observed: 'Short mnemonics — fdFirAcc, BasAcc, MyAcc, BankAcc, PremAcc, GradAcc, StuAcc. 10 records, 7 distinct.'
+    description: >-
+      The product code. NOT a primary key despite the name — see identification_is_not_a_key.
+      Marked primary_key false deliberately; the row identity is (BrandName, Identification).
+
+  - name: Name
+    type: String
+    required: true
+    pii: false
+    primary_key: false
+    observed: '10/10. "Bank Account", "1st Account", "HSBC Premier Account", "Basic Bank Account", "MyAccount", "HSBC Graduate Bank Account", "HSBC Student Bank Account".'
+    description: "The marketing name. Clean and directly renderable — unlike Branch.Name, no service caveat is appended."
+
+  - name: Segment
+    type:
+      list_of: String
+    required: false
+    pii: false
+    primary_key: false
+    enum_ref: PcaSegment
+    observed: "10/10 present, always a SINGLE element."
+    description: >-
+      An ARRAY, even though every observed PCA carries exactly one value. The audience the product
+      is aimed at, and the only cheap filter on this screen.
+
+  - name: OnSaleIndicator
+    type:
+      optional: Boolean
+    required: false
+    pii: false
+    primary_key: false
+    observed: "10/10, `true` on every PCA and on both brand blocks."
+    description: >-
+      Presumably marks a withdrawn product when false. NEVER observed false on this family, so
+      untested here — but it IS observed false on 9 of 14 BCA products, which proves the field is
+      live and discriminating. Filter on it defensively rather than assuming everything is on sale.
+
+  - name: PCAMarketingState
+    type:
+      list_of: PcaMarketingState
+    required: true
+    pii: false
+    primary_key: false
+    observed: "10/10. AN ARRAY — length 1 on every PCA record."
+    description: >-
+      Where nearly all of the 83 KB sits. See marketing_state below. Note the array-ness: the
+      duplicate-Identification pattern above puts each state in its OWN record rather than as a
+      second element here, so on PCA the array is length 1 and the RECORD is duplicated. BCA does
+      the opposite. Do not assume either shape.
+
+  - name: Notes
+    type:
+      list_of: String
+    required: false
+    pii: false
+    primary_key: false
+    observed: "0/10 — never sent at product level."
+    description: "Declared. Absent from every PCA."
+
+# ─────────────────────────────────────────────────────────────────────────
+# MARKETING STATE — where the substance lives
+# ─────────────────────────────────────────────────────────────────────────
+marketing_state:
+  declared_required: [Identification, MarketingState, OtherFeesCharges]
+  key_presence_over_10_states:
+    always: [CoreProduct, Eligibility, FeaturesAndBenefits, FirstMarketedDate, Identification, MarketingState, OtherFeesCharges, PredecessorID, Ucodes]
+    sometimes: { LastMarketedDate: "8/10", Overdraft: "8/10", Notes: "3/10" }
+    never: [CreditInterest, StateTenureLength, StateTenurePeriod]
+  overdraft_absent_on:
+    products: [BasAcc, MyAcc]
+    reading: >-
+      Basic Bank Account and MyAccount publish no Overdraft block — consistent with a basic
+      account and a youth account genuinely having no overdraft. An absent Overdraft means
+      "no overdraft offered", not "data missing". Render it as a real product difference.
+  nested_blocks:
+    CoreProduct: [MonthlyMaximumCharge, ProductDescription, ProductURL, SalesAccessChannels, ServicingAccessChannels, TcsAndCsURL]
+    Eligibility: [AgeEligibility, CreditCheck, IDVerificationCheck, OtherEligibility, ResidencyEligibility]
+    FeaturesAndBenefits: [Card, FeatureBenefitItem, MobileWallet]
+    Overdraft: [OverdraftTierBandSet, TcsAndCsURL, Notes]
+    Ucodes: "Array of { CurrentUcode } — e.g. UAJAA, UAJAG. An OBIE-internal product taxonomy code; no user-facing meaning. Do not render."
+  where_the_substance_lives: >-
+    The product record itself is thin — a name, a code, a segment. Everything a customer would
+    compare (eligibility, features, overdraft rates, fees) is inside this block. A LIST screen
+    does not need it and should not parse it; a COMPARE screen reads it. Parsing the whole 83 KB
+    to render seven rows is the wasteful default.
+  product_url_is_the_escape_hatch: >-
+    CoreProduct.ProductURL is populated on every state and points at the real HSBC product page
+    (e.g. https://www.hsbc.co.uk/current-accounts/products/bank-account/). Anything the feed does
+    not model well is one tap away — worth more than a half-rendered fee table.
+
+# ─────────────────────────────────────────────────────────────────────────
+# DATES
+# ─────────────────────────────────────────────────────────────────────────
+date_semantics:
+  sentinel:
+    value: "2099-12-31"
+    meaning: "INDEFINITE — not a real end date."
+    observed: "On 8 of 10 LastMarketedDate values, including a Promotional one (PremAcc's £500 Welcome Reward)."
+    requirement: >-
+      DO NOT RENDER IT. "Available until 31 December 2099" is absurd on screen. Treat it as
+      no-end-date and say nothing, or say "ongoing".
+  absent_last_marketed_date:
+    observed: "2/10 — fdFirAcc and BankAcc promotional states."
+    meaning: "The offer is currently live with no announced end."
+    trap: >-
+      Absent and sentinel mean nearly the same thing but arrive differently. Handle BOTH as
+      no-end-date. A null check alone lets 2099-12-31 through to the screen.
+  first_marketed_date:
+    observed: '"2017-01-01" on every Regular state — a bulk backfill, not a real launch date. Promotional states carry real dates (2026-03-23, 2026-06-15, 2026-07-16).'
+    requirement: "Do not render FirstMarketedDate on a Regular product. It says 2017 for everything and means nothing."
+
+# ─────────────────────────────────────────────────────────────────────────
+# BRANDS
+# ─────────────────────────────────────────────────────────────────────────
+brand_split:
+  observed: { "HSBC UK": 8, "first direct": 2 }
+  significance: >-
+    This is the ONLY Open Data feed where a second brand appears. The ATM feed returned "HSBC UK"
+    across 135 records and the Branch feed across 25. So the brand split is REAL in the estate,
+    and the standing caution against hardcoding one brand is vindicated here rather than merely
+    prudent.
+  ui_consequence: >-
+    Products MUST be grouped or labelled by brand. first direct is a distinct bank to a customer,
+    not an HSBC sub-label; showing the 1st Account in an undifferentiated HSBC list is wrong, and
+    the duplicate-Identification grouping key depends on brand as well.
+
+enums:
+  - name: PcaSegment
+    declared_in_product_body: [Basic, BenefitAndReward, CreditInterest, Cashback, General, Graduate, Other, Overdraft, Packaged, Premium, Reward, Student, YoungAdult, Youth]
+    declared_count: 14
+    observed_live: [Basic, General, Graduate, Premium, Student, Youth]
+    observed_count: 6
+    corrects_api_yaml: >-
+      screens/products/api.yaml records NINE declared segments for the segment path parameter.
+      The swagger declares no enum at all on that path parameter; the 14-value list above is the
+      product-body enum, read from PCADefinition. Both the 9 and the 14 are "declared"; only the
+      6 are real.
+    requirement: >-
+      Build the segment filter from the SIX that occur. A chip for a segment HSBC does not publish
+      returns an empty list and reads to the user as "there are no accounts for students like me".
+  - name: PcaMarketingStateValue
+    declared: [Promotional, Regular]
+    observed: [Regular, Promotional]
+    note: "Both declared values occur. This is the only enum on the products screen that is fully exercised live."
+
+# ─────────────────────────────────────────────────────────────────────────
+# BEHAVIOUR OF THE SEGMENT EXTENSION — probed live 2026-08-07
+# ─────────────────────────────────────────────────────────────────────────
+segment_endpoint_behaviour:
+  probed: "GET /x-open-banking/v2.2/personal-current-accounts/segment/{segment}"
+  results:
+    - { segment: Student, http: 200, TotalResults: 1, products: 1 }
+    - { segment: Packaged, http: 200, TotalResults: 0, products: 0, note: "declared segment, no HSBC product" }
+    - { segment: Reward, http: 200, TotalResults: 0, products: 0 }
+    - { segment: NotASegment, http: 200, TotalResults: 0, products: 0, note: "UNRECOGNISED segment — still 200" }
+  finding_1_no_400: >-
+    An unrecognised segment returns HTTP 200 with `data: []`, NOT 400. This CORRECTS
+    screens/products/api.yaml#error_cases, which lists 400 as "Bad request — e.g. an unrecognised
+    segment". There is no input validation on this path; a typo in a segment name is
+    indistinguishable from an empty catalogue.
+  finding_2_epoch_sentinel: >-
+    The unrecognised-segment response carries meta.LastUpdated = "1970-01-01T00:00:00.000Z" —
+    the Unix epoch, a second sentinel value. A "catalogue last updated" line rendered from meta
+    would read "1 January 1970". Guard it the same way 2099-12-31 is guarded.
+  finding_3_total_results: >-
+    TotalResults is 0 on an empty result and 10 on the full PCA feed — it counts PRODUCT RECORDS
+    (including the duplicate-Identification ones), not brand blocks. See SmeLendingProduct for
+    where that claim was previously recorded backwards.
+
+used_by:
+  - { feature: products, api_id: get_personal_current_accounts, role: response }
+  - { feature: products, api_id: get_pca_by_segment, role: response }

@@ -1,0 +1,135 @@
+name: AtmLocationPlace
+version: "1.0.0"
+source:
+  origin: external_api
+  api_path: "GET /open-banking/v2.2/atms and the four /x-open-banking/v2.2/atms/… extensions"
+  host: api.hsbc.com
+  host_status: resolved
+  api_ref: API-OD-ATM
+  spec: "OBIE Open Data v2.2 — unauthenticated, outside the OBIE consent surface"
+  created:
+    at: "2026-08-07"
+    by: "/idea-sync — dangling-ref closure"
+    reason: >-
+      AtmLocation v2.1.0 declared `Location` as `dto_ref: AtmLocationPlace` but no such DTO
+      existed. Written here from open-atm-locator-swagger.json plus 135 live ATMs.
+
+description: >-
+  The `Location` object on an ATM — where the machine physically is. A LEAF DTO reached at
+  data[].Brand[].ATM[].Location. It is the ONLY place an ATM carries anything human-readable:
+  an ATM has no Name of its own, so every title, list row and map pin on the atm-locator screen
+  is composed from this object.
+
+# ─────────────────────────────────────────────────────────────────────────
+# FIELD POPULATION — measured, not assumed
+# ─────────────────────────────────────────────────────────────────────────
+field_population:
+  measured_over: "135 ATMs across five UK geographies (London 103, Birmingham 8, Manchester 7, Edinburgh 4, HQ probe 13), 2026-08-07"
+  observed_keys: [Site, PostalAddress]
+  never_populated: { LocationCategory: "0/135", OtherLocationCategory: "0/135" }
+  headline: >-
+    HALF of this object never arrives. The swagger declares four properties; live responses carry
+    two. Only PostalAddress is required by the contract, and it is the only field that can be
+    depended on.
+
+fields:
+  - name: PostalAddress
+    type:
+      dto_ref: PostalAddress
+    required: true
+    pii: false
+    primary_key: false
+    observed: "135/135. Keys present: StreetName, TownName, Country, PostCode, GeoLocation."
+    observed_absent: [AddressLine, BuildingNumber, CountrySubDivision]
+    description: >-
+      The only REQUIRED member and the only reliable one. Note what is missing: an ATM address
+      has NO BuildingNumber, where a Branch address does. So "8 Canada Square" arrives as a
+      StreetName with the number already inside the string on some records and absent on others —
+      there is no structured house number to compose with. Render StreetName verbatim; do not
+      build a UK-style "number, street" line from these parts, because the number is not a part.
+      GeoLocation.GeographicCoordinates carries Latitude/Longitude as STRINGS, which is what
+      makes distance sorting and map pins possible at all.
+
+  - name: Site
+    type:
+      optional: SiteObject
+    required: false
+    pii: false
+    primary_key: false
+    observed: "135/135 present, but only ever as { Name }."
+    description: >-
+      HSBC's internal name for the location — "HSBC 8CS RECEPTION", "Baker Street". Optional by
+      contract yet present on every record, and it is the closest thing an ATM has to a title.
+      Use it as the list-row heading and fall back to the postal address when it is absent, rather
+      than the other way round.
+
+  - name: LocationCategory
+    type:
+      list_of: String
+    required: false
+    pii: false
+    primary_key: false
+    enum_ref: AtmLocationCategory
+    observed: "0/135 — never sent."
+    description: >-
+      Declared; absent from every live record. This is the field that would answer the question a
+      person actually has — is this machine inside a branch, on the street wall, or in a shop? —
+      and HSBC does not publish it. Do NOT build an "inside / outside" filter or a category icon:
+      it would be blank on 100% of records. Parse it if it ever appears; never depend on it.
+
+  - name: OtherLocationCategory
+    type:
+      list_of: OtherCategoryCode
+    required: false
+    pii: false
+    primary_key: false
+    observed: "0/135 — never sent, which follows from LocationCategory also being absent."
+    description: >-
+      The free-text partner of LocationCategory under the `Other` pairing rule declared on
+      AtmLocation. Each element is { Code (≤4 chars), Name, Description } with Name + Description
+      required. Populated only when LocationCategory contains the literal `Other`.
+
+# ─────────────────────────────────────────────────────────────────────────
+# NESTED SHAPES — declared inline by the swagger, not $ref'd
+# ─────────────────────────────────────────────────────────────────────────
+nested_shapes:
+  SiteObject:
+    declared_fields:
+      - { name: Identification, type: String, maxLength: 35, observed: "0/135 — never sent" }
+      - { name: Name, type: String, maxLength: 140, observed: "135/135" }
+    required: none
+    trailing_space_trap:
+      finding: '10 of 135 Site.Name values end in a SPACE — e.g. "HSBC 8CS RECEPTION ".'
+      consequence: >-
+        The same defect the Branch feed has on BuildingNumber, on a different field. An untrimmed
+        Name concatenated with a separator renders "HSBC 8CS RECEPTION  - London". Trim on parse.
+      not_an_edge_case: "7.4% of records. It will be visible in any screenshot of a full list."
+  OtherCategoryCode:
+    declared_fields:
+      - { name: Code, type: String, pattern: '^\w{0,4}$', required: false }
+      - { name: Name, type: String, maxLength: 70, required: true }
+      - { name: Description, type: String, maxLength: 350, required: true }
+
+enums:
+  - name: AtmLocationCategory
+    declared: [BranchExternal, BranchInternal, BranchLobby, Other, RetailerOutlet, RemoteUnit]
+    observed: []
+    note: "Six declared values, zero observed. Listed for contract completeness only."
+
+contrast_with_branch:
+  finding: >-
+    A Branch publishes its address as a first-class `PostalAddress` field WITH BuildingNumber and
+    CountrySubDivision. An ATM wraps its address one level deeper, inside Location, and sends
+    neither of those two parts.
+  consequence: >-
+    Address-rendering code cannot be shared verbatim between atm-locator and branch-locator. The
+    field set genuinely differs; a single formatter must treat BuildingNumber as optional and must
+    not assume the ATM path and the Branch path have the same depth.
+
+used_by:
+  - { dto: AtmLocation, field: Location, role: "embedded object — required" }
+  - { feature: atm-locator, api_id: get_all_atms, role: "response — nested" }
+  - { feature: atm-locator, api_id: get_atms_by_geolocation, role: "response — nested" }
+  - { feature: atm-locator, api_id: get_atms_by_postcode, role: "response — nested" }
+  - { feature: atm-locator, api_id: get_atms_by_town, role: "response — nested" }
+  - { feature: atm-locator, api_id: get_atms_by_country, role: "response — nested" }

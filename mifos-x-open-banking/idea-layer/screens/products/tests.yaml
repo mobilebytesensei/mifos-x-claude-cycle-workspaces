@@ -1,0 +1,572 @@
+sibling: tests
+schema_version: "4.0"
+feature_id: products
+
+screen_id: products
+
+# ═══════════════════════════════════════════════════════════════════════════
+# REWRITTEN 2026-08-07 by /idea-sync, against screens/products/api.yaml.
+#
+# The previous suite tested the 2026-08-06 per-account AIS reading, and before that a
+# per-bank OBP catalogue. Both are gone. Every scenario below is written against the
+# HSBC UK Open Data Product Finder — four families, two brands, NO auth.
+#
+# A note on fixtures: TC-PRODS-002/003/004 assert exact counts (10 records → 7 rows,
+# 14 BCA, 1 CCC, 1 SMEL). Those come from live captures dated 2026-07/2026-08 and WILL
+# drift as HSBC publishes and withdraws products. They are pinned to the captures in
+# screens/products/demo-data.yaml, not to the live feed. A test suite that hits the live
+# host is testing HSBC's product roadmap.
+#
+# The previous file had TWO scenarios numbered TC-PRODS-017. Ids are unique here.
+# ═══════════════════════════════════════════════════════════════════════════
+
+fixtures:
+  source: "screens/products/demo-data.yaml — captured live 2026-08-07, verbatim including wire defects"
+  pca:
+    summary: "10 records, 2 brands, 7 distinct products"
+    reproduce: 'curl -H "Accept: application/prs.openbanking.opendata.v2.2+json" "https://api.hsbc.com/open-banking/v2.2/personal-current-accounts"'
+    local_capture: "/home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/pca-probe.json — OUTSIDE this repository, captured 2026-08-07. Not checked in; use `reproduce` above."
+  bca:
+    summary: "14 products, ~966 KB"
+    reproduce: 'curl -H "Accept: application/prs.openbanking.opendata.v2.2+json" "https://api.hsbc.com/open-banking/v2.2/business-current-accounts"'
+    local_capture: "/home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/pf-business-current-accounts.json — OUTSIDE this repository, captured 2026-08-07. Not checked in; use `reproduce` above."
+  ccc:
+    summary: "1 product"
+    reproduce: 'curl -H "Accept: application/prs.openbanking.opendata.v2.2+json" "https://api.hsbc.com/open-banking/v2.2/commercial-credit-cards"'
+    local_capture: "/home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/pf-commercial-credit-cards.json — OUTSIDE this repository, captured 2026-08-07. Not checked in; use `reproduce` above."
+  smel:
+    summary: "1 product"
+    reproduce: 'curl -H "Accept: application/prs.openbanking.opendata.v2.2+json" "https://api.hsbc.com/open-banking/v2.2/unsecured-sme-loans"'
+    local_capture: "/home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/pf-unsecured-sme-loans.json — OUTSIDE this repository, captured 2026-08-07. Not checked in; use `reproduce` above."
+  empty: "demo-data.yaml#empty_case — HTTP 200, data: [], LastUpdated 1970-01-01"
+  reproduction_note: >-
+    The four `reproduce` commands re-fetch the LIVE catalogue, which drifts as HSBC publishes and
+    withdraws products. The pinned counts above describe the 2026-08-07 capture; the assertions in
+    TC-PRODS-002/003/004 run against screens/products/demo-data.yaml, never against the live host.
+
+scenarios:
+
+  # ── Load and shell ──────────────────────────────────────────────────
+  - id: TC-PRODS-001
+    description: "Only the Personal family is fetched on screen open"
+    state: loading
+    given: "The screen mounts with no cached families"
+    when: "The initial load runs"
+    then:
+      - "GET /open-banking/v2.2/personal-current-accounts is issued"
+      - "NO request is issued to business-current-accounts, commercial-credit-cards or unsecured-sme-loans"
+      - "The loading affordance renders with no product rows"
+      - "Reduced-motion preference substitutes static_placeholder for the shimmer"
+    priority: high
+    rationale: >-
+      The Business family is 966 KB unpaged with no cursor in the spec. Prefetching it on
+      open is the single most expensive mistake available on this screen, and it is the
+      one a naive "load all four in parallel" implementation makes.
+
+  - id: TC-PRODS-002
+    description: "All FOUR family tabs render — no family is empty"
+    state: content
+    given: "All four families are loaded from the captured fixtures"
+    when: "The tab row renders"
+    then:
+      - "Four tabs are present: Personal, Business, Commercial cards, Business loans"
+      - "Personal is selected by default"
+      - "The tab set is derived from which families returned products — it is not a hardcoded list of four"
+    priority: high
+    do_not_write_the_inverse: >-
+      There is NO live empty-family fixture. An earlier expectation — "a four-family fetch
+      must render three tabs, because HSBC publishes no SME loans" — was FALSE. It came
+      from parsing the SMEL response with the wrong array key (`SMELending` instead of
+      `SMELoan`), so a real 1-product family looked empty. All four families have products.
+      A four-family fetch renders FOUR tabs.
+
+  - id: TC-PRODS-003
+    description: "10 Personal records render as 7 product rows"
+    state: content
+    given: "The captured PCA fixture — meta.TotalResults 10, ten records across two brands"
+    when: "The Personal tab renders"
+    then:
+      - "Exactly 7 product_card rows are shown"
+      - "'Bank Account' appears exactly ONCE"
+      - "'HSBC Premier Account' appears exactly ONCE"
+      - "'1st Account' appears exactly ONCE"
+      - "The rows are grouped on (BrandName, Identification)"
+    priority: high
+    rationale: >-
+      Identification is NOT unique on this feed. fdFirAcc, BankAcc and PremAcc each appear
+      TWICE, differing only in their marketing state. A list keyed on Identification renders
+      each of those three twice, with no visible difference between the two rows. This is
+      the single most likely bug on this screen and it is present in the very first response.
+
+  - id: TC-PRODS-004
+    description: "meta.TotalResults is not rendered as a product count"
+    state: content
+    given: "The PCA response carries meta.TotalResults 10 and the list renders 7 rows"
+    when: "Any count is displayed to the user"
+    then:
+      - "No copy claims 10 products"
+      - "Any count shown matches the number of rows rendered after grouping"
+    priority: medium
+    rationale: >-
+      TotalResults is a reliable count of RECORDS ON THE WIRE, which is not the number of
+      products a grouped list shows. It counts the duplicates.
+
+  # ── Brand ───────────────────────────────────────────────────────────
+  - id: TC-PRODS-005
+    description: "first direct products are labelled as first direct, not as HSBC"
+    state: content
+    given: "The PCA fixture — 2 first direct products and 8 HSBC UK records"
+    when: "The Personal tab renders"
+    then:
+      - "A products_brand_heading reading 'first direct' precedes the 1st Account row"
+      - "A products_brand_heading reading 'HSBC UK' precedes the HSBC rows"
+      - "The 1st Account does NOT appear in an undifferentiated list under an HSBC heading"
+    priority: high
+    rationale: >-
+      first direct is a distinct bank to a customer, not an HSBC sub-label. Its 1st Account
+      sitting unlabelled between HSBC accounts is a factual error on screen. Note this feed
+      differs from the ATM and Branch feeds, which returned 'HSBC UK' only — so a brand
+      handling built on the locator samples would be untested here.
+
+  # ── Offers ──────────────────────────────────────────────────────────
+  - id: TC-PRODS-006
+    description: "The promotional marketing state renders as a badge, not a second row"
+    state: content
+    given: "BankAcc appears twice — once 'Regular - No Offer', once 'HSBC Bank £220 Switch and Spend'"
+    when: "The Personal tab renders"
+    then:
+      - "One 'Bank Account' row is shown"
+      - "That row carries a product_offer_badge reading 'HSBC Bank £220 Switch and Spend'"
+      - "Exactly three of the seven rows carry an offer badge — Bank Account, HSBC Premier Account and 1st Account"
+    priority: high
+    rationale: >-
+      The offer is the reason most people are on this screen. Rendering it as a duplicate
+      row both hides it and looks like a rendering bug.
+
+  - id: TC-PRODS-007
+    description: "An offer with the 2099 sentinel is treated as live, not expired"
+    state: content
+    given: >-
+      Two live promotional states with different date shapes — the BankAcc and fdFirAcc
+      offers OMIT LastMarketedDate entirely, while the PremAcc 'HSBC Premier £500 Welcome
+      Reward' carries LastMarketedDate 2099-12-31
+    when: "Offer liveness is resolved"
+    then:
+      - "All three offers resolve to live"
+      - "The Premier offer is NOT marked expired or hidden"
+    priority: high
+    rationale: >-
+      'Absent LastMarketedDate means the offer is live' is sufficient but NOT necessary. A
+      liveness rule written only on absence marks the Premier reward — a real, currently
+      running offer — as expired.
+
+  - id: TC-PRODS-008
+    description: "Sentinel dates are never rendered as dates"
+    state: content
+    given: "Records carrying LastMarketedDate 2099-12-31, and an empty response carrying meta.LastUpdated 1970-01-01T00:00:00.000Z"
+    when: "Any date is displayed"
+    then:
+      - "No screen text contains '2099'"
+      - "No screen text contains '1970' or '1 January 1970'"
+    priority: high
+    rationale: "Both are sentinels — 'indefinite' and 'never'. Printed, they read as bugs to the user and as neglect to a reviewer."
+
+  # ── The OnSaleIndicator trap ────────────────────────────────────────
+  - id: TC-PRODS-009
+    description: "A shared on-sale filter does not empty three families out of four"
+    state: content
+    given: >-
+      PCA carries OnSaleIndicator true throughout; BCA carries FALSE at brand level and
+      false on 9 of its 14 products; CCC and SMEL carry NO OnSaleIndicator key at all, at
+      either brand or product level
+    when: "All four families are loaded and mapped"
+    then:
+      - "The Business tab renders products despite the brand-level OnSaleIndicator being false"
+      - "The Commercial cards tab renders its one product despite the field being absent"
+      - "The Business loans tab renders its one product despite the field being absent"
+      - "An absent OnSaleIndicator is treated as on-sale, not as false"
+    priority: high
+    rationale: >-
+      A shared `filter { onSale }` silently drops three families out of four against four
+      successful HTTP 200s. Worse, the empty_family_rule then HIDES their tabs — so the bug
+      presents as three missing tabs, with no error anywhere, and looks like a product
+      decision rather than a parsing fault.
+
+  # ── The envelope ────────────────────────────────────────────────────
+  - id: TC-PRODS-010
+    description: "Each family's wire array key is supplied explicitly, never derived"
+    state: content
+    given: "The four responses nest products at data[].Brand[].PCA[], .BCA[], .CCC[] and .SMELoan[]"
+    when: "Each family is parsed"
+    then:
+      - "unsecured-sme-loans is read from the SMELoan key and yields 1 product"
+      - "The key is passed in per family, not derived from the endpoint path or a definition name"
+      - "A brand object missing its expected family key raises a parse failure — it does NOT silently yield an empty list"
+    priority: high
+    rationale: >-
+      `unsecured-sme-loans` + `SMELendingDefinition` → `SMELoan`. Three names for one
+      family. A derived key returns nothing, and a silently-swallowed missing key makes an
+      empty result indistinguishable from an empty family — which is precisely how "HSBC
+      publishes zero SME loans" was reported and believed.
+
+  - id: TC-PRODS-011
+    description: "The envelope is unwrapped through three levels and data is an array"
+    state: content
+    given: "A response shaped { meta, data } where data is an ARRAY"
+    when: "The response is deserialised"
+    then:
+      - "data is decoded as a list, not as a single object"
+      - "Products are read at data[i].Brand[j].<FAMILY>[k]"
+    priority: high
+
+  # ── Weight ──────────────────────────────────────────────────────────
+  - id: TC-PRODS-012
+    description: "The Business family loads on first tab selection and is cached for the session"
+    state: content
+    given: "The Business tab has not been selected this session"
+    when: "The user selects it, then navigates away and back, then selects it again"
+    then:
+      - "business-current-accounts is requested exactly ONCE"
+      - "The loading state is shown during that first request, with the tab row still visible"
+      - "The second selection renders from cache with no request"
+    priority: high
+
+  - id: TC-PRODS-013
+    description: "Family selection issues a request; segment selection does not"
+    state: content
+    given: "The Personal family is loaded with its six observed segments"
+    when: "The user taps the Student segment chip, then the Business family tab"
+    then:
+      - "The segment tap issues NO network request — it filters the loaded list in memory"
+      - "The family tap DOES issue a request, because each family is a different endpoint"
+      - "Switching family resets the segment chip selection"
+    priority: high
+    rationale: >-
+      This inverts the removed ProductScope tabs, which filtered an already-loaded list and
+      never fetched. Segment selection filters in memory because a product carries several
+      segments and per-segment fetching returns the same product in several responses.
+
+  # ── Segments ────────────────────────────────────────────────────────
+  - id: TC-PRODS-014
+    description: "Segment chips are built from observed segments, not the declared list"
+    state: content
+    given: "The PCA spec declares nine segments; the live feed publishes six"
+    when: "The Personal tab's chip row renders"
+    then:
+      - "Six chips render: Basic, General, Graduate, Premium, Student, Youth"
+      - "No chip renders for Packaged, Reward or YoungAdult"
+    priority: high
+    rationale: >-
+      A chip for a segment HSBC does not publish returns an empty list and reads to the
+      user as 'no accounts for students like me' — the app blaming the customer for the
+      spec's optimism.
+
+  - id: TC-PRODS-015
+    description: "The segment vocabulary is per family, with no shared enum"
+    state: content
+    given: "Personal publishes [Basic, General, Graduate, Premium, Student, Youth]; Business publishes [Standard, Startup, Switcher, Religious, NonCommercial]; Commercial cards [General]; Business loans [Business]"
+    when: "The user switches between family tabs"
+    then:
+      - "The chip set changes completely between Personal and Business — the two share no value"
+      - "No chip is carried over from the previous family"
+    priority: medium
+
+  - id: TC-PRODS-016
+    description: "Segment is an array and multi-segment products match every one of their segments"
+    state: content
+    given: "BCAHSBCKinetic carries Segment [Standard, Startup, Switcher]"
+    when: "The user selects each of those three chips in turn"
+    then:
+      - "BCAHSBCKinetic is present under all three"
+      - "It appears exactly once per filtered list, never duplicated within one"
+    priority: medium
+
+  - id: TC-PRODS-017
+    description: "A segment matching nothing shows the inline empty row, not a hidden tab"
+    state: content
+    given: "A segment filter that matches no product in the loaded family"
+    when: "The filter is applied"
+    then:
+      - "products_segment_empty 'No products in this segment' renders inline"
+      - "The tab remains present and the chip row remains usable"
+      - "Clearing the chip restores the full list"
+      - "The screen stays in Content — it does NOT fall to the whole-screen Empty state"
+    priority: medium
+    rationale: "Distinct from empty_family_rule: the FAMILY has products, this SEGMENT does not. Hiding the tab here would be wrong."
+
+  # ── Wire defects ────────────────────────────────────────────────────
+  - id: TC-PRODS-018
+    description: "Display names are trimmed"
+    state: content
+    given: "Live Name values 'Small Business Loan ', 'HSBC Small Business Banking Account ' and 'HSBC Start up account for Small Business Banking ' — all with trailing spaces"
+    when: "product_name renders"
+    then:
+      - "No rendered name has leading or trailing whitespace"
+      - "Trimming happens at the mapper boundary, not at render time"
+    priority: medium
+
+  - id: TC-PRODS-019
+    description: "Scheme-less and tab-padded URLs are normalised before they reach the browser"
+    state: content
+    given: >-
+      BCAEBT and BCASBT publish CoreProduct.ProductURL as the bare host
+      'www.business.hsbc.uk'; BCAStartup publishes a URL with three trailing TAB characters
+      inside the string
+    when: "The user taps product_more_info on those rows"
+    then:
+      - "The scheme-less value is prefixed with https:// before being handed to LocalUriHandler"
+      - "The tab characters are trimmed"
+      - "The browser opens successfully — the affordance does not fail silently"
+    priority: high
+    rationale: "openUri on a scheme-less string does nothing or throws. A silent no-op on a tap is the worst failure mode available."
+
+  - id: TC-PRODS-020
+    description: "Amount and rate strings are parsed before comparison"
+    state: content
+    given: "SMEL tier bands carry TierValueMinimum '1000.00' / '10001.00' and RepAPR '11.3' / '8.6' as STRINGS"
+    when: "Tiers are ordered or compared"
+    then:
+      - "The £1,000-£10,000 band orders before the £10,001-£25,000 band"
+      - "No lexicographic ordering places 10001 before 1000"
+    priority: medium
+
+  # ── Outbound ────────────────────────────────────────────────────────
+  - id: TC-PRODS-021
+    description: "The product URL survives the list mapper discarding the marketing state"
+    state: content
+    given: "CoreProduct.ProductURL and TcsAndCsURL live INSIDE the marketing state, which the list mapper drops for weight"
+    when: "A product row is built"
+    then:
+      - "productUrl is populated — e.g. StuAcc resolves to https://www.hsbc.co.uk/current-accounts/products/student/"
+      - "The URLs are lifted out in the same pass that discards the rest of the marketing state"
+    priority: high
+    rationale: >-
+      This reverses a claim recorded on 2026-08-06 that the outbound URL 'has no equivalent
+      at all'. It does — it is just nested inside the block a list view is trying not to parse.
+
+  - id: TC-PRODS-022
+    description: "More info opens the platform browser and there is no apply journey"
+    state: content
+    given: "A product row with a published productUrl"
+    when: "The user taps product_card or product_more_info"
+    then:
+      - "LocalUriHandler.openUri is invoked with the normalised URL"
+      - "No in-app web view is used and no terms text is inlined on the screen"
+      - "No Apply or Details journey is triggered — none exists"
+    priority: high
+
+  - id: TC-PRODS-023
+    description: "A product with no published URL renders as a non-clickable card"
+    state: content
+    given: "A product row whose productUrl is null"
+    when: "product_card renders"
+    then:
+      - "The card is disabled and does not respond to taps"
+      - "No browser is opened and no URL is fabricated from the product name"
+      - "The name, brand, segment badge and any offer badge still render"
+    priority: high
+
+  # ── Failure ─────────────────────────────────────────────────────────
+  - id: TC-PRODS-024
+    description: "One family failing leaves the others usable"
+    state: content
+    given: "Personal and Commercial cards load; the Business family request fails with 500"
+    when: "The user is on the Business tab"
+    then:
+      - "products_family_load_failed renders inline with a Try again button"
+      - "The tab row stays visible and the other tabs stay selectable"
+      - "The screen stays in Content — it does NOT fall to the whole-screen error state"
+    priority: high
+
+  - id: TC-PRODS-025
+    description: "Retry re-fetches only the current family"
+    state: content
+    given: "The Commercial cards family failed while Business is already cached"
+    when: "The user taps Try again on the Commercial cards tab"
+    then:
+      - "commercial-credit-cards is re-requested"
+      - "business-current-accounts is NOT re-requested"
+    priority: high
+    rationale: "Re-downloading 966 KB to recover an 8 KB feed is the kind of retry that makes a slow connection worse."
+
+  - id: TC-PRODS-026
+    description: "429 renders its own state and does not auto-retry"
+    state: rate_limited
+    given: "The host responds 429"
+    when: "The response is handled"
+    then:
+      - "ScreenState resolves to RateLimited with 'Too many requests'"
+      - "No automatic retry is scheduled on a timer"
+      - "Retry is available only on explicit user action"
+    priority: high
+    rationale: >-
+      This is an unauthenticated public API rate-limited by ORIGIN. An auto-retry loop is
+      throttled against every user behind the same egress, not just this device — one
+      device's bug degrades the screen for everyone else on that network.
+
+  - id: TC-PRODS-027
+    description: "Offline is distinguished from a server error"
+    state: no_network
+    given: "The device has no connectivity"
+    when: "The screen loads"
+    then:
+      - "ScreenState resolves to NoNetwork with the wifi_off shell and 'You're offline'"
+      - "It is NOT rendered as the generic server-error shell"
+    priority: medium
+    rationale: "This feed is live-only with no disk cache, so offline is a total blank rather than stale data. 'Connect to the internet' is the honest instruction."
+
+  # ── The absence of auth ─────────────────────────────────────────────
+  - id: TC-PRODS-028
+    description: "No request on this screen carries a credential"
+    state: content
+    given: "All four family requests and any segment request"
+    when: "The requests are issued"
+    then:
+      - "No Authorization header is attached"
+      - "No consent id, no x-fapi header, no session cookie and no API key is attached"
+      - "The screen loads with no signed-in user present"
+    priority: high
+
+  - id: TC-PRODS-029
+    description: "There is no unauthenticated state to reach"
+    state: content
+    given: "The Open Data contract declares no 401 and no 403 on any path"
+    when: "The screen's state set is enumerated"
+    then:
+      - "states_handled contains no `unauthenticated` entry"
+      - "No code path navigates to login, refreshes a token or clears a session"
+      - "No copy on this screen invites the user to sign in"
+    priority: high
+    rationale: >-
+      The previous suite tested a session-expired state inherited from the OBP DirectLogin
+      era and carried through the AIS rewrite. It is unreachable here: this API takes no
+      credential, so signing in changes nothing about what the screen can see. Shipping the
+      state would ship an untestable branch and an untrue promise.
+
+  # ── Empty ───────────────────────────────────────────────────────────
+  - id: TC-PRODS-030
+    description: "An unrecognised segment is a 200 with an empty array, not a 400"
+    state: content
+    given: "A request to /x-open-banking/v2.2/personal-current-accounts/segment/Zzz"
+    when: "The response is handled"
+    then:
+      - "The status is 200"
+      - "data is an empty array and meta.TotalResults is 0"
+      - "meta.LastUpdated is '1970-01-01T00:00:00.000Z' and is not rendered"
+      - "The result is treated as no-results, not as a bad-request error"
+    priority: high
+    rationale: >-
+      Verified live 2026-08-07 against segment/Zzz, segment/Packaged and
+      unsecured-sme-loans/segment/General — all three returned an identical 322-byte 200.
+      Code that distinguishes bad input from no results on the status code cannot tell them
+      apart here. This is also the RIGHT fixture for exercising empty_family_rule, since no
+      live family is empty.
+
+  - id: TC-PRODS-031
+    description: "empty_family_rule hides the tab rather than rendering an empty one"
+    state: content
+    given: "A family whose product array comes back empty (constructed from the segment-empty fixture)"
+    when: "The tab row is derived"
+    then:
+      - "That family's tab is absent from the tab row"
+      - "No tab is rendered containing an empty-state message"
+      - "The remaining tabs render normally and one of them is selected"
+    priority: medium
+    rationale: >-
+      The rule is DEFENSIVE, not load-bearing: nothing in the live catalogue triggers it
+      today. It was decided on a premise that turned out false (a supposedly empty SME loan
+      family), and it still holds because a family CAN empty and a permanently blank tab is
+      the wrong failure mode when it does.
+
+  - id: TC-PRODS-032
+    description: "The whole-screen empty state needs every family to be empty"
+    state: empty
+    given: "All four families return empty product arrays"
+    when: "The screen renders"
+    then:
+      - "The inventory_2 empty state renders with 'No products published'"
+      - "No tab row is shown, because there is no non-empty family to tab to"
+    priority: low
+    rationale: "Not reachable against the live catalogue. Documented so the state is not mistaken for the single-empty-family case, which hides one tab and never reaches here."
+
+  # ── Compare-view boundary ───────────────────────────────────────────
+  - id: TC-PRODS-033
+    description: "The list mapper does not deserialise the deep marketing-state block"
+    state: content
+    given: "Each marketing state carries Eligibility, FeaturesAndBenefits, Overdraft, OtherFeesCharges, Ucodes and per-family blocks that hold nearly all the payload weight"
+    when: "A list of product rows is built"
+    then:
+      - "Only Identification, Name, Segment, BrandName, the marketing-state header and the two URLs are read"
+      - "No Eligibility, FeaturesAndBenefits, Overdraft, OtherFeesCharges, CreditInterest, LoanInterest, Repayment or Ucodes model is instantiated for a list render"
+    priority: medium
+
+  - id: TC-PRODS-034
+    description: "A missing Overdraft block does not throw"
+    state: content
+    given: "The Basic Bank Account's PCAMarketingState carries NO Overdraft key at all"
+    when: "The product is mapped and rendered"
+    then:
+      - "The row renders without error"
+      - "Any overdraft surface is absent rather than empty-or-zero"
+    priority: medium
+    rationale: >-
+      The one product where 'no overdraft' is the defining feature is also the one whose
+      record omits the block. A compare view reading Overdraft unconditionally throws
+      exactly there.
+
+  - id: TC-PRODS-035
+    description: "Marketing-state shape is modelled per family, not shared"
+    state: content
+    given: "PCA carries Overdraft + Ucodes; BCA adds CreditInterest and sometimes StateTenureLength; CCC carries Repayment with no Ucodes and no PredecessorID; SMEL carries LoanInterest + Repayment with no OtherFeesCharges"
+    when: "Each family is deserialised"
+    then:
+      - "No single shared marketing-state model is required to accept all four"
+      - "Fields absent from a family are absent from its model, not nullable placeholders on a union type"
+    priority: low
+
+  - id: TC-PRODS-036
+    description: "PredecessorID is not used as a product reference"
+    state: content
+    given: "Observed PredecessorID values are 'N/A' (7 records), 'Regular - No Offer' (2) and 'Regular – No Offer' with an EN DASH (1)"
+    when: "Products are linked or ordered"
+    then:
+      - "No lookup resolves PredecessorID against another product's Identification"
+      - "No 'replaces' or 'replaced by' relationship is rendered from it"
+    priority: low
+    rationale: >-
+      None of the observed values is a product Identification. They are either the literal
+      string 'N/A' or a marketing-state name, and one of those uses an en-dash where its
+      sibling uses an ASCII hyphen — so even a string join across records would split on
+      invisible punctuation.
+
+  - id: TC-PRODS-037
+    description: "The duplicated Commercial card marketing state is collapsed"
+    state: content
+    given: "The single CCC product carries TWO CCCMarketingState entries that are identical — same Identification, same MarketingState, same dates"
+    when: "The product is rendered"
+    then:
+      - "One product row is shown"
+      - "No surface lists the same 'Regular' marketing state twice"
+    priority: low
+    rationale: "The PCA duplicate lives across sibling RECORDS; the CCC duplicate lives across nested STATES. A dedupe written for one does not catch the other."
+
+# ── Removed scenarios, and why ───────────────────────────────────────
+removed_scenarios_2026_08_07:
+  - { id: TC-PRODS-003, was: "Bank selector is always shown, even with a single bank", reason: "There is no bank selector. One bank group — the pill had nothing to switch between." }
+  - { id: TC-PRODS-004, was: "Choosing a different bank re-filters the list", reason: "Same." }
+  - { id: TC-PRODS-005, was: "Catalogues are fetched per bank in parallel, once per session", reason: "No fan-out. Four family endpoints, one eager and three lazy." }
+  - { id: TC-PRODS-006, was: "Audience split is derived client-side because the API category is null", reason: "The audience split is an ENDPOINT choice. There is no category field to be null and no BUSINESS_MARKERS keyword list." }
+  - { id: TC-PRODS-007, was: "Switching to Business shows only business products", reason: "Replaced by TC-PRODS-013 — switching to Business now ISSUES A REQUEST rather than filtering a loaded list. The distinction is the point." }
+  - { id: TC-PRODS-008, was: "Category badge is derived client-side across four buckets", reason: "No category field exists on this wire and the four families are not those four buckets. The badge is now SEGMENT, which is real data on the record." }
+  - { id: TC-PRODS-011, was: "A single bank failing degrades inline, not globally", reason: "Right shape, wrong unit. Replaced by TC-PRODS-024 — failure is scoped to the FAMILY, because each family is its own request." }
+  - { id: TC-PRODS-013, was: "Empty state covers a bank with no published catalogue at all", reason: "Replaced by TC-PRODS-031/032 — a single empty family hides its tab; only an all-empty response reaches the whole-screen state." }
+  - { id: TC-PRODS-014, was: "A 400 on one account skips that account rather than failing the screen", reason: "Belonged to the per-account AIS reading. There are no accounts in this flow. The Global Money 400 case moved to screens/product/ with the feature it belongs to." }
+  - { id: TC-PRODS-015, was: "Unauthenticated and no-network render the same recoverable failure shell", reason: "Half of it is unreachable — there is no 401 on this API. Replaced by TC-PRODS-029 (no unauthenticated state exists) and TC-PRODS-027 (offline is its own state, distinct from a server error)." }
+  - { id: TC-PRODS-016, was: "Product name binds to the API name field, not a label field", reason: "An OBP-era regression guard. The field is `Name` and there is no `label` on this wire. Superseded by TC-PRODS-018, which guards the defect that IS present — trailing whitespace." }
+  - { id: TC-PRODS-017a, was: "A PSU whose only account returns 400 sees an explained empty state", reason: "Per-account AIS reading. Moved with the feature." }
+  - { id: TC-PRODS-017b, was: "Product search is not reachable from this screen", reason: "Still true, but for a new reason — the Open Data spec has no search resource at all, so there is nothing to defer. Folded into ui.yaml#top_app_bar rather than kept as a scenario." }
+  - id: "(unnumbered)"
+    was: "an expectation that a four-family fetch renders THREE tabs, because HSBC publishes no unsecured SME loans"
+    reason: >-
+      NEVER WRITE THIS. The premise was false — it came from parsing the SMEL response with
+      the wrong array key. HSBC publishes one SME loan and always did. See TC-PRODS-002.

@@ -1,0 +1,161 @@
+name: ObPaymentError
+version: "1.0.0"
+source:
+  origin: external_api
+  api_ref: API-003
+  api_path: "Every 400 from every PISP endpoint, all seven families"
+  spec: "OBIE Read/Write v4.0 OBError1"
+
+description: >-
+  NEW 2026-08-07. The error contract, extracted from the full by-type capture corpus (139 single
+  payment + 78 standing order + 52 scheduled + 18 VRP scenarios). Nothing in the idea-layer
+  described this surface before, and every payment screen depends on it. The corpus shows the
+  error shape is materially less regular than OBError1 suggests — six distinct inconsistencies,
+  each of which breaks an obvious client implementation.
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE ONE RULE
+# ─────────────────────────────────────────────────────────────────────────
+iron_rule:
+  rule: "Key every decision off ErrorCode + Path. NEVER off Message."
+  why: >-
+    Message is not stable for a given code. U004 alone has FOUR observed wordings, and U002 has
+    two. A client that switches on Message will silently stop matching when HSBC edits a string.
+
+envelope:
+  shape: '{ Code, Id, Message, Errors[] }'
+  code_is_a_string: '"Code": "400" — the STRING "400", not the integer 400.'
+  key_order_unstable:
+    observed: '"Code" before "Id" in SO-D04, SO-I06, SP-D04, SP-I06, VRP-03; "Id" first everywhere else.'
+    consequence: "Never parse positionally or compare serialised envelopes."
+  url_member: >-
+    OBError1 declares a Url member. It is ABSENT from every payment error in the corpus and
+    present (as an empty string) only on the AIS header rejection R18-A01. Treat as optional.
+
+# ─────────────────────────────────────────────────────────────────────────
+# 1. Errors IS AN ARRAY AND CAN CARRY TWO ENTRIES
+# ─────────────────────────────────────────────────────────────────────────
+errors_is_an_array:
+  finding: "Multiple faults can return multiple errors in one response."
+  observed:
+    - "R13-10 — U027 @ CreditorAccount.SchemeName, THEN U002 'Debtor and Creditor Account cannot be same' @ DebtorAccount.Identification"
+    - "R9-11 — U027 @ CreditorAccount.SchemeName, THEN U002 Global Money same-account @ CreditorAccount"
+    - "INT-05, INT-06, SO-I04, SP-I04 — two U002 Global Money rules together"
+    - "VRP-16 — U023 @ MaximumIndividualAmount.Currency, THEN U005 @ PeriodicLimits[0].Currency"
+  ui_requirement: >-
+    Render EVERY entry. A screen that shows Errors[0] hides the actionable half of the message —
+    in SP-I04 the first error is about the creditor and the second is about the currency, and
+    fixing only the first leaves the payment still refused.
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2. VALIDATION IS FAIL-FAST FOR SHAPE, BATCHED FOR BUSINESS RULES
+# ─────────────────────────────────────────────────────────────────────────
+validation_ordering:
+  shape_errors_are_one_at_a_time:
+    codes: [U004, U005]
+    observed:
+      - "R15-E01 — InstructedAmount present on a DOMESTIC standing order with FirstPaymentAmount ABSENT returns ONLY U005 on the unexpected field. The missing mandatory field is NOT reported."
+      - "R15-E03 — both amount fields present returns ONLY U005 @ InstructedAmount. No conflict error."
+      - "R17-B03 — MandateRelatedInformation omitted returns ONLY U004 on the parent. The nested Frequency error is not also emitted."
+      - "VRP-09 — ControlParameters omitted returns ONLY U004 on the parent, not the three nested mandatories."
+    rule: "U005 'not expected' strictly PRECEDES U004 'missing'."
+    consequence: >-
+      A form cannot obtain a full fault list in one round trip. Fixing one field surfaces the
+      next. Validate everything client-side FIRST — the API is a last line of defence, not a
+      form validator, and using it as one produces a maddening one-error-at-a-time experience.
+  business_rules_batch:
+    codes: [U002]
+    observed: "SO-I04 returns both Global Money rules at once; SO-I05 fixes the first and receives the second alone."
+  scheme_check_precedes_business_rule:
+    observed: "R13-10 and R9-11 both put U027 (scheme) ahead of U002 (business rule)."
+  creditor_before_debtor:
+    observed: "R9-07 — with an invalid creditor AND an invalid debtor, the creditor error surfaces first. Once the creditor is valid the debtor rejection appears."
+
+# ─────────────────────────────────────────────────────────────────────────
+# 3. Path IS NOT A RELIABLE FIELD POINTER
+# ─────────────────────────────────────────────────────────────────────────
+path_inconsistencies:
+  case:
+    observed: 'R2-05 returns Path "Data.Initiation.CreditorAccount.identification" — LOWERCASE i.'
+    everywhere_else: '"Data.Initiation.DebtorAccount.Identification" — capital I.'
+    consequence: "A case-sensitive Path→form-field map misses R2-05's error entirely and shows the user nothing."
+  array_notation:
+    bracket: '"Data.ControlParameters.PeriodicLimits[0].Currency" — VRP-16'
+    dot_index: '"Data.ControlParameters.PSUAuthenticationMethods.0" — VRP-12'
+    consequence: "Both notations occur in the SAME API. A mapper must handle both."
+  url_path_not_field_path:
+    observed: 'Post-delete VRP GET returns Path "/domestic-vrp-consents/45205" — a URL path, not a JSON pointer.'
+    consequence: "A generic Path→field mapper misfires here. Special-case U011."
+  requirement: "Match Path case-insensitively, accept both array notations, and never assume it points at a form field."
+
+# ─────────────────────────────────────────────────────────────────────────
+# 4. MESSAGE TEXT VARIES FOR THE SAME CODE
+# ─────────────────────────────────────────────────────────────────────────
+message_instability:
+  U004_wordings:
+    - '"Data.Permission is missing" @ Data.Permission — SO-D12'
+    - '"Initiation.FirstPaymentAmount is missing" @ Data.Initiation.FirstPaymentAmount — R17-B04'
+    - '"Field is missing" @ Data.Initiation.ChargeBearer — SO-I11'
+    - '"CreditorAccount.Name is missing" @ Data.Initiation.CreditorAccount.Name — R9-07'
+  U002_wordings:
+    - '"Invalid Field" — VRP-03, Global Money debtor'
+    - '"Invalid value" — VRP-12, PSUAuthenticationMethods'
+  consequence: "Four wordings for one code. Never key UI copy off Message."
+
+# ─────────────────────────────────────────────────────────────────────────
+# 5. U002 @ DebtorAccount.Identification IS OVERLOADED
+# ─────────────────────────────────────────────────────────────────────────
+overloaded_debtor_error:
+  identical_response_for_three_causes:
+    - "Global Money as a domestic debtor — DOM-02, R7-01..R7-07, R9-01..R9-06"
+    - "Credit card addressed by SORT CODE — DOM-04, INT-08"
+    - "Credit card addressed by PAN on the INTERNATIONAL rail — INT-07, R2-08, R3-10, R3-11, R4-01, R4-02"
+  consequence: >-
+    Same code, same message, same Path for three different problems. The app CANNOT disambiguate
+    from the response and therefore CANNOT write a useful recovery message. The only correct
+    design is to pre-filter the debtor picker client-side so none of these three is reachable —
+    which is FR-018.
+  u021_correction:
+    finding: >-
+      U021 NEVER appears in the 139 single-payment scenarios, even though DOM-04 and INT-08 are
+      TITLED "the app's live U021" / "reproduces the app's U021". Both actually returned U002.
+    consequence: >-
+      U021 is a VRP-only code in this corpus. If the shipped app surfaces U021 on a single
+      payment, it is not coming from these request shapes — do not map it there.
+
+# ─────────────────────────────────────────────────────────────────────────
+# 6. RAIL-DEPENDENT ERRORS FOR THE SAME FAULT
+# ─────────────────────────────────────────────────────────────────────────
+same_fault_different_error_per_rail:
+  card_as_debtor:
+    domestic: 'U027 "Unsupported scheme" @ Data.Initiation.DebtorAccount.SchemeName'
+    international: 'U002 "Invalid Field" @ Data.Initiation.DebtorAccount.Identification'
+    holds_across: "single payments, standing orders (SO-D05/SO-I06) and scheduled (SP-D05/SP-I06) — all three shapes, identically."
+  consequence: "Different code AND different Path for one user-visible situation. Match on rail + code, never on Path alone."
+
+response_shape_differs_by_rail:
+  domestic_201_carries: [Charges, CutOffDateTime, ExpectedExecutionDateTime, ExpectedSettlementDateTime]
+  international_201_carries: "NONE of those four — the keys are ABSENT, not empty."
+  consequence: >-
+    Parse Charges as absent/nullable, NOT as an empty array. A model that defaults it to [] cannot
+    distinguish "no charge" from "no charge information", and on the international rail the second
+    is what is true.
+
+error_code_inventory:
+  observed_in_single_payments: [U002, U004, U005, U027]
+  observed_elsewhere: [U003, U009, U011, U014, U021, U023, U000, U019]
+  note: >-
+    The single-payment corpus produced only four codes across 139 scenarios. The wider set comes
+    from the deferred rails, VRP and the authorised flows. Do not build a mapper from the
+    single-payment set alone.
+
+used_by:
+  - { feature: pay-domestic-single, role: error }
+  - { feature: pay-domestic-scheduled, role: error }
+  - { feature: pay-domestic-standing-order, role: error }
+  - { feature: pay-international-single, role: error }
+  - { feature: pay-international-scheduled, role: error }
+  - { feature: pay-international-standing-order, role: error }
+  - { feature: pay-vrp-mandate, role: error }
+  - { feature: payment-consent, role: error }
+  - { feature: payment-status, role: error }

@@ -1,0 +1,634 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: pay-vrp-mandate
+
+id: pay-vrp-mandate
+name: Variable payments
+feature: pay-vrp-mandate
+flavor: consumer
+quality_score: 92
+contract_version: "2.0.0"
+capabilities: [has_ui, has_api]
+
+# ─────────────────────────────────────────────────────────────────────────
+# THREE SURFACES IN ONE FEATURE, because a VRP mandate has a LIFECYCLE the other six types
+# do not: it is created once, drawn on many times, and destroyed.
+#
+#   1. mandate_list   — the landing surface. Not a form.
+#   2. mandate_create — a 4-step form, run once per mandate.
+#   3. mandate_detail — headroom, health, pay-under-it, revoke.
+#
+# The tile on the payments hub opens the LIST, not a payment composer. That is the structural
+# difference from every other tile and it is deliberate: for VRP the common action is paying
+# under an existing mandate, not creating a new one.
+#
+# WHAT THIS SCREEN IS FOR, IN ONE LINE: one consent funds MANY payments with NO PSU
+# re-authentication. Verified on three runs, two payments each, consent still AUTH afterwards.
+# Every other family moves its consent to COND on first use; the VRP state model explicitly
+# OMITS Consumed. Everything else on this screen — the list, the health chip, the local
+# headroom ledger, the revoke button — exists only because the mandate outlives the payment.
+#
+# SCOPE OF THE RAIL, so the UI does not offer what the API cannot do:
+#   - domestic only. There is no international VRP and no rail picker.
+#   - single IMMEDIATE payments only. No standing orders, no forward-dating WITHIN a mandate;
+#     the recurrence lives in the PSU's repeated taps, not in a schedule the bank holds.
+#   - GBP only, on both the individual maximum and every periodic limit.
+# ─────────────────────────────────────────────────────────────────────────
+
+screens:
+  - id: pay-vrp-mandate
+    name: Variable payments
+    archetype: index_list
+    shell:
+      top_bar:
+        title: "{strings.vrp.title}"
+        navigation_icon: back
+        actions: [{ id: create_mandate_action, icon: add, label: "{strings.vrp.create_action}" }]
+      bottom_nav: true
+
+  - id: pay-vrp-mandate-create
+    name: New variable payment
+    archetype: form
+    shell:
+      top_bar: { title: "{strings.vrp.create_title}", navigation_icon: back }
+      bottom_nav: false
+
+  - id: pay-vrp-mandate-detail
+    name: Variable payment
+    archetype: detail_screen
+    shell:
+      top_bar: { title: "{strings.vrp.detail_title}", navigation_icon: back }
+      bottom_nav: false
+
+components:
+
+  # ══ SURFACE 1 — mandate list ═══════════════════════════════════════════
+  - type: list
+    id: mandate_list
+    parent_screen: pay-vrp-mandate
+    label: "{strings.vrp.list_label}"
+    item_source: mandates
+    test_context: { tag: vrp:mandateList }
+    action_contract:
+      on_click: OpenMandate(consentId)
+      effect: "navigate to pay-vrp-mandate-detail"
+      writes_to: navigation
+
+  - type: list_item
+    id: mandate_row
+    parent: mandate_list
+    rows:
+      - { field: creditorName, style: titleMedium }
+      - { field: limitsSummary, style: bodySmall }
+      - { field: healthChip, style: chip }
+    test_context: { tag: vrp:mandateRow }
+    note: >-
+      limitsSummary reads like "Up to £10 per payment, £50 a week". healthChip is the important
+      one — see mandate_health_chip.
+
+  - type: chip
+    id: mandate_health_chip
+    parent: mandate_row
+    variants:
+      - state: active
+        label: "{strings.vrp.health.active}"
+        color: success
+        condition: "consent AUTH and no recent ExemptionNotApplied"
+      - state: failing
+        label: "{strings.vrp.health.failing}"
+        color: warning
+        condition: "consent AUTH but recent payments carry StatusReason UK.OBIE.ExemptionNotApplied"
+      - state: unpayable
+        label: "{strings.vrp.health.unpayable}"
+        color: error
+        condition: "consent AUTH but every payment attempt returns 400 U021 on the bank-written debtor"
+      - state: revoked
+        label: "{strings.vrp.health.revoked}"
+        color: onSurfaceVariant
+        condition: "locally recorded as revoked, or the consent GET returns 400 U011"
+    test_context: { tag: vrp:healthChip }
+    note: >-
+      FOUR states, and NONE of them is a function of the consent status. Three of the four coexist
+      with Data.Status == AUTH. This is the single most important structural fact about the
+      screen: a mandate can be simultaneously authorised and incapable of paying, and the consent
+      reports nothing at all about it. Do NOT derive health from the status ladder.
+
+      `failing` — HSBC rejects VRPs at fulfilment if the Trusted Beneficiary exemption check
+      fails, which happens when the PSU deletes the payee in the HSBC app. The consent stays
+      AUTHORISED while payments silently fail with StatusReason UK.OBIE.ExemptionNotApplied.
+
+      `unpayable` — consent 45224. The PSU chose the credit card AT THE BANK, the consent reached
+      AUTH, funds-confirmation returned "Available", and then EVERY payment failed 400 U021. Three
+      failures, consent still AUTH. So the TPP holds a live mandate, past SCA, that will refuse
+      every payment — with nothing in the consent status to say so, and a funds-confirmation that
+      actively said yes. Distinguished from `failing` by the error (U021 on the debtor scheme, at
+      submission) rather than the StatusReason (ExemptionNotApplied, at fulfilment); the two have
+      different remedies, so they are different chips.
+
+      `revoked` is driven by the LOCAL record, because after DELETE the consent GET returns 400
+      U011 forever and can never report a revoked state.
+
+  - type: empty_state
+    id: no_mandates
+    parent_screen: pay-vrp-mandate
+    title: "{strings.vrp.empty_title}"
+    body: "{strings.vrp.empty_body}"
+    cta: "{strings.vrp.create_action}"
+    visibility: "mandates is empty"
+    test_context: { tag: vrp:noMandates }
+    note: >-
+      This is the FIRST-RUN state for every PSU, and it is also permanent for anyone who never
+      creates one — there is no AIS read for VRP mandates, so the list only ever shows mandates
+      this app itself created. The body says so, and it also says a mandate created on another
+      device will not appear here.
+
+      It is also the right place to redirect the wrong intent. A PSU arriving wanting a dated or
+      repeating instruction wants pay-domestic-scheduled or pay-domestic-standing-order: a VRP
+      mandate funds single IMMEDIATE payments only and holds no schedule. Better to say that
+      before they build a mandate than after.
+
+  # ══ SURFACE 2 — create (5 steps) ═══════════════════════════════════════
+  - type: stepper
+    id: create_step_indicator
+    parent_screen: pay-vrp-mandate-create
+    steps: 4
+    labels:
+      - "{strings.payment.step.account}"
+      - "{strings.payment.step.payee}"
+      - "{strings.vrp.step.limits}"
+      - "{strings.payment.step.review}"
+    test_context: { tag: vrpCreate:stepIndicator }
+    note: >-
+      FOUR steps since 2026-08-07, not five. The former Reference step encoded a constraint the
+      capture corpus contradicts — see reference_handling below.
+
+  - type: list
+    id: debtor_account_list
+    parent_screen: pay-vrp-mandate-create
+    item_source: eligibleDebtorAccounts
+    visibility: "step == Account"
+    test_context: { tag: vrpCreate:debtorList }
+    action_contract:
+      on_click: SelectDebtorAccount(accountId)
+      effect: "sets create.debtorAccountId"
+      writes_to: "VrpCreateUiState.debtorAccountId"
+    note: >-
+      Filter is SchemeName == UK.OBIE.SortCodeAccountNumber — a SCHEME rule, not a product rule.
+      That admits savings and Global Money-by-sort-code but excludes the credit card, which is
+      refused on VRP by BOTH routes — the one family where bank-selection does not rescue it.
+
+      Savings IS offered, and it works: TPP-named savings authorised and settled 19931/19932.
+      That contradicts HSBC's Guide §28.8 ("PCA only", with a documented hard-stop). Do not
+      re-narrow this filter to current accounts on the strength of the Guide — the implemented
+      rule is the scheme, and it is the only endpoint that states it in prose rather than as a
+      bare U027.
+
+      This is also the ONLY step where the app can prevent the problem. Once the PSU is at the
+      bank the app has no say: the bank may nominate ANY account, including one its own payment
+      endpoint then refuses. See unpayable_mandate_banner.
+
+  - type: text_field
+    id: creditor_sort_code_field
+    parent_screen: pay-vrp-mandate-create
+    label: "{strings.payment.sort_code_label}"
+    visibility: "step == Payee"
+    test_context: { tag: vrpCreate:creditorSortCodeField }
+    note: "Creditor must ALSO be UK.OBIE.SortCodeAccountNumber. An IBAN creditor returns U021."
+
+  - type: text_field
+    id: creditor_account_number_field
+    parent_screen: pay-vrp-mandate-create
+    label: "{strings.payment.account_number_label}"
+    visibility: "step == Payee"
+    test_context: { tag: vrpCreate:creditorAccountNumberField }
+
+  - type: text_field
+    id: creditor_name_field
+    parent_screen: pay-vrp-mandate-create
+    label: "{strings.payment.payee_name_label}"
+    visibility: "step == Payee"
+    test_context: { tag: vrpCreate:creditorNameField }
+
+  # ── Step 3: the limits ──────────────────────────────────────────────────
+  - type: text_field
+    id: max_individual_amount_field
+    parent_screen: pay-vrp-mandate-create
+    label: "{strings.vrp.max_individual_label}"
+    helper_text: "{strings.vrp.max_individual_helper}"
+    keyboard: number
+    visibility: "step == Limits"
+    test_context: { tag: vrpCreate:maxIndividualField }
+    note: "MaximumIndividualAmount. Mandatory — U004 if omitted. GBP only — U023 otherwise."
+
+  - type: dropdown
+    id: period_type_picker
+    parent_screen: pay-vrp-mandate-create
+    label: "{strings.vrp.period_type_label}"
+    options: [Day, Week, Fortnight, Month, Half-year, Year]
+    visibility: "step == Limits"
+    test_context: { tag: vrpCreate:periodTypePicker }
+    note: >-
+      Day, Week and Month were each observed staging 201. Fortnight, Half-year and Year are from
+      the OBIE enum and were NEVER SENT — offered, but untested. If one is rejected in the field
+      the fault is the option list, not the PSU's input.
+
+      PeriodAlignment: both Calendar and Consent were observed accepted. The picker does not
+      currently expose the choice; Calendar is what all three authorised runs used.
+
+  - type: text_field
+    id: period_limit_amount_field
+    parent_screen: pay-vrp-mandate-create
+    label: "{strings.vrp.period_limit_label}"
+    keyboard: number
+    visibility: "step == Limits"
+    test_context: { tag: vrpCreate:periodLimitField }
+    note: "PeriodicLimits[0].Amount. At least one is mandatory — U004 if the array is omitted."
+
+  - type: banner
+    id: pro_rating_notice
+    parent_screen: pay-vrp-mandate-create
+    content: "{strings.vrp.pro_rating_notice}"
+    severity: info
+    visibility: "step == Limits AND periodLimitAmount is set AND periodAlignment == Calendar"
+    test_context: { tag: vrpCreate:proRatingNotice }
+    note: >-
+      DOWNGRADED 2026-08-07 from warning to info, and from a computed figure to a caution. The
+      previous version stated the first period's pro-rated amount as fact (£300 Month/Calendar
+      created on the 6th → £250). NO PRO-RATING WAS EVER OBSERVED. The API exposes no computed
+      period start or end, no consumed or remaining amount, and no PeriodicLimitsUsed member
+      anywhere — the consent response echoes PeriodicLimits byte-for-byte. The worked figures come
+      from VRP-RESEARCH.md, which is documentation, not a capture.
+
+      So the copy says the first calendar period MAY allow less than the headline figure and that
+      the app cannot see the bank's arithmetic — it does NOT print a number the app invented.
+      Printing £250 and having the bank allow £300 is the same class of error in the other
+      direction, and it is the app that would be wrong.
+
+  - type: switch
+    id: add_second_limit_switch
+    parent_screen: pay-vrp-mandate-create
+    label: "{strings.vrp.add_second_limit_label}"
+    default: false
+    visibility: "step == Limits"
+    test_context: { tag: vrpCreate:addSecondLimitSwitch }
+    note: >-
+      TWO limits (Week 50.00 + Month 150.00) staged 201 — that is the maximum OBSERVED. HSBC's
+      docs claim up to six, one per period type; three or more was never tried. The switch adds a
+      second only. Do not build an unbounded add-another list on the strength of the documented
+      six — unknown is not the same as proven unlimited.
+
+  - type: summary_card
+    id: create_review_card
+    parent_screen: pay-vrp-mandate-create
+    visibility: "step == Review"
+    rows:
+      - { label: "{strings.payment.review.from}", value: debtorAccountLabel }
+      - { label: "{strings.payment.review.to}", value: creditorLabel }
+      - { label: "{strings.vrp.review.max_per_payment}", value: maxIndividualLabel }
+      - { label: "{strings.vrp.review.period_limits}", value: periodLimitsLabel }
+    test_context: { tag: vrpCreate:reviewCard }
+    note: >-
+      No first-period row and no reference row. Both were removed 2026-08-07 — the first stated an
+      unobserved pro-rated figure, the second a constraint the evidence contradicts.
+
+      What this card CANNOT show is a charge. Charges are returned on the PAYMENT (0.05 GBP
+      UK.OBIE.CHAPSOut, on all eight settled payments, on every debtor type), never on the
+      consent. A mandate has no cost; each draw under it does.
+
+  - type: banner
+    id: single_authorisation_notice
+    parent_screen: pay-vrp-mandate-create
+    content: "{strings.vrp.single_authorisation_notice}"
+    severity: info
+    visibility: "step == Review"
+    test_context: { tag: vrpCreate:singleAuthorisationNotice }
+    note: >-
+      Sets the expectation the whole rail turns on, at the one moment the PSU is about to grant
+      it: this approval is the ONLY one this mandate will ever ask for, and every future payment
+      up to these limits will go through without returning to the bank. A PSU who does not
+      understand that has consented to something broader than they think.
+
+      It also states the flip side honestly — the mandate does not expire on its own. VRP tokens
+      live as long as the consent, NOT the AIS 90-day window, and an ASPSP must not revoke for
+      dormancy either. The only ways it ends are the revoke button here or the PSU revoking in
+      the HSBC app. There is no expiry date to display because there is no expiry.
+
+  # ══ SURFACE 3 — mandate detail ═════════════════════════════════════════
+  - type: summary_card
+    id: mandate_detail_card
+    parent_screen: pay-vrp-mandate-detail
+    rows:
+      - { label: "{strings.vrp.review.to}", value: creditorLabel }
+      - { label: "{strings.vrp.review.max_per_payment}", value: maxIndividualLabel }
+      - { label: "{strings.vrp.detail.status}", value: healthLabel }
+    test_context: { tag: vrpDetail:card }
+    note: >-
+      No headroom row here — headroom needs a row PER LIMIT, so it has its own component. See
+      headroom_list.
+
+  - type: list
+    id: headroom_list
+    parent_screen: pay-vrp-mandate-detail
+    item_source: periodicLimitsWithHeadroom
+    label: "{strings.vrp.detail.headroom}"
+    test_context: { tag: vrpDetail:headroomList }
+    rows:
+      - { field: periodLabel, style: bodyMedium }
+      - { field: spentOfLimitLabel, style: bodySmall }
+      - { field: headroomBar, style: progress }
+    note: >-
+      EVERY limit is listed, always — not just the binding one, and not collapsed into a single
+      "remaining" figure. Two reasons, and the second is the load-bearing one.
+
+      (1) THE APP IS THE ONLY LEDGER. The API exposes NO pro-rating, no period start or end, no
+      consumed or remaining amount, and no PeriodicLimitsUsed member on the consent or on any
+      payment — the consent response echoes PeriodicLimits byte-for-byte and nothing more. Every
+      figure in this list is computed locally from this app's own payment history. Nothing in the
+      API will ever confirm or correct it.
+
+      (2) A BREACH DOES NOT NAME THE LIMIT. U014 comes back with Path
+      Data.Instruction.InstructedAmount.Amount whether the individual maximum or a periodic limit
+      was hit. The bank cannot tell the PSU which one, so the app shows all of them and lets the
+      PSU see for themselves which is close to the line.
+
+      Accuracy caveat, which the copy must not hide: this ledger counts only payments THIS app
+      made. A mandate is per-consent so there should be no other payer, but a reinstall loses the
+      history and the tally silently restarts at zero while the bank's does not. On a fresh
+      install with a mandate restored from nowhere, show the limits without a spent figure rather
+      than a confident zero.
+
+      RJCT and BLCK payments are excluded from periodic totals by the spec, so they are excluded
+      from the local tally too.
+
+  - type: banner
+    id: failing_mandate_banner
+    parent_screen: pay-vrp-mandate-detail
+    content: "{strings.vrp.failing_banner}"
+    severity: warning
+    visibility: "health == failing"
+    test_context: { tag: vrpDetail:failingBanner }
+    note: >-
+      Explains that payments are being declined because the payee is no longer a trusted
+      beneficiary at the bank, and that the fix is to re-add them in the HSBC app. Without this
+      the PSU sees an authorised mandate whose payments keep failing and no reason why.
+
+  - type: banner
+    id: unpayable_mandate_banner
+    parent_screen: pay-vrp-mandate-detail
+    content: "{strings.vrp.unpayable_banner}"
+    severity: error
+    visibility: "health == unpayable"
+    test_context: { tag: vrpDetail:unpayableBanner }
+    note: >-
+      The banner for the worst state on this screen, and the one the PSU has no way to reason
+      about unaided. Consent 45224: the PSU picked the credit card at the bank, the consent
+      reached AUTH, funds-confirmation said "Available", and every payment then failed 400 U021
+      "…the Debtor Identification is not a UK.OBIE.SortCodeAccountNumber account". After three
+      failures the consent was STILL AUTH.
+
+      From the PSU's side that is: I approved this at my bank, the app says the money is there,
+      and it will not pay. The copy must therefore say the thing the API never does — the account
+      chosen AT THE BANK cannot fund a variable payment, this mandate cannot be repaired, and a
+      new one must be created against an account held under a sort code. Do not offer a retry;
+      the failure is deterministic and three attempts already proved it.
+
+      This banner also carries the honest admission that the funds check was misleading. Never
+      show a successful funds-confirmation as reassurance once this state is reached.
+
+  - type: banner
+    id: revoked_mandate_banner
+    parent_screen: pay-vrp-mandate-detail
+    content: "{strings.vrp.revoked_banner}"
+    severity: info
+    visibility: "health == revoked"
+    test_context: { tag: vrpDetail:revokedBanner }
+    note: >-
+      Shown when the local record says revoked OR the consent GET returns 400 U011. States that
+      the mandate is cancelled and cannot be reinstated — a new one must be created.
+
+  - type: button
+    id: pay_now_button
+    parent_screen: pay-vrp-mandate-detail
+    label: "{strings.vrp.pay_now}"
+    style: { variant: filled_pill }
+    visibility: "health == active"
+    test_context: { tag: vrpDetail:payNowButton }
+    action_contract:
+      on_click: StartPaymentUnderMandate
+      effect: "opens the amount sheet, then POST funds-confirmation followed by POST /domestic-vrps"
+      writes_to: "VrpDetailUiState -> Paying"
+    note: >-
+      Hidden on a failing, unpayable or revoked mandate — the payment would be refused.
+
+      No app-to-app leg, no redirect, no re-authentication. Tapping this on an existing mandate
+      goes straight to the bank's payment endpoint. That is the whole point of the rail and it is
+      the one interaction that must never regress into a consent round trip.
+
+  - type: text_field
+    id: payment_amount_field
+    parent_screen: pay-vrp-mandate-detail
+    label: "{strings.vrp.payment_amount_label}"
+    keyboard: number
+    visibility: "uiState is Paying"
+    test_context: { tag: vrpDetail:paymentAmountField }
+    validation: "<= MaximumIndividualAmount, and <= remaining headroom on EVERY periodic limit"
+    note: >-
+      Validated locally against every limit before the call, because a breach returns U014 with
+      Path pointing at Data.Instruction.InstructedAmount.Amount regardless of WHICH limit was
+      hit — the bank does not say which, so the app cannot explain it after the fact. When the
+      local check blocks the amount, name the limit that stopped it; that is information only
+      this app holds.
+
+  - type: text_field
+    id: payment_reference_field
+    parent_screen: pay-vrp-mandate-detail
+    label: "{strings.vrp.payment_reference_label}"
+    optional: true
+    visibility: "uiState is Paying"
+    test_context: { tag: vrpDetail:paymentReferenceField }
+    note: >-
+      REPLACES the removed create-time reference-mode step. Each payment carries its OWN
+      reference, which is what was actually observed: the consent carried Unstructured
+      ["VRP20260806"] while the payments carried ["VRP-5.00"] and settled. The consent's
+      RemittanceInformation does not propagate into the payment at all — Data.Initiation on a VRP
+      payment has no RemittanceInformation member; it lives only in Data.Instruction.
+
+      Note the untested half rather than pretending it away: only `Unstructured` was ever sent on
+      VRP. `Reference` and `Structured` were never tried on this family, so the documented rule
+      that a consent-level Reference binds every payment is neither confirmed nor refuted for the
+      field it names. Probing it costs one staging call and no authorisation.
+
+  - type: progress_indicator
+    id: settling_indicator
+    parent_screen: pay-vrp-mandate-detail
+    label: "{strings.vrp.settling}"
+    visibility: "uiState is Paying(Settling)"
+    test_context: { tag: vrpDetail:settlingIndicator }
+    expected_duration_seconds: 30
+    note: >-
+      A REAL countdown, uniquely on this family. ExpectedExecutionDateTime and
+      ExpectedSettlementDateTime are identical and are exactly CreationDateTime + 30 SECONDS on
+      all eight observed payments (15:12:26 → 15:12:56). This is the one place in the entire
+      payment surface where those fields carry usable information — on the deferred families they
+      are stubs equal to CreationDateTime, and a countdown there would be a lie.
+
+      Drive it from the returned ExpectedSettlementDateTime, not from a hardcoded 30, and let it
+      lapse into a plain in-progress state rather than an error if settlement runs long.
+
+  - type: banner
+    id: evening_window_notice
+    parent_screen: pay-vrp-mandate-detail
+    content: "{strings.vrp.evening_window_notice}"
+    severity: info
+    visibility: "uiState is Error(FraudCheckRejected)"
+    test_context: { tag: vrpDetail:eveningWindowNotice }
+    note: >-
+      HSBC documents that payment requests received between 18:00 and 23:45 may be rejected or
+      declined if identified as requiring additional fraud checks. Surface the rejection plainly
+      and state the window. Do NOT auto-retry into it — a retry inside the window invites the
+      same rejection, and on a rail whose whole appeal is unattended repeat payments an automatic
+      retry loop is exactly the wrong reflex.
+
+  - type: button
+    id: revoke_button
+    parent_screen: pay-vrp-mandate-detail
+    label: "{strings.vrp.revoke}"
+    style: { variant: text, color: error }
+    visibility: "health in {active, failing, unpayable}"
+    test_context: { tag: vrpDetail:revokeButton }
+    note: >-
+      Offered on unpayable too — a mandate that can never pay is exactly the one a PSU most wants
+      gone, and revocation is the only action left on it.
+    action_contract:
+      on_click: ConfirmRevoke
+      effect: "opens a confirmation dialog, then DELETE /domestic-vrp-consents/{ConsentId}"
+      writes_to: "VrpDetailUiState -> Revoking"
+
+  - type: dialog
+    id: revoke_confirm_dialog
+    parent_screen: pay-vrp-mandate-detail
+    title: "{strings.vrp.revoke_confirm_title}"
+    body: "{strings.vrp.revoke_confirm_body}"
+    confirm: "{strings.vrp.revoke_confirm_cta}"
+    visibility: "uiState is Revoking"
+    test_context: { tag: vrpDetail:revokeConfirmDialog }
+    note: >-
+      The body states that revocation is permanent and that the mandate cannot be reinstated.
+      True in a stronger sense than usual: after DELETE the consent is unreadable forever, so
+      there is nothing to restore even in principle.
+
+responsive: { mobile_only: false, baseline_width: 390 }
+
+states:
+  initial_state: loading
+  loading: { layout: { visible_components: [] } }
+  content: { layout: { visible_components: [mandate_list, mandate_row, mandate_health_chip] } }
+  empty: { layout: { visible_components: [no_mandates] } }
+  paying: { layout: { visible_components: [mandate_detail_card, headroom_list, payment_amount_field, payment_reference_field] } }
+  settling: { layout: { visible_components: [mandate_detail_card, settling_indicator] } }
+  revoking: { layout: { visible_components: [mandate_detail_card, revoke_confirm_dialog] } }
+  error: { layout: { visible_components: [error_panel] } }
+
+state_model:
+  view_model: VrpMandateViewModel
+  ui_state_type: VrpMandateUiState
+  states: ["Loading", "Content(mandates)", "Empty", "Creating(step)", "Detail(mandate)", "Paying", "Settling", "Revoking", "Error(type)"]
+  actions:
+    - LoadMandates
+    - OpenMandate
+    - StartCreate
+    - SelectDebtorAccount
+    - EnterCreditor
+    - EnterMaxIndividualAmount
+    - SelectPeriodType
+    - EnterPeriodLimit
+    - ToggleSecondLimit
+    - ReviewMandate
+    - CreateMandate
+    - StartPaymentUnderMandate
+    - EnterPaymentAmount
+    - EnterPaymentReference
+    - ConfirmFundsAndPay
+    - RecordPaymentInLedger
+    - MarkMandateUnpayable
+    - ConfirmRevoke
+    - Revoke
+    - BackStep
+  events: [NavigateToPaymentConsent, NavigateToPaymentStatus]
+  di: [AccountsOverviewRepository, VrpMandateRepository, PaymentInitiationRepository]
+  di_note: >-
+    VrpMandateRepository is unique to this feature and carries TWO responsibilities no other
+    payment type has. It owns the LOCAL mandate record — because after revocation the bank can no
+    longer tell the app that a mandate ever existed — and it owns the LOCAL SPEND LEDGER, because
+    the API exposes no consumed or remaining amount against any periodic limit. Both are cases of
+    the app remembering what the bank will not tell it.
+
+  authorise_url_note: >-
+    The consent response carries only Links.Self and Meta.TotalPages. There is NO authorisation or
+    redirect link anywhere in it. The app CONSTRUCTS the authorise URL itself from the ConsentId
+    before emitting NavigateToPaymentConsent — an implementer looking for a redirect URL in the
+    body will not find one and may conclude the response is malformed.
+
+  no_reauthorisation_state: >-
+    There is deliberately no Reauthorising state and no expiry countdown. The consent stays AUTH
+    indefinitely, tokens live as long as the consent rather than for the AIS 90 days, and an
+    ASPSP must not revoke for dormancy. A re-consent prompt on this screen would be a defect.
+
+form_submit_guard: state-transition-unmount
+
+# ─────────────────────────────────────────────────────────────────────────
+# REFERENCE HANDLING — a UI requirement WITHDRAWN, recorded not silently dropped
+# ─────────────────────────────────────────────────────────────────────────
+reference_handling:
+  removed_2026_08_07: [reference_mode_picker, reference_immutability_notice, "the Reference step", "the review card's reference row"]
+  what_they_encoded: >-
+    That fixing RemittanceInformation.Reference on the consent binds every payment under it, so
+    the PSU must choose irreversibly at creation time between one fixed reference and per-payment
+    ones.
+  why_removed: >-
+    The capture corpus contradicts it for the field actually tested. Per-payment remittance is
+    INDEPENDENT of the consent's and the payment's value is honoured — the consent carried
+    Unstructured ["VRP20260806"] and the payments carried ["VRP-5.00"] and settled. A whole
+    create step, a warning banner and a review row were all built on a constraint that does not
+    hold, and they would have taught the PSU something false about their own mandate.
+  what_is_true_now: "Each payment carries its own reference, entered on the pay sheet. See payment_reference_field."
+  what_is_still_unknown: >-
+    `Reference` and `Structured` were NEVER sent on VRP. If reference support is ever built out,
+    probe Reference on a staged consent first — one call, no authorisation.
+
+# ─────────────────────────────────────────────────────────────────────────
+# ERROR RENDERING — this screen cannot use a naive Path→field mapper
+# ─────────────────────────────────────────────────────────────────────────
+error_rendering:
+  contract_ref: "dtos/ObPaymentError.yaml — the envelope, the iron rule (key off ErrorCode + Path, NEVER off Message), and all six inconsistencies."
+  vrp_specific_consequences:
+    render_every_error:
+      why: >-
+        VRP-16 returns TWO errors at the same level, in field order: U023 on
+        MaximumIndividualAmount.Currency, THEN U005 on PeriodicLimits[0].Currency. A form showing
+        Errors[0] fixes the individual maximum, resubmits, and is refused again for the limit it
+        was never told about.
+      applies_to: "the Limits step"
+    expect_one_fault_at_a_time:
+      why: >-
+        VRP-09 omits ControlParameters and receives ONLY U004 on the parent — not the nested
+        PeriodicLimits and MaximumIndividualAmount errors that are also true. The API short-
+        circuits on the parent, so the form CANNOT obtain a full fault list in one round trip.
+      consequence: >-
+        Validate every control parameter client-side before submitting. The API is a last line of
+        defence, not a form validator; using it as one produces a one-error-at-a-time crawl.
+    both_array_notations:
+      why: 'The SAME API returns "PeriodicLimits[0].Currency" (bracket) and "PSUAuthenticationMethods.0" (dot-index).'
+      applies_to: "the Limits step's field mapper, which must handle both."
+    u011_path_is_a_url:
+      why: >-
+        A post-delete consent GET returns Path "/domestic-vrp-consents/45205" — a URL PATH, not a
+        JSON field pointer. A generic Path→form-field mapper misfires on it and may highlight a
+        random control, or crash on the leading slash.
+      requirement: "SPECIAL-CASE U011 before the Path mapper runs. It is a revoked mandate, not a field fault."
+    never_key_on_message:
+      why: 'U002 arrives as "Invalid Field" (VRP-03) and as "Invalid value" (VRP-12) for this one family alone.'
+
+dependencies:
+  tier: feature
+  features: [accounts, beneficiaries, payment-consent, payment-status]

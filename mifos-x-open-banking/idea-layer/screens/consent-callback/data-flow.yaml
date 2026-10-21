@@ -1,0 +1,88 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: consent-callback
+
+screen_id: consent-callback
+
+on_mount:
+  # ── Step 0: Security pre-check — FAPI state param validation (MUST run first) ──
+  - trigger: validate_state_param
+    description: "Validate the route_params.state value and the hybrid-flow id_token nonce against the locally stored state/nonce before any token exchange. A mismatch indicates a CSRF or replay attack — abort immediately."
+    steps:
+      - action: validate_state
+        params:
+          received_state: "{route_params.state}"
+          stored_state: "{local_storage.oauth_state}"
+      - action: validate_nonce
+        params:
+          received_nonce: "{route_params.id_token.nonce}"
+          stored_nonce: "{local_storage.oauth_nonce}"
+    on_mismatch: security_error
+    short_circuit_on_mismatch: true
+
+  # ── Step 1: OAuth error pre-check — handle HSBC denial redirect ───────
+  - trigger: check_oauth_error
+    description: "Inspect route_params.error before attempting any token exchange. access_denied = PSU declined. Other errors may indicate provider-side issues."
+    condition: "route_params.error is present"
+    steps:
+      - action: classify_oauth_error
+        params:
+          error: "{route_params.error}"
+          error_description: "{route_params.error_description}"
+    outcomes:
+      access_denied: access_denied
+      temporarily_unavailable: error
+      server_error: error
+    short_circuit_on_error: true
+
+  # ── Step 2: Token exchange + consent poll (happy path) ────────────────
+  - trigger: exchange_and_verify
+    description: "Exchange the OAuth auth code for a PSU bearer token via FAPI token endpoint, then poll consent-status to verify the consent is Authorised."
+    condition: "route_params.error is absent AND state param validated"
+    steps:
+      - action: exchange_auth_code
+        params:
+          code: "{route_params.code}"
+          state: "{route_params.state}"
+        store_as: psu_token
+        on_error:
+          HttpException(400): error
+          HttpException(401): error
+          NetworkError: error
+      - call: consent-status
+        path_params:
+          ConsentId: "{local_storage.stored_consent_id}"
+        store_as: consent
+        on_error:
+          HttpException(401): error
+          HttpException(404): error
+          NetworkError: error
+    on_loading: loading
+    on_success: content
+    on_empty: empty
+    on_error: error
+    success_condition: "consent.Data.Status == 'Authorised'"
+    empty_condition: "consent.Data.Status == 'AwaitingAuthorisation'"
+    post_success_navigate:
+      target: accounts
+      delay_ms: 1500
+
+on_user_action:
+  - trigger: poll_consent_status
+    description: "Manual re-poll when consent is still AwaitingAuthorisation — retriggers consent-status GET only (token already stored)."
+    re_runs: [exchange_and_verify]
+    skip_steps: [validate_state_param, check_oauth_error, exchange_auth_code]
+
+  - trigger: navigate_retry
+    description: "Navigate back to login on error or access_denied — clears partial auth state."
+    navigate_to: login
+    side_effects:
+      - "LocalStorage.clearOAuthState()"
+      - "LocalStorage.clearConsentId()"
+
+  - trigger: navigate_login
+    description: "Navigate back to login on security_error — full state clear to prevent replay."
+    navigate_to: login
+    side_effects:
+      - "LocalStorage.clearAll()"
+      - "TokenStore.revokeAll()"

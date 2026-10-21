@@ -1,0 +1,491 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: standing-orders
+
+screen_id: standing-orders
+archetype: index_list
+name: "Standing Orders"
+# status: REMOVED 2026-08-04 (CROSS_LEAK repair — sibling-layout.json assigns `status` to
+# the docs sibling). This copy held `implemented`; docs.yaml is the single owner.
+initial_state: loading
+quality_score: 95
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  top_app_bar_title: "{strings.standing_orders_screen_title}"
+  top_app_bar_leading: back
+  fab_visible: false
+
+states: [loading, content, empty, unsupported, error]
+
+# TEST TAGS — reconciled against source 2026-08-02 by /idea-sync (source-truth pass).
+# 5 state-root tags were already correct; 10 more were backfilled this pass.
+test_tags:
+  source: "feature/standing-orders/src/commonMain/kotlin/org/mifosx/openbanking/feature/standingorders/StandingOrdersTestTags.kt"
+  declared_in_source: 22         # 14 const val + 8 per-order builder fns
+  bound: 15
+  interpolated:
+    # All eight builders key on standingOrderId — StandingOrdersContent.kt passes order.standingOrderId.
+    - { tag: "standingOrders:card:{item.standingOrderId}",        builder: "fun card(orderId)" }
+    - { tag: "standingOrders:statusBadge:{item.standingOrderId}", builder: "fun statusBadge(orderId)" }
+    - { tag: "standingOrders:amount:{item.standingOrderId}",      builder: "fun amount(orderId)" }
+    - { tag: "standingOrders:frequency:{item.standingOrderId}",   builder: "fun frequency(orderId)" }
+    - { tag: "standingOrders:nextDate:{item.standingOrderId}",    builder: "fun nextDate(orderId)" }
+    - { tag: "standingOrders:finalDate:{item.standingOrderId}",   builder: "fun finalDate(orderId)" }
+    - { tag: "standingOrders:sortCode:{item.standingOrderId}",    builder: "fun sortCode(orderId)" }
+    - { tag: "standingOrders:reference:{item.standingOrderId}",   builder: "fun reference(orderId)" }
+  unbound:
+    - { tag: "standingOrders:skeletonSummary", why: "Tags the summary-row placeholder INSIDE the loading skeleton; the idea-layer models loading as one progress_circular with no children." }
+    - { tag: "standingOrders:emptyTitle",       parent: empty_standing_orders,       why: "Text node modelled as the parent's `title:` field." }
+    - { tag: "standingOrders:emptyBody",        parent: empty_standing_orders,       why: "Text node modelled as the parent's `body:` field." }
+    - { tag: "standingOrders:unsupportedTitle", parent: unsupported_standing_orders, why: "Text node modelled as the parent's `title:` field." }
+    - { tag: "standingOrders:unsupportedBody",  parent: unsupported_standing_orders, why: "Text node modelled as the parent's `body:` field." }
+    - { tag: "standingOrders:errorTitle",       parent: error_state,                 why: "Text node modelled as the parent's `title:` field." }
+    - { tag: "standingOrders:errorBody",        parent: error_state,                 why: "Text node modelled as the parent's `body:` field." }
+
+business_logic:
+  kind: crud
+  description: "Calls GET /accounts/{AccountId}/standing-orders via ktorfit to retrieve OBReadStandingOrder6. Maps CreditorAccount.Name, CreditorAccount.Identification, NextPaymentAmount, NextPaymentDateTime, FinalPaymentDateTime (when non-null), Reference, and StandingOrderStatusCode per Data.StandingOrder. OBIE ISO 20022 frequency codes (IntrvlMnthDay, IntrvlWkDay, IntrvlDay, IntrvlYear) are decoded to human-readable labels in StandingOrdersViewModel via a sealed FrequencyDecoder; Active/Inactive status drives badge variant (primary/secondary); hasFinalPayment flag controls FinalPaymentDateTime row visibility; summary label (e.g. '3 Active · 1 Inactive') is computed as SummaryLabel and emitted in UiState.Content."
+  external_library_refs:
+    - "ktorfit"
+    - "hsbc-obie-ais-v4.0:standing-orders"
+  description_author: claude
+  description_authored_at: "2026-06-29T15:00:00Z"
+
+# ─────────────────────────────────────────────────────────────────────
+# STATE MODEL — StandingOrdersViewModel contract
+# Derived from docs.yaml#vm_actions + error_cases for implementation.
+# Satisfies QUALITY_FORMULA.md Category 10 (State Model, 5 pts).
+# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
+# SOURCE BINDING — reverse-synced from source 2026-07-28
+# ─────────────────────────────────────────────────────────────────────
+implementation:
+  status: implemented
+  source_module: "feature/standing-orders"
+  package: "org.mifosx.openbanking.feature.standingorders"
+  route: "StandingOrdersRoute(accountId: String)"
+  viewmodel: StandingOrdersViewModel
+  screen: StandingOrdersScreen
+  test_tags_object: StandingOrdersTestTags
+  reachable_from:
+    - "account-detail — AccountDetailChip.StandingOrders -> navigate(StandingOrdersRoute(accountId))"
+  synced_from_source_at: "2026-07-28"
+  added_in_sync:
+    - "unsupported state — StandingOrdersUiState.Unsupported(message) ships in source and renders StandingOrdersUnsupported.kt; the idea-layer never declared it"
+  removed_in_sync:
+    - "loadStandingOrders and navigateBack actions — StandingOrdersAction declares only RetryLoad"
+    - "NavigationController DI — navigation is callback-based via the nav host"
+  note: "StandingOrdersErrorKind carries no isRetriable flag (unlike DirectDebitsErrorKind), so the retry CTA is not conditionally hidden on this screen."
+  owed_to_source:
+    opened_at: "2026-08-04"
+    opened_by: "/idea-sync"
+    reason: >-
+      Three spec changes landed on this implemented screen. The idea-layer is the source of
+      truth (RULE-GAP-IDEA-FIRST-001), so the module now trails it until /implement catches up.
+    items:
+      - "empty_create_button — new filled CTA on the empty state navigating to standing-order-create with accountId. Needs the composable, the TestTag const (standingOrders:emptyCreateButton), and the nav callback wired at the Route callsite."
+      - "hasNextPayment — new StandingOrderRowUi field, false when NextPaymentDateTime is null. so_next_date must become conditional on it, mirroring the existing hasFinalPayment guard."
+      - "Inactive badge variant secondary -> outline, to stop colliding with the payment-disposition vocabulary's in-progress container. (Was written as a 'triad'; that vocabulary became FOUR values on 2026-08-07 with instruction_established. The collision being avoided is unchanged — it is with in-progress's secondary-container.)"
+
+state_model:
+  StandingOrdersViewModel:
+    state:
+      name: StandingOrdersState
+      fields:
+        - name: accountId
+          type: String
+        - name: uiState
+          type: StandingOrdersUiState
+    screen_state:
+      sealed_class: StandingOrdersUiState
+      members:
+        - Loading
+        - Content      # orders: List<StandingOrderRowUi>, activeCount: Int, inactiveCount: Int
+        - Empty        # no standing orders returned
+        - Unsupported  # message: String — servicer does not expose standing orders for this account
+        - Error        # kind: StandingOrdersErrorKind
+      # Folded in from docs.yaml#state_model 2026-07-31 (CROSS_LEAK repair). docs.yaml
+      # carried a SECOND, competing declaration of this same sealed class — stale: it
+      # described only 4 variants and never knew about Unsupported. This block here is
+      # authoritative (right sibling per sibling-layout.json, and the canonical MVI shape
+      # every other feature uses), so only the prose docs.yaml uniquely held was kept.
+      member_notes:
+        Loading: "OBReadStandingOrder6 fetch in flight; no standing order data available yet."
+        Content: >-
+          Non-empty response; all transforms applied by StandingOrdersViewModel.
+          standingOrders (List<StandingOrderViewModel>) is the mapped OBIE order list with
+          frequency_label, status_variant and hasFinalPayment flags; summaryLabel (String)
+          is the computed "3 Active · 1 Inactive" string from StandingOrderStatusCode counts.
+        Empty: "Data.StandingOrder[] returned by HSBC is an empty array; zero-result UI shown."
+        Error: >-
+          Typed error state; Retry button always visible. errorType
+          (TokenExpired | ConsentRevoked | RateLimited | NetworkError | ServerError) resolves
+          to a localised message String in the ViewModel.
+    row_model:
+      name: StandingOrderRowUi
+      fields:
+        - name: standingOrderId
+          type: String
+        - name: payeeName
+          type: String
+        - name: statusLabel
+          type: String
+        - name: isActive
+          type: Boolean
+        - name: amountLabel
+          type: String
+        - name: currencyLabel
+          type: String
+        - name: frequencyLabel
+          type: String
+        - name: nextDateLabel
+          type: String
+        - name: hasNextPayment
+          type: Boolean
+          notes: >-
+            False when NextPaymentDateTime is null, which is the normal shape for an Inactive
+            order — a cancelled mandate has no next collection. Added 2026-08-04: so_next_date
+            previously had no visibility guard, so an Inactive row rendered a "Next:" label over
+            a null date. Mirrors hasFinalPayment exactly.
+        - name: finalDateLabel
+          type: String
+        - name: hasFinalPayment
+          type: Boolean
+        - name: sortCodeLabel
+          type: String
+        - name: referenceLabel
+          type: String
+    errors:
+      types:
+        - StandingOrdersErrorKind.TokenExpired    # Unauthorized
+        - StandingOrdersErrorKind.ConsentRevoked  # Forbidden
+        - StandingOrdersErrorKind.RateLimited     # RateLimited
+        - StandingOrdersErrorKind.ServerError     # fallback
+        - StandingOrdersErrorKind.NetworkError    # NetworkError.Network
+    actions:
+      members:
+        - RetryLoad
+    di:
+      - SavedStateHandle           # supplies the accountId route arg
+      - StandingOrdersRepository   # Koin single; stream over the standing-orders store
+
+components:
+  # ── LOADING STATE ────────────────────────────────────────────────
+  - type: progress_circular
+    state_binding: [loading]
+    accessibility_label: "{strings.standing_orders_loading_a11y}"
+    test_tag: "standingOrders:loadingSkeleton"
+    test_context:
+      purpose: "Indicate async fetch of OBReadStandingOrder6 from HSBC AIS endpoint"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  # ── NAVIGATION ───────────────────────────────────────────────────
+  - type: icon_button
+    keyboard:
+      focusable: true
+    id: back_button
+    icon: arrow_back
+    accessibility_label: "{strings.standing_orders_nav_back_a11y}"
+    on_click:
+      action: navigate_back
+      target: account-detail
+      action_contract:
+        effect: navigate
+        description: "Pops the standing-orders screen from the back stack, returning the user to account-detail."
+    test_context:
+      purpose: "Return user to account-detail screen, emitting NavigationEvent.Back to NavController"
+      required_fields: []
+      interaction_type: navigate
+      data_driven: false
+
+  # ── CONTENT STATE — summary bar ──────────────────────────────────
+  - type: text
+    id: summary_row
+    test_tag: "standingOrders:summaryRow"
+    state_binding: [content]
+    role: subtitle
+    content: "{strings.standing_orders_summary_format}"
+    style: labelMedium
+    color: "onSurfaceVariant"
+    accessibility_label: "{strings.standing_orders_summary_format}"
+    test_context:
+      purpose: "ViewModel-computed summary label (e.g. '3 Active · 1 Inactive') from StandingOrderStatusCode counts; uses {strings.standing_orders_summary_format} internally"
+      required_fields: ["standingOrders_summary_label"]
+      interaction_type: display
+      data_driven: true
+
+  # ── CONTENT STATE — standing orders list ─────────────────────────
+  - type: list
+    id: standing_orders_list
+    state_binding: [content]
+    scroll_direction: vertical
+    items_source: "{orders}"
+    test_tag: "standingOrders:content"
+    pull_to_refresh: true
+    pull_to_refresh_action: RetryLoad
+    pull_to_refresh_binding: "rememberKptPullToRefreshState in StandingOrdersScreen.kt"
+    pull_to_refresh_a11y: "{strings.standing_orders_pull_refresh_a11y}"
+    accessibility_label: "{strings.standing_orders_list_a11y}"
+    test_context:
+      purpose: "Render full OBReadStandingOrder6 Data.StandingOrder array; pull-to-refresh re-triggers LoadStandingOrders"
+      required_fields: ["standingOrders"]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: card
+        id: standing_order_card
+        test_tag: "standingOrders:card:{item.standingOrderId}"
+        elevation: 1
+        accessibility_label: "{strings.standing_orders_card_a11y} {item.payeeName}"
+        test_context:
+          purpose: "Per-standing-order container grouping all payment fields for one recurring instruction"
+          required_fields: ["item"]
+          interaction_type: display
+          data_driven: true
+        children:
+          # Row 1: payee name + status badge (inline)
+          - type: text
+            id: so_payee_name
+            role: title
+            content: "{item.payeeName}"
+            style: titleMedium
+            accessibility_label: "{strings.standing_orders_payee_a11y_prefix} {item.payeeName}"
+            test_context:
+              purpose: "Beneficiary name from CreditorAccount.Name in OBReadStandingOrder6"
+              required_fields: ["item.CreditorAccount.Name"]
+              interaction_type: display
+              data_driven: true
+
+          # Retyped badge -> status_chip 2026-08-04 (/idea-sync, findings N-1 + R-1c).
+          - type: status_chip
+            id: so_status_badge
+            test_tag: "standingOrders:statusBadge:{item.standingOrderId}"
+            label: "{item.statusLabel}"
+            variant: "{item.isActive ? 'active' : 'inactive'}"
+            accessibility_label: "{strings.standing_orders_status_prefix} {item.statusLabel}"
+            test_context:
+              purpose: >-
+                Active (variant=primary) / Inactive (variant=outline) badge; variant mapped in
+                ViewModel from StandingOrderStatusCode enum. Inactive was `secondary` until
+                2026-08-04 — changed to `outline` to match direct-debits and to stop colliding
+                with DESIGN.md's payment-disposition vocabulary, which reserves
+                secondary-container (#D3E5F5) for "In progress". A cancelled mandate rendered in
+                the in-progress colour reads as a payment in flight. (That vocabulary was a triad
+                when this was written; it became FOUR values 2026-08-07 with
+                instruction_established, which takes hue-less surfaceVariant. The reservation of
+                secondary-container for In progress is unchanged, so the `outline` choice stands.
+                This badge is a MANDATE lifecycle state, not a payment disposition — an inactive
+                standing order must not borrow instruction_established either, which describes a
+                live instruction that has simply not executed yet.)
+              required_fields: ["item.StandingOrderStatusCode", "item.status_variant"]
+              interaction_type: display
+              data_driven: true
+
+          # Row 2: next payment amount (headline)
+          - type: text
+            id: so_amount
+            test_tag: "standingOrders:amount:{item.standingOrderId}"
+            role: amount
+            content: "{item.amountLabel} {item.currencyLabel}"
+            style: headlineSmall
+            color: "onSurface"
+            accessibility_label: "{strings.standing_orders_amount_a11y_prefix} {item.amountLabel} {item.currencyLabel}"
+            test_context:
+              purpose: "Next payment amount + currency from NextPaymentAmount OB object; on-surface color (read-only banking view — not error)"
+              required_fields: ["item.NextPaymentAmount.Amount", "item.NextPaymentAmount.Currency"]
+              interaction_type: display
+              data_driven: true
+
+          # Row 3: frequency label (human-readable)
+          - type: text
+            id: so_frequency
+            test_tag: "standingOrders:frequency:{item.standingOrderId}"
+            role: body
+            content: "{item.frequencyLabel}"
+            style: bodySmall
+            color: "onSurfaceVariant"
+            accessibility_label: "{strings.standing_orders_frequency_a11y_prefix} {item.frequencyLabel}"
+            test_context:
+              purpose: "Human-readable frequency decoded in ViewModel; covers IntrvlMnthDay, IntrvlWkDay, IntrvlDay, IntrvlYear OBIE patterns"
+              required_fields: ["item.frequency_label"]
+              interaction_type: display
+              data_driven: true
+
+          # Row 4: next payment date
+          - type: text
+            id: so_next_date
+            test_tag: "standingOrders:nextDate:{item.standingOrderId}"
+            role: body
+            content: "{strings.standing_orders_next_prefix} {item.nextDateLabel}"
+            style: bodySmall
+            color: "onSurfaceVariant"
+            visibility: "{item.hasNextPayment}"
+            accessibility_label: "{strings.standing_orders_next_date_a11y_prefix} {item.nextDateLabel}"
+            test_context:
+              purpose: "ISO-8601 NextPaymentDateTime with localised 'Next:' prefix; ViewModel formats to dd MMM yyyy. Hidden when hasNextPayment is false — an Inactive order has a null NextPaymentDateTime, and rendering 'Next:' over nothing states something false about a scheduled payment."
+              required_fields: ["item.NextPaymentDateTime", "item.hasNextPayment"]
+              interaction_type: display
+              data_driven: true
+
+          # Row 5 (conditional): final payment date — only when hasFinalPayment=true
+          - type: text
+            id: so_final_date
+            test_tag: "standingOrders:finalDate:{item.standingOrderId}"
+            role: body
+            content: "{strings.standing_orders_final_prefix} {item.finalDateLabel}"
+            style: bodySmall
+            color: "onSurfaceVariant"
+            visibility: "{item.hasFinalPayment}"
+            accessibility_label: "{strings.standing_orders_final_date_a11y_prefix} {item.finalDateLabel}"
+            test_context:
+              purpose: "FinalPaymentDateTime shown only when non-null; signals last scheduled payment; hasFinalPayment flag set in ViewModel transform"
+              required_fields: ["item.FinalPaymentDateTime", "item.hasFinalPayment"]
+              interaction_type: display
+              data_driven: true
+
+          # Row 6: creditor sort-code / account number
+          - type: text
+            id: so_sort_code
+            test_tag: "standingOrders:sortCode:{item.standingOrderId}"
+            role: body
+            content: "{item.sortCodeLabel}"
+            style: bodySmall
+            color: "onSurfaceVariant"
+            accessibility_label: "{strings.standing_orders_sort_code_a11y_prefix} {item.sortCodeLabel}"
+            test_context:
+              purpose: "CreditorAccount.Identification (UK.OBIE.SortCodeAccountNumber scheme, format '40-12-09 65872310'); aids user recognition of destination"
+              required_fields: ["item.CreditorAccount.Identification"]
+              interaction_type: display
+              data_driven: true
+
+          # Row 7: payment reference
+          - type: text
+            id: so_payment_ref
+            test_tag: "standingOrders:reference:{item.standingOrderId}"
+            role: body
+            content: "{strings.standing_orders_ref_prefix} {item.referenceLabel}"
+            style: bodySmall
+            color: "onSurfaceVariant"
+            accessibility_label: "{strings.standing_orders_ref_a11y_prefix} {item.referenceLabel}"
+            test_context:
+              purpose: "Payment reference string (e.g. RENT-FLAT12, ISA-TOPUP) from OB Reference field; helps distinguish multiple orders to same creditor"
+              required_fields: ["item.Reference"]
+              interaction_type: display
+              data_driven: true
+
+  # ── EMPTY STATE ──────────────────────────────────────────────────
+  - type: empty_state
+    id: empty_standing_orders
+    state_binding: [empty]
+    icon: autorenew
+    title: "{strings.standing_orders_empty_title}"
+    body: "{strings.standing_orders_empty_body}"
+    test_tag: "standingOrders:emptyState"
+    accessibility_label: "{strings.standing_orders_empty_a11y}"
+    test_context:
+      purpose: "Zero-result state when Data.StandingOrder[] is empty in OBIE response"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+    children:
+      # Added 2026-08-04 by /idea-sync. demo-data#states[empty] had declared this CTA since
+      # 2026-08-02 but no component existed for it, so it rendered nowhere. Adding it also gives
+      # standing-order-create its FIRST inbound route — that screen is status:approved yet no
+      # screen navigated to it, leaving it unreachable.
+      #
+      # Creation is genuinely supported: data-flow.yaml#server_capability_gap lists
+      # missing: [GET, PUT, DELETE, pause, resume] — POST is NOT missing — and the HSBC sandbox
+      # exposes /pisp/domestic-standing-order-consents + /pisp/domestic-standing-orders on
+      # UK Personal v4.0, the brand this app targets.
+      - type: button
+        keyboard:
+          focusable: true
+        id: empty_create_button
+        variant: filled
+        label: "{strings.standing_orders_empty_cta}"
+        test_tag: "standingOrders:emptyCreateButton"
+        accessibility_label: "{strings.standing_orders_empty_cta_a11y}"
+        on_click:
+          action: navigate
+          target: standing-order-create
+          action_contract:
+            effect: navigate
+            description: >-
+              Navigates to standing-order-create carrying the current accountId, so a customer
+              with no standing orders has a path to create one instead of a dead-end empty state.
+        test_context:
+          purpose: "Route from the zero-result state to standing-order-create; the only inbound route that screen has"
+          required_fields: []
+          interaction_type: navigate
+          data_driven: false
+
+  # ── UNSUPPORTED STATE ────────────────────────────────────────────
+  # StandingOrdersUiState.Unsupported(message) — rendered by StandingOrdersUnsupported.kt.
+  # Distinct from empty: the servicer does not expose standing orders for this
+  # account at all, so there is nothing to retry.
+  - type: empty_state
+    id: unsupported_standing_orders
+    variant: info
+    state_binding: [unsupported]
+    icon: info_outline
+    title: "{strings.standing_orders_unsupported_title}"
+    body: "{uiState.message}"
+    test_tag: "standingOrders:unsupportedState"
+    accessibility_label: "{strings.standing_orders_unsupported_a11y}"
+    test_context:
+      purpose: "Servicer does not support the standing-orders resource for this account. No retry CTA — the capability registry refused the call rather than the network failing."
+      required_fields: ["uiState.message"]
+      interaction_type: display
+      data_driven: true
+
+  # ── ERROR STATE ──────────────────────────────────────────────────
+  - type: error_state
+    id: error_state
+    state_binding: [error]
+    icon: error_outline
+    title: "{strings.standing_orders_error_title}"
+    body: "{strings.standing_orders_error_body}"
+    test_tag: "standingOrders:errorState"
+    accessibility_label: "{strings.standing_orders_error_a11y}"
+    test_context:
+      purpose: "Surface typed API errors. classifyStandingOrdersError maps Unauthorized→TokenExpired, Forbidden→ConsentRevoked, RateLimited→RateLimited, NetworkError.Network→NetworkError, else→ServerError. StandingOrdersErrorKind carries no isRetriable flag, so the retry CTA is always shown."
+      required_fields: ["uiState.kind"]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: button
+        keyboard:
+          focusable: true
+        id: retry_button
+        variant: filled
+        label: "{strings.standing_orders_retry}"
+        test_tag: "standingOrders:retryButton"
+        accessibility_label: "{strings.standing_orders_retry_a11y}"
+        on_click:
+          action: RetryLoad
+          action_contract:
+            effect: call_api
+            reads_from: standing-orders-list
+            external_library_refs: ["ktorfit", "hsbc-obie-ais-v4.0:standing-orders"]
+            description: "Dispatches StandingOrdersAction.RetryLoad, refreshing the standing-orders stream and returning the screen to Loading then Content or Empty."
+        test_context:
+          purpose: "Dispatch StandingOrdersAction.RetryLoad after a failure; also reachable via pull-to-refresh on the content list"
+          required_fields: []
+          interaction_type: action
+          data_driven: false
+
+i18n_covered: true
+a11y_covered: true
+status_history:
+  - from: draft
+    to: enriched
+    at: "2026-06-29"
+    by: "/idea-enrich"
+  - from: enriched
+    to: enriched
+    at: "2026-06-29"
+    by: "/idea-enrich (re-enrich: +i18n x20 keys, +sort-code row, +reference row, +final-date conditional row, +summary_row, +pull-to-refresh, fix amount color error→on-surface; quality 85→93)"

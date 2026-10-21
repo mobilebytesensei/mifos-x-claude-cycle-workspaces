@@ -1,0 +1,238 @@
+sibling: tests
+schema_version: "4.0"
+feature_id: pay-international-single
+
+feature: pay-international-single
+scenario_count: 17
+
+scenarios:
+  - id: TC-PIS-001
+    priority: p0
+    title: "Happy path — stage, authorise, confirm funds, submit"
+    given: "An eligible account, a German IBAN, EUR transfer currency and a charge bearer"
+    when: "The PSU confirms"
+    then:
+      - "POST /international-payment-consents stages 201 AWAU"
+      - "funds-confirmation runs on the PSU token after AUTH"
+      - "POST /international-payments returns ACSP"
+      - "The app navigates to payment-status"
+
+  - id: TC-PIS-002
+    priority: p0
+    title: "CurrencyOfTransfer and ChargeBearer are always present"
+    given: "Any staged or submitted body"
+    when: "The request is inspected"
+    then:
+      - "Data.Initiation.CurrencyOfTransfer is present"
+      - "Data.Initiation.ChargeBearer is present"
+    rationale: >-
+      Both are mandatory. R18-B01 omitted ChargeBearer and returned U004; the identical body
+      with it present staged 201. FR-019.
+
+  - id: TC-PIS-003
+    priority: p0
+    title: "RemittanceInformation is never sent, and its absence is explained"
+    given: "Any staged or submitted body, and the Amount step"
+    then:
+      - "Data.Initiation.RemittanceInformation is absent from every request"
+      - "No reference input exists on the form"
+      - "no_reference_note is displayed"
+    rationale: >-
+      U005 Field is not expected. The domestic form has a reference field, so a PSU will look
+      for one here; an unexplained absence reads as a missing feature.
+
+  - id: TC-PIS-004
+    priority: p0
+    title: "The creditor is always an IBAN, and saved payees are not offered"
+    given: "The Recipient step"
+    then:
+      - "CreditorAccount.SchemeName is UK.OBIE.IBAN on every request"
+      - "No beneficiary list is presented"
+      - "No sort-code or account-number input exists"
+    rationale: >-
+      A sort-code creditor returns U027 across every currency combination tried. Saved
+      beneficiaries are sort-code addressed, so a payee list would render entries that all fail.
+
+  - id: TC-PIS-005
+    priority: p0
+    title: "An 8-character BIC is rejected before submit"
+    given: "The Recipient step with COBADEFF entered in the BIC field"
+    when: "The PSU tries to advance"
+    then:
+      - "bic_length_error is displayed"
+      - "Advance is blocked"
+      - "No request is sent"
+    rationale: >-
+      8-character BICs return 'Invalid Bank Code'. That form is what most bank directories
+      publish, so it is exactly what a PSU pastes. Catching it locally avoids a round trip and
+      an error message the PSU cannot act on.
+
+  - id: TC-PIS-006
+    priority: p1
+    title: "An omitted BIC stages successfully"
+    given: "The BIC field left blank"
+    when: "The consent is staged"
+    then:
+      - "CreditorAgent is absent from the request body entirely"
+      - "The consent stages 201"
+    rationale: "Omitting CreditorAgent stages 201 (R3-07). The field is genuinely optional."
+
+  - id: TC-PIS-007
+    priority: p0
+    title: "No fee figure is ever displayed"
+    given: "Any step of the flow, including Review and the success state"
+    when: "The screen is inspected"
+    then:
+      - "No monetary fee, estimated fee or charge amount is rendered"
+      - "no_charge_note is displayed on the Charges step"
+    rationale: >-
+      This rail returns NO Charges at any stage — 0 of 33 consents and none on any of the four
+      authorised resources. It is the only shape in the whole surface with that property, so
+      the empty fee row looks like a bug and invites someone to "fix" it with an estimate.
+
+  - id: TC-PIS-008
+    priority: p0
+    title: "No exchange rate or converted amount is displayed"
+    given: "Instructed currency GBP and transfer currency EUR"
+    when: "The Amount and Review steps render"
+    then:
+      - "No exchange rate is shown"
+      - "No estimated received amount is shown"
+      - "fx_disclosure states that the bank sets the final converted amount"
+    rationale: >-
+      No observed response on this endpoint carries a quoted rate. Any displayed figure would
+      be invented, and it would be a claim about how much money the recipient gets.
+
+  - id: TC-PIS-009
+    priority: p1
+    title: "No FX countdown or expiry is presented"
+    given: "The flow between funds-confirmation and submit"
+    when: "The screen is inspected and the flow is deliberately delayed"
+    then:
+      - "No countdown timer is rendered"
+      - "The flow does not abort or expire the staged payment"
+      - "Submission after a delay still succeeds"
+    rationale: >-
+      Guide §21.10.1 gives the TPP 5 seconds to POST within a 40-second window. Both authorised
+      FX flows called funds-confirmation and submitted minutes later without rejection. A timer
+      would abort journeys the bank accepts.
+
+  - id: TC-PIS-010
+    priority: p1
+    title: "A rejected consent offers a fresh payment, not a resubmit"
+    given: "The consent status poll returns RJCT after the PSU denied it at the bank"
+    when: "The app returns to the form"
+    then:
+      - "A rejected message is shown"
+      - "The CTA starts a NEW payment"
+      - "No resubmit against the rejected consent is attempted"
+    rationale: "Observed on consent 45121. A rejected consent cannot be reused."
+
+  - id: TC-PIS-011
+    priority: p2
+    title: "Instructed and transfer currency are independently selectable"
+    given: "The Amount step"
+    when: "GBP is chosen as instructed and USD as transfer"
+    then:
+      - "Both controls hold their distinct values"
+      - "The staged body carries InstructedAmount.Currency GBP and CurrencyOfTransfer USD"
+    rationale: >-
+      The two need not match — GBP instructed with USD transfer stages 201. Collapsing them into
+      one control would make the common case of paying in sterling so the recipient receives
+      euros unexpressible.
+
+  - id: TC-PIS-012
+    priority: p0
+    title: "CreditorAgent is emitted whole or omitted — never half-populated"
+    given: "The Recipient step with the BIC field left blank, then with a full 11-character BIC"
+    when: "The consent is staged in each case"
+    then:
+      - "With the BIC blank, the request body contains NO CreditorAgent key at all"
+      - "No empty-but-present CreditorAgent object is serialised"
+      - "With a full BIC, CreditorAgent carries SchemeName and Identification"
+      - "No code path can produce a CreditorAgent without an Identification"
+    rationale: >-
+      Sending CreditorAgent AT ALL makes Identification mandatory. R8-01, R8-02, R8-03, R8-09 and
+      R8-10 each sent {"CreditorAgent":{"PostalAddress":{"Country":"DE"|"FR"}}} and each returned
+      U004 'Field is missing' @ Data.Initiation.CreditorAgent.Identification; R3-08 sent
+      { Name, PostalAddress.Country } and failed the same way. R8-11 is the explicit control —
+      identical to R8-01 with the key REMOVED, and it stages 201. Omitting is safe;
+      half-populating is worse than omitting. A naive nested-model serialiser emits the empty
+      object by default, which is precisely the refused shape.
+
+  - id: TC-PIS-013
+    priority: p0
+    title: "Every entry in the Errors array is rendered, in wire order"
+    given: "A 400 whose Errors array carries TWO entries — U027 @ CreditorAccount.SchemeName then U002 'Debtor and Creditor Account cannot be same'"
+    when: "The error panel renders"
+    then:
+      - "Two rows are displayed, not one"
+      - "The U027 row precedes the U002 row, matching wire order"
+      - "Neither row is dropped, merged or de-duplicated"
+      - "Row copy is selected by ErrorCode + Path, not by Message"
+    rationale: >-
+      R13-10 and R9-11 both return this exact pair, and INT-05, INT-06 return two Global Money
+      U002 rules together. A panel bound to Errors[0] hides the actionable half — on R13-10 the
+      first entry is a scheme fault the form has already made unreachable and the SECOND is the
+      one the PSU could act on. The scheme check precedes the business rule deliberately, so
+      sorting by severity would invert the server's evaluation order. Message is unstable: U004
+      alone carries four wordings for one code. See dtos/ObPaymentError.yaml.
+
+  - id: TC-PIS-014
+    priority: p0
+    title: "The submit echo is the parsed read-back, never a re-serialised local model"
+    given: "An authorised consent whose Initiation echoes in the server's key order"
+    when: "The submit body is built"
+    then:
+      - "Initiation is taken from the consent read-back response object"
+      - "No string comparison is performed between a locally-serialised body and the read-back"
+      - "Submit succeeds despite the request and echo key orders differing"
+    rationale: >-
+      The server REORDERS Initiation keys on echo — international echoes as ChargeBearer,
+      CurrencyOfTransfer, InstructedAmount, MandateRelatedInformation, [CreditorAgent],
+      [DebtorAccount], CreditorAccount regardless of request order. A re-serialise-and-compare
+      'echo verification' fails on a CORRECT payload and would abort a journey the bank accepts.
+
+  - id: TC-PIS-015
+    priority: p0
+    title: "Charges parses as absent, not as an empty list"
+    given: "An international 201 that omits Charges, CutOffDateTime, ExpectedExecutionDateTime and ExpectedSettlementDateTime"
+    when: "The response is deserialised"
+    then:
+      - "Charges is null/absent in the parsed model, not an empty collection"
+      - "The four omitted keys do not materialise as defaulted empty values"
+      - "The screen distinguishes 'no charge' from 'no charge information'"
+    rationale: >-
+      The keys are ABSENT, not empty. On this rail there is genuinely no charge, so the
+      distinction looks academic — but the same parser serves the deferred international rails
+      where 0.50 arrives at resource creation, and there a defaulted [] renders 'free' for a
+      payment that costs money. FR-021.
+
+  - id: TC-PIS-016
+    priority: p1
+    title: "A matching-country 8-character BIC is still rejected locally"
+    given: "The Recipient step with a French IBAN and the French BIC 'NWBKFRPP'"
+    when: "The PSU tries to advance"
+    then:
+      - "bic_length_error is displayed and advance is blocked"
+      - "No BIC-country versus IBAN-country comparison is performed anywhere"
+    rationale: >-
+      R2-07 proves the refusal is LENGTH-driven, not country-mismatch-driven: a MATCHING French
+      BIC with a French IBAN still returned U002 'Invalid Bank Code'. R3-04's 11-character
+      'COBADEFFXXX' passed. A country-correlation check would both reject valid cross-border
+      routings and let this matching-country 8-character form through.
+
+  - id: TC-PIS-017
+    priority: p1
+    title: "No FX rate can be sent, and none is offered"
+    given: "Any staged body, and every step of the form"
+    then:
+      - "Data.Initiation.ExchangeRateInformation is absent from every request"
+      - "No RateType control exists on the form"
+      - "No rate, no ContractIdentification and no negotiated-rate entry point is offered"
+    rationale: >-
+      ExchangeRateInformation is REFUSED for all three RateType values on this rail
+      (R16-P1/P2/P3) and on both deferred rails (R16-S1/S2/S3, R16-O1/O2/O3), including the
+      Agreed form carrying a real ExchangeRate 1.15 and ContractIdentification 'FX-CONTRACT-001'.
+      Controls R16-C1/C2/C3 with the block removed all staged 201. There is NO WAY to show the
+      customer a rate before authorisation — not even one the TPP holds by contract.

@@ -1,0 +1,152 @@
+schema_version: "4.0"
+api_group: consents
+name: "Consents API"
+base_url: "https://secure.sandbox.ob.hsbc.co.uk/obie/open-banking/v4.0/aisp"
+auth_scheme: "FAPI 1.0 Advanced — see the per-endpoint token column; the three calls do not share one"
+# Rewritten 2026-08-06 (/idea-sync, OBP eviction). Was the Open Bank Project consent model at
+# /obp/v4.0.0/consumers/{consumerId}/consents.
+#
+# ENDPOINT BODIES MIGRATED 2026-08-07. The 2026-08-06 pass rewrote the header — including the
+# HEADER TRAP and 90-DAY notes below, which are correct and current — but left both endpoints
+# underneath on the OBP consumer-consent model: /v4.0.0/consumers/{consumer_id}/consents, a
+# snake_case consent body, and a "list all consents granted by the authenticated consumer"
+# description of an endpoint OBIE does not have.
+# What was actually wrong:
+#   paths    /v4.0.0/consumers/{consumer_id}/consents -> /account-access-consents
+#            The OBP path was consumer-scoped (one app, many consents). OBIE is consent-scoped:
+#            a TPP addresses ONE consent by the ConsentId it was handed at creation.
+#   listing  there is NO list endpoint. See no_list_endpoint below — this is the single largest
+#            structural difference and it shapes the consent-list screen.
+#   create   the OBP model had no create call in this file at all. OBIE's POST is the whole
+#            point of the resource: it is where the Permissions array is declared.
+#   fields   snake_case consent / consumer_id / json_web_token -> the OBIE Data.* envelope.
+#   errors   OBP_SERVER_ERROR / USER_NOT_LOGGED_IN -> the observed HTTP set.
+#
+# The OBIE account-access-consent is a different object: it carries an explicit Permissions
+# array the PSU approves at the bank, an ExpirationDateTime, and a transaction date window.
+# Permissions are NOT toggled in this app — approval happens on HSBC's portal.
+#
+# HEADER TRAP: this is the ONE consent endpoint that REJECTS x-jws-signature. Sending it
+# returns UK.OBIE.Header.Unexpected "x-jws-signature header was not expected" @ Header
+# (verified R18-A01, control R18-A02 stages 201). Detached JWS is for PISP writes only.
+#
+# 90-DAY RECONFIRMATION: UK Open Banking requires the PSU to reconfirm an account-access
+# consent every 90 days. VRP consents are explicitly exempt from that expiry.
+generated_at: "2026-05-30"
+
+# ─────────────────────────────────────────────────────────────────────────
+# NO LIST ENDPOINT — the structural fact this file used to contradict
+# ─────────────────────────────────────────────────────────────────────────
+no_list_endpoint:
+  finding: >-
+    There is no "list my consents" call. The endpoint inventory carries exactly three
+    account-access-consent operations — POST, GET by ConsentId, DELETE by ConsentId. A TPP can
+    only read a consent whose ConsentId it already holds.
+  consequence: >-
+    consent-list is driven by LOCALLY STORED ConsentIds, refreshed one GET at a time. Lose the
+    local store and the app cannot enumerate what it holds; the PSU would have to revoke from
+    HSBC's own channel. The out-of-band case is covered by event polling, not by a list read —
+    see server/apis/events.yaml.
+  sandbox_note: >-
+    In the HSBC sandbox a PSU can hold only one active consent at a time. The list still shows
+    every locally-known ConsentId, including expired and revoked ones, as history.
+
+endpoints:
+
+  - id: create_consent
+    method: POST
+    path: "/account-access-consents"
+    token: client_credentials
+    jws: "REJECTED IF SENT — see the HEADER TRAP above"
+    description: >-
+      Stage an account-access consent with an explicit Permissions array, an ExpirationDateTime
+      and a transaction date window. Stages 201 with a Data.ConsentId (control R18-A02). The PSU
+      then authorises at HSBC via the app-to-app redirect; approval never happens in this app.
+    response_dto: [HSBCCreateConsentResponse, HSBCCreateConsentData]
+    consumed_by: [login, consent-manager]
+
+  - id: get_consent_status
+    method: GET
+    path: "/account-access-consents/{ConsentId}"
+    description: >-
+      Status of ONE consent. Called per locally-stored ConsentId to refresh the list, and polled
+      after the authorisation redirect returns.
+    response_dto: [Consent, ConsentSummary]
+    token: >-
+      unresolved — requires_auth is true, but the capture corpus does not establish whether a
+      client_credentials token suffices post-authorisation or whether the PSU token is required.
+    consumed_by: [consent-list, consent-detail, consent-manager]
+
+  - id: revoke_consent
+    method: DELETE
+    path: "/account-access-consents/{ConsentId}"
+    description: >-
+      Revoke a consent, immediately terminating access to the account data it covered. Contrast
+      the payment surface, where PSD2 Article 80 forbids revoking an authorised payment-order
+      consent and only VRP carries a DELETE — see server/apis/pisp.yaml#delete_rule.
+    token: >-
+      unresolved — same open question as get_consent_status.
+    consumed_by: [consent-detail, consent-manager]
+
+# ─────────────────────────────────────────────────────────────────────────
+# ERRORS — the observed HTTP set
+#
+# The U0xx short codes catalogued in server/apis/pisp.yaml are a PISP surface. The one OBIE
+# long-form error established on THIS resource is the header trap above.
+# ─────────────────────────────────────────────────────────────────────────
+error_codes:
+  - code: 400
+    message: "UK.OBIE.Header.Unexpected"
+    cause: "x-jws-signature was sent on the create call. This resource rejects it."
+    recovery: "Drop the header. Detached JWS is for PISP writes only."
+    retry: false
+  - code: 401
+    cause: "Access token expired or invalid."
+    recovery: "Clear the token store and navigate to login."
+    retry: false
+  - code: 403
+    cause: "The consent is not in a state that permits the operation."
+    recovery: "Refresh the consent status before retrying."
+    retry: false
+  - code: 404
+    cause: "ConsentId not found — typically a stale locally-stored id."
+    recovery: "Drop it from the local store and remove the row."
+    retry: false
+  - code: 429
+    cause: "Rate limit exceeded. OBIE mandates a 500-calls-per-5-minutes PSU limit."
+    recovery: "Exponential back-off, then surface a retry affordance."
+    retry: true
+  - code: 503
+    cause: "HSBC sandbox unavailable."
+    recovery: "Surface a retry affordance after a brief delay."
+    retry: true
+
+# ─────────────────────────────────────────────────────────────────────────
+# REMOVED 2026-08-07 — the OBP consumer-consent model
+# ─────────────────────────────────────────────────────────────────────────
+removed_2026_08_07:
+  - endpoint: "GET /v4.0.0/consumers/{consumer_id}/consents"
+    reason: >-
+      OBP consumer-scoped consent list. OBIE has no list endpoint at all — see no_list_endpoint.
+  - endpoint: "DELETE /v4.0.0/consumers/{consumer_id}/consents/{consent_id}"
+    reason: "Superseded by DELETE /account-access-consents/{ConsentId}."
+  - field: consumer_id
+    reason: >-
+      OBP identifier for "the third-party app that holds this consent". The TPP is implicit in
+      the mTLS certificate and the private_key_jwt client assertion; it is never a path or body
+      parameter.
+  - field: json_web_token
+    reason: "OBP encoded the consent claims as a JWT on the consent object. OBIE does not."
+  - field: redirects
+    reason: >-
+      OBP returned the registered redirect URIs on the consent. Under FAPI the redirect_uri is
+      fixed at Dynamic Client Registration, not carried per consent.
+  - enum: "INITIATED | ACCEPTED | REVOKED | EXPIRED"
+    reason: >-
+      OBP consent lifecycle vocabulary — none of these four values is an OBIE consent status.
+      The replacement enum for THIS resource is deliberately not asserted: the capture corpus
+      documents the PISP consent ladder (AWAU -> AUTH -> COND, RJCT on denial) in
+      server/apis/pisp.yaml and dtos/ObPaymentStatus.yaml, and HSBC is known to serve both the
+      short-code and long-form encodings on different endpoints. Read the AIS consent's own
+      Data.Status values off a captured response before mapping any of them to a display label.
+    replacement_enum_status: unresolved

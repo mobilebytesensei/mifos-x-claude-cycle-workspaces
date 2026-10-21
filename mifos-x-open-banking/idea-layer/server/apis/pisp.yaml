@@ -1,0 +1,208 @@
+# server/apis/pisp.yaml — the SHARED PISP contract for all seven payment families
+#
+# Authored 2026-08-06 by /idea-sync. Replaces server/apis/payments.yaml, which described the
+# Open Bank Project transaction-request model (SEPA / COUNTERPARTY / SANDBOX_TAN rails,
+# counterparty CRUD, IBAN pre-check) and had no relationship to what the app now does.
+#
+# SCOPE OF THIS FILE: what is TRUE OF EVERY FAMILY — auth, headers, the request/response
+# envelope, the status vocabulary and the error catalogue.
+#
+# PER-FAMILY wire contracts (mandatory fields, forbidden fields, amount field names, eligibility,
+# charge behaviour, measured boundaries) live in each screen's api.yaml, where the evidence that
+# justifies them sits alongside. They are deliberately NOT duplicated here — that duplication is
+# exactly how a manifest drifts from the specs it claims to describe.
+#
+#   pay-domestic-single/api.yaml               the reference rail
+#   pay-domestic-scheduled/api.yaml            + Permission, + date, - funds-confirmation
+#   pay-domestic-standing-order/api.yaml       FirstPaymentAmount, mandate, Risk {}
+#   pay-international-single/api.yaml          IBAN, CurrencyOfTransfer, ChargeBearer, no charge
+#   pay-international-scheduled/api.yaml       intersection of the two above
+#   pay-international-standing-order/api.yaml  InstructedAmount — the inverse of the domestic mandate
+#   pay-vrp-mandate/api.yaml                   ControlParameters, POST funds-confirmation, DELETE
+
+schema_version: "2.0"
+api: "HSBC UK Open Banking — Payment Initiation (OBIE Read/Write v4.0)"
+base_url: "https://secure.sandbox.ob.hsbc.co.uk/obie/open-banking/v4.0/pisp"
+api_source_ref: API-003
+brand: "HSBC UK Personal"
+
+families:
+  count: 7
+  list:
+    - { id: domestic-payment, consent: domestic-payment-consents, resource: domestic-payments, id_field: DomesticPaymentId, funds_confirmation: GET, delete: false }
+    - { id: domestic-scheduled-payment, consent: domestic-scheduled-payment-consents, resource: domestic-scheduled-payments, id_field: DomesticScheduledPaymentId, funds_confirmation: none, delete: false }
+    - { id: domestic-standing-order, consent: domestic-standing-order-consents, resource: domestic-standing-orders, id_field: DomesticStandingOrderId, funds_confirmation: none, delete: false }
+    - { id: international-payment, consent: international-payment-consents, resource: international-payments, id_field: InternationalPaymentId, funds_confirmation: GET, delete: false }
+    - { id: international-scheduled-payment, consent: international-scheduled-payment-consents, resource: international-scheduled-payments, id_field: InternationalScheduledPaymentId, funds_confirmation: none, delete: false }
+    - { id: international-standing-order, consent: international-standing-order-consents, resource: international-standing-orders, id_field: InternationalStandingOrderId, funds_confirmation: none, delete: false }
+    - { id: domestic-vrp, consent: domestic-vrp-consents, resource: domestic-vrps, id_field: DomesticVRPId, funds_confirmation: POST, delete: true }
+  no_file_payments: "There is no file-payments folder for this brand."
+  no_international_vrp: "VRP is domestic only."
+  funds_confirmation_rule: >-
+    Exists only where execution is NOW. Scheduled and standing-order journeys have no such step
+    — today's balance says nothing about execution day. VRP inverts the verb: a PISP consent has
+    one fixed amount so a GET suffices; a VRP consent has none, so the TPP supplies one in a body.
+  delete_rule: >-
+    VRP is the only family with a DELETE. PSD2 Article 80 forbids a PSU revoking an authorised
+    payment-order consent, while the VRP profile grants revocation "at any point in time".
+
+# ─────────────────────────────────────────────────────────────────────────
+# HEADER CONTRACT — observed, per call type
+# ─────────────────────────────────────────────────────────────────────────
+header_contract:
+  - { call: "POST /v1.1/oauth2/token", jws: false, idempotency: false, token: "—" }
+  - { call: "POST /v4.0/aisp/account-access-consents", jws: "REJECTED IF SENT", idempotency: false, token: client_credentials }
+  - { call: "POST /v4.0/pisp/*-consents", jws: required, idempotency: required, token: client_credentials }
+  - { call: "GET /v4.0/pisp/*-consents/{id}", jws: false, idempotency: false, token: client_credentials }
+  - { call: "GET|POST .../funds-confirmation", jws: "POST only (VRP)", idempotency: "POST only (VRP)", token: "PSU (authorisation_code)" }
+  - { call: "POST /v4.0/pisp/*-payments", jws: required, idempotency: required, token: "PSU (authorisation_code)" }
+  - { call: "GET /v4.0/pisp/*-payments/{id}", jws: false, idempotency: false, token: client_credentials }
+
+detached_jws:
+  algorithm: PS256
+  b64: false
+  crit: [iat, iss, tan]
+  typ: JOSE
+  cty: application/json
+  claims: "the three http://openbanking.org.uk/* claims"
+  omission_error: "400 U019"
+  ais_rejection: >-
+    Sending x-jws-signature on an AIS consent returns UK.OBIE.Header.Unexpected
+    "x-jws-signature header was not expected" @ Header. Note the error is the v3.1 LONG form —
+    v4.0 codes this condition U020. HSBC serves both generations.
+
+idempotency:
+  header: x-idempotency-key
+  max_length: 40
+  scope: "one key per staged payment"
+  reused_across: [consent_stage, submit, every_retry_of_either]
+  rationale: >-
+    A retry after a network timeout is indistinguishable, client-side, from a request that never
+    arrived. Without a stable key the safe-looking action is the one that takes the money twice.
+
+# ─────────────────────────────────────────────────────────────────────────
+# JOURNEY — identical in shape across all six PIS families
+# ─────────────────────────────────────────────────────────────────────────
+journey:
+  - { step: 1, action: "client_credentials token on scope=payments" }
+  - { step: 2, action: "POST {family}-consents", result: "201, Data.ConsentId, Status AWAU" }
+  - { step: 3, action: "app-to-app redirect to /v1.1/oauth2/authorize", note: "PSU authenticates and approves at HSBC" }
+  - { step: 4, action: "exchange the code for a PSU token", note: "validate state and nonce BEFORE spending the code" }
+  - { step: 5, action: "GET {family}-consents/{ConsentId}", poll_to: AUTH }
+  - { step: 6, action: "funds-confirmation", applies_to: [domestic-payment, international-payment, domestic-vrp] }
+  - { step: 7, action: "POST {family}", note: "PSU token, same idempotency key, Initiation echoed from the AUTHORISED consent" }
+  - { step: 8, action: "GET {family}/{id}", poll_to: "a terminal disposition" }
+
+vrp_journey_divergence: >-
+  Steps 1-5 run ONCE, at mandate creation. Every subsequent payment runs steps 6-8 only, with no
+  re-authentication — the defining VRP property. The consent stays AUTH rather than moving to
+  COND, and can be destroyed with DELETE.
+
+initiation_echo_rule:
+  rule: "The submitted Data.Initiation must byte-match the AUTHORISED consent's Initiation."
+  mismatch_error: U008
+  critical: >-
+    Take it from the AUTHORISED CONSENT, not from what was staged locally. When the TPP omits
+    DebtorAccount the bank writes the PSU's own choice into Initiation.DebtorAccount and enriches
+    it with a Name. On the six PIS families echoing a stale local copy blocks re-use; on VRP the
+    payment itself is refused.
+  necessary_but_not_sufficient: >-
+    The bank may write an account whose scheme its own payment endpoint refuses — observed when
+    the PSU selected the credit card on a VRP consent. Handle U021 on a payload taken verbatim
+    from the bank.
+
+# ─────────────────────────────────────────────────────────────────────────
+# STATUS — four ladders, two encodings. Full contract in dtos/ObPaymentStatus.yaml
+# ─────────────────────────────────────────────────────────────────────────
+status:
+  consent_ladder: "AWAU -> AUTH -> COND (RJCT if the PSU denies)"
+  vrp_consent_ladder: "AWAU -> AUTH, forever. Never COND. 400 U011 once deleted."
+  resource_ladders:
+    single: "ACSP -> ACCC"
+    domestic_deferred: "PDNG -> INCO"
+    international_deferred: "INCO -> INCO"
+    vrp: "ACSP -> ACCC, in the v3.1 LONG form"
+  dual_encoding_warning: >-
+    GET /domestic-vrps returns 'AcceptedCreditSettlementCompleted' where every other endpoint
+    returns 'ACCC'. A short-code-only mapper reads every VRP payment as unrecognised and, per the
+    fail-open rule, renders a completed payment as permanently in progress.
+  status_update_datetime_warning: >-
+    StatusUpdateDateTime does NOT move on AWAU -> AUTH. All five authorised consents in the
+    corpus transitioned with it equal to CreationDateTime. Read Data.Status only.
+  no_per_execution_status: >-
+    There is no per-execution status anywhere in OBIE. On the four deferred families the resource
+    describes the instruction's SETUP, never the Nth payment. A TPP cannot learn that execution
+    #3 failed by any API means.
+
+# ─────────────────────────────────────────────────────────────────────────
+# ELIGIBILITY — scheme-based, not product-based
+# ─────────────────────────────────────────────────────────────────────────
+debtor_eligibility:
+  rule: "A UK.OBIE.SortCodeAccountNumber account is payable. A UK.OBIE.PAN account is not."
+  tpp_named:
+    current_account: accepted
+    savings: accepted
+    global_money: "U002 — except the international same-account conversion"
+    credit_card: "U027 domestic (scheme rejected) / U002 international (value rejected) / U021 VRP (stated in prose)"
+  bank_selected: >-
+    Omitting DebtorAccount lets the PSU choose at the bank, which widens what is reachable —
+    Global Money and the credit card both funded payments this way on the six PIS families.
+    It does NOT rescue the card on VRP, which is refused by both routes.
+  guide_divergence: >-
+    Guide §17.5.1 states a PRODUCT matrix (SO not on savings, VRP PCA-only). Observation
+    contradicts it in both directions: savings authorised and settled two VRP payments, and
+    Global Money funded a VRP when the bank nominated it. Only the VRP endpoint states the real
+    rule in words; elsewhere it surfaces as a bare U027.
+
+creditor_scheme:
+  domestic: "UK.OBIE.SortCodeAccountNumber. An IBAN returns U027."
+  international: "UK.OBIE.IBAN. A sort code returns U027 in every shape tried."
+  vrp: "UK.OBIE.SortCodeAccountNumber on BOTH sides. No IBAN, no PAN."
+
+# ─────────────────────────────────────────────────────────────────────────
+# CONSUMER CONTEXT — binds all seven families
+# ─────────────────────────────────────────────────────────────────────────
+consumer_context_constraint:
+  allowed: [TransferToThirdParty, TransferToSelf]
+  forbidden_contexts: [EcommerceMerchantInitiatedPayment, BillingGoodsAndServicesInAdvance, BillingGoodsAndServicesInArrears, FaceToFacePointOfSale]
+  forbidden_fields: [MerchantCategoryCode, MerchantCustomerIdentification, DeliveryAddress]
+  warning: >-
+    HSBC's own Postman bodies use the MERCHANT shape — EcommerceMerchantInitiatedPayment with
+    MerchantCategoryCode and a DeliveryAddress on the PIS families, PispPayee with the same
+    merchant fields on VRP. They are a wire-format reference only. Copying them verbatim models a
+    merchant checkout, which this app is not.
+  standing_order_exception: >-
+    Both standing-order families send Risk as {} empty. That is CORRECT and is not the merchant
+    problem — a recurring mandate genuinely has no single payment context to declare.
+
+# ─────────────────────────────────────────────────────────────────────────
+# CHARGES
+# ─────────────────────────────────────────────────────────────────────────
+charges:
+  domestic_single: "0.05 at consent staging, instructed currency (GBP)"
+  domestic_deferred: "0.05 at consent staging"
+  international_single: "NONE at any stage, through to ACCC — the only shape with this property"
+  international_deferred: "none at consent, 0.50 at RESOURCE creation, in the INSTRUCTED currency"
+  vrp: "0.05 per payment"
+  type_observed: "UK.OBIE.CHAPSOut on every charge in the corpus, even where LocalInstrument is UK.OBIE.FPS"
+  instructed_currency_proof: >-
+    Three resources separate instructed from transfer currency and all agree the charge follows
+    the INSTRUCTED one: 19918 (GBP -> USD, 0.50 GBP), 19921 (GBP -> EUR, 0.50 GBP),
+    19917 (USD -> USD, 0.50 USD).
+
+# ─────────────────────────────────────────────────────────────────────────
+# ERRORS
+# ─────────────────────────────────────────────────────────────────────────
+errors:
+  - { code: U002, meaning: "Invalid field value", common_causes: ["TPP-named Global Money debtor", "8-character BIC", "frequency outside the five accepted values", "date beyond T+365", "UK.OBIE.SCA in PSUAuthenticationMethods"] }
+  - { code: U003, meaning: "Invalid date", common_causes: ["execution date today or in the past", "final payment date before first, beyond 12 months, or today/tomorrow"] }
+  - { code: U004, meaning: "Field is missing", common_causes: ["Data.Permission", "RequestedExecutionDateTime", "ChargeBearer", "CurrencyOfTransfer", "ControlParameters / PeriodicLimits / MaximumIndividualAmount", "CreditorAgent.Identification"] }
+  - { code: U005, meaning: "Field is not expected", common_causes: ["RemittanceInformation on any international shape", "InstructedAmount on a domestic SO", "FirstPaymentAmount on an international SO", "PointInTime on any mandate"] }
+  - { code: U008, meaning: "Initiation mismatch on submit" }
+  - { code: U009, meaning: "Consent is not in Authorised status" }
+  - { code: U011, meaning: "Resource cannot be found", note: "VRP consent GET after DELETE. Expected, not a fault." }
+  - { code: U014, meaning: "Fails control parameters", note: "VRP. Path always points at the amount, so the breached limit is not identifiable." }
+  - { code: U019, meaning: "Missing or invalid x-jws-signature" }
+  - { code: U021, meaning: "Identification is not a UK.OBIE.SortCodeAccountNumber account", note: "VRP only — the one endpoint that states the scheme rule in prose." }
+  - { code: U023, meaning: "Currency invalid — only GBP allowed", note: "VRP only." }
+  - { code: U027, meaning: "Unsupported scheme" }

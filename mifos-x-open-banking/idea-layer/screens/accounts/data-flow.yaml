@@ -1,0 +1,90 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: accounts
+
+screen_id: accounts
+
+on_mount:
+  - trigger: accounts_and_balances_load
+    description: >
+      Load authorised account list, fan out parallel balance fetches per AccountId,
+      read cached consent ExpirationDateTime to derive consentDaysRemaining and
+      decide content vs consent_expiring state transition.
+    steps:
+      - call: accounts-list
+        store_as: accounts
+        on_empty_result:
+          # OBReadAccount6 with empty Data.Account[] → empty state
+          state: empty
+      - call: balances
+        for_each: "{accounts[].AccountId}"
+        parallel: true
+        path_params:
+          AccountId: "{item.AccountId}"
+        merge_into: "accounts[i].balance"
+        on_item_error:
+          # Partial failure: mark that account as balance_unavailable; keep rest
+          action: mark_balance_unavailable
+      - derive:
+          - field: consentDaysRemaining
+            from: "localConsentCache.ExpirationDateTime"
+            transform: "ChronoUnit.DAYS.between(Instant.now(), value)"
+          - field: activeConsentId
+            from: "localConsentCache.ConsentId"
+          - field: isConsentExpiring
+            from: "consentDaysRemaining < 30"
+          - field: totalBalanceFormatted
+            from: "accounts.filter { it.Currency == 'GBP' }.sumOf { it.balance.Amount.Amount }"
+            transform: "formatCurrency(GBP, value)"
+    on_loading: loading
+    on_success:
+      default: content
+      condition_overrides:
+        - condition: "isConsentExpiring == true"
+          state: consent_expiring
+    on_empty: empty
+    on_error:
+      - code: 401
+        state: error
+        error_context:
+          userMessage: "Your session has expired. Please sign in again."
+          recovery_action: navigate_to_login
+      - code: 403
+        state: error
+        error_context:
+          userMessage: "Account access permission denied. Please check your consent."
+      - code: 429
+        state: error
+        error_context:
+          userMessage: "Too many requests. Please try again in a moment."
+      - code: network_error
+        state: error
+        error_context:
+          userMessage: "No internet connection. Please check your network and retry."
+      - code: default
+        state: error
+        error_context:
+          userMessage: "Unable to load accounts. Please retry."
+
+on_user_action:
+  - trigger: retry_load
+    re_runs: [accounts_and_balances_load]
+
+  - trigger: filter_accounts
+    description: "Client-side filter by AccountSubType. No API call — operates on cached accounts list."
+    updates:
+      - field: filteredAccounts
+        from: >
+          subtype == null
+            ? accounts
+            : accounts.filter { it.AccountSubType in subtype.split(',') }
+      - field: activeFilter
+        from: "{params.subtype}"
+    state_unchanged: true
+
+  - trigger: navigate_reconfirm_consent
+    description: "Navigate to consent-detail for 90-day OBIE reconfirmation. Triggered from consent_expiring banner."
+    navigate:
+      target: consent-detail
+      params:
+        consentId: "{activeConsentId}"

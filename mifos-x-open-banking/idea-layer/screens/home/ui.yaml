@@ -1,0 +1,554 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: home
+
+screen_id: home
+archetype: dashboard
+name: "{strings.home.screen.title}"
+# status: REMOVED 2026-08-04 (CROSS_LEAK repair — sibling-layout.json assigns `status` to
+# the docs sibling). This copy held `implemented`; docs.yaml is the single owner.
+quality_score: 95
+initial_state: loading
+i18n: true
+
+screens:
+  - id: home
+    name: "{strings.home.screen.title}"
+    viewmodel: HomeViewModel
+
+status_history:
+  - { from: draft, to: enriched, at: "2026-06-30", by: "/idea-add (create + enrich)" }
+  - { from: enriched, to: enriched, at: "2026-07-14", by: "/idea-enrich (quality-pass)" }
+
+business_logic:
+  kind: composite
+  description: >
+    Aggregates selected-account data by firing GET /accounts (hsbc-obie-ais-v4.0:accounts)
+    to populate the account-switcher list, then in a coroutineScope async/awaitAll fetches
+    GET /accounts/{AccountId}/balances (hsbc-obie-ais-v4.0:balances) and
+    GET /accounts/{AccountId}/transactions with limit=5 (hsbc-obie-ais-v4.0:transactions)
+    in parallel for the selected account; persists selectedAccountId in DataStore so the
+    selection survives app restarts; derives InterimAvailable balance and available balance
+    from OBCashBalance3 list; derives spending snapshot from cached PFM Room data (no
+    extra API call). Transitions to empty state when no accounts are authorised or no
+    active consent exists.
+  external_library_refs:
+    - "ktorfit"
+    - "hsbc-obie-ais-v4.0:accounts"
+    - "hsbc-obie-ais-v4.0:balances"
+    - "hsbc-obie-ais-v4.0:transactions"
+  description_author: claude
+  description_authored_at: "2026-06-30T00:00:00Z"
+
+# ─────────────────────────────────────────────────────────────────────
+# STATE MODEL — HomeViewModel contract
+# Derived from docs.yaml#impl_notes.state_model Kotlin block + vm_actions + error_cases.
+# Satisfies QUALITY_FORMULA.md Category 10 (State Model, 5 pts).
+# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
+# SOURCE BINDING — reverse-synced from source 2026-07-28
+# ─────────────────────────────────────────────────────────────────────
+implementation:
+  status: implemented
+  source_module: "feature/home"
+  package: "org.mifosx.openbanking.feature.home"
+  graph: "homeGraph(onNavigateToTransactions, onNavigateToTransactionDetail)"
+  route: "HomeRoute inside the HomeDestination graph"
+  viewmodel: HomeViewModel
+  screen: HomeScreen
+  test_tags_object: HomeTestTags
+  bottom_nav_tab: "HomeTab (order 0) — also the NavHost start destination"
+  nav_callbacks:
+    - "onNavigateToTransactions(accountId) -> TransactionsRoute(accountId)"
+    - "onNavigateToTransactionDetail(transactionId, accountId) -> TransactionDetailRoute(...)"
+  components:
+    - "components/HeroBalanceCard.kt"
+    - "components/AccountSelectorSheet.kt"
+    - "components/RecentTransactionsSection.kt"
+  synced_from_source_at: "2026-07-28"
+  added_in_sync:
+    - "OpenAccountSelector / DismissAccountSelector actions — the account-selector bottom sheet is driven by isAccountSelectorVisible; the idea-layer modelled neither the actions nor the sheet state"
+  removed_in_sync:
+    - "navigateToStatements — homeGraph exposes no statements callback"
+    - "navigateToSpending — the pfm-dashboard screen was never built; no callback exists"
+    - "navigateToConsentList — homeGraph exposes no consent-list callback; consents are reached from settings"
+    - "navigateToAccountDetail — homeGraph exposes no account-detail callback"
+    - "loadHome action — the initial load is stream collection in init{}, not a dispatched action"
+    - "spendThisMonth / topCategoryName / activeConsentId state fields — HomeData carries none of them"
+  note: "HomeData does expose a spending snapshot through core/data SpendingCalculator.computeSpendingSnapshot, but there is no navigation out of it."
+
+state_model:
+  HomeViewModel:
+    state:
+      name: HomeState
+      fields:
+        - name: uiState
+          type: ScreenState<HomeData>
+        - name: isAccountSelectorVisible
+          type: Boolean
+        - name: accountId
+          type: String
+    data_model:
+      name: HomeData
+      fields:
+        - name: accounts
+          type: List<AccountChipUi>
+        - name: selectedAccountId
+          type: String
+        - name: accountTypeLabel
+          type: String
+        - name: accountNickname
+          type: String
+        - name: accountSubType
+          type: String
+        - name: accountNumber
+          type: String
+        - name: rawIdentification
+          type: String
+        - name: balanceLabel
+          type: String
+        - name: availableAmountLabel
+          type: String
+        - name: accountNumberLabel
+          type: String
+        - name: recentTransactions
+          type: List<TransactionRowUi>
+    screen_state:
+      sealed_class: ScreenState        # shared core-base type
+      members:
+        - Loading
+        - Content                      # HomeData
+        - Empty
+        - Error
+        - NoNetwork
+        - Unauthenticated
+    actions:
+      members:
+        - SelectAccount            # data class — persists the selection and re-drives the stream
+        - OpenAccountSelector      # shows the AccountSelectorSheet
+        - DismissAccountSelector   # hides the AccountSelectorSheet
+        - RetryLoad
+    di:
+      - AccountsRepository      # accounts stream
+      - BalancesRepository      # balances stream
+      - TransactionsRepository  # recent-transactions stream
+      - UserDataRepository      # selectedAccountId persistence across app restarts
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: false
+  fab_visible: false
+
+# dependencies: MOVED to flow.yaml 2026-07-31 (CROSS_LEAK repair —
+# sibling-layout.json assigns `dependencies` to the flow sibling).
+
+# ─────────────────────────────────────────────────────────────────────
+# STATES — full coverage required
+# ─────────────────────────────────────────────────────────────────────
+states: [loading, content, empty, error]
+
+# ─────────────────────────────────────────────────────────────────────
+# TEST TAGS — reconciled against source 2026-08-02 by /idea-sync (source-truth pass)
+# ─────────────────────────────────────────────────────────────────────
+# Every `test_tag:` below components[] is copied VERBATIM from HomeTestTags.kt. Do not
+# normalise the string form: this project's source uses two conventions (snake_case here,
+# `feature:camelCase` in account-holder) and both are truth. The tag is the contract the
+# Robolectric and instrumented UI tests drive the screen through — a "tidied" value silently
+# breaks every onNodeWithTag assertion.
+test_tags:
+  source: "feature/home/src/commonMain/kotlin/org/mifosx/openbanking/feature/home/HomeTestTags.kt"
+  declared_in_source: 7          # 6 const val + 1 private prefix consumed by fun accountChip()
+  bound_to_components: 6
+  unbound:
+    - tag: "home_content"
+      source_ref: "HomeContent.kt:49"
+      why: >-
+        Tags the content Column that wraps hero_balance_card + recent_transactions_section.
+        The idea-layer models those as sibling components bound to [content] with no wrapper,
+        so there is no component to carry it. Recorded here rather than invented as a synthetic
+        container — adding one would change the component inventory that TRAINING_MASTER and
+        design-validate both count, to represent a layout node the spec deliberately omits.
+
+components:
+
+  # ══════════════════════════════════════════════════════════════════
+  # LOADING STATE — skeleton placeholders
+  # ══════════════════════════════════════════════════════════════════
+
+  - type: stack
+    id: loading_skeleton
+    state_binding: [loading]
+    direction: vertical
+    gap: spacing.md
+    padding: { top: spacing.xl, horizontal: spacing.md, bottom: spacing.md }
+    accessibility_label: "{strings.home.loading.description}"
+    test_tag: "home_skeleton"          # HomeTestTags.SKELETON @ HomeSkeleton.kt:35
+    children:
+      # hero card skeleton
+      - type: shimmer
+        id: skeleton_hero
+        variant: card
+        height: "180dp"
+        corner_radius: radius.lg
+      # skeleton_actions REMOVED 2026-08-02 (/design-validate F-013, STATE-002).
+      # It was an 80dp placeholder mirroring quick_actions_card — a component deleted from the
+      # content state on 2026-07-30 (see the comment below the hero card). The content state
+      # renders exactly three components and has no quick-actions row, so this reserved 80dp
+      # plus its gap for content that never arrives: a guaranteed layout shift on data arrival,
+      # which is precisely what STATE-002 exists to catch. The 07-30 pass swept the card and its
+      # explanatory comment but not the skeleton that mirrored it.
+      # section header skeleton
+      - type: shimmer
+        id: skeleton_tx_header
+        variant: text
+        height: "20dp"
+        width: "140dp"
+      # transaction row skeletons
+      - type: shimmer
+        id: skeleton_tx_1
+        variant: card
+        height: "64dp"
+        corner_radius: radius.sm
+      - type: shimmer
+        id: skeleton_tx_2
+        variant: card
+        height: "64dp"
+        corner_radius: radius.sm
+      - type: shimmer
+        id: skeleton_tx_3
+        variant: card
+        height: "64dp"
+        corner_radius: radius.sm
+
+  # ══════════════════════════════════════════════════════════════════
+  # CONTENT STATE
+  # ══════════════════════════════════════════════════════════════════
+
+  # ── Account switcher strip ─────────────────────────────────────────
+  # ── account_switcher RESHAPED 2026-07-30 (/idea-feature-export stale-artifact fix) ──
+  # Was a horizontal-scrolling `chip_row` of account chips. Source has no such row:
+  # HomeContent.kt line 63 wires `onClick = onOpenAccountSelector` on the HERO CARD, and the
+  # switcher is AccountSelectorSheet — the first and only ModalBottomSheet in this codebase.
+  # Modelled as the sheet it actually is, with the hero card as its trigger.
+  - type: bottom_sheet
+    id: account_selector_sheet
+    state_binding: [content]
+    visibility_condition: "{state.isAccountSelectorVisible}"
+    accessibility_label: "{strings.home.switcher.accessibility}"
+    items_source: "{allAccounts}"
+    api_id: accounts-list
+    test_tag: "home_account_selector_sheet"   # HomeTestTags.ACCOUNT_SELECTOR_SHEET @ components/AccountSelectorSheet.kt:88
+    note: >-
+      Split in two on purpose in source: a thin ModalBottomSheet wrapper plus a stateless
+      AccountSelectorSheetContent holding every interactive row. A sheet renders in its own
+      window, where onNodeWithTag is unreliable, so the tests drive the content composable
+      directly — exactly as they do the other *ScreenContent. Sheet visibility lives on
+      HomeState beside uiState, not inside HomeData: it is presentation state, not loaded data.
+    test_context:
+      purpose: "Account selector sheet — the PSU picks which account the whole screen renders"
+      data_driven: true
+      required_fields:
+        - "items_source"
+        - "state.isAccountSelectorVisible"
+      interaction_type: action
+    children:
+      - type: list_item
+        keyboard:
+          focusable: true
+        id: account_selector_row
+        headline: "{item.Nickname}"
+        selected_when: "{item.AccountId == selectedAccountId}"
+        accessibility_label: "{strings.home.switcher.chip.accessibility}"
+        # Interpolated, not a flat const: HomeTestTags.kt:24,27 declares a private
+        # ACCOUNT_CHIP_PREFIX = "home_account_chip_" plus fun accountChip(accountId) that
+        # concatenates it per row. Kept in the {…} form so the binding stays honest.
+        test_tag: "home_account_chip_{item.AccountId}"
+        on_click:
+          action: select_account
+          params:
+            accountId: "{item.AccountId}"
+          action_contract:
+            effect: call_api
+            reads_from: [selected-account-balances, recent-transactions]
+            writes_to: selectedAccountId
+            external_library_refs: [ktorfit, "hsbc-obie-ais-v4.0:balances", "hsbc-obie-ais-v4.0:transactions"]
+            description: "Persists the selected AccountId to DataStore, closes the sheet, then re-fetches balances and recent transactions for the newly selected account, returning the home screen to loading then content state."
+  - type: card
+    keyboard:
+      focusable: true
+    id: hero_balance_card
+    state_binding: [content]
+    elevation: 2
+    corner_radius: radius.lg
+    padding: spacing.lg
+    background: "primaryContainer"
+    test_tag: "home_hero_card"         # HomeTestTags.HERO_CARD @ components/HeroBalanceCard.kt:61
+    margin: { horizontal: spacing.md, bottom: spacing.md }
+    accessibility_label: "{strings.home.hero.card.accessibility}"
+    api_id: selected-account-balances
+    test_context:
+      purpose: "Hero card showing selected account nickname, InterimAvailable balance, and available balance — tapping opens the account-selector sheet"
+      data_driven: true
+      required_fields:
+        - "api_id"
+        - "on_click.action"
+      interaction_type: action
+    # ── CORRECTED 2026-07-30 (/idea-verify check 10 -> /idea-heal) ──
+    # Was `action: navigate_account_detail` / `target: account-detail` / effect: navigate.
+    # That contradicted THIS FILE's own comment at the account_selector_sheet block, which
+    # already recorded that HomeContent.kt:63 wires `onClick = onOpenAccountSelector` on the
+    # HERO CARD. The 2026-07-30 stale-artifact pass reshaped account_switcher into the sheet
+    # and documented the hero card as its trigger, but never updated the trigger itself — a
+    # half-applied fix that left the file self-contradictory.
+    #
+    # Source is authority and is unambiguous:
+    #   feature/home/.../HomeContent.kt:63  -> onClick = onOpenAccountSelector
+    #   feature/home/.../HomeScreen.kt:50   -> HomeAction.OpenAccountSelector
+    #   zero occurrences of onNavigateToAccountDetail anywhere in feature/home
+    # Home does not navigate to account-detail at all; that route is reached from the
+    # Accounts tab. Detected because check 10 found no flow.yaml transition home ->
+    # account-detail — correctly, since source has no such transition to record.
+    on_click:
+      action: open_account_selector
+      action_contract:
+        effect: transform_state
+        external_library_refs: [kotlinx-coroutines]
+        description: >-
+          Opens the AccountSelectorSheet so the PSU can change which account the whole home
+          screen renders. Pure presentation-state flip — HomeState.isAccountSelectorVisible —
+          with no navigation and no network call; the account list is already resident.
+    children:
+      - type: stack
+        direction: vertical
+        gap: spacing.sm
+        children:
+          # Row 1: account subtype + account type icon
+          - type: stack
+            direction: horizontal
+            alignment: center_vertical
+            children:
+              - type: text
+                id: hero_account_subtype
+                content: "{selectedAccount.AccountSubType}"
+                style: labelMedium
+                color: "onPrimaryContainer"
+                weight: 1
+                accessibility_label: "{strings.home.hero.subtype.accessibility}"
+              - type: icon
+                id: hero_account_icon
+                name: "{selectedAccount.accountTypeIcon}"
+                size: icon.md
+                color: "onPrimaryContainer"
+                decorative: true
+          # Row 2: account nickname
+          - type: text
+            id: hero_nickname
+            content: "{selectedAccount.Nickname}"
+            style: titleLarge
+            color: "onPrimaryContainer"
+          # Row 3: big balance (InterimAvailable)
+          - type: text
+            id: hero_balance
+            content: "{selectedAccountBalance.Amount.Amount | formatCurrency(GBP)}"
+            style: displaySmall
+            color: "onPrimaryContainer"
+            accessibility_label: "{strings.home.hero.balance.accessibility}"
+          # Row 4: available balance label + value
+          - type: stack
+            direction: horizontal
+            alignment: center_vertical
+            gap: spacing.xs
+            children:
+              - type: text
+                id: hero_available_label
+                content: "{strings.home.hero.available_label}"
+                style: bodySmall
+                color: "onPrimaryContainer"
+              - type: text
+                id: hero_available_amount
+                content: "{availableBalance.Amount.Amount | formatCurrency(GBP)}"
+                style: bodySmall
+                color: "onPrimaryContainer"
+                accessibility_label: "{strings.home.hero.available.accessibility}"
+          # Row 5: masked account identifier
+          - type: text
+            id: hero_identification
+            content: "{selectedAccount.Account[0].Identification}"
+            style: bodySmall
+            color: "onPrimaryContainer"
+            accessibility_label: "{strings.home.hero.identification.accessibility}"
+
+  # ── Quick actions row ──────────────────────────────────────────────
+  # ── quick_actions_card REMOVED 2026-07-30 (/idea-feature-export stale-artifact fix) ──
+  # A 119-line card declaring Pay / Transactions / Statements / Consents quick actions.
+  # Source ships none of it: HomeContent.kt renders HeroBalanceCard -> RecentTransactionsSection
+  # -> AccountSelectorSheet and nothing else, and homeGraph takes only two lambdas
+  # (onNavigateToTransactions, onNavigateToTransactionDetail) — so the Statements and Consents
+  # actions had no callback to fire and the Pay action was permanently disabled.
+  # Removed with the spending-snapshot prose in the same pass; both predate the 2026-07-28
+  # reverse sync, which pruned HomeData.spending and statementsAvailable but left this card.
+  - type: stack
+    id: recent_transactions_section
+    state_binding: [content]
+    direction: vertical
+    gap: spacing.xs
+    padding: { horizontal: spacing.md, bottom: spacing.md }
+    test_tag: "home_recent_transactions"   # HomeTestTags.RECENT_TRANSACTIONS @ components/RecentTransactionsSection.kt:53
+    children:
+      # Section header + "View all" link
+      - type: stack
+        direction: horizontal
+        alignment: center_vertical
+        children:
+          - type: section_header
+            id: recent_tx_header
+            # `value:` -> `label:` 2026-08-02 (/design-validate R-1). This was the ONLY one of 21
+            # section_header call sites using `value`; the registry has been corrected to `label`
+            # to match the other 20, so this one becomes the odd one out and is aligned here.
+            label: "{strings.home.recent_transactions.title}"
+            style: titleSmall
+            weight: 1
+          - type: text_button
+            keyboard:
+              focusable: true
+            id: view_all_transactions_link
+            label: "{strings.home.recent_transactions.view_all}"
+            accessibility_label: "{strings.home.recent_transactions.view_all.accessibility}"
+            on_click:
+              action: navigate_transactions
+              target: transactions
+              params:
+                accountId: "{selectedAccountId}"
+              action_contract:
+                effect: navigate
+                description: "Navigates to the full transactions screen for the currently selected account, passing selectedAccountId as a route parameter."
+      # Transaction list (most recent 5)
+      - type: list
+        id: recent_transactions_list
+        items_source: "{recentTransactions}"
+        scroll_direction: none
+        gap: spacing.xxs
+        accessibility_label: "{strings.home.recent_transactions.list.accessibility}"
+        api_id: recent-transactions
+        test_context:
+          purpose: "Ordered list of up to 5 most-recent Booked transactions; debit=error colour, credit=primary colour; each row navigates to transaction-detail"
+          data_driven: true
+          required_fields:
+            - "items_source"
+            - "api_id"
+          interaction_type: navigate
+        children:
+          - type: card
+            keyboard:
+              focusable: true
+            id: recent_tx_row
+            elevation: 0
+            corner_radius: radius.sm
+            padding: { vertical: spacing.sm, horizontal: spacing.md }
+            accessibility_label: "{strings.home.recent_transactions.row.accessibility}"
+            children:
+              - type: stack
+                direction: horizontal
+                alignment: center_vertical
+                gap: spacing.md
+                children:
+                  # Category icon
+                  - type: icon
+                    id: tx_category_icon
+                    name: "{item.categoryIcon}"
+                    size: icon.md
+                    color: "secondary"
+                    decorative: true
+                  # Description + date
+                  - type: stack
+                    direction: vertical
+                    gap: spacing.xxs
+                    weight: 1
+                    children:
+                      - type: text
+                        id: tx_description
+                        content: "{item.TransactionInformation}"
+                        style: bodyMedium
+                        max_lines: 1
+                        overflow: ellipsis
+                      - type: text
+                        id: tx_date
+                        content: "{item.BookingDateTime | formatDate(dd MMM)}"
+                        style: bodySmall
+                        color: "onSurfaceVariant"
+                  # Amount + credit/debit indicator
+                  - type: text
+                    id: tx_amount
+                    content: "{item.amountFormatted}"
+                    style: bodyMedium
+                    color: "{item.amountColor}"
+                    alignment: end
+                    accessibility_label: "{strings.home.recent_transactions.amount.accessibility}"
+            on_click:
+              action: navigate_transaction_detail
+              target: transaction-detail
+              params:
+                transactionId: "{item.TransactionId}"
+                accountId: "{item.AccountId}"
+              action_contract:
+                effect: navigate
+                description: "Opens the transaction detail screen for the tapped transaction row, passing both transactionId and accountId as route parameters."
+
+  # ── Spending snapshot card — REMOVED 2026-07-28 (reverse sync) ──────
+  # HomeData carries no spending fields and feature/home contains zero
+  # references to spending or snapshots. The card, its four text rows, its
+  # chevron and its navigate_pfm -> pfm-dashboard on_click were never built.
+  # core/data does ship SpendingCalculator.computeSpendingSnapshot and the
+  # SpendingSnapshot model, but the home screen does not consume them.
+
+  # ══════════════════════════════════════════════════════════════════
+  # EMPTY STATE
+  # ══════════════════════════════════════════════════════════════════
+
+  - type: empty_state
+    id: empty_home
+    state_binding: [empty]
+    icon: account_balance_wallet
+    title: "{strings.home.empty.title}"
+    body: "{strings.home.empty.body}"
+    accessibility_label: "{strings.home.empty.title}"
+    # ── connect_bank_button REMOVED 2026-07-30 (/idea-verify check 10 -> /idea-heal) ──
+    # It declared `navigate_login` -> `target: login`, a navigation source does not have.
+    # feature/home/.../HomeEmpty.kt:37 states it outright: "Points the PSU to Settings rather
+    # than offering its own connect button. Staging a consent is a..." — and the file contains
+    # no Button and no onClick at all. homeGraph exposes exactly two callbacks
+    # (onNavigateToTransactions, onNavigateToTransactionDetail); there is no login lambda to
+    # invoke. This matches the deliberate project-wide convention the beneficiaries empty state
+    # follows: the connect/renew affordance lives ONLY on the consent screens, reached via
+    # Settings -> Consents, so a second entry point here would fork the consent journey.
+    # Detected by check 10 — no flow.yaml transition home -> login, correctly, since none exists.
+    # Strings home.empty.cta + home.empty.cta.accessibility are swept with it (see _strings).
+
+  # ══════════════════════════════════════════════════════════════════
+  # ERROR STATE
+  # ══════════════════════════════════════════════════════════════════
+
+  - type: error_state
+    id: error_home
+    state_binding: [error]
+    icon: error_outline
+    title: "{strings.home.error.title}"
+    body: "{error.userMessage}"
+    accessibility_label: "{strings.home.error.title}"
+    children:
+      - type: button
+        keyboard:
+          focusable: true
+        id: retry_button
+        variant: filled
+        label: "{strings.home.error.retry_button}"
+        accessibility_label: "{strings.home.error.retry.accessibility}"
+        visible_when: "{error.recoverable}"
+        test_tag: "home_error_retry"    # HomeTestTags.ERROR_RETRY @ HomeError.kt:66
+        on_click:
+          action: retry_load
+          action_contract:
+            effect: call_api
+            reads_from: [accounts-list, selected-account-balances, recent-transactions]
+            external_library_refs: [ktorfit, "hsbc-obie-ais-v4.0:accounts", "hsbc-obie-ais-v4.0:balances", "hsbc-obie-ais-v4.0:transactions"]
+            description: "Re-issues the full home load sequence — fetches all authorised accounts then in parallel fetches balances and recent transactions for the selected account, recovering from a recoverable error."

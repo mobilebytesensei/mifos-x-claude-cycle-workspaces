@@ -1,0 +1,157 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: consent-list
+
+feature: consent-list
+contract_version: "2.0.0"
+status: approved
+approve_hash: "sha256:71f93080a4baae05c79b9fdacbfd769431a8e43d370e29727a081aec394cadeb"
+approved_at: "2026-08-05T05:15:00Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+score: 95
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. Added 2026-08-07 (/idea-sync).
+quality_score: 95
+cluster: consent
+acceptance_refs:
+  - FR-008
+scaffolded_by: /idea-heal
+enriched_by: /idea-enrich (quality-push)
+enriched_at: '2026-06-29'
+archetype: index_list
+# flow_ref backfilled 2026-08-02 (/idea-sync) from flows/*.yaml#screens[] membership.
+flow_ref: consent-management
+description: >-
+  Consent management list screen reachable from More/Settings. Partitions locally-stored HSBC consents into Active
+  (Authorised) and History (Expired/Revoked) sections separated by a divider. Active cards show OBIE status chip,
+  permission count, expiry countdown, and connection date. When days_until_expiry ≤ 14, a reconfirm urgency chip renders
+  on the card and a warning banner appears at the top of the screen (OBIE 90-day PSU reconfirmation requirement —
+  FR-008). HTTP 401 from consent-status transitions to a dedicated error_auth state with a 'Sign in again' CTA rather
+  than the generic retry flow. Tapping any card navigates to consent-detail with the ConsentId as a route parameter.
+has_ui: true
+has_server: false
+capabilities: [has_ui, has_api, has_flow]
+metadata:
+  category: crud
+  implementation_ready: true
+  impl_ready_at: '2026-06-29T12:00:00Z'
+  impl_ready_schema: v2
+contracts: []
+libraries:
+  - capability: rest-client
+    library: ktorfit
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+      - web
+vm_state:
+  computed_fields:
+    - name: active_consents
+      type: List<OBReadConsentResponse1>
+      derived_from: consents.filter { it.Data.Status == 'Authorised' }
+    - name: history_consents
+      type: List<OBReadConsentResponse1>
+      derived_from: consents.filter { it.Data.Status in listOf('Expired', 'Revoked') }
+    - name: has_active_consents
+      type: Boolean
+      derived_from: active_consents.isNotEmpty()
+    - name: has_history_consents
+      type: Boolean
+      derived_from: history_consents.isNotEmpty()
+    - name: has_near_expiry_consents
+      type: Boolean
+      derived_from: active_consents.any { it.days_until_expiry <= 14 }
+    - name: days_until_expiry
+      type: Int
+      derived_from: ChronoUnit.DAYS.between(Clock.System.now(), Data.ExpirationDateTime).coerceAtLeast(0)
+      note: Computed per consent item; coerced to 0 for already-expired consents in history
+    - name: expiry_color
+      type: String (design token)
+      derived_from: if (days_until_expiry <= 14) 'tertiary' else 'onSurfaceVariant'
+    - name: formatted_creation_date
+      type: String
+      derived_from: Data.CreationDateTime.format('d MMM yyyy')
+    - name: formatted_expiry_date
+      type: String
+      derived_from: Data.ExpirationDateTime.format('d MMM yyyy')
+# vm_actions RELOCATED 2026-08-01 (/idea-sync): loadConsents -> initial_load; the three
+# navigate* entries -> nav_callbacks. Nothing deleted. ui.yaml#state_model declares exactly one
+# member: RetryLoad, retained below.
+initial_load:
+  mechanism: init-stream-collection
+  what:
+    - LocalStorage.getAllConsentIds()
+    - ConsentService.getConsentStatus(consentId) for each stored id
+    - Partition results into active_consents and history_consents
+    - Compute days_until_expiry, expiry_color, formatted dates per item
+  states: "Loading -> Content(active, history) | error | error_auth"
+  error_handling:
+    NetworkError: Transition to error state with message
+    HttpException(401): Transition to error_auth state — PSU session expired, prompt re-auth
+    HttpException(500): Transition to error state with generic message
+  note: >-
+    NOT a dispatched action. ui.yaml#implementation.removed_in_sync: "loadConsents action — the
+    initial load is stream collection in init{}".
+
+nav_callbacks:
+  # ui.yaml#implementation.removed_in_sync: "navigateConsentDetail / navigateConnect /
+  # navigateReauth actions — all three are nav-host callbacks".
+  - signature: "onNavigateToConsentDetail(consentId) -> navigate(Route.ConsentDetail(consentId))"
+    surface: "consent card tap"
+  - signature: "onConnect -> navigate(Route.UserOnboarding)"
+    surface: "empty-state Connect HSBC button"
+  - signature: "onReauth -> navigate(Route.Login)"
+    surface: "error_auth state — fired when the PSU access token has expired"
+
+vm_actions:
+  - name: RetryLoad
+    signature: 'suspend fun retryLoad(): Unit'
+    state_mutations:
+      - uiState = Loading
+    side_effects:
+      - ConsentService.getConsentStatus(consentId) for each stored id
+    error_handling:
+      NetworkError: Transition to error state
+      HttpException(401): Transition to error_auth state
+error_cases:
+  - NetworkError
+  - TokenExpiredSession
+  - ConsentStatusServerError
+test_fixtures:
+  source: screens/consent-list/tests.yaml
+  scenario_count: 8
+  priority_distribution:
+    high: 5
+    medium: 3
+    low: 0
+status_history:
+  - from: enriched
+    to: designed
+    at: '2026-07-01T10:52:41.602Z'
+    by: /idea-export-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-14T00:00:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: ""
+  - from: approved
+    to: enriched
+    at: "2026-08-05T05:05:00Z"
+    by: "/idea approve --unapprove"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "Stored approve_hash predated the 2026-08-04 export regeneration and no longer matched the sibling set."
+  - from: enriched
+    to: approved
+    at: "2026-08-05T05:15:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "--all-ready bulk approval; predicate C1-C6 green."

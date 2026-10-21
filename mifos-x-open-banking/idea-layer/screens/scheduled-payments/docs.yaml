@@ -1,0 +1,154 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: scheduled-payments
+
+feature: scheduled-payments
+contract_version: "2.0.0"
+status: approved
+approve_hash: "sha256:9ad39ed8d1cc7a83aa0fad3beaa651143c60daf4304ed6cc5a10a08d33adf58c"
+approved_at: "2026-08-05T05:15:00Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+score: 96
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. Added 2026-08-07 (/idea-sync).
+quality_score: 96
+cluster: payments-context
+acceptance_refs:
+  - FR-006
+scaffolded_by: /idea-heal
+archetype: index_list
+flow_ref: recurring-and-statements
+description: >-
+  Read-only list of future-dated one-off scheduled payments for an account, sourced from OBReadScheduledPayment3. Shows
+  payee name, instructed amount (GBP formatted), formatted scheduled date (EEE d MMM yyyy), ScheduledType chip
+  (Execution date / Arrival date), destination CreditorAccount.Identification (sort code + account number), and payment
+  reference. Reached from account-detail Scheduled chip. ViewModel maps OBIE ScheduledType enum to human-readable chip
+  label + icon.
+has_ui: true
+has_server: false
+capabilities: [has_ui, has_api, has_flow]
+
+# Declared 2026-08-02 by /idea-sync (source-truth reverse pass). This feature is aligned to
+# source in every dimension EXCEPT the `unsupported` state, which the idea-layer keeps ahead of
+# source on purpose — source already records the U000 refusal (BankingStores.kt:377) but never
+# renders it, so pruning the state to match source would delete the specification of a live
+# defect rather than resolve it. Full evidence + the exact fix source owes: ui.yaml#spec_ahead_of_source.
+spec_ahead_of_source:
+  scope: "state:unsupported"
+  owed_by: /implement
+  detail_ref: "screens/scheduled-payments/ui.yaml#spec_ahead_of_source"
+metadata:
+  category: crud
+  implementation_ready: true
+  impl_ready_at: '2026-06-29T12:00:00Z'
+  impl_ready_schema: v2
+contracts: []
+libraries:
+  - capability: rest-client
+    library: ktorfit
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+      - web
+# vm_actions RELOCATED 2026-08-01 (/idea-sync): LoadScheduledPayments -> initial_load;
+# NavigateBack -> nav_callbacks. Nothing deleted. ui.yaml#implementation.removed_in_sync names
+# both. RetryLoad is the only declared ScheduledPaymentsAction member and is retained below.
+initial_load:
+  mechanism: init-stream-collection
+  what: "GET /accounts/{accountId}/scheduled-payments via Ktorfit AisApiService"
+  states: "Loading -> Content(scheduledPayments = response.Data.ScheduledPayment.map { it.toUiModel() }) | Empty when the list is empty"
+  error_handling:
+    on_401: uiState = Error(TokenExpired)
+    on_403: uiState = Error(ConsentRevoked)
+    on_429: uiState = Error(RateLimited)
+    on_network: uiState = Error(NetworkError)
+  notes: >-
+    toUiModel() maps: ScheduledPaymentDateTime ISO-8601 → scheduledDateFormatted (EEE d MMM yyyy); ScheduledType
+    Execution → scheduledTypeLabel='Execution date', scheduledTypeIcon='calendar_today', scheduledTypeA11y='Money
+    leaves your account on {date}'; ScheduledType Arrival → scheduledTypeLabel='Arrival date',
+    scheduledTypeIcon='arrow_downward', scheduledTypeA11y='Funds arrive at {payee} on {date}'.
+  unsupported_note: >-
+    The `unsupported` state (added 2026-07-30) is reached from this same load path on an OBIE
+    U000 product refusal. The refusal CONDITION is still not modelled in api.yaml — see
+    CAPABILITY_GAPS RULE-IDEA-GAP-DISCOVERY-001 steps 2 and 3, both still OPEN.
+
+nav_callbacks:
+  - signature: "onBack -> popBackStack() returning to account-detail"
+
+vm_actions:
+  - name: RetryLoad
+    signature: fun retryLoad()
+    state_mutations:
+      - re-invokes LoadScheduledPayments with same accountId
+    side_effects: []
+    error_handling: {}
+error_cases:
+  - id: TokenExpired
+    trigger: HTTP 401 from HSBC AIS
+    user_message: Session expired. Please log in again.
+    recovery: Route to login screen
+  - id: ConsentRevoked
+    trigger: HTTP 403 from HSBC AIS
+    user_message: Account access consent has been revoked.
+    recovery: Route to consent-list screen
+  - id: RateLimited
+    trigger: HTTP 429 from HSBC AIS
+    user_message: Too many requests. Please wait a moment and try again.
+    recovery: Retry button shown; exponential back-off in ViewModel
+  - id: NetworkError
+    trigger: IOException / timeout
+    user_message: No network connection. Check your connection and retry.
+    recovery: Retry button re-triggers LoadScheduledPayments
+  - id: EmptyResult
+    trigger: Data.ScheduledPayment[] is empty
+    user_message: No future-dated payments are pending for this account.
+    recovery: Empty state shown; no action needed
+test_fixtures:
+  source: idea-layer/screens/scheduled-payments/demo-data.yaml
+  scenario_count: 9
+  priority_distribution:
+    p0: 3
+    p1: 5
+    p2: 1
+capability_completeness:
+  storage_location: "no-local-storage — screen fetches on mount from HSBC AIS; no Room/SQLDelight writes; data discarded on navigation"
+  destructive_action_safety: "not-applicable — AISP read-only screen; zero write, delete, or mutation operations permitted under ReadScheduledPaymentsDetail"
+  nav_callback_wiring: "yes — NavigateBack() emits NavigationEvent.Back to NavController; screen entered from account-detail via accountId nav param"
+  user_data_export: "not-applicable — AISP read-only; ReadScheduledPaymentsDetail is a read-only OBIE permission; no export surface warranted"
+  permission_visibility: "yes — requires ReadScheduledPaymentsDetail AISP permission declared at consent-creation time; 403 surfaced as ConsentRevoked error state"
+  storage_budget_awareness: "not-applicable — no local cache; fetch on demand only; no file or DB writes"
+  network_data_policy: "HSBC OBIE AIS v4.0 GET /accounts/{AccountId}/scheduled-payments; 429 handled with retry button and exponential back-off in ViewModel"
+  cache_lifecycle: "not-applicable — screen is stateless; data lives only in ViewModel memory; re-fetched on every mount or explicit retry"
+  error_recovery: "yes — 401/TokenExpired routes to login screen; 403/ConsentRevoked routes to consent-list screen; 429/NetworkError shows Retry button that re-triggers LoadScheduledPayments; empty Data.ScheduledPayment[] shows empty state without retry"
+
+status_history:
+  - from: enriched
+    to: designed
+    at: '2026-07-01T10:59:44.538Z'
+    by: /idea-export-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-14T00:00:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: ""
+  - from: approved
+    to: enriched
+    at: "2026-08-05T05:05:00Z"
+    by: "/idea approve --unapprove"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "Stored approve_hash predated the 2026-08-04 export regeneration and no longer matched the sibling set."
+  - from: enriched
+    to: approved
+    at: "2026-08-05T05:15:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "--all-ready bulk approval; predicate C1-C6 green."

@@ -1,0 +1,228 @@
+name: BcaProduct
+version: "1.0.0"
+source:
+  origin: external_api
+  api_path: "GET /open-banking/v2.2/business-current-accounts + /x-open-banking/v2.2/business-current-accounts/segment/{segment}"
+  host: api.hsbc.com
+  host_status: resolved
+  api_ref: API-OD-PRODUCT
+  spec: "OBIE Open Data v2.2 (swagger info.version 2.2.1) — unauthenticated, no consent, no session"
+  created:
+    at: "2026-08-07"
+    by: "/idea-sync — dangling-ref closure"
+    evidence:
+      tier_1_live:
+        summary: "14 products, 1 brand, HTTP 200, 966 KB. Re-probed live 2026-08-07: byte-identical."
+        reproduce: 'curl -H "Accept: application/prs.openbanking.opendata.v2.2+json" "https://api.hsbc.com/open-banking/v2.2/business-current-accounts"'
+        local_capture: "/home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/pf-business-current-accounts.json — OUTSIDE this repository, captured 2026-08-07. Not checked in (966 KB, and it goes stale — meta.LastUpdated moves); use `reproduce` above."
+      tier_2_spec:
+        summary: "Product Finder swagger 2.0, info.version 2.2.1 — #definitions.BCADefinition"
+        reproduce: "Download the swagger from https://develop.hsbc.com/ob-api-documentation/product-finder-uk/endpoints — public, no credential."
+        local_capture: "/home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/open-product-finder-swagger.json — OUTSIDE this repository, captured 2026-08-07. Not checked in; use `reproduce` above."
+
+description: >-
+  One business current account in HSBC's PUBLIC catalogue. Reached at data[].Brand[].BCA[].
+  Structurally a sibling of PcaProduct, but it inverts three of PCA's key behaviours — duplicate
+  handling, on-sale semantics and payload size — so it cannot be parsed by the same code path
+  without care.
+
+envelope:
+  shape: "{ meta, data } — both required"
+  path_to_this_dto: "data[].Brand[].BCA[]"
+  depth_warning: "THREE levels. `data` observed length 1, `Brand` observed length 1 (HSBC UK only — no first direct business accounts)."
+  flatten_rule: "Flatten across data[].Brand[] and carry BrandName down, as with every family."
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE PAYLOAD PROBLEM — this is the biggest call the app makes
+# ─────────────────────────────────────────────────────────────────────────
+payload_warning:
+  size: "966 KB in ONE unpaged response — roughly 11× the PCA feed, and by far the largest call the app makes."
+  no_pagination: "There is no limit, offset, page or cursor parameter anywhere in the swagger for this path."
+  requirement: >-
+    Do NOT fetch this on screen open. Fetch on demand (when the Business tab is selected), cache
+    hard, and never on a metered connection without cause. The segment extension
+    /x-open-banking/v2.2/business-current-accounts/segment/{segment} is the only practical way to
+    avoid the unfiltered payload.
+  why_it_is_so_large: >-
+    Not because there are many products — there are 14, versus 10 PCAs. It is the 29 marketing
+    states, each carrying a full CoreProduct + Eligibility + FeaturesAndBenefits + OtherFeesCharges
+    + Overdraft + CreditInterest block. Business fee schedules are genuinely enormous.
+
+# ─────────────────────────────────────────────────────────────────────────
+# HOW BCA DIFFERS FROM PCA — three inversions, all load-bearing
+# ─────────────────────────────────────────────────────────────────────────
+diverges_from_pca:
+  inversion_1_duplicates:
+    pca: "Identification REPEATS across records; each marketing state gets its own record and PCAMarketingState is length 1."
+    bca: "Identification is UNIQUE — 14 records, 14 distinct ids. Multiple marketing states are nested INSIDE one record."
+    evidence: "BCAMarketingState lengths: 5 products have 1, 5 have 2, 2 have 3, 2 have 4. Total 29 states across 14 products."
+    consequence: >-
+      The group-by-Identification fix that PCA REQUIRES is a no-op here, and the array iteration
+      that BCA requires is a no-op on PCA. A shared parser must handle BOTH — outer duplication
+      AND inner multiplicity — or it will be correct on exactly one family.
+  inversion_2_on_sale:
+    pca: "OnSaleIndicator true on 10/10 products and on both brand blocks. Never observed false."
+    bca: "OnSaleIndicator FALSE on the brand block, and false on 9 of 14 products. Only 5 are on sale."
+    consequence: >-
+      This CORRECTS screens/products/api.yaml#brands.on_sale_indicator, which records
+      "true on every brand and every product in the sample" and calls a false value "never
+      observed, so untested". It is observed, on this family, on the majority of records.
+      Filtering on OnSaleIndicator is REAL work here: showing all 14 shows 9 withdrawn products.
+  inversion_3_marketing_state:
+    pca: "Both Regular and Promotional occur."
+    bca: "Regular on all 29 states. HSBC runs no business-account promotions in this feed."
+
+# ─────────────────────────────────────────────────────────────────────────
+# FIELDS
+# ─────────────────────────────────────────────────────────────────────────
+fields:
+  - name: BrandName
+    type: String
+    required: true
+    pii: false
+    primary_key: false
+    synthetic: true
+    observed: '"HSBC UK" only. first direct publishes no business accounts.'
+    description: "NOT a field on the BCA object — lifted from the parent data[].Brand[] during flatten."
+
+  - name: Identification
+    type: String
+    required: true
+    pii: false
+    primary_key: true
+    observed: "14/14, all distinct — BCAEBT, BCAStartup, BCASwitcher, BCASBT, BCACommunityAccount, BCASchoolCollegeAccount, BCAHSBCKinetic, BCAStartUpBB, BCACharitableBankAccount, BCASwitcherSBB, BCASBBA, BCABBA, BCASwitcherBB, BCAStartupSBB."
+    description: >-
+      A genuine primary key on this family — unlike PcaProduct.Identification. Verified: 14 total,
+      14 distinct.
+
+  - name: Name
+    type: String
+    required: true
+    pii: false
+    primary_key: false
+    observed: '14/14. e.g. "HSBC Electronic Banking Tariff", "HSBC Kinetic Current Account".'
+    trailing_space_trap: >-
+      Two names end in a SPACE — "HSBC Small Business Banking Account " and "HSBC Start up account
+      for Small Business Banking ". The same defect as Branch.BuildingNumber and
+      AtmLocationPlace.Site.Name. Trim on parse.
+
+  - name: Segment
+    type:
+      list_of: String
+    required: false
+    pii: false
+    primary_key: false
+    enum_ref: BcaSegment
+    observed: "14/14. MULTI-VALUED here, unlike PCA — e.g. BCAHSBCKinetic carries [Standard, Startup, Switcher]; BCACommunityAccount carries [Standard, Religious]."
+    description: >-
+      A real array on this family. A product appears under several audience filters at once, so a
+      segment filter must use set-membership, not equality. A PCA-shaped `Segment[0]` read silently
+      hides products from most filters.
+
+  - name: OnSaleIndicator
+    type:
+      optional: Boolean
+    required: false
+    pii: false
+    primary_key: false
+    observed: "14/14 present. 5 true, 9 FALSE."
+    description: >-
+      The one field on this screen that actually discriminates. See inversion_2_on_sale — nine of
+      fourteen business accounts are withdrawn. A catalogue that lists them alongside live products
+      is showing a business owner accounts they cannot open.
+
+  - name: BCAMarketingState
+    type:
+      list_of: BcaMarketingState
+    required: true
+    pii: false
+    primary_key: false
+    observed: "14/14. Array of 1-4 elements; 29 states in total."
+    description: "Where the 966 KB lives. See marketing_state below."
+
+  - name: FeeFreeLength
+    type:
+      optional: Integer
+    required: false
+    pii: false
+    primary_key: false
+    observed: "2/14 — value 12 on BCASwitcherSBB and BCAStartupSBB."
+    description: >-
+      BCA-ONLY. Has no PCA, CCC or SMELoan counterpart. The introductory fee-free period, paired
+      with FeeFreeLengthPeriod. Present on only two products, both of which are withdrawn
+      (OnSaleIndicator false, marketing states expired 2025-06-30) — so the field is currently
+      populated ONLY on products that cannot be opened. Do not build a "12 months free banking"
+      badge from it without also checking OnSaleIndicator.
+
+  - name: FeeFreeLengthPeriod
+    type:
+      optional: String
+    required: false
+    pii: false
+    primary_key: false
+    observed: '2/14 — "Month" on both.'
+    description: "The unit for FeeFreeLength. Always paired; never render the number without it."
+
+  - name: Notes
+    type:
+      list_of: String
+    required: false
+    pii: false
+    primary_key: false
+    observed: "2/14."
+    description: "Declared product-level free text. Sparse; not a reliable surface."
+
+# ─────────────────────────────────────────────────────────────────────────
+# MARKETING STATE
+# ─────────────────────────────────────────────────────────────────────────
+marketing_state:
+  declared_required: [Identification, MarketingState, OtherFeesCharges]
+  key_presence_over_29_states:
+    always: [CoreProduct, CreditInterest, Eligibility, FeaturesAndBenefits, Identification, MarketingState, OtherFeesCharges, Overdraft, Ucodes]
+    sometimes: { FirstMarketedDate: "19/29", LastMarketedDate: "19/29", PredecessorID: "15/29", StateTenureLength: "8/29", StateTenurePeriod: "8/29" }
+    never: [Notes]
+  credit_interest_is_bca_and_pca_only: >-
+    CreditInterest is present on 29/29 BCA states and 0/10 PCA states, though both families
+    declare it. CCC and SMELoan do not declare it at all.
+  state_tenure_is_new: >-
+    StateTenureLength / StateTenurePeriod appear here and not on PCA. They bound how long a
+    customer stays in a given marketing state — an introductory-tariff concept with no personal
+    equivalent.
+  multiple_states_are_a_TIMELINE_not_variants:
+    finding: >-
+      Where a product has 2-4 states, they are consecutive date ranges, not simultaneous options.
+      BCAStartUpBB's four states run 2026-04-02→2026-12-13 and 2026-12-14→2099-12-31, in two pairs.
+    requirement: >-
+      Select the state whose [FirstMarketedDate, LastMarketedDate] window contains TODAY, and
+      render that one. Rendering all four shows a business owner four contradictory tariffs for
+      one account. Where dates are absent (10 of 29 states), there is no window to test — fall
+      back to the first element and do not claim currency.
+  expired_states_are_live_in_the_feed:
+    finding: >-
+      BCASwitcherSBB and BCAStartupSBB carry states that ended 2025-06-30 — over a year before
+      capture. BCAHSBCKinetic's only state ended 2026-04-02.
+    reading: >-
+      The catalogue is an archive as much as a shop window. This is the same signal
+      OnSaleIndicator=false carries, expressed as dates, and the two agree: all three of these
+      products are off sale.
+
+date_semantics:
+  sentinel: { value: "2099-12-31", meaning: "INDEFINITE — do not render", observed: "on the current-window state of BCAStartUpBB, BCACharitableBankAccount, BCASBBA, BCABBA, BCASwitcherBB" }
+  absent_dates: "10 of 29 states carry NEITHER FirstMarketedDate nor LastMarketedDate — more common here than on PCA. An undated state cannot be date-filtered at all."
+
+enums:
+  - name: BcaSegment
+    declared: [ClientAccount, Standard, NonCommercialChaitiesClbSoc, NonCommercialPublicAuthGovt, Religious, SectorSpecific, Startup, Switcher, NonCommercial]
+    declared_count: 9
+    observed_live: [NonCommercial, Religious, Standard, Startup, Switcher]
+    observed_count: 5
+    note: >-
+      Five of nine. Note the spec's own typo in `NonCommercialChaitiesClbSoc` (Chaities) —
+      reproduce it verbatim in any constant; do not "fix" it or the match fails.
+  - name: BcaMarketingStateValue
+    declared: [Promotional, Regular]
+    observed: [Regular]
+
+used_by:
+  - { feature: products, api_id: get_business_current_accounts, role: response }
+  - { feature: products, api_id: get_bca_by_segment, role: response }

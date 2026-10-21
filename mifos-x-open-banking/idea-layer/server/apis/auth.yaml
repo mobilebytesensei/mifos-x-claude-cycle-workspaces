@@ -1,0 +1,148 @@
+# server/apis/auth.yaml — FAPI 1.0 Advanced authentication for HSBC UK Open Banking
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# REWRITTEN 2026-08-06 by /idea-sync (full OBP eviction)
+#
+# This file previously described Open Bank Project DirectLogin — a username, a password and a
+# consumer_key posted to /obp/v6.0.0/my/logins/direct in exchange for a session token. That
+# model does not exist in this app and cannot: under FAPI the PSU authenticates on HSBC's own
+# site and the app never sees a credential.
+#
+# The companion server/apis/auth-recovery.yaml (password reset and change) was DELETED rather
+# than rewritten, along with the forgot-password and change-password screens. There is no
+# in-app password to reset or change.
+# ═══════════════════════════════════════════════════════════════════════════
+
+schema_version: "2.0"
+api: "HSBC UK Open Banking — OAuth 2.0 / OIDC v1.1"
+base_url: "https://secure.sandbox.ob.hsbc.co.uk/obie/open-banking"
+auth_scheme: "FAPI 1.0 Advanced"
+
+version_note: >-
+  The OAuth surface is v1.1 while the resource surface is v4.0. Both are correct at the same
+  time — the token and authorize endpoints come from the OIDC well-known config, not from the
+  resource swagger.
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE SECURITY MODEL
+# ─────────────────────────────────────────────────────────────────────────
+security_profile:
+  name: "FAPI 1.0 Advanced"
+  components:
+    transport: "Mutual TLS (mTLS) with an HSBC-issued sandbox client certificate"
+    client_authentication: "private_key_jwt signed PS256 — NOT a client secret"
+    request_object: "signed"
+    pkce: "S256"
+    redirect: "app-to-app"
+  no_psu_credentials: >-
+    The app has NO password field and receives no PSU credential at any point. The PSU
+    authenticates at HSBC and the app receives a scoped token. This is the single largest
+    difference from the OBP model this file used to describe, and it removes an entire class of
+    screens (login form, forgot password, change password) rather than changing how they work.
+
+certificates:
+  transport: "O=Mifos Initiative., organizationIdentifier=PSDUS-IRS-453613178, valid 2026-07-04 to 2028-07-03"
+  signing: "One unencrypted PKCS#8 key backs both the transport certificate and the signing operations."
+  storage: "Vault-managed. Never in source, never in the binary."
+
+scopes:
+  - id: accounts
+    used_for: "every AIS read"
+    obtained_by: [client_credentials, authorization_code]
+  - id: payments
+    used_for: "every PIS write and read, INCLUDING VRP"
+    obtained_by: [client_credentials, authorization_code]
+    vrp_note: >-
+      There is NO separate VRP scope and no separate VRP TPP role. OBIE states a PISP calls VRP
+      APIs using the payments scope, and HSBC's production well-known config advertises exactly
+      five scopes — accounts, payments, openid, fundsconfirmations, eventpolling — with no VRP
+      one. Our SSA carries software_roles [AISP, PISP].
+    opaque_gate_warning: >-
+      OBIE permits the ASPSP to use the scope ITSELF to limit functionality to sweeping or
+      non-sweeping VRP usage, and there is NO discovery mechanism for which rights a given
+      payments token carries. The app cannot find out except by trying.
+
+endpoints:
+
+  - id: client_credentials_token
+    method: POST
+    path: "/v1.1/oauth2/token"
+    grant_type: client_credentials
+    client_auth: private_key_jwt
+    scope: "accounts | payments"
+    description: "App-level token. Used for consent staging and every status read."
+    headers: [Content-Type, Accept]
+    jws: false
+
+  - id: authorize
+    method: GET
+    path: "/v1.1/oauth2/authorize"
+    description: >-
+      PSU authorisation. Opens HSBC's own site via app-to-app redirect, carrying a signed request
+      object and a PKCE challenge. The PSU authenticates (SCA), approves, and for AIS also
+      selects which accounts to share. Approval happens at the bank, never in this app.
+    host: "authorize hostname — distinct from the mTLS resource hostname"
+
+  - id: authorization_code_token
+    method: POST
+    path: "/v1.1/oauth2/token"
+    grant_type: authorization_code
+    client_auth: private_key_jwt
+    description: "Exchanges the single-use authorisation code for a PSU-bound access token."
+    preconditions:
+      - "the redirect `state` matches the one this app generated"
+      - "the id_token `nonce` matches the one this app generated"
+    ordering_rule: >-
+      BOTH checks run before the code is spent. An authorisation code is single-use, so
+      validating afterwards leaves nothing to retry with — and a mismatched state is exactly the
+      case where an attacker wants the code spent.
+    observed: "expires_in 3599, and a refresh token IS issued on the AIS consent."
+
+  - id: refresh_token
+    method: POST
+    path: "/v1.1/oauth2/token"
+    grant_type: refresh_token
+    client_auth: private_key_jwt
+    description: "Renews AIS access without re-authenticating."
+    sca_recency_caveat: >-
+      Refreshing does NOT restore SCA recency. A token whose SCA is ~7.4 hours old returns 403
+      with an EMPTY BODY on beneficiaries, standing-orders, scheduled-payments, direct-debits and
+      party, while balances and transactions still return 200 — exactly the PSD2 RTS Article 10
+      boundary. A long-running integration on refresh tokens loses five of seven account
+      resources silently, with no error code to key on. Provisional: the 403 column is prose,
+      not a captured artefact.
+
+  - id: dynamic_client_registration
+    method: POST
+    path: "/register"
+    spec: "DCR v3.2.1 — separate spec (API-002)"
+    description: "Once per brand, using the signed SSA, to obtain client credentials."
+    jws: "PS256-signed SSA"
+
+# ─────────────────────────────────────────────────────────────────────────
+# TOKEN ISOLATION
+# ─────────────────────────────────────────────────────────────────────────
+token_isolation:
+  rule: "A payments-scope token is NEVER written into ConsentSession."
+  rationale: >-
+    ConsentSession holds the AIS data-sharing session. Writing a payments token into it would
+    hand account-information reads a payment-initiation credential, and couple a one-shot payment
+    authorisation to a 90-day data consent.
+  lifetimes:
+    aisp: "consent-bounded; 90-day reconfirmation required by UK Open Banking rules"
+    pisp_six_families: "the life of one payment — the funds check and the submit"
+    pisp_vrp: >-
+      As long as the consent. OBIE: "unlike AIS consents, VRP access tokens should not be set to
+      expire at 90 days." The mandate funds many payments and each needs the PSU token for
+      funds-confirmation.
+
+# ─────────────────────────────────────────────────────────────────────────
+# REMOVED
+# ─────────────────────────────────────────────────────────────────────────
+removed_2026_08_06:
+  - { endpoint: "POST /obp/v6.0.0/my/logins/direct", reason: "DirectLogin. No PSU credential ever reaches this app." }
+  - { endpoint: "POST /obp-oidc/token", reason: "Open Bank Project OIDC at apisandbox-oidc.openbankproject.com." }
+  - { endpoint: "POST /obp/v4.0.0/auth/password/reset/initiate", reason: "No in-app password exists." }
+  - { endpoint: "POST /obp/v4.0.0/auth/password/reset/confirm", reason: "No in-app password exists." }
+  - { endpoint: "PUT /obp/v7.0.0/users/current/password", reason: "No in-app password exists." }
+  - { field: consumer_key, reason: "OBP client credential. Replaced by private_key_jwt with a directory-issued signing key." }

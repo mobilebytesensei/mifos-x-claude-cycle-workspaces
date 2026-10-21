@@ -1,0 +1,339 @@
+sibling: api
+schema_version: "4.0"
+feature_id: atm-locator
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ATM LOCATOR — HSBC UK Open Data, OBIE Open Data v2.2
+#
+# HOST RESOLVED 2026-08-07. Supersedes the `host_status: unresolved` marker set on
+# 2026-08-06, which itself withdrew an invented `https://www.hsbc.co.uk/open-banking`.
+#
+# Evidence — TWO tiers, and they disagree in three places. Observation wins.
+#   Tier 1 — LIVE RESPONSES. 135 ATMs captured 2026-08-07 across five geographies
+#     (Canary Wharf r=2, London r=5, Manchester r=5, Edinburgh r=5, Birmingham r=5).
+#     All HTTP 200. REPRODUCE — public, unauthenticated, free:
+#       curl -H "Accept: application/prs.openbanking.opendata.v2.2+json" \
+#         "https://api.hsbc.com/x-open-banking/v2.2/atms/geo-location/lat/{lat}/long/{long}?radius={1-10}"
+#     with lat/long/radius per geography:
+#       Canary Wharf 51.5054 / -0.0235 / 2   London     51.5074 / -0.1278 / 5
+#       Manchester   53.4808 / -2.2426 / 5   Edinburgh  55.9533 / -3.1883 / 5
+#       Birmingham   52.4862 / -1.8904 / 5
+#   Tier 2 — ATM Locator swagger 2.0, info.version 2.2.1, host api.hsbc.com, schemes [https].
+#     REPRODUCE: the "Download swagger file" control on
+#     https://develop.hsbc.com/ob-api-documentation/atm-locator-uk/endpoints
+#   Portal page: https://develop.hsbc.com/ob-api-overview/api-overview-8 ("UK ATM Locator")
+#
+# LOCAL CAPTURES — OUTSIDE THIS REPOSITORY, captured 2026-08-07, NOT checked in:
+#   /home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/
+#     probe-{London,Manchester,Edinburgh,Birmingham}.json · atm-probe.json ·
+#     open-atm-locator-swagger.json
+#   That directory is one developer's machine, not shared evidence, and the responses drift as
+#   meta.LastUpdated moves. Re-run the curl above to verify any claim in this file.
+#
+# The API is open, free and unauthenticated, so it was called directly rather than reasoned
+# about — the same Tier-1-beats-documents discipline the PISP corpus uses.
+#
+# This is a DIFFERENT API PRODUCT from everything else in the app. It is not the sandbox,
+# not OBIE Read/Write, not v4.0, and carries no credential of any kind.
+# ═══════════════════════════════════════════════════════════════════════════
+
+base_path: "https://api.hsbc.com"
+host: api.hsbc.com
+host_status: resolved
+host_resolved:
+  at: "2026-08-07"
+  by: "/idea-sync — develop.hsbc.com Open Data research"
+  source: "HSBC-published ATM Locator swagger, #host — download it from https://develop.hsbc.com/ob-api-documentation/atm-locator-uk/endpoints (public, no credential)"
+api_source_ref: API-OD-ATM
+spec: "OBIE Open Data v2.2 (swagger info.version 2.2.1)"
+auth: none
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE THREE WAYS THIS API IS UNLIKE EVERY OTHER ONE IN THE APP
+# ─────────────────────────────────────────────────────────────────────────
+divergence_from_the_rest_of_the_app:
+  no_credential:
+    finding: "The swagger declares NO `security` block and NO `securityDefinitions`."
+    consequence: >-
+      No mTLS, no client cert, no OAuth token, no consent, no x-jws-signature,
+      no x-idempotency-key, no x-fapi-* header. The HTTP client for this surface shares
+      nothing with the AIS/PIS client but the JSON parser. Building it on the mTLS client
+      is the predictable mistake — that client will present a cert this host never asked for.
+    corroboration: >-
+      The portal states it in words: "There are no charges for using these APIs.
+      You don't have to register."
+  live_only:
+    finding: >-
+      "No Sandbox environment is available for these APIs. You're able to access the Live
+      service directly." — develop.hsbc.com, ATM Locator Documentation tab.
+    consequence: >-
+      This is the ONLY surface in the app that talks to production. AIS and PIS both point at
+      secure.sandbox.ob.hsbc.co.uk; this one points at api.hsbc.com and there is no sandbox
+      alternative to point it at. Open, free and unauthenticated, so there is no credential or
+      billing exposure — but it is real traffic to a real host and the responses are real
+      HSBC data, not fixtures.
+  vendor_media_type:
+    produces: "application/prs.openbanking.opendata.v2.2+json"
+    consequence: >-
+      NOT `application/json`. A client that sends `Accept: application/json` is asking for a
+      representation this endpoint does not declare. Send the vendor type, or send no Accept
+      header at all — do not assume the default.
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE STANDARD/EXTENSION SPLIT — the whole search capability is non-standard
+# ─────────────────────────────────────────────────────────────────────────
+path_namespace_rule:
+  standard: "/open-banking/v2.2/…  — the OBIE Open Data mandated endpoint"
+  extension: "/x-open-banking/v2.2/… — HSBC's own additions, `x-` prefixed"
+  finding: >-
+    The MANDATED endpoint takes no parameters at all and returns every HSBC UK and first direct
+    ATM in one response. Every filter — country, town, postcode, geo-location — lives in the
+    `x-` extension namespace.
+  consequence: >-
+    Search is not a standard capability and must not be assumed portable. If this app is ever
+    pointed at another ASPSP's Open Data, `/open-banking/v2.2/atms` will still work and every
+    `x-` path will 404. The screen should degrade to the unfiltered list, not break.
+  ui_consequence: >-
+    Never call the unfiltered endpoint to populate a map view. It is the whole UK estate in one
+    payload with no paging parameter anywhere in the spec. Geo-location is the map's endpoint.
+
+operations:
+
+  # ── 1. The mandated endpoint — every UK ATM, unfiltered ─────────────────
+  - id: get_all_atms
+    endpoint: "GET /open-banking/v2.2/atms"
+    auth: none
+    parameters: []
+    success: "200 with {meta, data}"
+    response:
+      dto: AtmLocation
+      collection: true
+      envelope: "data.Brand[].ATM[]"
+    payload_warning: >-
+      Unfiltered and unpaged — the entire HSBC UK + first direct ATM estate. There is no limit,
+      offset, page or cursor parameter in the spec. Use only for a cold cache prime, never for
+      an interactive view.
+
+  # ── 2..5. HSBC extensions — the actual search surface ───────────────────
+  - id: get_atms_by_geolocation
+    endpoint: "GET /x-open-banking/v2.2/atms/geo-location/lat/{latitude}/long/{longitude}"
+    auth: none
+    primary_for: "the map and 'near me' view"
+    parameters:
+      - { name: latitude, in: path, required: true, type: string, example: "51.50551621597067", note: "Decimal degrees as a STRING, not a number." }
+      - { name: longitude, in: path, required: true, type: string, example: "-0.0180120225995", note: "Decimal degrees as a STRING. May be negative — the leading minus is part of the path segment." }
+      - { name: radius, in: query, required: true, type: number, range: "1 to 10", unit: miles, default: 1 }
+    radius_note: >-
+      REQUIRED despite carrying a documented default of 1. The spec marks it `required: true`
+      and states "Number of miles (1 to 10) as an integer" — so the default describes the
+      server's fallback, not permission to omit the parameter. Always send it.
+    unit_note: >-
+      MILES, not kilometres. A UI that renders a metric radius must convert, and 10 miles is a
+      hard ceiling — there is no wider search.
+    response: { dto: AtmLocation, collection: true, envelope: "data.Brand[].ATM[]" }
+
+  - id: get_atms_by_postcode
+    endpoint: "GET /x-open-banking/v2.2/atms/postcode/{postcode}"
+    auth: none
+    parameters: [{ name: postcode, in: path, required: true, type: string }]
+    response: { dto: AtmLocation, collection: true, envelope: "data.Brand[].ATM[]" }
+
+  - id: get_atms_by_town
+    endpoint: "GET /x-open-banking/v2.2/atms/country/{country}/town/{town}"
+    auth: none
+    parameters:
+      - { name: country, in: path, required: true, type: string }
+      - { name: town, in: path, required: true, type: string }
+    note: "Town is nested UNDER country — there is no town-only path."
+    response: { dto: AtmLocation, collection: true, envelope: "data.Brand[].ATM[]" }
+
+  - id: get_atms_by_country
+    endpoint: "GET /x-open-banking/v2.2/atms/country/{country}"
+    auth: none
+    parameters: [{ name: country, in: path, required: true, type: string }]
+    utility_note: >-
+      Near-useless on its own — the API is UK-only, so this returns approximately the unfiltered
+      estate. It exists as the parent of the country/town path.
+    response: { dto: AtmLocation, collection: true, envelope: "data.Brand[].ATM[]" }
+
+# ─────────────────────────────────────────────────────────────────────────
+# RESPONSE ENVELOPE — brand-grouped, not a flat list
+# ─────────────────────────────────────────────────────────────────────────
+response_envelope:
+  shape: "{ meta, data } — both REQUIRED"
+  data_nesting: "data[] → [i].Brand[] → [j].{BrandName, ATM[]}"
+  depth_warning: >-
+    THREE levels, not two. `data` is itself an ARRAY (swagger: type array, items $ref) and is
+    observed with length 1 on every capture. An implementer who reads the swagger quickly — or
+    who sees `"data": [{...}]` with a single element — will write `data.Brand` or `data[0].Brand`
+    and both are wrong in different ways: the first fails immediately, the second works today and
+    silently drops records the moment HSBC returns a second element. Iterate all three levels.
+  finding: >-
+    Results are grouped BY BRAND. The portal advertises "HSBC UK and first direct ATMs", so a
+    response could in principle carry two brand blocks.
+  brand_observation:
+    observed: "BrandName is 'HSBC UK' on all 135 ATMs across all five geographies. first direct never appeared."
+    caution: >-
+      Do NOT hardcode a single brand. The Product Finder feed DOES return first direct products
+      ('1st Account'), so the brand split is real in the estate even though the ATM feed did not
+      exercise it here. Absence in five samples is not proof of absence.
+  consequence: >-
+    Flatten across data[].Brand[] and carry BrandName down onto each ATM — the brand is the only
+    place the HSBC-vs-first-direct distinction is recorded, and a naive flatten destroys it.
+  meta_fields:
+    LastUpdated: "date-time — how fresh the estate data is. Worth surfacing; this is reference data that changes slowly."
+    TotalResults: integer
+    Agreement: "Fixed string — the Open Licence terms."
+    License: "https://www.openbanking.org.uk/open-licence"
+    TermsOfUse: uri
+  attribution_requirement: >-
+    meta.Agreement and meta.License are single-value enums in the spec — the licence terms are
+    part of the payload, not optional metadata. Use of the data is subject to the Open Licence,
+    so the screen carries an attribution line.
+
+# ─────────────────────────────────────────────────────────────────────────
+# ATM RECORD — what the UI can actually show
+# ─────────────────────────────────────────────────────────────────────────
+atm_record:
+  required: [Identification, SupportedCurrencies, Location]
+  identification_note: >-
+    The only stable key. There is no name field on an ATM — an ATM is identified by its number
+    and located by its address. A UI that wants a title must compose one from the address.
+  # ── THE FINDING THAT CHANGES THE SCREEN ──────────────────────────────
+  never_populated:
+    measured_over: "135 ATMs — Canary Wharf, London, Manchester, Edinburgh, Birmingham, 2026-08-07"
+    fields:
+      Access24HoursIndicator: "0/135"
+      Accessibility: "0/135"
+      MinimumPossibleAmount: "0/135"
+      Note: "0/135"
+      OtherATMServices: "0/135"
+    finding: >-
+      These are declared optional in the swagger and HSBC populates NONE of them, anywhere, in
+      any sample. This is not a regional gap — it held across five geographies and both a 2-mile
+      and a 5-mile radius.
+    design_consequence: >-
+      There must be NO 24-hour filter and NO accessibility filter on the ATM screen. Specifying
+      either produces a control that returns zero results for every user at all times — worse
+      than absent, because it reads as "no 24-hour ATMs near you" rather than "we don't have
+      that data". An earlier draft of this file called Access24HoursIndicator "the single most
+      useful filter" and Accessibility "deserving of a first-class filter" on the strength of
+      the swagger alone. Both claims were wrong and are withdrawn.
+    accessibility_note: >-
+      Accessibility IS populated on BRANCHES — 25/25 in the same London sample, with real values
+      (WheelchairAccess, AudioCashMachine, AutomaticDoors, InductionLoop, LevelAccess). So the
+      accessibility filter belongs on branch-locator, not here. The data exists; it is just not
+      published at ATM granularity.
+    caveat: >-
+      Absence across 135 records is strong but not permanent — HSBC may populate these later.
+      Treat them as absent, not as non-existent: parse them if present, never depend on them.
+
+  observed_optional_fields:
+    SupportedCurrencies: "required and always present. Observed GBP-only in every sample — do not promise multi-currency search on this evidence."
+    SupportedLanguages: "13/13 and 135/135 present. Observed set: en, fr, es, de."
+    Branch: >-
+      135/135 present, but it is a REFERENCE STUB, not an embedded branch — the observed shape is
+      {\"Identification\": \"401874\"} and nothing else. Resolving it to a branch name, address or
+      opening hours requires a SEPARATE Branch Locator call keyed on that id. Any UI that says
+      "at HSBC Baker Street" is making a second network call to learn the name.
+
+  atm_services_enum:
+    declared: 17
+    values: [Balance, BillPayments, CashDeposits, CharityDonation, ChequeDeposits, CashWithdrawal, EnvelopeDeposit, FastCash, MobileBankingRegistration, MobilePaymentRegistration, MobilePhoneTopUp, OrderStatement, Other, PINActivation, PINChange, PINUnblock, MiniStatement]
+    observed_live: [Balance, CashDeposits, CashWithdrawal, ChequeDeposits, MiniStatement, PINActivation, PINChange, PINUnblock]
+    observed_count: 8
+    ui_note: >-
+      This is the ONE field rich enough to filter on — 8 of the 17 values occur live, and
+      CashDeposits / ChequeDeposits are exactly what people search for, since most machines
+      dispense but do not accept. Build the filter from the OBSERVED eight, not the declared
+      seventeen: a picker offering CharityDonation or MobilePhoneTopUp returns nothing.
+  other_fields_pattern:
+    fields: [OtherATMServices, OtherAccessibility, OtherLocationCategory]
+    rule: >-
+      Each paired enum carries an `Other` member plus a matching `Other…` array for the free
+      text. When the enum reads `Other`, the human-readable value is in the sibling array —
+      rendering the enum alone shows the user the literal word "Other".
+
+geo_coordinates:
+  path: "Location.PostalAddress.GeoLocation.GeographicCoordinates"
+  fields: { Latitude: string, Longitude: string }
+  type_warning: >-
+    STRINGS, not numbers — pattern ^-?\d{1,3}\.\d{1,8}$. Parse to double for map rendering and
+    distance maths, but never round-trip through a float when echoing back into a path
+    parameter; the precision in the examples (51.50551621597067) exceeds what a naive
+    float→string conversion preserves.
+
+postal_address:
+  fields: [AddressLine, BuildingNumber, StreetName, TownName, CountrySubDivision, Country, PostCode, GeoLocation]
+  required: "none — the swagger marks no PostalAddress child as required"
+  observed_present: [StreetName, TownName, Country, PostCode, GeoLocation]
+  observed_absent: [AddressLine, BuildingNumber, CountrySubDivision]
+  consequence: >-
+    Every address line is individually optional even though PostalAddress itself is required on
+    the ATM. Observation narrows this usefully: HSBC consistently sends StreetName + TownName +
+    Country + PostCode and consistently omits AddressLine, BuildingNumber and CountrySubDivision.
+    Compose the display address from the four that arrive; do not leave a blank line where
+    BuildingNumber would go.
+
+# ─────────────────────────────────────────────────────────────────────────
+# DATA QUALITY — the feed is not display-ready
+# ─────────────────────────────────────────────────────────────────────────
+data_quality:
+  observed: "Location.Site.Name values include 'HSBC 8CS RECEPTION ' (trailing space), 'CANARY WHARF', 'UNIT 14 JUBILEE PLACE'."
+  defects:
+    trailing_whitespace: >-
+      Real, and present in the live feed. Trim every string before display or comparison —
+      untrimmed values break equality checks and produce visible ragged alignment.
+    all_caps: >-
+      Site names are upper-cased in the source. Rendering them raw makes the screen look like a
+      systems dump. Title-case for display, but keep the raw value for matching.
+  rule: >-
+    Treat this feed as machine data requiring normalisation, not as copy. It is published under a
+    regulatory obligation, not curated for end-user display, and it shows.
+  no_name_field_consequence: >-
+    ATMs have no Name — only Location.Site.Name, which is optional and is a SITE label, not an
+    ATM label. Two machines at one site share it (two 'HSBC 8CS RECEPTION' entries appear in the
+    Canary Wharf sample). It cannot be used as a unique title or a list key; Identification is
+    the only key.
+
+error_cases:
+  codes:
+    - { http: 400, meaning: "Bad request — malformed parameter", recovery: "Implementation fault; the pickers constrain input." }
+    - { http: 408, meaning: "Request timeout", recovery: "Retry with backoff." }
+    - { http: 429, meaning: "Too many requests", recovery: "Back off. This is the one to design for — an unauthenticated public API is rate-limited by origin, and a map that refetches on every pan will hit it." }
+    - { http: 500, meaning: "Internal server error", recovery: "Surface plainly, offer retry." }
+    - { http: 503, meaning: "Service unavailable", recovery: "Surface plainly, offer retry." }
+  no_auth_errors: >-
+    There is no 401 and no 403 in the spec, on any path. Nothing here can fail for a credential
+    reason, so no error path routes to re-authentication — and the screen must not offer one.
+
+open_data_notes:
+  no_consent_required: >-
+    Reachable with no consent and no session — the only surface in the app that is, and a genuine
+    product opportunity rather than an edge case. Sourced rather than asserted: the HSBC-published
+    ATM Locator swagger has no `security` block and no `securityDefinitions` at all. Every earlier
+    revision of this file gated the screen behind an authenticated fetch; that requirement was
+    never a property of Open Data. See `removed_2026_08_06` for what was withdrawn.
+  no_permission_gate: "No OBIE Permission applies. Nothing to request at consent time."
+  device_permission: >-
+    Location is a DEVICE permission, not an API one. The app currently declares zero device
+    permissions app-wide, so a geolocation prompt would be the first — see login/docs.yaml.
+    The postcode and town paths exist precisely so the screen works when the PSU declines.
+
+status:
+  built: false
+  note: >-
+    Specified, not built. AccountDetailChip.AtmLocator ships and navigates but resolves to
+    PlaceholderScreen("ATM locator"). Declared under idea-plan.yaml#deferred_routes, which is
+    what makes the deferral an explicit product decision rather than dead code.
+    The host blocker is now CLEARED — this is buildable.
+
+related:
+  branch_locator: >-
+    Branches are a SEPARATE API and a separate feature (branch-locator), not a mode of this one.
+    The join is ATM.Branch, present when an ATM sits at a branch.
+
+removed_2026_08_06:
+  - { operation: obp_get_atms, was: "GET /obp/v5.1.0/banks/{bankId}/atms", reason: "OBP sandbox." }
+  - { operation: obp_get_branches, was: "GET /obp/v5.1.0/banks/{bankId}/branches", reason: "Moved to the branch-locator feature 2026-08-07." }
+  - { requirement: "DirectLogin auth", reason: "Open Data is unauthenticated." }

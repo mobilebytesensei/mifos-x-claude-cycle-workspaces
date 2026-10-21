@@ -1,0 +1,200 @@
+schema_version: "4.0"
+api_group: transactions
+name: "Transactions API"
+base_url: "https://secure.sandbox.ob.hsbc.co.uk/obie/open-banking/v4.0/aisp"
+auth_scheme: "FAPI 1.0 Advanced — PSU authorization_code token on scope=accounts"
+# Rewritten 2026-08-06 (/idea-sync, OBP eviction). Was the Open Bank Project sandbox with
+# DirectLogin and an /owner/ view segment in the path.
+#
+# ENDPOINT BODIES MIGRATED 2026-08-07. The 2026-08-06 pass rewrote the header and left the four
+# endpoints beneath it entirely OBP — /v3.0.0/banks/{bank_id}/accounts/{account_id}/owner/…
+# paths, snake_case this_account / other_account / details bodies, OBP_SERVER_ERROR codes, and
+# two transaction-metadata writes (tags, comments) that OBIE has no resource for. The header
+# itself carried the naming debt as an open TODO ("the descriptions are OBP vocabulary … owed a
+# rename"); that debt is paid below rather than restated.
+# What was actually wrong:
+#   paths       /v3.0.0/banks/{bank_id}/accounts/{account_id}/owner/transactions
+#               -> /accounts/{AccountId}/transactions. One bank, no bankId, no /owner/ view.
+#   detail      OBIE has NO single-transaction endpoint. transaction-detail reads the same list
+#               resource and selects client-side — see the note on get_transaction_detail below.
+#   counterparty  OBIE has no counterparty resource. A transaction's other party is
+#               CreditorAccount / DebtorAccount carrying a Name.
+#   txn type    the field carried an OBP enum including a SEPA rail. HSBC UK Personal has no
+#               SEPA rail at all — the rails are Domestic and International.
+#   metadata    tags and comments were an OBP v1.2.1 API. No OBIE counterpart; the backing DTOs
+#               and the transaction-tags screen were deleted 2026-08-06.
+#
+# ⚠ UNMASKED PAN: this resource returns the credit card number UNMASKED —
+# "SchemeName":"UK.OBIE.PAN","Identification":"1234567890123456" on transaction records, in
+# both sweeps of the capture corpus. The `account` resource masks it to xxxx-xxxx-xxxx-3456.
+# Anything that logs, caches or exports transaction records is handling a full PAN, and the
+# capture corpus itself carries it in 72 places across four files.
+generated_at: "2026-06-02"
+
+# ─────────────────────────────────────────────────────────────────────────
+# RESPONSE SHAPE — by reference, not restated
+#
+# The { Data, Links, Meta } envelope and the per-field contract live in the DTO registry
+# (TransactionsPage, TransactionListItem, TransactionDetail, TransactionAccount,
+# TransactionDetails), migrated in the same pass. Restating fields here would create a second
+# copy free to drift — which is exactly how this file went stale the first time.
+# ─────────────────────────────────────────────────────────────────────────
+
+endpoints:
+
+  - id: list_transactions
+    method: GET
+    path: "/accounts/{AccountId}/transactions"
+    permission: ReadTransactionsDetail
+    description: >-
+      Booked and pending transactions for ONE account, optionally bounded by booking date.
+      This is the only transaction resource in the AIS surface outside statements — the list,
+      the account-detail recent-activity section, the home activity feed and the
+      transaction-detail screen all read it.
+    response_dto: [TransactionsPage, TransactionListItem, TransactionDetail]
+    response_dto_path: "Data.Transaction[]"
+    query_params:
+      fromBookingDateTime:
+        type: string
+        format: date-time
+        required: false
+        description: "ISO-8601 lower bound on BookingDateTime (e.g. 2026-06-01T00:00:00Z)."
+      toBookingDateTime:
+        type: string
+        format: date-time
+        required: false
+        description: "ISO-8601 upper bound on BookingDateTime (e.g. 2026-06-28T23:59:59Z)."
+    pagination:
+      cursor: "Links.Next"
+      rule: >-
+        OBIE-standard cursor pagination. The client stores Links.Next from each response and
+        presents a 'Load more' affordance while it is non-null. Page size is HSBC-controlled
+        (~100 transactions per page). There is no limit/offset pair — the OBP limit + offset +
+        sort_direction triple this endpoint used to declare has no OBIE equivalent.
+      reset_on: "a date-range change, which discards the cursor and refetches the first page"
+    client_side_only:
+      note: >-
+        Credit/debit filtering, text search and sort are applied against the accumulated
+        in-memory list. OBIE offers no query parameter for any of them.
+    transaction_type_fields:
+      note: >-
+        The OBP `details.type` enum this file used to document does not exist. OBIE classifies a
+        transaction with two ISO 20022 members — BankTransactionCode {Code, SubCode} and
+        ProprietaryBankTransactionCode {Code, Issuer}. Which specific codes HSBC emits is NOT
+        established from the capture corpus and is deliberately not listed; read them off a
+        captured response before mapping any of them to a display label.
+    # `card-detail` dropped from consumed_by 2026-08-07 — the screen was deleted. Its use of
+    # this endpoint was the same account-scoped read every other consumer makes; nothing about
+    # the transactions resource is card-specific, and the unmasked-PAN caveat below is unchanged.
+    consumed_by: [transactions, transaction-detail, account-detail, home]
+
+  # ── RESOLVED 2026-08-07 — was `status: unresolved`, now closed with evidence ──
+  - id: get_transaction_detail
+    method: n/a
+    path: "DOES NOT EXIST — confirmed absent, not merely unestablished"
+    status: resolved-absent
+    evidence:
+      source: "sandbox-prod-ob-ukce-postman/sandbox-prod-ob-ukce-postman-collection.json"
+      method: >-
+        Enumerated every request URL in the ENTIRE collection — all ten brand folders, not just
+        UK Personal — and filtered for a path segment after `transactions/`. Zero matches.
+      conclusion: >-
+        There is no GET /transactions/{TransactionId} on any HSBC brand. This is now a measured
+        absence, not an open question.
+    the_two_transaction_endpoints_that_DO_exist:
+      - path: "GET /accounts/{AccountId}/transactions"
+        owner_feature: transactions
+        note: "The account transaction list. Declared in screens/transactions/api.yaml."
+      - path: "GET /accounts/{AccountId}/statements/{StatementId}/transactions"
+        owner_feature: statement-detail
+        note: >-
+          A LIST scoped to one statement — NOT a single-transaction read. It belongs to the
+          statements family, which is a SEPARATE feature from transactions. Already declared at
+          screens/statement-detail/api.yaml.
+    how_transaction_detail_actually_works: >-
+      screens/transaction-detail/api.yaml reads GET /accounts/{AccountId}/transactions and
+      selects the record client-side. That screen spec was already correct — this server-layer
+      entry was the only place carrying an open question, and it is now closed.
+    why_the_entry_is_kept: >-
+      The OBP predecessor /…/transactions/{transaction_id}/transaction WAS a real endpoint. Its
+      absence under OBIE is a contract difference worth stating explicitly rather than leaving
+      silent, so a future reader does not re-open the question.
+    consumed_by: []
+
+# ─────────────────────────────────────────────────────────────────────────
+# ERRORS — the observed HTTP set
+#
+# The U0xx short codes catalogued in server/apis/pisp.yaml are a PISP surface and do not appear
+# on this resource.
+# ─────────────────────────────────────────────────────────────────────────
+error_codes:
+  - code: 400
+    cause: "Malformed date bound on fromBookingDateTime / toBookingDateTime."
+    recovery: "Reset the range to the default window."
+    retry: false
+  - code: 401
+    cause: "Access token expired or invalid."
+    recovery: "Clear the token store and navigate to login."
+    retry: false
+  - code: 403
+    cause: "Consent rejected or revoked, or ReadTransactionsDetail absent from the consent."
+    recovery: "Navigate to consent-list for re-authorisation."
+    retry: false
+  - code: 404
+    cause: "AccountId not found — a stale reference, typically a consent revoked mid-session."
+    recovery: "Drop the stale account and advise."
+    retry: false
+  - code: 429
+    cause: "Rate limit exceeded. OBIE mandates a 500-calls-per-5-minutes PSU limit."
+    recovery: "Exponential back-off, then surface a retry affordance."
+    retry: true
+  - code: 503
+    cause: "HSBC sandbox unavailable."
+    recovery: "Surface a retry affordance after a brief delay."
+    retry: true
+
+sca_recency_gate:
+  applies: false
+  note: >-
+    Transactions is one of the two resources observed still returning 200 on a token whose SCA is
+    ~7.4 hours old, alongside balances — the SCA-exempt side of the PSD2 RTS Article 10 split.
+    See server/apis/payments-context.yaml#sca_recency_gate for the finding and its provenance
+    warning.
+
+# ─────────────────────────────────────────────────────────────────────────
+# REMOVED 2026-08-07 — OBP endpoints with no OBIE successor
+# ─────────────────────────────────────────────────────────────────────────
+removed_2026_08_07:
+  - endpoint: "GET /v3.0.0/banks/{bank_id}/accounts/{account_id}/owner/transactions/{transaction_id}/transaction"
+    reason: >-
+      OBP single-transaction read. No OBIE analogue in the AIS surface; transaction-detail
+      selects from the list response instead. Recorded above as `get_transaction_detail`
+      (status: resolved-absent, confirmed against the full Postman collection 2026-08-07)
+      rather than silently dropped.
+  - endpoint: "POST /v3.0.0/banks/{bank_id}/accounts/{account_id}/owner/transactions/{transaction_id}/metadata/tags"
+    reason: >-
+      OBP v1.2.1 transaction-metadata API. OBIE has no transaction-metadata resource. The Tag /
+      TransactionTag / TagAuthorUser DTOs and the transaction-tags screen were deleted
+      2026-08-06.
+  - endpoint: "DELETE /v3.0.0/banks/{bank_id}/accounts/{account_id}/owner/transactions/{transaction_id}/metadata/tags/{tag_id}"
+    reason: "Same. There is nothing to delete because there is nothing to create."
+  - endpoint: "POST /v3.0.0/banks/{bank_id}/accounts/{account_id}/owner/transactions/{transaction_id}/metadata/comments"
+    reason: >-
+      OBP transaction comments. No OBIE counterpart; the Comment / TransactionComment DTOs went
+      with the tags in the same pass.
+  - field: "details.type enum values"
+    reason: >-
+      Declared 'SEPA_CREDIT_TRANSFERS', 'DEBIT', 'CREDIT', 'UK_FASTER_PAYMENTS_SEND' as live
+      field documentation. An OBP enum, and the SEPA member is doubly wrong: HSBC UK Personal
+      has no SEPA rail — the rails are Domestic and International. Replaced by the structural
+      note on list_transactions#transaction_type_fields.
+  - field: "metadata.narrative / metadata.comments / metadata.tags"
+    reason: "User-generated OBP metadata. The resource returns none of it."
+  - field: bank_id
+    reason: "OBP bank identifier. There is ONE bank; no bankId path parameter concept exists."
+  - concept: "the /owner/ view path segment"
+    reason: "OBP view model. OBIE scopes access by consent Permissions, not by a path-embedded view."
+  - concept: counterparty
+    reason: >-
+      OBP vocabulary the old field descriptions were written in. OBIE has no counterparty
+      resource — a transaction's other party is CreditorAccount / DebtorAccount with a Name.

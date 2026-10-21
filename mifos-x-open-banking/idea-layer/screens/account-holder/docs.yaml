@@ -1,0 +1,191 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: account-holder
+
+feature: account-holder
+contract_version: "2.0.0"
+status: approved
+approve_hash: "sha256:f003bab8f4c6871e04e44b3252dd4e537ef81ef76dfd32e41610cef611208441"
+approved_at: "2026-08-05T05:15:00Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+score: 96
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. Added 2026-08-07 (/idea-sync).
+quality_score: 96
+cluster: account-extras
+acceptance_refs: [FR-007]
+scaffolded_by: "/idea-heal"
+enriched_by: "/idea-enrich"
+enriched_at: "2026-06-29"
+archetype: detail_screen
+# flow_ref backfilled 2026-08-02 (/idea-sync) from flows/*.yaml#screens[] membership.
+flow_ref: account-browsing
+description: "Account holder / PSU details screen, gated by ReadParty permission. Renders the flat PartyProfile domain model — displayName, roleLabel, initials, email, mobile and a single pre-flattened addressLine — streamed from ProfileRepository. Four states: loading, content, empty (blank displayName via emptyIfContent), and error. A 403 PermissionNotGranted is classified as AccountHolderErrorKind.ConsentMissingParty and rendered on the shared error surface with retry suppressed; it is not a separate state."
+has_ui: true
+has_server: false
+capabilities: [has_ui, has_api, has_flow]
+
+# ─────────────────────────────────────────────────────────────────────
+# SOURCE BINDING — reverse-synced from source 2026-07-28
+# ─────────────────────────────────────────────────────────────────────
+implementation:
+  status: implemented
+  source_module: "feature/account-holder"
+  package: "org.mifosx.openbanking.feature.accountholder"
+  route: "AccountHolderRoute(accountId: String)"
+  viewmodel: AccountHolderViewModel
+  screen: AccountHolderScreen
+  repositories: [ProfileRepository]
+  domain_model: PartyProfile
+  reachable_from:
+    - "account-detail — AccountDetailChip.Party -> navigate(AccountHolderRoute(accountId))"
+  tests:
+    unit: "commonTest/ui/AccountHolderViewModelTest.kt"
+    compose_ui: "commonTest/AccountHolderScreenUiTest.kt"
+    robolectric: "androidUnitTest/AccountHolderScreenRobolectricTest.kt"
+    instrumented: "androidInstrumentedTest/AccountHolderScreenInstrumentedTest.kt"
+  renamed_from: party
+  synced_from_source_at: "2026-07-28"
+
+metadata:
+  category: crud
+  implementation_ready: true
+  impl_ready_at: "2026-06-29"
+  impl_ready_schema: "v2"
+
+contracts:
+  # Source calls the singular /party endpoint only. Aisp.getParties() exists on the
+  # client but no repository or store consumes it — the parallel /party + /parties
+  # merge previously declared here was never implemented.
+  - endpoint_id: party
+    permission: ReadParty
+    response_dto: PartyResponse
+    source_binding: "Aisp.getParty(accountId) -> PartyResponse -> toPartyProfile()"
+    mapper: "core/data/banking/mapper/PartyMapper.kt"
+    store: "BankingStores.partyStore(aisp): Store<String, PartyProfile>"
+    notes: "Mapper derives displayName, roleLabel, initials, mobile and a single flattened addressLine from Party + PartyAddress. No capability-registry gate — there is no AccountEndpoint.Party, so a U000 refusal is not modelled."
+
+libraries:
+  - capability: rest-client
+    library: ktorfit
+    version: latest
+    targets: [android, ios, desktop, web]
+
+# dependencies: MOVED to flow.yaml · screens: MOVED to ui.yaml — 2026-07-31
+# (CROSS_LEAK repair; sibling-layout.json assigns `dependencies`->flow, `screens`->ui).
+
+
+capability_completeness:
+  storage_location: "No local storage — party data is read-only and not cached on device. Both endpoints fetched fresh on every screen mount."
+  destructive_action_safety: "No destructive actions — screen is read-only AISP data view."
+  nav_callback_wiring: "Single onBack callback wired to popBackStack() by accountHolderScreen(onBack = ...) in AuthenticatedNavbarNavigationScreen; returns to account-detail. No outbound navigation from this screen."
+  user_data_export: "Party data (name, address, contact) is displayed on-screen only; no download or copy mechanism needed for AISP read-only access."
+  permission_visibility: "ReadParty missing from consent → NetworkError.Client.Forbidden → AccountHolderErrorKind.ConsentMissingParty, rendered on the shared error surface with isRetriable=false so the Retry CTA is suppressed. There is no dedicated consent_required state and no in-screen re-authorise navigation in source."
+  storage_budget_awareness: "No local caching; zero device storage impact from this screen."
+  network_data_policy: "One ScreenDataStream opened per screen mount, scoped to viewModelScope and torn down with it. No prefetch, no background refresh, no pagination."
+  cache_lifecycle: "Stream-backed via the party store; the repository exposes no refresh() — RetryLoad calls refresh() on the stream instance the view model already holds."
+  error_recovery: "classifyAccountHolderError maps RemoteException.networkError: Unauthorized → TokenExpired (retriable), Forbidden → ConsentMissingParty (not retriable), NotFound → ProfileNotFound (not retriable), else → LoadFailed (retriable). ScreenState.NoNetwork → LoadFailed; ScreenState.Unauthenticated → TokenExpired. Blank displayName → Empty via emptyIfContent."
+
+vm_actions:
+  # Source declares exactly one action. Stream collection in init{} is not an action.
+  - name: RetryLoad
+    signature: "AccountHolderAction.RetryLoad -> handleAction() -> stream.refresh()"
+    state_mutations:
+      - "stream re-emits ScreenState.Loading, then Content | Empty | Error"
+      - "uiState = screenState.toUiState()"
+    side_effects:
+      - "refresh() on the ScreenDataStream<PartyProfile> held by the view model"
+    error_handling:
+      unauthorized: "AccountHolderUiState.Error(TokenExpired)"
+      forbidden: "AccountHolderUiState.Error(ConsentMissingParty) — retry suppressed"
+      not_found: "AccountHolderUiState.Error(ProfileNotFound) — retry suppressed"
+      other: "AccountHolderUiState.Error(LoadFailed)"
+
+stream_wiring:
+  description: "init{} collects repository.profileStream(accountId, viewModelScope), passes it through emptyIfContent { it.isEmpty }, and maps each ScreenState onto AccountHolderUiState. Not modelled as an action."
+  source_ref: "ui/AccountHolderViewModel.kt"
+
+error_cases:
+  - code: TOKEN_EXPIRED
+    maps_from: "NetworkError.Client.Unauthorized | ScreenState.Unauthenticated"
+    retriable: true
+    description: "PSU access token expired; Retry CTA shown."
+  - code: CONSENT_MISSING_PARTY
+    maps_from: "NetworkError.Client.Forbidden"
+    retriable: false
+    description: "Consent scope does not include ReadParty. Rendered on the shared error surface with the Retry CTA suppressed — source has no in-screen re-consent navigation."
+  - code: PROFILE_NOT_FOUND
+    maps_from: "NetworkError.Client.NotFound"
+    retriable: false
+    description: "No party record associated with this AccountId."
+  - code: LOAD_FAILED
+    maps_from: "any other RemoteException | ScreenState.NoNetwork"
+    retriable: true
+    description: "Device offline or AIS endpoint unreachable."
+
+test_fixtures:
+  # `source` path repaired 2026-08-01 (/idea-sync). It read screens/party/tests.yaml — a
+  # DANGLING path: the 2026-07-28 reverse sync renamed the party screen to account-holder and
+  # screens/party/ no longer exists (verified). Another artifact of the same sweep that left
+  # the vm_actions and scenario counts stale across this project.
+  source: "idea-layer/screens/account-holder/tests.yaml"
+  # Corrected 2026-08-01 (from /idea-verify XS-1): was 6 / critical:4 normal:2. tests.yaml holds
+  # 7 scenarios (TC-ACCOUNT-HOLDER-001..007).
+  scenario_count: 7
+  priority_distribution:
+    critical: 4
+    normal: 3
+
+exports:
+  spec_md:
+    source_hash: regenerated-2026-07-14
+    at: "2026-07-14T21:00:00Z"
+    roundtrip: pass
+  api_md:
+    source_hash: regenerated-2026-07-14
+    at: "2026-07-14T21:00:00Z"
+    roundtrip: pass
+
+status_history:
+  - from: enriched
+    to: designed
+    at: "2026-07-14"
+    by: "/idea export"
+    exports: [spec_md, api_md]
+  - from: designed
+    to: approved
+    at: "2026-07-14T00:00:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: ""
+  - from: approved
+    to: enriched
+    at: "2026-08-05T05:05:00Z"
+    by: "/idea approve --unapprove"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "Stored approve_hash predated the 2026-08-04 export regeneration and no longer matched the sibling set."
+  - from: enriched
+    to: approved
+    at: "2026-08-05T05:15:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "--all-ready bulk approval; predicate C1-C6 green."
+
+score_history:
+  - score: 0
+    at: "2026-06-29"
+    note: "score field absent pre-2026-07-14 enrichment pass"
+  - score: 93
+    at: "2026-07-14"
+    by: /idea-enrich
+    note: "5 states, parallel API merge, full a11y, consent_required CTA, address card with OBPostalAddress8"
+  - score: 96
+    at: "2026-07-14"
+    by: /idea-enrich
+    note: "Full ViewModel state_model (state.fields + screen_state.members + errors.types + actions.members + di). Per-state layout blocks. api.yaml response{} + errors{} on both endpoints. dependencies{} block with tier+features. screens[] entry. capability_completeness all 9 categories."

@@ -1,0 +1,542 @@
+sibling: api
+schema_version: "4.0"
+feature_id: branch-locator
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BRANCH LOCATOR — HSBC UK Open Data, OBIE Open Data v2.2
+#
+# NEW FEATURE 2026-08-07. Branches were previously a deferred second operation inside
+# atm-locator (`get_branches`, status: deferred) against an unresolved OBP-era host. They are a
+# SEPARATE HSBC API product with a materially different payload, so they are now a separate
+# feature — decided by the repository owner 2026-08-07.
+#
+# Evidence — THREE tiers:
+#   Tier 1 — LIVE SAMPLE. 25 branches captured 2026-08-07,
+#     GET /x-open-banking/v2.2/branches/geo-location/lat/51.5074/long/-0.1278?radius=5
+#     HTTP 200. (Originally cited as `open-data-specs/branch-probe.json` — a bare relative path
+#     that resolves from nowhere; the real location is outside the repo. See EVIDENCE PROVENANCE.)
+#   Tier 1b — LIVE POPULATION. The ENTIRE HSBC UK estate, 327 branches, captured 2026-08-07 via
+#     the unfiltered GET /open-banking/v2.2/branches (443 KB, HTTP 200, meta.TotalResults 327).
+#     Every "N/327" figure below is a full-population count, not an extrapolation. The population
+#     scan OVERTURNED three claims that the 25-branch sample had supported — see
+#     `corrections_from_population_scan` at the foot of this file. Sample-scale evidence is
+#     retained where it agrees and explicitly superseded where it does not.
+#   Tier 2 — open-branch-locator-swagger.json (swagger 2.0, info.version 2.2.1, host
+#     api.hsbc.com) from https://develop.hsbc.com/ob-api-documentation/branch-locator-uk/endpoints
+#   Portal: https://develop.hsbc.com/ob-api-overview/api-overview-9 ("UK Branch Locator")
+#
+# EVIDENCE PROVENANCE — read before trusting a citation in this file.
+#   The `open-data-specs/` directory referenced by earlier revisions of this file and by
+#   demo-data.yaml is NOT in this repository. CORRECTED 2026-08-07: it exists OUTSIDE the
+#   repository at /home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/ and does hold
+#   both cited artefacts — branch-probe.json and open-branch-locator-swagger.json, captured
+#   2026-08-07. The evidence is real; the bare relative citation was simply unresolvable, and
+#   an absolute path on one developer's machine is not shared evidence either.
+#   Everything asserted in this file is instead REPRODUCIBLE FROM THE LIVE API, which is a
+#   stronger guarantee than a checked-in capture: the endpoint is public, unauthenticated and
+#   free. Every measurement below states the exact request that produced it so any reader can
+#   re-run it. See `reproduction_commands` at the foot of this file.
+# ═══════════════════════════════════════════════════════════════════════════
+
+base_path: "https://api.hsbc.com"
+host: api.hsbc.com
+host_status: resolved
+api_source_ref: API-OD-BRANCH
+spec: "OBIE Open Data v2.2 (swagger info.version 2.2.1)"
+auth: none
+
+inherits_from: atm-locator
+inherits: [divergence_from_the_rest_of_the_app, path_namespace_rule, data_quality]
+inherits_note: >-
+  Same host, same Open Data contract, same three divergences (no credential, live-only, vendor
+  media type application/prs.openbanking.opendata.v2.2+json) and the same trailing-whitespace
+  data-quality defects. Only the differences are restated below.
+
+# ─────────────────────────────────────────────────────────────────────────
+# WHY THIS IS NOT A TAB ON THE ATM SCREEN
+# ─────────────────────────────────────────────────────────────────────────
+why_separate_from_atm_locator:
+  payload_asymmetry: >-
+    An ATM record carries 5 useful fields and HSBC populates none of its optional ones. A branch
+    record carries opening hours, 11 distinct services and facilities, 8 customer segments, a
+    phone number, a sort code and real accessibility data — all populated 25/25.
+  the_sharpest_contrast: >-
+    Accessibility is 0/135 on ATMs and 25/25 on BRANCHES, with real values. The accessibility
+    filter is impossible on one surface and valuable on the other. Two screens with genuinely
+    different capability, not one screen with a toggle.
+  sortcode_is_branch_only: >-
+    Branches have a sort-code lookup path with no ATM equivalent — the only Open Data endpoint
+    that joins to anything else in the app, since a sort code is what a payment carries.
+  join: "ATM.Branch.Identification → this API's Branch.Identification. A reference, not an embed."
+
+operations:
+
+  # ── 1. The mandated endpoint — every UK branch, unfiltered ──────────────
+  - id: get_all_branches
+    endpoint: "GET /open-banking/v2.2/branches"
+    auth: none
+    parameters: []
+    success: "200 with {meta, data}"
+    response: { dto: Branch, collection: true, envelope: "data[].Brand[].Branch[]" }
+    namespace_verified: >-
+      VERIFIED 2026-08-07. This path is on /open-banking/ with NO x- prefix and returns 200.
+      The same path WITH the prefix — /x-open-banking/v2.2/branches — returns 404. The namespace
+      split is real and inverted from every other operation here: the OBIE-mandated unfiltered
+      endpoint lives under /open-banking/, and every HSBC filtered extension lives under
+      /x-open-banking/. Getting this backwards 404s.
+    payload_warning: >-
+      Unfiltered and unpaged — the entire HSBC UK estate. No limit, offset, page or cursor
+      parameter exists anywhere in the spec. MEASURED 2026-08-07: 443 KB, 327 branches, one
+      response, no pagination offered. Cold-cache prime only, never an interactive view.
+    why_it_is_still_worth_calling: >-
+      443 KB once beats 135 sortcode round-trips. This is the call that makes the ATM join cheap
+      (see related_features in docs.yaml) and it is the only way to get a branch the user's
+      radius search did not reach.
+
+  # ── 2. Geo-location — the map ───────────────────────────────────────────
+  - id: get_branches_by_geolocation
+    endpoint: "GET /x-open-banking/v2.2/branches/geo-location/lat/{latitude}/long/{longitude}"
+    auth: none
+    primary_for: "the map and 'near me' view"
+    parameters:
+      - { name: latitude, in: path, required: true, type: string, example: "51.5074" }
+      - { name: longitude, in: path, required: true, type: string, example: "-0.1278", note: "May be negative — the leading minus is part of the path segment." }
+      - { name: radius, in: query, required: false, type: number, range: "1 to 10", unit: miles, default: 1 }
+    radius_note: >-
+      CORRECTED 2026-08-07 by probe. The swagger marks radius required; the SERVER does not
+      enforce it. Omitting it returns 200 and is byte-identical to radius=1 (8528 bytes,
+      TotalResults 6 at 51.5074/-0.1278). So it is optional at runtime and the documented
+      default of 1 genuinely applies.
+    always_send_it_anyway: >-
+      Send radius explicitly on every call — but for a PRODUCT reason, not a protocol one. The
+      default of 1 mile is a very narrow search: at central London it returns 6 branches where
+      radius=10 returns 42. A client that omits the parameter silently ships the narrowest
+      possible result set and looks like it found almost nothing.
+    radius_boundary_measured:
+      probed: "2026-08-07, lat 51.5074 long -0.1278"
+      results: "radius=1 → 6 results · radius=10 → 42 results · radius=11 → 0 results · radius=0 → 0 results · omitted → 6 results"
+      ceiling_behaviour: >-
+        CRITICAL. Out-of-range does NOT 400. radius=11 and radius=0 both return HTTP 200 with an
+        EMPTY data[]. An out-of-range radius is therefore indistinguishable from "no branches
+        near you". A metric UI that converts km to miles and lands on 16 will tell the user
+        there are no branches in their city. Clamp to 1..10 client-side BEFORE the request —
+        the server will not tell you that you were wrong.
+    response: { dto: Branch, collection: true, envelope: "data[].Brand[].Branch[]" }
+
+  # ── 3. Sort code — unique to branches ───────────────────────────────────
+  - id: get_branch_by_sortcode
+    endpoint: "GET /x-open-banking/v2.2/branches/sortcode/{sortcode}"
+    auth: none
+    parameters: [{ name: sortcode, in: path, required: true, type: string, accepted_format: "400106 — SIX DIGITS, NO HYPHENS" }]
+    uniqueness: "No ATM equivalent. The only Open Data path keyed on a banking identifier rather than a place."
+    product_opportunity: >-
+      A sort code is what every payment in this app already carries. This endpoint can turn the
+      bare sort code on a beneficiary, a standing order or a transaction into a named branch with
+      an address — without a consent, a token or a session. It is the one Open Data endpoint that
+      composes with the rest of the app rather than sitting beside it.
+    format_SETTLED:
+      probed_at: "2026-08-07"
+      question: "Does the path accept the hyphenated form, the 6-digit form, or both?"
+      answer: "SIX-DIGIT ONLY. The hyphenated form is silently rejected."
+      measurements:
+        - { path: "/sortcode/400106",   http: 200, total_results: 1, note: "Baker Street returned in full." }
+        - { path: "/sortcode/40-01-06", http: 200, total_results: 0, note: "Empty. NOT an error." }
+        - { path: "/sortcode/99-99-99", http: 200, total_results: 0, note: "Bogus code — byte-identical 322-byte response to the hyphenated valid one." }
+      the_round_trip_trap:
+        severity: high
+        finding: >-
+          The API's own OUTPUT is in the WRONG format for the API's own INPUT. Every branch
+          record returns SortCode as ["40-01-06"], hyphenated, 327/327. Feeding that value
+          straight back into the sortcode path returns zero results. The response cannot be
+          round-tripped into the request without transformation.
+        why_it_will_ship: >-
+          There is no error to catch. A valid sort code in the wrong format and a sort code that
+          does not exist produce the identical 322-byte empty envelope. A developer who reads
+          SortCode[0] off a record and passes it to the lookup gets "branch not found" and will
+          conclude the branch is missing, not that the format is wrong.
+        mandated_fix: >-
+          Strip every non-digit before building the path. The app's beneficiaries, standing
+          orders and transactions carry sort codes in mixed presentation formats (40-01-06,
+          40 01 06, 400106) — normalise all of them to six digits at the call site.
+    response: { dto: Branch, collection: true, envelope: "data[].Brand[].Branch[]" }
+
+  # ── 4..5. Place filters ─────────────────────────────────────────────────
+  - id: get_branches_by_postcode
+    endpoint: "GET /x-open-banking/v2.2/branches/postcode/{postcode}"
+    auth: none
+    parameters: [{ name: postcode, in: path, required: true, type: string }]
+    response: { dto: Branch, collection: true, envelope: "data[].Brand[].Branch[]" }
+
+  - id: get_branches_by_town
+    endpoint: "GET /x-open-banking/v2.2/branches/country/{country}/town/{town}"
+    auth: none
+    parameters:
+      - { name: country, in: path, required: true, type: string }
+      - { name: town, in: path, required: true, type: string }
+    note: "Town is nested UNDER country — there is no town-only path."
+    response: { dto: Branch, collection: true, envelope: "data[].Brand[].Branch[]" }
+
+  - id: get_branches_by_country
+    endpoint: "GET /x-open-banking/v2.2/branches/country/{country}"
+    auth: none
+    parameters: [{ name: country, in: path, required: true, type: string }]
+    utility_note: "Near-useless alone — the API is UK-only. Exists as the parent of the country/town path."
+    response: { dto: Branch, collection: true, envelope: "data[].Brand[].Branch[]" }
+
+response_envelope:
+  shape: "{ meta, data } — both REQUIRED"
+  data_nesting: "data[] → [i].Brand[] → [j].{BrandName, Branch[]}"
+  depth_warning: "THREE levels, exactly as the ATM feed. `data` is an array, observed length 1."
+  brand_observation: "BrandName 'HSBC UK' on all 25 observed. first direct did not appear — do not hardcode."
+  brand_SETTLED:
+    probed_at: "2026-08-07, against the full 327-branch estate"
+    finding: >-
+      The entire feed contains exactly ONE BrandName occurrence — "HSBC UK". Not one per branch:
+      one in the whole document. The real shape is data[0].Brand[0].Branch[327], so the brand
+      loop yields a single element and all 327 branches hang beneath it.
+    first_direct: >-
+      RESOLVED. first direct does not appear, and will not. Two first direct sort codes (404784,
+      402406) were probed against the sortcode path and both returned TotalResults 0. The reason
+      is structural rather than a sampling artefact: first direct is a branchless telephone and
+      internet bank with no branch estate at all, so its absence from a BRANCH feed is correct
+      and permanent. The brand split that is genuinely real in the Product Finder feed does not
+      apply to this one.
+    still_do_not_hardcode: >-
+      Traverse the Brand[] loop anyway. Not because a second brand is expected here, but because
+      the envelope is shared with the ATM feed and with Product Finder, where the split IS real —
+      a traversal that assumes a single brand is a latent defect the moment the DTO is reused.
+      The loop costs one line and the assumption costs a rewrite.
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE SILENT-EMPTY FAILURE CLASS — the defining hazard of this API
+# ─────────────────────────────────────────────────────────────────────────
+silent_empty_envelope:
+  severity: high
+  finding: >-
+    This API almost never returns an error. Malformed input, out-of-range input and genuinely
+    empty results all produce the SAME HTTP 200 with an empty data[] — a byte-identical 322-byte
+    response. Four distinct causes were measured collapsing to one indistinguishable output.
+  measured_causes:
+    - { cause: "genuinely no branches nearby", example: "lat 57.0 / long -10.0, radius 10 (mid-ocean)", http: 200, results: 0 }
+    - { cause: "sort code in the wrong format", example: "/sortcode/40-01-06", http: 200, results: 0 }
+    - { cause: "sort code does not exist", example: "/sortcode/99-99-99", http: 200, results: 0 }
+    - { cause: "radius out of range", example: "radius=11 or radius=0", http: 200, results: 0 }
+  the_epoch_sentinel:
+    finding: >-
+      Every empty response carries meta.LastUpdated = "1970-01-01T00:00:00.000Z" — the Unix
+      epoch. A populated response carries a real timestamp (2026-08-06T10:26:11.506Z observed).
+      The epoch value is therefore a reliable machine-readable marker that a response is empty.
+    cache_hazard: >-
+      This directly breaks any cache keyed on meta.LastUpdated. An empty response does not carry
+      a plausible-but-stale timestamp; it carries 1970. A cache that stores or compares on that
+      value will treat every empty result as infinitely old, or worse, persist an empty result
+      under a key that never invalidates. Check for the epoch BEFORE caching.
+  consequence_for_the_ui: >-
+    The empty state cannot be trusted to mean "no branches near you". Validate input client-side
+    — clamp radius to 1..10, normalise sort codes to six digits — so that by the time a request
+    is issued, empty genuinely does mean empty. Without that, the screen will confidently tell
+    users there are no branches in Birmingham because someone typed a hyphen.
+
+# ─────────────────────────────────────────────────────────────────────────
+# BRANCH RECORD — richly populated, unlike the ATM one
+# ─────────────────────────────────────────────────────────────────────────
+branch_record:
+  required: [Identification, SequenceNumber, Type, CustomerSegment, PostalAddress]
+  field_population:
+    measured_over: "25 branches, London radius 5mi, 2026-08-07"
+    fully_populated: "Name, SortCode, CustomerSegment, ServiceAndFacility, Accessibility, Availability, ContactInfo, PostalAddress — all 25/25"
+    never_populated: { Photo: "0/25", Note: "0/25" }
+    contrast_with_atms: >-
+      The inverse of the ATM feed, where five optional fields are 0/135. Branch data is genuinely
+      rich and worth building a real screen against.
+  population_confirmation:
+    measured_over: "all 327 UK branches, 2026-08-07"
+    always_present: "Accessibility 327/327 · ContactInfo 327/327 · SortCode 327/327 · Availability 327/327"
+    never_present: "Photo 0/327 · Note 0/327 — confirmed dead at population scale, not merely unsampled."
+    note: >-
+      Every field the sample showed as fully populated is fully populated across the whole
+      estate. No branch anywhere is missing accessibility, hours, a sort code or a contact.
+      The screen can treat all four as guaranteed rather than defensively optional.
+  type_observed: "Physical on all 327 — confirmed at population scale. The enum permits others; nothing else exists in the UK estate."
+  name_note: >-
+    Branches DO have a Name, unlike ATMs — and it is editorial, not just a label:
+    "Baker Street - Counter Service Available (Monday-Friday)". Useful, but it means the name
+    can carry service caveats that duplicate or contradict ServiceAndFacility. Render the name,
+    but derive capability from the structured fields.
+
+# ─────────────────────────────────────────────────────────────────────────
+# OPENING HOURS — the trap on this screen
+# ─────────────────────────────────────────────────────────────────────────
+availability:
+  path: "Availability.StandardAvailability.Day[]"
+  day_shape: "{ Name: <weekday>, OpeningHours: [{ OpeningTime, ClosingTime }] }"
+  observed_example: "Mon-Fri 09:30-16:30, Saturday 09:30-13:00"
+  closed_days_are_ABSENT:
+    finding: >-
+      A day the branch is CLOSED is simply NOT IN THE ARRAY. The observed branch lists six Day
+      entries — Monday through Saturday — and no Sunday entry at all.
+    population_confirmation:
+      measured_over: "all 327 UK branches, 2026-08-07"
+      sunday: "0 of 327. Not one branch in the entire HSBC UK estate publishes a Sunday entry."
+      saturday: "167 of 327 (51%) — a near coin-flip across the estate."
+      total_day_entries: 1802
+      arithmetic_proof: >-
+        327 branches x 5 weekdays = 1635, plus 167 Saturdays = 1802, which is exactly the
+        observed Day-entry count. So EVERY branch publishes precisely Monday-to-Friday and
+        optionally Saturday, and nothing else. There is no branch with a Sunday, none with a
+        missing weekday, and none with a seventh entry. The Mon-Fri core is invariant and
+        Saturday is the only variable day in the whole feed.
+      sample_was_pessimistic: >-
+        The 25-branch London sample showed Saturday at 9/25 (36%). The population is 51%. The
+        sample under-represented Saturday opening — the paired positive/negative fixtures are
+        representative of a genuine split, not of a rare case.
+    consequence: >-
+      Absence means closed, not unknown. A UI that iterates the array and renders only what it
+      finds silently omits Sunday, leaving the user unable to tell "closed on Sunday" from "we
+      don't know about Sunday". Build the week from a fixed Mon-Sun list and mark every day the
+      API did not send as Closed.
+    severity: "This is the single most likely bug on this screen."
+  opening_hours_is_an_array:
+    note: >-
+      OpeningHours is a LIST per day, which models a lunchtime closure as two ranges. Every
+      observed day had exactly one range — so a client that reads OpeningHours[0] works today and
+      silently hides an afternoon session the first time HSBC publishes a split day.
+    population_check: >-
+      CONFIRMED across all 1802 Day entries in the estate: every single one carries exactly one
+      range. Zero split days exist today. The defensive advice stands anyway — this is a
+      contract-conformance guard against a shape the API is allowed to send, not a workaround
+      for an observed case. Treat it as cheap insurance, not as a bug being fixed.
+    time_format: >-
+      All 1802 observed times use the colon form ("09:30"). The swagger pattern makes the colon
+      OPTIONAL, so "0930" is conformant and would parse to garbage under a strict HH:mm parser.
+      Zero occurrences today; parse defensively.
+
+  # ── CORRECTED 2026-08-07 — the sample said this field was dead. It is not. ──
+  non_standard_availability_EXISTS:
+    supersedes: "The earlier `no_holiday_data` finding, which was drawn from the 25-branch sample and is WRONG at population scale."
+    finding: >-
+      NonStandardAvailability is published by exactly 1 of 327 branches. The 25-branch London
+      sample contained none, which is why it was previously recorded as never populated. It is
+      rare, not absent — and the one branch that carries it is the single most dangerous record
+      in the entire feed.
+    the_record:
+      identification: "401118"
+      name: "Birmingham, New Street - Temporarily closed"
+      shape: '{ Name, StartDate, EndDate, Notes } — an OBJECT, not an array'
+      value: '{ Name: "Temporarily Closed", StartDate: "2025-10-06", EndDate: "2027-03-21", Notes: "Branch Temporarily Closed" }'
+      dates_only: "StartDate and EndDate carry no time component. This is a date-range override, not an hours override."
+    why_this_is_the_worst_record_in_the_feed: >-
+      This branch is closed for roughly eighteen months — 2025-10-06 to 2027-03-21, a window that
+      contains today — and it STILL publishes a complete, ordinary-looking StandardAvailability
+      of Monday-Saturday 09:30-16:30. A renderer that reads StandardAvailability alone will tell
+      the user the branch opens at 09:30 on Monday and send them to a shuttered building. The
+      structured closure is the only machine-readable signal that the weekly pattern is a lie.
+    rendering_contract:
+      rule: >-
+        Read NonStandardAvailability FIRST. If today falls within [StartDate, EndDate], the
+        branch's StandardAvailability must be suppressed or visibly overridden — never rendered
+        as though it were in force.
+      surfacing: "Surface Notes verbatim. It is the only human-readable explanation the feed provides."
+      one_in_327_is_the_trap: >-
+        A developer testing against any London radius search will never see this field and will
+        ship without handling it. That is precisely why branch 401118 is now carried in
+        demo-data.yaml as a required fixture rather than left to chance.
+    editorial_name_agrees: >-
+      The Name field also reads "- Temporarily closed", so the two signals agree here. Do NOT
+      rely on the name for this: it is free text with no guaranteed vocabulary, whereas
+      NonStandardAvailability is structured and date-bounded. Parse the structure; the name is
+      corroboration, not a source.
+
+  no_holiday_data:
+    scope_narrowed: "Still true for HOLIDAYS specifically, but no longer true of exception data in general — see non_standard_availability_EXISTS above."
+    finding: >-
+      No bank-holiday or public-holiday calendar is published anywhere in this feed. The one
+      NonStandardAvailability record describes a long-run temporary closure, not a holiday.
+    consequence: >-
+      BANK HOLIDAYS ARE NOT IN THIS FEED. The screen must never assert a branch is open on a
+      given date; it can only report the standard weekly pattern, plus any temporary-closure
+      override. Phrase it as normal opening hours, not as "open now" — an "Open now" badge on
+      Christmas Day is the failure mode.
+    what_IS_computable: >-
+      "Temporarily closed" IS computable and IS mandatory, because the date range is published.
+      "Open now" is NOT computable, because the holiday calendar is not. These are different
+      questions and the screen must answer only the first.
+
+enums_observed:
+
+  # A value being PRESENT tells you nothing about whether it is worth a filter chip. What matters
+  # is whether it DISCRIMINATES. A value carried by 327/327 branches can never exclude anything —
+  # a chip for it is a dead control that looks functional and silently does nothing. All counts
+  # below are full-population, measured 2026-08-07.
+  _discrimination_principle: >-
+    Build every filter from values that SPLIT the estate, not from values that merely appear in
+    it. The sample-scale guidance previously in this file recommended five service chips, of
+    which three turn out to be present on every branch in the country.
+
+  ServiceAndFacility:
+    declared: 28
+    observed: [BureauDeChange, CounterServices, ExternalATM, InternalATM, LodgementDevice, MeetingRooms, OnDemandCurrency, OnlineBankingPoint, SelfServiceAccountOpening, StatementPrinter, WiFi]
+    observed_count: 11
+    population_frequency:
+      universal_DEAD_as_filters:
+        - { value: WiFi, count: "327/327" }
+        - { value: StatementPrinter, count: "327/327" }
+        - { value: SelfServiceAccountOpening, count: "327/327" }
+        - { value: OnlineBankingPoint, count: "327/327" }
+        - { value: MeetingRooms, count: "327/327" }
+        - { value: LodgementDevice, count: "326/327" }
+      weakly_discriminating:
+        - { value: InternalATM, count: "324/327" }
+        - { value: ExternalATM, count: "300/327" }
+      genuinely_discriminating:
+        - { value: CounterServices, count: "175/327 (54%)" }
+        - { value: BureauDeChange, count: "175/327" }
+        - { value: OnDemandCurrency, count: "175/327" }
+    the_one_real_axis: >-
+      CounterServices, BureauDeChange and OnDemandCurrency all sit at exactly 175/327. They
+      co-occur: a branch either is a full-service branch and has all three, or is self-service
+      and has none. So the 11 observed values collapse to ONE meaningful user question — "can I
+      speak to someone at a counter?" — and 152 of 327 UK branches answer no.
+    corroborated_by_the_name_field: >-
+      The editorial Name suffixes split the estate the same way: 164 branches read "Counter
+      Service Available (Monday-Friday)" and 149 read "Cash Withdrawals and Note Deposits
+      Through Self-Service". Two independent fields telling the same story is strong evidence
+      the axis is real and worth surfacing prominently rather than burying in a chip row.
+    ui_note: >-
+      Ship ONE service filter — counter service, yes/no. Do not ship chips for WiFi, MeetingRooms,
+      StatementPrinter, OnlineBankingPoint or SelfServiceAccountOpening: every branch in the
+      country has them and the chip can never change the result set.
+
+  CustomerSegment:
+    declared: 9
+    observed: [Business, Corporate, Personal, Premier, Private, SME, Select, Wealth]
+    population_frequency: "All 8 observed values are present on ALL 327 branches. Zero variance across the entire estate."
+    ui_note: >-
+      DROP THIS FIELD FROM THE UI ENTIRELY. It is not "noise to be filtered down to Personal and
+      Premier" as previously recorded — it is a constant. Every HSBC UK branch declares all eight
+      segments, so a segment filter cannot exclude a single branch and a segment badge cannot
+      distinguish one branch from another. Rendering it implies a difference that does not exist.
+
+  Accessibility:
+    declared: 10
+    observed: [AudioCashMachine, AutomaticDoors, ExternalRamp, InductionLoop, InternalRamp, LevelAccess, WheelchairAccess]
+    observed_count: 7
+    sample_missed_one: "ExternalRamp (50/327) never appeared in the 25-branch sample. The correct observed count is SEVEN, not six."
+    population_frequency:
+      universal_DEAD_as_filters:
+        - { value: InductionLoop, count: "327/327" }
+        - { value: AudioCashMachine, count: "326/327" }
+      genuinely_discriminating:
+        - { value: WheelchairAccess, count: "314/327 — 13 branches lack it" }
+        - { value: AutomaticDoors, count: "309/327" }
+        - { value: LevelAccess, count: "284/327 — 43 branches lack it" }
+        - { value: InternalRamp, count: "53/327" }
+        - { value: ExternalRamp, count: "50/327" }
+    cross_check_passed: >-
+      12 branches carry "Not Wheelchair Accessible" in their editorial Name. Every one of them
+      also OMITS WheelchairAccess from the structured array — checked on Birmingham Jewellery
+      Quarter, whose Accessibility is [AudioCashMachine, InductionLoop, LevelAccess]. The free
+      text and the structured field AGREE, which is direct evidence the structured field is
+      trustworthy enough to filter on. This is the strongest single justification for the
+      accessibility filter.
+    ui_note: >-
+      Populated 327/327 with real, varying values — the filter belongs here and is impossible on
+      the ATM screen, where the same field is never sent at all. Build chips from the FIVE
+      discriminating values only. InductionLoop and AudioCashMachine must NOT be chips: they are
+      on every branch and would be dead controls on a filter row where a dead control is
+      especially costly, because the user relying on it has an access need.
+
+contact_info:
+  shape: "ContactInfo[] of { ContactType, ContactContent }"
+  observed: '[{ ContactType: "Phone", ContactContent: "03457 404 404" }]'
+  population_frequency: "327 of 327 branches carry the IDENTICAL string 03457 404 404. There is not one distinct number in the entire estate."
+  caution: >-
+    The observed number is HSBC's general UK contact line, not a per-branch direct dial. Labelling
+    it "Call this branch" would be wrong — it reaches the national call centre. The population
+    scan removes any doubt: a field with exactly one value across 327 records is not per-branch
+    data. Label it as HSBC's general enquiries line, and consider whether repeating an identical
+    national number on every branch card earns its space at all.
+
+postal_address:
+  observed_present: [BuildingNumber, StreetName, TownName, CountrySubDivision, Country, PostCode, GeoLocation]
+  richer_than_atm: "Branches send BuildingNumber and CountrySubDivision; ATMs send neither."
+  whitespace_defect: >-
+    BuildingNumber observed as "90 " with a trailing space, same class of defect as the ATM
+    Site.Name values. Trim before display or the composed address reads "90  Baker Street".
+  whitespace_prevalence:
+    measured: "281 of 327 BuildingNumber values carry a trailing space (86%). StreetName: 0 of 327."
+    implication: >-
+      This is the majority case, not an oddity — a naive address composition renders a double
+      space on roughly six branches in seven. It is also localised: only BuildingNumber is
+      affected, so a blanket trim of every string is defensible but a targeted one suffices.
+      Trim regardless; the cost is nil and the field is the first thing on the address line.
+
+error_cases:
+  codes:
+    - { http: 400, meaning: "Bad request — malformed parameter" }
+    - { http: 408, meaning: "Request timeout", recovery: "Retry with backoff." }
+    - { http: 429, meaning: "Too many requests", recovery: "Back off — unauthenticated public API, rate-limited by origin." }
+    - { http: 500, meaning: "Internal server error" }
+    - { http: 503, meaning: "Service unavailable" }
+  no_auth_errors: "No 401 and no 403 on any path. Nothing here fails for a credential reason."
+  what_does_NOT_error: >-
+    IMPORTANT — the list above is misleading on its own. In probing, the only status ever
+    observed was 200, including for malformed sort codes, out-of-range radii and mid-ocean
+    coordinates. A 404 was produced only by using the wrong path NAMESPACE (/x-open-banking/
+    on the unfiltered endpoint). Error handling on this screen matters far less than
+    empty-result disambiguation — see silent_empty_envelope.
+
+# ─────────────────────────────────────────────────────────────────────────
+# CORRECTIONS — claims this file previously made that the population scan disproved
+# ─────────────────────────────────────────────────────────────────────────
+corrections_from_population_scan:
+  scanned_at: "2026-08-07"
+  method: "GET /open-banking/v2.2/branches — all 327 UK branches — plus targeted probes on the sortcode and geo-location paths."
+  why_recorded: >-
+    Each of these was a reasonable inference from a 25-branch London sample and each was wrong.
+    They are kept visible rather than quietly edited so that the next person can see which class
+    of claim a sample supports and which it does not.
+  corrections:
+    - id: C1
+      was: "NonStandardAvailability is never populated (0/25) — bank-holiday and exception data does not exist in this feed."
+      now: "It exists on 1 of 327 branches, and that branch is closed for 18 months while still publishing normal opening hours."
+      impact: "Changed from a non-feature to a mandatory rendering rule plus a required fixture. The highest-impact correction here."
+    - id: C2
+      was: "radius is REQUIRED despite documenting a default of 1 — the default is not permission to omit it."
+      now: "The server does not enforce it. Omitting it is byte-identical to radius=1. It is optional at runtime."
+      impact: "The advice to always send it survives, but for a product reason (1 mile is too narrow) rather than a protocol one."
+    - id: C3
+      was: "The sortcode path format is untested — observed hyphenated in the response."
+      now: "SETTLED: six digits only. The hyphenated form returns zero results with no error, so the API's own output cannot be fed back into its own input."
+      impact: "Turned an open question into a mandatory normalisation step at the call site."
+    - id: C4
+      was: "Build the accessibility filter from the six observed values."
+      now: "Seven values exist (ExternalRamp was unsampled), and two of the six are on every branch in the country and would be dead controls."
+      impact: "Filter design rewritten around discrimination rather than presence."
+    - id: C5
+      was: "CustomerSegment: Personal and Premier are the ones that matter; the rest are noise."
+      now: "All eight values are on all 327 branches. The field has zero variance and cannot filter or distinguish anything."
+      impact: "Field dropped from the UI entirely."
+
+# ─────────────────────────────────────────────────────────────────────────
+# REPRODUCTION — every claim in this file can be re-verified from a shell
+# ─────────────────────────────────────────────────────────────────────────
+reproduction_commands:
+  note: >-
+    No credential, no consent, no token. Anyone can re-run these and check the numbers. These
+    commands ARE the evidence base. Local captures of the same responses live OUTSIDE this
+    repository at /home/kalpesh/OpenBankingProject/HSBC_Sandbox/open-data-specs/ (branch-probe.json
+    and open-branch-locator-swagger.json, captured 2026-08-07) — not checked in, and not citable
+    as shared evidence. Prefer these commands over any snapshot: the feed moves as
+    meta.LastUpdated advances, so a re-run is truer than a stored copy.
+  accept_header: 'Accept: application/prs.openbanking.opendata.v2.2+json'
+  commands:
+    - { claim: "327 branches, whole estate, one BrandName", cmd: "curl -s https://api.hsbc.com/open-banking/v2.2/branches" }
+    - { claim: "sortcode takes six digits only", cmd: "curl -s https://api.hsbc.com/x-open-banking/v2.2/branches/sortcode/400106  # vs .../40-01-06 → 0 results" }
+    - { claim: "radius optional, ceiling 10, no 400 above it", cmd: "curl -s 'https://api.hsbc.com/x-open-banking/v2.2/branches/geo-location/lat/51.5074/long/-0.1278?radius=11'  # → 0 results, HTTP 200" }
+    - { claim: "unfiltered path 404s under the x- namespace", cmd: "curl -s -o /dev/null -w '%{http_code}' https://api.hsbc.com/x-open-banking/v2.2/branches  # → 404" }
+    - { claim: "the temporarily-closed branch", cmd: "curl -s https://api.hsbc.com/x-open-banking/v2.2/branches/sortcode/401118" }
+
+status:
+  built: false
+  note: "Specified 2026-08-07, enriched against the full population the same day. No source exists yet — this feature is net-new to the idea-layer."

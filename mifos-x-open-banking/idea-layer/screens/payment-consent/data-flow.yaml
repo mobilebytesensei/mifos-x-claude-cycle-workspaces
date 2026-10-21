@@ -1,0 +1,105 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: payment-consent
+
+screen_id: payment-consent
+
+# Rewritten 2026-08-06 (/idea-sync, PISP-tests research). Previously domestic-payment only.
+
+cache_strategy: none
+cache_rationale: >-
+  Nothing is cached. This screen exists for the duration of one authorisation round trip and
+  holds a single-use authorisation code plus a scoped token. Caching either would extend the
+  life of a credential past the journey that justified it.
+store_shape: none
+
+on_mount:
+  - trigger: validate_and_exchange
+    description: "Validate the redirect, then spend the code. Order matters — see the invariant."
+    steps:
+      - compute:
+          stateMatches: "redirect.state == session.expectedState"
+          consentPath: "consentPathFor(params.paymentFamily)"
+      - branch:
+          when: "stateMatches == false"
+          then: "uiState = Error(StateMismatch); ABORT before the exchange"
+      - call: oauth-token-exchange
+        auth: private_key_jwt
+        grant_type: authorization_code
+        scope: payments
+        store_as: psuToken
+      - compute:
+          nonceMatches: "psuToken.id_token.nonce == session.expectedNonce"
+      - branch:
+          when: "nonceMatches == false"
+          then: "uiState = Error(NonceMismatch); discard the token"
+    on_loading: exchanging
+    on_error: error
+
+  - trigger: poll_consent_to_authorised
+    description: "Poll the ORIGINATING family's consent-status endpoint until AUTH."
+    steps:
+      - call: payment-consent-read
+        path_template: "{consentPath}/{params.consentId}"
+        auth: client_credentials_payments_scope
+        store_as: consent
+      - compute:
+          status: "{consent.Data.Status}"
+          isAuthorised: "status == 'AUTH'"
+          isRejected: "status == 'RJCT'"
+    interval_ms: 2000
+    backoff_multiplier: 1.5
+    max_interval_ms: 15000
+    max_duration_ms: 180000
+    stop_when: "status in {AUTH, RJCT}"
+    on_authorised: "hand back to the originating screen with consentId"
+    on_rejected: "uiState = Error(ConsentRejected)"
+    on_timeout: "uiState = AwaitingAuthorisation (NON-terminal) with a manual retry"
+
+on_user_action:
+  - { trigger: retry_poll, description: "Manual re-poll after a timeout.", re_runs: [poll_consent_to_authorised] }
+  - trigger: restart_authorisation
+    description: "Restart the app-to-app leg after a state or nonce mismatch, or a failed exchange."
+    navigates_to: "{originating type screen, from paymentFamily}"
+
+# ─────────────────────────────────────────────────────────────────────────
+# INVARIANTS
+# ─────────────────────────────────────────────────────────────────────────
+validate_before_spend_invariant:
+  rule: "The state check runs BEFORE the token exchange; the nonce check runs immediately after and discards the token on mismatch."
+  rationale: >-
+    An authorisation code is single-use. Validating after spending it leaves nothing to retry
+    with, and a mismatched state is exactly the case where an attacker wants the code spent.
+  enforced_by: "TC-PCON-001"
+
+token_isolation_invariant:
+  rule: "ConsentSession is never written to by this screen."
+  rationale: >-
+    ConsentSession holds the AIS data-sharing session. Writing a payments-scope token into it
+    would hand account-information reads a payment-initiation credential, and couple a one-shot
+    payment authorisation to a 90-day data consent.
+  enforced_by: "TC-PCON-002"
+
+family_resolution_invariant:
+  rule: "The consent-status endpoint is resolved from the paymentFamily nav param, never hardcoded."
+  rationale: >-
+    Seven families, seven consent endpoints. A hardcoded domestic-payment-consents path — which
+    is what this screen shipped with before the rewrite — silently polls the wrong resource for
+    six of the seven and never observes AUTH.
+  enforced_by: "TC-PCON-003"
+
+status_field_only_invariant:
+  rule: "AUTH is detected from Data.Status. StatusUpdateDateTime is never consulted."
+  evidence: "All five authorised consents transitioned with StatusUpdateDateTime unchanged from CreationDateTime."
+  failure_mode: "A timestamp-keyed poll spins to its deadline on every payment, on every family."
+  enforced_by: "TC-PCON-004"
+
+timeout_is_not_failure_invariant:
+  rule: "A poll deadline yields a non-terminal awaiting state with a retry, never a failure that discards the consent."
+  rationale: "The PSU may still be authenticating at the bank. Abandoning the consent would strand a payment the bank is about to authorise."
+  enforced_by: "TC-PCON-005"
+
+rejected_is_terminal_invariant:
+  rule: "RJCT offers a NEW payment, never a resubmit."
+  rationale: "A rejected consent cannot be reused. Observed on consent 45121."
+  enforced_by: "TC-PCON-006"

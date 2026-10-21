@@ -1,0 +1,447 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: pay-vrp-mandate
+
+feature: pay-vrp-mandate
+contract_version: "2.0.0"
+status: designed
+score: 92
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. Added 2026-08-07 (/idea-sync).
+quality_score: 92
+cluster: payment-initiation
+acceptance_refs: [FR-012, FR-015, FR-016, FR-017, FR-018, FR-021, FR-022, FR-023, FR-024]
+scaffolded_by: /idea-sync
+archetype: index_list
+flow_ref: pay-vrp-mandate
+description: >-
+  Variable Recurring Payments — the only mutable recurring rail, and the only payment type with
+  a lifecycle. Three surfaces in one feature: a mandate LIST (the landing surface), a 4-step
+  CREATE form run once per mandate, and a DETAIL screen carrying headroom, health, pay-under-it
+  and revoke. Create once, draw on it many times with no re-authentication, revoke when done.
+
+  ONE CONSENT FUNDS MANY PAYMENTS. That is the whole feature. Verified three times — two payments
+  per authorisation with no PSU re-authentication, consent still AUTH afterwards. Every other
+  family moves its consent to COND on first use; the VRP state model explicitly OMITS Consumed.
+  The mandate does not expire either: VRP tokens live as long as the consent rather than for the
+  AIS 90 days, and an ASPSP must not revoke for dormancy.
+
+  What it is NOT: domestic only (there is no international VRP), and single IMMEDIATE payments
+  only (no standing orders, no forward-dating within a mandate — the recurrence is the PSU
+  tapping Pay now again, not an instruction the bank holds).
+has_ui: true
+has_server: false
+capabilities: [has_ui, has_api, has_flow, has_form_input, has_system_integration]
+system_capabilities:
+  - { kind: deep_link, detail: "Hands off to payment-consent for the app-to-app authorise leg, once, at mandate creation." }
+
+# ─────────────────────────────────────────────────────────────────────────
+# WHY THIS TILE OPENS A LIST
+# ─────────────────────────────────────────────────────────────────────────
+tile_behaviour_divergence:
+  other_six_tiles: "open a payment composer — the common action is composing a new payment"
+  this_tile: "opens the mandate list — the common action is paying under an EXISTING mandate"
+  rationale: >-
+    A VRP consent is created once and reused indefinitely. Making creation the landing surface
+    would put the rare action first and bury the frequent one. It is also the only payment type
+    where 'what do I already have set up?' is a question the app can answer at all.
+
+rail_position:
+  time_dimension: "none — ControlParameters replace both the mandate schedule and the execution date"
+  amount_field: "Instruction.InstructedAmount, per payment, bounded by ControlParameters"
+  creditor_scheme: "UK.OBIE.SortCodeAccountNumber — required on BOTH sides"
+  funds_confirmation: "POST, carrying an explicit amount, on the PSU token"
+  currency: "GBP only"
+  consent_ladder: "AWAU -> AUTH, and stays AUTH — never COND"
+  resource_ladder: "ACSP -> ACCC, returned in the v3.1 LONG form"
+  delete: "yes — the only one in the entire payment surface"
+  international: "does not exist — VRP is domestic only"
+
+# ─────────────────────────────────────────────────────────────────────────
+# WHAT MAKES VRP DIFFERENT, IN ORDER OF HOW BADLY IT BITES
+# ─────────────────────────────────────────────────────────────────────────
+divergence_traps:
+  - trap: "Mapping only the v4.0 short status codes"
+    why_wrong: >-
+      GET /domestic-vrps returns the v3.1 LONG name 'AcceptedCreditSettlementCompleted' where
+      every other endpoint returns 'ACCC'. HSBC serves both spec generations side by side.
+    consequence: >-
+      Per the fail-open rule an unrecognised status maps to in_progress — so a short-code-only
+      mapper renders every COMPLETED VRP payment as permanently in progress. Silent and
+      permanent.
+    correct: "The status mapper accepts both encodings for every code. See ObPaymentStatus DTO."
+
+  - trap: "Echoing the locally staged Initiation on the payment"
+    why_wrong: >-
+      When the TPP omits DebtorAccount the bank OVERWRITES Initiation.DebtorAccount with the
+      PSU's choice. On the six PIS families this merely blocks re-use; here the payment itself is
+      refused.
+    correct: "Read the Initiation back from the AUTHORISED consent, always."
+    caveat: >-
+      Necessary but not sufficient — the bank may write an account whose scheme its own payment
+      endpoint refuses. That is exactly what happens with the credit card, so the app must ALSO
+      handle U021 on a payload it took verbatim from the bank.
+
+  - trap: "Treating the consent status as the mandate's health"
+    why_wrong: >-
+      THREE of the four health values coexist with Data.Status == AUTH. A mandate can be
+      simultaneously authorised, past SCA, and incapable of paying — and the consent reports
+      nothing about it. Two separate silent failures produce that state. (a) Trusted-beneficiary:
+      HSBC rejects VRPs at fulfilment if the exemption check fails, which happens when the PSU
+      deletes the payee in the HSBC app; StatusReason UK.OBIE.ExemptionNotApplied. (b) Bank-written
+      ineligible debtor: consent 45224 reached AUTH, funds-confirmation said "Available", and
+      every payment then failed 400 U021 — three times, consent AUTH throughout.
+    correct: "Four health states — active, failing, unpayable, revoked. Health is DERIVED from payment outcomes, never from the status ladder."
+    why_it_matters_most: >-
+      This is the single most consequential design fact on the screen. Neither condition is
+      observable from consent status alone, and OBIE provides no async failure reason when a
+      payment fails a background check — documented as "being considered". Beyond the StatusReason
+      and the error code there is nothing to key on.
+
+  - trap: "Reading a successful funds-confirmation as a promise the payment will go through"
+    why_wrong: >-
+      Consent 45224 returned FundsAvailable "Available" and then refused every payment with U021.
+      The check answers whether the amount is present, not whether the debtor is a payer this rail
+      accepts. It gave a clean false positive for a payer that could never pay.
+    correct: >-
+      Treat it as a necessary precondition only. Once a mandate is unpayable, never show the
+      earlier funds result as reassurance.
+
+  - trap: "Expecting the API to track spend against the periodic limits"
+    why_wrong: >-
+      It exposes NOTHING. The consent response echoes PeriodicLimits byte-for-byte — no computed
+      period start or end, no consumed amount, no remaining amount, no PeriodicLimitsUsed member,
+      on the consent or on any payment. And a breach returns U014 with Path
+      Data.Instruction.InstructedAmount.Amount without naming WHICH limit was hit.
+    correct: >-
+      The app keeps its own payment ledger and does the arithmetic itself, then shows EVERY limit
+      so the PSU can see which is close to the line. This is a hard client obligation, not an
+      optimisation — see data-flow.yaml#periodic_limit_ledger.
+
+  - trap: "Expecting a revoked status after DELETE"
+    why_wrong: >-
+      There is none. DELETE returns 204 and every subsequent GET returns 400 U011 'Resource
+      cannot be found'. OBIE mandates exactly this behaviour.
+    correct: >-
+      Persist a local revoked record, and map U011 on a consent GET to 'you revoked this' rather
+      than to a generic failure. The API forgets; the app must remember.
+
+  - trap: "Filtering the debtor picker by PRODUCT rather than by SCHEME"
+    why_wrong: >-
+      The rule is UK.OBIE.SortCodeAccountNumber on BOTH sides — nothing about account type.
+      Savings authorised and settled two payments TPP-named (19931, 19932), contradicting Guide
+      §28.8's "PCA only, hard-stop"; Global Money funded two more when the BANK nominated it
+      (19933, 19934). Neither is a current account. When no debtor was staged the bank itself
+      defaulted to the SAVINGS account, not a PCA.
+    correct: >-
+      Filter on SchemeName only. This is also the ONLY endpoint that states the scheme rule in
+      prose — elsewhere the same constraint is a bare U027 with no explanation.
+
+  - trap: "Assuming bank-selection rescues an ineligible debtor"
+    why_wrong: >-
+      It does on all six PIS families. It does NOT here. When the PSU selected the credit card at
+      the bank, the bank wrote a UK.OBIE.PAN debtor into the authorised consent and
+      POST /domestic-vrps rejected that exact payload. The card is refused by both routes.
+    correct: "The card is never offered, and a U021 on a bank-written debtor is handled gracefully."
+
+  - trap: "Printing a computed first-period pro-rated figure"
+    corrected: "2026-08-07 — this entry previously said the OPPOSITE and required the figure to be shown."
+    why_wrong: >-
+      NO pro-rating was observed in any response. VRP-RESEARCH.md describes first-period
+      pro-rating with worked figures (£300 Month/Calendar on the 6th → £250; £500 Year/Calendar
+      on 5 June → £286.30) but that is documentation, not a capture, and the API exposes no period
+      window at all. Printing £250 when the bank allows £300 is the same class of error as hiding
+      the caution, and this direction is the one where the APP is wrong.
+    correct: >-
+      pro_rating_notice cautions at severity info that the first calendar period may allow less,
+      and states no figure. Resolve it with one authorised probe — a payment between the pro-rated
+      and headline amounts settles the question.
+
+  - trap: "Building a create-time question about whether the reference is fixed for the mandate"
+    corrected: "2026-08-07 — this entry previously REQUIRED that step. The evidence contradicts it."
+    why_wrong: >-
+      Per-payment remittance is INDEPENDENT of the consent's and the payment's value is honoured:
+      the consent carried Unstructured ["VRP20260806"] while payments carried ["VRP-5.00"] and
+      settled. Data.Initiation on a VRP payment has no RemittanceInformation member — it lives
+      only in Data.Instruction, which is why the consent's cannot bind it. A whole create step, a
+      warning banner and a review row were built on a constraint that does not hold.
+    correct: >-
+      Each payment carries its own reference, entered on the pay sheet. The create form is 4 steps.
+    still_unknown: >-
+      Only `Unstructured` was ever sent on VRP; `Reference` and `Structured` were never tried, so
+      the documented rule is neither confirmed nor refuted for the field it names. Probe before
+      building reference support — one staging call, no authorisation.
+
+  - trap: "Feeding U011's Path into a generic Path-to-form-field mapper"
+    why_wrong: >-
+      A post-delete consent GET returns Path "/domestic-vrp-consents/45205" — a URL PATH, where
+      every other error on this API carries a JSON field pointer. The mapper misfires, and may
+      highlight a random control or fail on the leading slash. Note also the code is 400, not 404,
+      so a 404 branch never fires.
+    correct: "Special-case U011 before the mapper runs. It is a revoked mandate, not a field fault."
+
+  - trap: "Using the API as the create form's validator"
+    why_wrong: >-
+      Validation SHORT-CIRCUITS on the parent. VRP-09 omits ControlParameters and returns ONLY
+      U004 on the parent — not the nested PeriodicLimits and MaximumIndividualAmount faults that
+      are equally true. So a form cannot obtain a full fault list in one round trip; fixing one
+      field surfaces the next. Separately, errors CAN batch at the same level: VRP-16 returns U023
+      on MaximumIndividualAmount.Currency and THEN U005 on PeriodicLimits[0].Currency, and a form
+      rendering Errors[0] leaves the payment still refused.
+    correct: >-
+      Validate every control parameter client-side first, and render EVERY entry in Errors[]. See
+      dtos/ObPaymentError.yaml for the envelope and the iron rule — key off ErrorCode + Path,
+      never off Message. U002 alone arrives as "Invalid Field" and as "Invalid value" on this
+      family.
+
+  - trap: "Sending UK.OBIE.SCA in PSUAuthenticationMethods"
+    why_wrong: >-
+      HSBC's enum contains only UK.OBIE.SCANotRequired; UK.OBIE.SCA returns U002. It means
+      delegated SCA — SCA carried out by the TPP under a contract — and ecosystem-wide there are
+      no reported implementations of it anywhere.
+    correct: "Send UK.OBIE.SCANotRequired only. Note it does NOT mean no SCA — SCA happens once, at setup."
+    naming_trap: >-
+      SCANotRequired is the most misleading identifier in the payment surface. SCA IS mandatory,
+      once, at consent setup; individual payments then ride an ASPSP exemption. Read as "no SCA"
+      it invites a design where the mandate is created without an authorise leg, which cannot work.
+
+  - trap: "Looking for a redirect link in the consent response"
+    why_wrong: >-
+      There is none. The response carries Links.Self and Meta.TotalPages only — no authorisation
+      URL, no redirect member. A reasonable implementer searching for one will conclude the
+      response is malformed.
+    correct: "Construct the authorise URL from Data.ConsentId. Nothing in the response hands it over."
+
+  - trap: "Retrying into the evening fraud window, or condemning the mandate for a rejection there"
+    why_wrong: >-
+      HSBC documents that requests received between 18:00 and 23:45 may be rejected pending
+      additional fraud checks. It is a property of the clock, not the mandate — the same payment
+      succeeds at 09:00.
+    correct: >-
+      Surface the rejection plainly with the window stated, leave health untouched, and never
+      auto-retry. On a rail built for unattended repeat payments a retry loop is exactly the wrong
+      reflex.
+
+sweeping_declaration:
+  value_sent: "UK.OBIE.VRPType.Sweeping"
+  definition: "Same person owns source and destination, both UK sterling, source a PCA/BCA, unattended execution permitted."
+  regulatory: >-
+    Mandated FREE by the CMA under item A10 of the Open Banking Roadmap, made under Article 10.5
+    of the Retail Banking Market Investigation Order 2017. The CMA9 must offer open access for
+    sweeping; non-sweeping was never mandated.
+  evidentiary_burden: >-
+    "The PISP asserts it is sweeping and so would need to be able to prove that it is if
+    questioned." Declaring Sweeping also LOCKS the creditor account and forbids the ASPSP adding
+    its own control parameters — which it MAY do for non-sweeping.
+  unresolved: >-
+    The sweeping boundary is still disputed as of December 2025. OBL wrote to the CMA because
+    PISPs and CMA9 firms hold irreconcilable readings of which credit products qualify. OBL's own
+    view: "it will be virtually impossible for them to distinguish between out of scope and
+    in-scope loans."
+  cvrp_out_of_scope: >-
+    UK.OBIE.VRPType.CVRP1 is accepted by HSBC per Guide §28.3.1, but its enumerations sit behind
+    the UK Payments Initiative MLA and are not in the public OBL specification. Not implementable
+    from public sources. UK.OBIE.VRPType.Other staged 201 in testing but no documented rule
+    permits it on HSBC Personal — genuine sandbox laxity, not a contract.
+
+operational_hazards:
+  evening_fraud_window: "HSBC documents that requests between 18:00 and 23:45 may be rejected pending additional fraud checks."
+  destination_restriction: >-
+    HSBC describes its Personal VRP API as "from HSBC UK Personal current accounts to non HSBC UK
+    accounts" — a restriction absent from the OBIE standard and untested here.
+  scope_is_an_opaque_gate: >-
+    OBIE permits the ASPSP to use the scope itself to limit sweeping versus non-sweeping usage,
+    and there is NO discovery mechanism for which rights a payments token carries.
+  no_async_failure_reason: "OBIE provides none when a payment fails a background check. Documented as 'being considered'."
+
+spec_ahead_of_source:
+  scope: feature
+  cluster: payment-initiation
+  declared_at: "2026-08-06"
+  declared_by: "/idea-sync (PISP-tests research rewrite)"
+  owed_by: /kmp-implement
+  reason: "Type brought in scope by the 2026-08-06 seven-type rewrite."
+  source_state_measured:
+    present: []
+    absent:
+      - "NO VRP wire models at all in core/network — unlike the other six families, which ship request+response DTOs"
+      - "no Ktorfit service, no store, no repository, no feature module"
+    note: >-
+      VRP is the only one of the seven with NO shipped wire model. The 2026-07-28 audit found
+      six PISP model sets in core/network; VRP was not among them. This feature therefore starts
+      further from source than any other payment type.
+  consequence_for_verification: "drift and source-test checks UNASSERTABLE, not failing. Score N/A."
+
+regulatory:
+  note: >-
+    PISP is a distinct FCA permission from AISP, and VRP sits inside it — there is no separate
+    VRP role. Sandbox unaffected; production payment initiation needs authorisation this project
+    does not hold.
+  affects_production: true
+  affects_sandbox: false
+  adr_required: true
+
+vm_actions:
+  - name: LoadMandates
+    signature: 'suspend fun loadMandates()'
+    state_mutations:
+      - uiState = Loading
+      - "uiState = Content(mandates) or Empty"
+    side_effects:
+      - "Reads the LOCAL mandate records from VrpMandateRepository"
+      - "For each, GET /domestic-vrp-consents/{ConsentId} to refresh status"
+      - "Polls POST /v4.0/events for UK.OBIE.Consent-Authorization-Revoked"
+    error_handling:
+      on_400_U011: "mark that mandate revoked locally — NOT an error"
+    notes: >-
+      There is no AIS read for VRP mandates, so the list is seeded entirely from local records.
+      A PSU who created a mandate on another device will not see it here.
+
+  - name: CreateMandate
+    signature: 'suspend fun createMandate()'
+    state_mutations:
+      - uiState = Creating(Submitting)
+      - "uiState = Creating(AwaitingAuthorisation, consentId)"
+    side_effects:
+      - "POST /domestic-vrp-consents with ControlParameters, GBP only, SortCodeAccountNumber both sides"
+      - "PSUAuthenticationMethods carries UK.OBIE.SCANotRequired only"
+      - "Emits NavigateToPaymentConsent — the ONE authorisation this mandate will ever need"
+    error_handling:
+      on_400_U004: uiState = Error(MissingControlParameters)
+      on_400_U023: uiState = Error(NonGbpCurrency)
+      on_400_U021: uiState = Error(IneligibleScheme)
+      on_400_U002: uiState = Error(InvalidFieldValue)
+
+  - name: ConfirmFundsAndPay
+    signature: 'suspend fun confirmFundsAndPay(consentId: String, amountMinorUnits: String)'
+    state_mutations:
+      - uiState = Paying(ConfirmingFunds)
+      - uiState = Paying(Submitting)
+      - "uiState = Detail(mandate) with the new payment appended"
+    side_effects:
+      - "POST /domestic-vrp-consents/{ConsentId}/funds-confirmation on the PSU token, carrying the amount"
+      - "GET /domestic-vrp-consents/{ConsentId} to re-read the AUTHORISED Initiation"
+      - "POST /domestic-vrps echoing that Initiation, with a fresh Instruction"
+      - "NO re-authentication — this is the defining VRP property"
+    error_handling:
+      on_401_on_funds: "implementation fault — funds-confirmation requires the PSU token, not client-credentials"
+      on_400_U014: "uiState = Error(ControlParameterBreach); show every limit — the bank does not name the one that was hit"
+      on_400_U021: "uiState = Error(BankWroteIneligibleDebtor); mark the mandate unpayable LOCALLY and do not retry"
+      on_fraud_window_rejection: "uiState = Error(FraudCheckRejected); health untouched, no auto-retry"
+    post_success:
+      - "Appends the payment to the LOCAL spend ledger — the only record of spend against any periodic limit that exists anywhere"
+      - "Drives a 30-second settling indicator from the returned ExpectedSettlementDateTime"
+    notes: >-
+      An 'Available' funds result is NEVER treated as proof the payment will succeed. Consent
+      45224 returned Available and then failed every payment with U021.
+
+  - name: Revoke
+    signature: 'suspend fun revoke(consentId: String)'
+    state_mutations:
+      - uiState = Revoking
+      - "mandate.health = revoked, persisted LOCALLY"
+    side_effects:
+      - "DELETE /domestic-vrp-consents/{ConsentId} -> 204"
+      - "Writes the local revoked record BEFORE the next consent GET can 400"
+    notes: >-
+      The local write is not an optimisation. After DELETE the consent GET returns 400 U011
+      forever, so if the local record is not written the mandate becomes indistinguishable from
+      a broken one.
+
+error_cases:
+  - { id: MissingControlParameters, trigger: "400 U004", user_message: '{strings.error.vrp.missing_control_parameters}', recovery: "Implementation fault — all three blocks are always sent." }
+  - { id: NonGbpCurrency, trigger: "400 U023", user_message: '{strings.error.vrp.gbp_only}', recovery: "Implementation fault — VRP is GBP only." }
+  - { id: IneligibleScheme, trigger: "400 U021", user_message: '{strings.error.vrp.ineligible_scheme}', recovery: "Return to the account or payee step." }
+  - { id: BankWroteIneligibleDebtor, trigger: "400 U021 on a payload taken from the authorised consent", user_message: '{strings.error.vrp.bank_debtor_unusable}', recovery: "Mark the mandate unpayable locally. Explain that the account chosen at the bank cannot fund a variable payment, that this mandate cannot be repaired, and offer to create a new one. No retry — the failure is deterministic." }
+  - { id: ControlParameterBreach, trigger: "400 U014", user_message: '{strings.error.vrp.limit_breach}', recovery: "Show ALL of the mandate's limits — the bank does not say WHICH limit was hit. Prevented client-side wherever the local ledger is intact." }
+  - { id: FraudCheckRejected, trigger: "rejection on a payment submitted between 18:00 and 23:45", user_message: '{strings.error.vrp.evening_window}', recovery: "State the window and let the PSU retry later themselves. Never auto-retry, and never mark the mandate unhealthy." }
+  - { id: MandateRevoked, trigger: "400 U011 on a consent GET", user_message: '{strings.error.vrp.revoked}', recovery: "NOT an error — render as revoked from the local record." }
+  - { id: SignatureMissing, trigger: "400 U019", user_message: '{strings.error.payment.signature_missing}', recovery: "Not user-recoverable." }
+  - { id: NetworkError, trigger: "IOException / timeout", user_message: '{strings.error.payment.network_error}', recovery: "Retry — idempotency key reused." }
+
+test_fixtures:
+  source: idea-layer/screens/pay-vrp-mandate/tests.yaml
+  fixture_data: idea-layer/screens/pay-vrp-mandate/demo-data.yaml
+  scenario_count: 19
+  priority_distribution: { p0: 11, p1: 5, p2: 3 }
+
+open_questions:
+  note: >-
+    Recorded rather than resolved, because each would change a UI decision and none is answerable
+    from the corpus. Listed in descending order of how much design rests on the answer.
+  questions:
+    - question: "Is first-period pro-rating live?"
+      why_it_matters: "Decides whether pro_rating_notice can state a figure, and whether the local ledger must model a short first period."
+      how_to_settle: "One authorised run: attempt a payment between the pro-rated and headline amounts mid-period."
+    - question: "Does a consent-level RemittanceInformation.Reference bind every payment?"
+      why_it_matters: "Decides whether the removed create-time reference step was right after all. Only `Unstructured` was ever sent."
+      how_to_settle: "One staging call with Reference set. No authorisation needed."
+    - question: "How many periodic limits are actually accepted?"
+      why_it_matters: "Decides whether the limits step offers a second limit or an unbounded list."
+      how_to_settle: "Stage three, then six. TWO is the maximum observed; six is documented."
+    - question: "Does this payments token carry VRP rights in production?"
+      why_it_matters: "OBIE permits the SCOPE ITSELF to gate sweeping versus non-sweeping, and there is NO DISCOVERY MECHANISM. The app cannot find out except by trying."
+      how_to_settle: "Unanswerable in advance by design. The create flow must degrade gracefully on a scope refusal."
+
+status_history:
+  - from: null
+    to: draft
+    at: "2026-08-06"
+    by: "/idea-sync — seven-type payments rewrite"
+    note: >-
+      Brought in scope. 18 scenarios in captures/by-type/vrp.md plus three authorised end-to-end
+      runs (flow-vrp-debtor-current, -savings, -bankpick-gm) totalling eight settled payments,
+      and a consent-deletion probe.
+  - from: draft
+    to: enriched
+    at: "2026-08-07"
+    by: "/idea-sync"
+    note: >-
+      Propagated the corrected api.yaml into every sibling and bound the screen to the shared
+      dtos/ObPaymentError.yaml and dtos/ObPaymentStatus.yaml rather than restating them.
+
+      TWO EXISTING CLAIMS WERE CONTRADICTED AND REMOVED — both had already been corrected in
+      api.yaml and were still driving UI, fixtures and tests. (1) The reference-immutability
+      constraint: a whole create step, a warning banner, a review row, a persisted field and
+      TC-VRP-013 all encoded a rule the corpus refutes for the only field ever tested — per-payment
+      remittance is INDEPENDENT of the consent's and the payment's value settles. The create form
+      is now 4 steps and the reference moved to the pay sheet. (2) The pro-rated first-period
+      figure: ui, demo-data and TC-VRP-012 required the app to print £250 as fact. NO pro-rating
+      was ever observed; the figures are documentation. The notice was downgraded to a caution
+      with no number.
+
+      ADDED, all UI-consequential: a FOURTH health state `unpayable` for the defining failure —
+      consent 45224 reached AUTH, funds-confirmation said "Available", and every payment then
+      failed U021, three times, consent AUTH throughout, so a mandate can be simultaneously
+      authorised and incapable of paying and health must never be derived from consent status.
+      The local periodic-limit LEDGER, because the API exposes no pro-rating, no period window, no
+      consumed or remaining amount and no PeriodicLimitsUsed member anywhere, and U014 does not
+      name the limit it refused — headroom_list now shows every limit. Per-payment reference
+      field. A 30-second settling indicator, legitimate here alone because Expected* are honest on
+      this family and stubs on the deferred ones. Evening fraud-window handling with no
+      auto-retry. Charges of 0.05 GBP CHAPSOut per payment and none on the mandate. The absent
+      redirect link — the app constructs the authorise URL itself. No-expiry: VRP tokens live as
+      long as the consent, not the AIS 90 days, so there is no renewal transition anywhere.
+      Scheme-not-product eligibility including the bank's own default to a SAVINGS account.
+      Error-rendering rules the create form cannot skip — batched same-level errors, parent
+      short-circuit, both array notations, and U011's URL Path special-case.
+
+      Six new test scenarios (TC-VRP-014..019); two rewritten. 13 → 19.
+    score_rationale: >-
+      92. The strongest evidence base of the seven rails — 18 scenarios, three authorised runs,
+      eight settled payments, a deletion probe and a cold read — and every sibling now agrees with
+      it. Held below the 94 of pay-domestic-single by four honest unknowns rather than by any gap
+      in the spec: pro-rating unobserved, Reference untested, the limit ceiling untried, and the
+      scope gate undiscoverable by design. No POST /domestic-vrps REQUEST body exists in the
+      corpus either, so field placement is inferred from response echoes.
+  - from: enriched
+    to: designed
+    at: "2026-08-07"
+    by: "/idea-feature-export"
+    exports_produced: [spec_md, api_md, mockup_md, prompts_figma_md, prompts_per_state]
+    note: >-
+      /idea-feature-export --all, owner-scoped to the ten payment-initiation features. Roundtrip
+      verification PASSED on all five checks — state coverage, endpoint coverage, ViewModel
+      coverage, forbidden content, and prompt size (7 per-state prompts — the largest state set
+      of the ten — all under the 4000-char limit).

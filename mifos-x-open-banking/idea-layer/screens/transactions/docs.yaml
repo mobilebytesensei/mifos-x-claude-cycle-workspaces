@@ -1,0 +1,227 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: transactions
+
+screen_id: transactions
+contract_version: "2.0.0"
+feature: transactions
+score: 95
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. Added 2026-08-07 (/idea-sync).
+quality_score: 95
+archetype: index_list
+cluster: transactions
+acceptance_refs:
+  - FR-005
+  - FR-011
+flow_ref: transaction-review
+scaffolded_by: /idea-heal
+status: approved
+approve_hash: "sha256:6707a5414dc7e59a16e9f6009a22f847d8ad7c7d1c7e9094679a13fdbe537f49"
+approved_at: "2026-08-05T05:15:00Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+description: >
+  Displays the full transaction history for a single authorised account. Supports credit/debit filter chips, a
+  date-range chip with server-side re-fetch, and free-text search by merchant or reference. Transactions are grouped by
+  booking date. Each row shows merchant name, PFM category chip, colour-coded amount (credit = primary, debit = error),
+  and a Pending badge when OBTransaction6.Status=Pending. A period summary strip shows totals for money-in and money-out
+  across the filtered result set. OBIE Links.Next pagination is surfaced via a 'Load more' affordance with inline linear
+  progress. All text labels use i18n {strings.transactions.*} references. Tapping a row navigates to transaction-detail.
+has_ui: true
+has_server: true
+# has_search: search_field does a case-insensitive substring match over the transaction
+# list. Declared knowing it will FAIL sub-check V1 (the surface repurposes a text_field
+# rather than using a dedicated search-type input, unlike beneficiaries' search_bar).
+# That finding is real and should be visible, not hidden by leaving the capability off.
+capabilities: [has_ui, has_api, has_flow, has_search]
+permissions_required:
+  - ReadTransactionsDetail
+obie_resources:
+  - OBReadTransaction6
+notes: >
+  Client-side Category field is derived from ProprietaryBankTransactionCode.Code or MerchantDetails.MerchantCategoryCode
+  mapping. Not returned by OBIE API directly.
+metadata:
+  category: transaction-list
+  implementation_ready: true
+  impl_ready_at: '2026-06-29'
+  impl_ready_schema: v2
+contracts: []
+libraries:
+  - capability: rest-client
+    library: ktorfit
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+      - web
+  - capability: datetime
+    library: kotlinx-datetime
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+      - web
+vm_actions:
+  - name: LoadTransactions
+    signature: 'suspend fun loadTransactions(accountId: String)'
+    state_mutations:
+      - uiState = TransactionsUiState.Loading
+      - uiState = TransactionsUiState.Content(transactionsByDate) on success
+      - uiState = TransactionsUiState.Error(message) on failure
+    side_effects:
+      - >-
+        GET /accounts/{accountId}/transactions via ktorfit; groups by BookingDateTime LocalDate via kotlinx-datetime;
+        derives Category via MCC lookup map
+    error_handling:
+      on_401: emit TokenExpiredError; surface error state
+      on_403: emit ConsentWithdrawnError; surface error state
+      on_429: emit RateLimitError with retry-after hint; surface error state
+      on_network: emit NetworkError; surface error state
+  - name: FilterTransactions
+    signature: 'fun filterTransactions(filter: TransactionFilter)'
+    state_mutations:
+      - activeFilter = filter
+      - filteredList = transactions.filter { it.CreditDebitIndicator matches filter }
+      - emit empty state if filteredList is empty
+    side_effects: []
+    error_handling: {}
+  - name: OpenDateRangePicker
+    signature: fun openDateRangePicker()
+    state_mutations:
+      - showDateRangePicker = true
+    side_effects:
+      - Show system date range picker dialog
+    error_handling: {}
+  - name: SearchTransactions
+    signature: 'fun searchTransactions(query: String)'
+    state_mutations:
+      - searchQuery = query
+      - >-
+        filteredList = transactions.filter { case-insensitive match on TransactionInformation and
+        MerchantDetails.MerchantName }
+      - emit empty state if filteredList is empty
+    side_effects: []
+    error_handling: {}
+  - name: NavigateTransactionDetail
+    signature: 'fun navigateTransactionDetail(transactionId: String, accountId: String)'
+    state_mutations: []
+    side_effects:
+      - Push transaction-detail route with transactionId and accountId params
+    error_handling: {}
+  - name: ClearFilters
+    signature: fun clearFilters()
+    state_mutations:
+      - activeFilter = TransactionFilter.All
+      - searchQuery = ''
+      - dateRange = null
+      - filteredList = all transactions
+    side_effects: []
+    error_handling: {}
+  - name: RetryLoad
+    signature: fun retryLoad()
+    state_mutations:
+      - nextLink = null
+      - hasNextPage = false
+      - isPaginating = false
+      - delegates to LoadTransactions with current accountId
+    side_effects: []
+    error_handling: {}
+  - name: LoadMoreTransactions
+    signature: suspend fun loadMoreTransactions()
+    state_mutations:
+      - isPaginating = true
+      - fetches nextLink URL via ktorfit; appends OBTransaction6 items to transactions list
+      - nextLink = response.Links.Next (null if last page)
+      - hasNextPage = response.Links.Next != null
+      - isPaginating = false
+      - recomputes period totals and filteredList from extended accumulated list
+    side_effects:
+      - GET nextLink (absolute OBIE Links.Next URL) via ktorfit
+    error_handling:
+      on_any: emit NetworkError or ApiError; surface error state; isPaginating = false
+  - name: SetDateRange
+    signature: 'fun setDateRange(from: LocalDate, to: LocalDate)'
+    state_mutations:
+      - dateRange = DateRange(from, to)
+      - nextLink = null
+      - hasNextPage = false
+      - isPaginating = false
+      - >-
+        delegates to LoadTransactions with fromBookingDateTime=from.atStartOfDayIn(UTC) and
+        toBookingDateTime=to.atTime(23, 59, 59).toInstant(UTC)
+    side_effects:
+      - Re-fetches first page of transactions with date bounds; pagination cursor reset
+    error_handling:
+      on_network: emit NetworkError; surface error state
+error_cases:
+  - id: TokenExpiredError
+    http_status: 401
+    user_message: Session expired. Please log in again.
+    recoverable: true
+    recovery_action: retry_load
+  - id: ConsentWithdrawnError
+    http_status: 403
+    user_message: Access to transactions has been withdrawn.
+    recoverable: false
+    recovery_action: navigate_back
+  - id: RateLimitError
+    http_status: 429
+    user_message: Too many requests. Please wait a moment and retry.
+    recoverable: true
+    recovery_action: retry_load
+  - id: NetworkError
+    http_status: null
+    user_message: No network connection. Please check your connection and retry.
+    recoverable: true
+    recovery_action: retry_load
+test_fixtures:
+  source: >-
+    HSBC sandbox — account 40051512345678 with 10 mixed credit/debit transactions across 5 booking dates; includes 1
+    Pending transaction (Spotify AB); pagination scenario uses 15-transaction two-page setup (10+5)
+  scenario_count: 12
+  priority_distribution:
+    critical: 4
+    high: 5
+    medium: 3
+status_history:
+  - from: enriched
+    to: designed
+    at: '2026-07-01T11:05:42.135Z'
+    by: /idea-export-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-14T00:00:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: ""
+  - from: approved
+    to: enriched
+    at: "2026-08-05T05:05:00Z"
+    by: "/idea approve --unapprove"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "Stored approve_hash predated the 2026-08-04 export regeneration and no longer matched the sibling set."
+  - from: enriched
+    to: approved
+    at: "2026-08-05T05:15:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "--all-ready bulk approval; predicate C1-C6 green."
+
+exports:
+  spec_md:
+    source_hash: regenerated-2026-07-14
+    at: "2026-07-14T12:00:00Z"
+    path: idea-layer/exports/transactions/SPEC.md
+  api_md:
+    source_hash: api-transactions-1ep-2026-07-14
+    at: "2026-07-14T12:00:00Z"
+    path: idea-layer/exports/transactions/API.md

@@ -1,0 +1,116 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: payment-consent
+
+feature: payment-consent
+flow_ref: payment-initiation
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CORRECTED 2026-08-07 (/idea-sync). Every edge in this file pointed at `send-money`,
+# a screen DELETED by the 2026-08-06 seven-type rewrite. That made this a BROKEN NAVIGATION
+# GRAPH, not merely stale prose: `flow_ref`, the entry point, all three transitions and the
+# parent dependency named a screen that does not exist on disk.
+#
+# The correct model is that payment-consent has SEVEN possible originators — one per PIS rail —
+# and it returns to WHICHEVER ONE SENT IT. It is a shared leg, not a child of one screen.
+# See originating_screen_contract below.
+# ═══════════════════════════════════════════════════════════════════════════
+
+originating_screen_contract:
+  rule: >-
+    payment-consent is entered from, and returns to, the ORIGINATING TYPE SCREEN — the one that
+    staged the consent. It is never hardcoded to a single parent.
+  the_seven_originators:
+    - pay-domestic-single
+    - pay-domestic-scheduled
+    - pay-domestic-standing-order
+    - pay-international-single
+    - pay-international-scheduled
+    - pay-international-standing-order
+    - pay-vrp-mandate
+  why_it_must_be_dynamic: >-
+    The originator retains state this screen cannot reconstruct: the x-idempotency-key generated
+    once per staged payment, and the staged Initiation it must resend. Returning to the wrong
+    screen loses both, and the submit then fails U008 on a mismatched Initiation.
+  nav_param: "The originating feature id is carried alongside consentId."
+  corroboration: >-
+    data-flow.yaml already modelled this correctly as "the originating type screen" — flow.yaml
+    was the sibling left behind.
+
+entry_points:
+  - source: "{originating type screen}"
+    label: "Redirect return from HSBC after the PSU completes SCA on the payment"
+    params: [consentId, originatingFeature]
+    notes: >-
+      Not a tap. The app left for the browser when the originating screen emitted
+      LaunchAuthorisation; the bank redirects back and the already-shipped per-platform
+      ConsentRedirectBus republishes the redirect into the composition, exactly as it does for
+      the AIS consent-callback.
+    host_note: >-
+      The authorise leg runs on sandbox.ob.hsbc.co.uk, NOT the mTLS resource host
+      secure.sandbox.ob.hsbc.co.uk. Sending the PSU to the resource host lands them somewhere
+      that does not serve the authorisation page.
+
+transitions:
+  - from: payment-consent
+    to: "{originating type screen}"
+    trigger: "Consent status reached AUTH — emits PaymentConsentEvent.Authorised"
+    params: [consentId]
+    condition: "Data.Status == AUTH"
+    notes: >-
+      Returns as an EVENT rather than a navigation so the originator retains the idempotency key
+      and the staged Initiation it must resend.
+    initiation_source_warning: >-
+      The originator must resend the Initiation read back from the AUTHORISED CONSENT, not the
+      copy it staged locally. When the TPP omitted DebtorAccount the bank writes the PSU's own
+      choice into Initiation.DebtorAccount; echoing the local copy returns U008.
+    auth_is_not_payability: >-
+      AUTH means the PSU approved, NOT that the payment can succeed. On VRP a bank-selected
+      credit card produces a consent that reaches AUTH, passes funds-confirmation, and then
+      refuses every payment with U021 — with nothing in the consent status to say so.
+
+  - from: payment-consent
+    to: "{originating type screen}"
+    trigger: "Restart authorisation"
+    params: []
+    condition: "error.type in {CodeExpired, AuthorisationTimedOut, NetworkError}"
+    # ── CORRECTED 2026-08-07 ──
+    restart_means_a_NEW_consent:
+      finding: >-
+        "Restart the authorise leg" against the SAME ConsentId does not work. An already-AUTH
+        consent CANNOT be re-authorised — the URL builds fine and the sandbox rejects the
+        attempt. There is NO recovery path for a lost or expired code.
+      requirement: >-
+        The originator must STAGE A FRESH CONSENT. This transition hands control back for that
+        purpose; it is not a retry of the previous authorisation.
+      evidence_grade: "provisional — browser-side observation, no capture artefact."
+
+  - from: payment-consent
+    to: "{originating type screen}"
+    trigger: "Abandon, or a state mismatch that cannot be recovered"
+    params: []
+    condition: "error.type in {StateMismatch, NoPendingAuthorisation, ConsentRejected}"
+    notes: >-
+      The staged consent is left unauthorised and expires on its own; no revocation call. A PSU
+      denial at the bank drives the consent to RJCT (observed on consent 45121). Staging another
+      consent does NOT supersede this one — 45123 sat at AWAU while a later consent on the same
+      endpoint was staged, authorised and consumed.
+
+dependencies:
+  tier: feature
+  features:
+    - name: "{originating type screen}"
+      relation: parent
+      params: [consentId, originatingFeature]
+      note: "Dynamic — one of the seven listed in originating_screen_contract. Never a fixed screen."
+    - name: consent-list
+      relation: error-recovery
+      condition: "error.type == ConsentRejected"
+  libraries:
+    - name: ktorfit
+      coords: "de.jensklingenberg.ktorfit:ktorfit-lib:2.x"
+      purpose: "Token exchange and payment-consent status polling"
+
+removed_2026_08_07:
+  - { was: "flow_ref: send-money-payment", reason: "send-money was deleted 2026-08-06; the flow is payment-initiation across seven rails." }
+  - { was: "source / to / dependencies name: send-money", occurrences: 5, reason: "Live edges to a deleted screen. Replaced by the dynamic originating-screen contract." }

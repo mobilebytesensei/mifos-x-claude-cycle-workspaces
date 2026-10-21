@@ -1,0 +1,160 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: pay-vrp-mandate
+
+feature: pay-vrp-mandate
+flow_ref: pay-vrp-mandate
+
+entry_points:
+  - source: payments
+    label: "Tap the Variable payments tile on the payments hub"
+    params: []
+    notes: >-
+      Opens the mandate LIST, not a payment composer. The only tile on the hub that does. For
+      VRP the common action is paying under an existing mandate; creation is the rare one.
+
+transitions:
+  # ── list -> create ──────────────────────────────────────────────────────
+  - from: pay-vrp-mandate
+    to: pay-vrp-mandate-create
+    trigger: "Tap the add action in the top bar, or the empty-state CTA"
+    params: []
+
+  - from: pay-vrp-mandate-create
+    to: payment-consent
+    trigger: "Confirm on the Review step (step 4 of 4), after the consent stages 201"
+    params: [consentId, paymentFamily]
+    notes: >-
+      paymentFamily is 'domestic-vrp'. This is the ONE authorisation this mandate will ever
+      need — every subsequent payment rides it with no re-authentication, and the mandate does not
+      expire, so this transition fires exactly once in a mandate's whole life.
+
+      The app must CONSTRUCT the authorise URL from the ConsentId. The staged consent response
+      carries only Links.Self and Meta.TotalPages — there is no redirect link to follow.
+
+  - from: payment-consent
+    to: pay-vrp-mandate-detail
+    trigger: "Consent reaches AUTH"
+    params: [consentId]
+    notes: >-
+      Lands on the mandate DETAIL, not back on the create form. The mandate now exists and the
+      natural next action is to use it.
+
+  # ── list -> detail ──────────────────────────────────────────────────────
+  - from: pay-vrp-mandate
+    to: pay-vrp-mandate-detail
+    trigger: "Tap a mandate row"
+    params: [consentId]
+    notes: >-
+      The frequent transition, and the one the rail exists for. From here a payment leaves without
+      touching the bank again.
+
+  # ── detail -> payment ───────────────────────────────────────────────────
+  - from: pay-vrp-mandate-detail
+    to: payment-status
+    trigger: "Pay now, funds confirmed, POST /domestic-vrps returns 201"
+    params: [paymentId, paymentFamily]
+    condition: "health == active"
+    notes: >-
+      NO trip through payment-consent. This is the defining VRP property — one authorisation
+      funds many payments. Two payments per run on a single authorisation were observed on all
+      three authorised runs, with the consent still AUTH afterwards.
+
+  # ── detail -> the payment that never leaves ─────────────────────────────
+  - from: pay-vrp-mandate-detail
+    to: pay-vrp-mandate-detail
+    trigger: "Pay now, funds confirmed 'Available', POST /domestic-vrps returns 400 U021"
+    params: []
+    condition: "the bank wrote a non-SortCodeAccountNumber debtor into the authorised consent"
+    notes: >-
+      A TERMINAL NON-TRANSITION, and the most important negative path on the screen. The PSU
+      completed SCA, the consent reads AUTH, funds-confirmation said the money was there — and
+      the payment is refused. It stays refused: consent 45224 failed three times and remained
+      AUTH throughout.
+
+      There is no route forward from here. The mandate is marked unpayable locally,
+      unpayable_mandate_banner replaces pay_now, and the only onward actions are revoke or create
+      a new mandate against a sort-code account. No retry, no re-authorise — re-authorising an
+      already-authorised consent is refused anyway, and it would not change the debtor the bank
+      wrote.
+
+  # ── detail -> revoke ────────────────────────────────────────────────────
+  - from: pay-vrp-mandate-detail
+    to: pay-vrp-mandate
+    trigger: "Revoke confirmed, DELETE returns 204"
+    params: []
+    condition: "health in {active, failing}"
+    notes: >-
+      Returns to the list with the mandate now showing the revoked chip, driven by the LOCAL
+      record. The consent GET will return 400 U011 from here on and can never report a revoked
+      state itself.
+
+  - from: pay-vrp-mandate-detail
+    to: pay-vrp-mandate
+    trigger: "Back"
+    params: []
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE AUTHORISATION ASYMMETRY
+# ─────────────────────────────────────────────────────────────────────────
+authorisation_model:
+  other_six_families: "one authorisation per PAYMENT — the consent goes COND on first use"
+  this_family: "one authorisation per MANDATE — the consent stays AUTH and funds many payments"
+  evidence: >-
+    Three runs, two payments each on a single authorisation, no PSU re-authentication, consent
+    still AUTH afterwards. Re-confirmed on a cold read hours later (vrp-status-readback.md).
+  flow_consequence: >-
+    payment-consent appears ONCE in this flow, on the create path. The pay path never touches
+    it. A flow that routed every payment through the authorise leg would be functionally wrong
+    and would defeat the entire point of the rail.
+  cannot_reauthorise: "An already-authorised consent cannot be re-authorised — attempting it is refused."
+  no_expiry_transition: >-
+    There is no re-consent transition ANYWHERE in this flow, not even a periodic one. VRP tokens
+    live as long as the consent rather than for the AIS 90-day window, and an ASPSP must not
+    revoke for dormancy. A mandate untouched for a year is still live. Any renewal prompt, expiry
+    countdown or refresh-before-lapse job added to this feature would be a defect, not a
+    safeguard.
+  what_the_mandate_cannot_do: >-
+    The flow has no scheduling leg and no international leg because the rail has neither. VRP
+    funds single IMMEDIATE domestic payments only; the recurrence is the PSU tapping Pay now
+    again, not an instruction the bank holds. A PSU wanting a dated or repeating instruction
+    belongs on pay-domestic-scheduled or pay-domestic-standing-order, and the empty state is the
+    right place to say so.
+
+out_of_band_transitions:
+  note: >-
+    Two state changes originate OUTSIDE the app entirely and have no user-triggered transition.
+    Both are handled on the list's refresh path rather than as navigation.
+  revoked_elsewhere:
+    trigger: "The PSU revokes the mandate in the HSBC app"
+    detection: "Event poll returns UK.OBIE.Consent-Authorization-Revoked, or the consent GET starts returning 400 U011"
+    effect: "The mandate's health becomes revoked without the PSU opening it"
+  became_failing:
+    trigger: "The PSU deletes the payee from their beneficiary list in the HSBC app"
+    detection: "Recent payments carry StatusReason UK.OBIE.ExemptionNotApplied while the consent still reads AUTH"
+    effect: "The mandate's health becomes failing; pay_now is hidden and failing_mandate_banner is shown"
+    note: >-
+      Detectable only AFTER a payment has already failed. There is no pre-flight beneficiary
+      check and OBIE provides no async failure reason for background rejections — documented as
+      "being considered". So the first the PSU knows is a payment that did not go.
+
+timing_hazard:
+  evening_fraud_window: >-
+    HSBC documents that payment requests received between 18:00 and 23:45 may be rejected pending
+    additional fraud checks. This is a property of the CLOCK, not of the mandate — a healthy
+    mandate can refuse a payment at 19:00 and accept the same payment at 09:00. Surface the
+    rejection plainly, do not mark the mandate failing or unpayable on it, and do not auto-retry
+    into the window.
+
+dependencies:
+  tier: feature
+  features:
+    - { name: payments, relation: parent, params: [] }
+    - { name: accounts, relation: data_source, params: [] }
+    - { name: beneficiaries, relation: data_source, params: [] }
+    - { name: payment-consent, relation: child, params: [consentId, paymentFamily] }
+    - { name: payment-status, relation: child, params: [paymentId, paymentFamily] }
+  libraries:
+    - name: ktorfit
+      coords: "de.jensklingenberg.ktorfit:ktorfit-lib:2.x"
+      purpose: "REST client for the six domestic-vrp endpoints plus the four event endpoints"

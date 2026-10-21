@@ -1,0 +1,317 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: pay-international-single
+
+id: pay-international-single
+name: Pay abroad
+feature: pay-international-single
+flavor: consumer
+quality_score: 93
+contract_version: "2.0.0"
+capabilities: [has_ui, has_api]
+
+# Five steps: Account -> Recipient -> Amount -> Charges -> Review.
+# The Recipient step replaces the domestic Payee step wholesale — an IBAN and an optional
+# 11-character BIC, not a sort code. The Charges step is unique to the international rails.
+# There is deliberately NO reference field: the schema refuses RemittanceInformation with U005.
+
+inherits_from: pay-domestic-single
+inherits_components: [debtor_account_list, ineligible_accounts_note, no_eligible_accounts]
+
+screens:
+  - id: pay-international-single
+    name: Pay abroad
+    archetype: form
+    shell:
+      top_bar:
+        title: "{strings.pay_international_single.title}"
+        navigation_icon: back
+        actions: []
+      bottom_nav: true
+
+components:
+  - type: stepper
+    id: step_indicator
+    steps: 5
+    labels:
+      - "{strings.payment.step.account}"
+      - "{strings.payment.step.recipient}"
+      - "{strings.payment.step.amount}"
+      - "{strings.payment.step.charges}"
+      - "{strings.payment.step.review}"
+    test_context:
+      tag: payInternationalSingle:stepIndicator
+
+  # ── Step 2: recipient — IBAN, not sort code ─────────────────────────────
+  - type: text_field
+    id: iban_field
+    label: "{strings.payment.iban_label}"
+    helper_text: "{strings.payment.iban_helper}"
+    visibility: "step == Recipient"
+    test_context:
+      tag: payInternationalSingle:ibanField
+    validation: "IBAN checksum (mod-97) validated locally before advance"
+    note: >-
+      CreditorAccount.SchemeName is UK.OBIE.IBAN on this rail. A sort-code creditor returns U027
+      across every currency combination tried, so there is no manual sort-code path here at all.
+      A GB IBAN is accepted, including GBP to GBP.
+
+  - type: text_field
+    id: payee_name_field
+    label: "{strings.payment.payee_name_label}"
+    visibility: "step == Recipient"
+    test_context:
+      tag: payInternationalSingle:payeeNameField
+
+  - type: text_field
+    id: bic_field
+    label: "{strings.payment.bic_label}"
+    helper_text: "{strings.payment.bic_helper}"
+    max_length: 11
+    visibility: "step == Recipient"
+    test_context:
+      tag: payInternationalSingle:bicField
+    validation: "optional; if present must be EXACTLY 11 characters. LENGTH ONLY — never cross-checked against the IBAN's country."
+    note: >-
+      Optional — omitting CreditorAgent entirely stages 201. But an 8-character BIC is REFUSED
+      with 'Invalid Bank Code', and 8 characters is the form most bank directories publish. The
+      helper text says 11 characters explicitly and the field validates it, because the natural
+      thing for a PSU to paste is exactly the form that fails.
+
+      The refusal is LENGTH-driven, not country-mismatch-driven: R2-07 paired a MATCHING French
+      BIC 'NWBKFRPP' with a French IBAN and still got 'Invalid Bank Code', while R3-04's
+      11-character 'COBADEFFXXX' passed. So the validator checks length and nothing else — a
+      BIC-country-versus-IBAN-country check would reject valid cross-border routings AND let the
+      matching-country 8-character form through.
+
+      This is the ONLY control that feeds CreditorAgent. There is deliberately no bank-name and
+      no bank-country field: sending CreditorAgent at ALL makes Identification mandatory
+      (R8-01/02/03/09/10 and R3-08 all return U004 @ CreditorAgent.Identification), and R8-11 —
+      the same body with the key removed — stages 201. A half-populated block is worse than no
+      block. The 'help the user find their bank' design is exactly what would build it.
+
+  - type: text
+    id: bic_length_error
+    content: "{strings.payment.bic_length_error}"
+    style: { typography: bodySmall, color: error }
+    visibility: "step == Recipient AND bic is not blank AND bic.length != 11"
+    test_context:
+      tag: payInternationalSingle:bicLengthError
+
+  # ── Step 3: amount + currencies ─────────────────────────────────────────
+  - type: text_field
+    id: amount_field
+    label: "{strings.payment.amount_label}"
+    keyboard: number
+    visibility: "step == Amount"
+    test_context:
+      tag: payInternationalSingle:amountField
+    validation: "positive; formatted per the INSTRUCTED currency's decimal places. No upper bound."
+    note: >-
+      No client-side ceiling. INT-13 staged '300000.00' USD at 201 — the scenario was titled as a
+      250k-limit probe and no limit fired at consent staging. Whether a ceiling applies later is
+      untested, so the form neither advertises a limit nor blocks a large amount; if one exists
+      it surfaces at authorisation, which is where the bank chose to put it.
+
+      Decimals follow the currency, not a hardcoded two places. INT-14 sent Amount '1000' with
+      CurrencyOfTransfer JPY and staged 201. A formatter that appends '.00' to everything is
+      accepted by the endpoint but wrong for a zero-decimal currency, and the PSU sees a decimal
+      place their currency does not have.
+
+  - type: dropdown
+    id: instructed_currency_picker
+    label: "{strings.payment.instructed_currency_label}"
+    helper_text: "{strings.payment.instructed_currency_helper}"
+    visibility: "step == Amount"
+    test_context:
+      tag: payInternationalSingle:instructedCurrencyPicker
+    note: "The currency the DEBTOR is charged in — InstructedAmount.Currency."
+
+  - type: dropdown
+    id: transfer_currency_picker
+    label: "{strings.payment.transfer_currency_label}"
+    helper_text: "{strings.payment.transfer_currency_helper}"
+    visibility: "step == Amount"
+    test_context:
+      tag: payInternationalSingle:transferCurrencyPicker
+    action_contract:
+      on_click: SelectTransferCurrency(code)
+      effect: "sets content.currencyOfTransfer"
+      writes_to: "PayInternationalSingleUiState.Content.currencyOfTransfer"
+    note: >-
+      The currency the CREDITOR receives — CurrencyOfTransfer, mandatory. Deliberately a
+      SEPARATE control from the instructed currency: the two need not match, and a single
+      "currency" field would hide a distinction the wire format insists on. GBP instructed with
+      USD transfer stages 201.
+
+  - type: banner
+    id: fx_disclosure
+    content: "{strings.payment.fx_disclosure}"
+    severity: info
+    visibility: "step == Amount AND instructedCurrency != transferCurrency"
+    test_context:
+      tag: payInternationalSingle:fxDisclosure
+    note: >-
+      States that the final converted amount is set by the bank. The screen must NOT show a
+      computed rate or an estimated received amount — no observed response carries a quoted rate
+      on this endpoint, so any figure would be invented. Guide §21.10.1 describes a 40-second FX
+      window that was not enforced in testing, so there is also no countdown to display.
+
+      The position is stronger than 'no rate is returned'. The REQUEST cannot carry one either:
+      ExchangeRateInformation is refused for all three RateType values (R16-P1/P2/P3 here,
+      R16-S1/S2/S3 and R16-O1/O2/O3 on the deferred rails), including the Agreed form with a
+      real ExchangeRate 1.15 and ContractIdentification 'FX-CONTRACT-001'. Controls R16-C1/C2/C3
+      with the block removed all staged 201. There is NO WAY to show a rate before
+      authorisation — so this banner is not a placeholder awaiting a better data source. It is
+      the final answer, and it should not be re-litigated by a later ticket asking for a rate.
+
+  - type: text
+    id: no_reference_note
+    content: "{strings.payment.intl_no_reference_note}"
+    style: { typography: bodySmall, color: onSurfaceVariant }
+    visibility: "step == Amount"
+    test_context:
+      tag: payInternationalSingle:noReferenceNote
+    note: >-
+      Explains that a payment reference cannot be sent abroad on this rail. The domestic form
+      has the field; its absence here is otherwise unexplained. RemittanceInformation returns
+      U005.
+
+  # ── Step 4: charges — unique to the international rails ─────────────────
+  - type: radio_group
+    id: charge_bearer_picker
+    label: "{strings.payment.charge_bearer_label}"
+    options:
+      - { value: BorneByDebtor, label: "{strings.payment.charge_bearer.debtor}" }
+      - { value: Shared, label: "{strings.payment.charge_bearer.shared}" }
+      - { value: BorneByCreditor, label: "{strings.payment.charge_bearer.creditor}" }
+    visibility: "step == Charges"
+    test_context:
+      tag: payInternationalSingle:chargeBearerPicker
+    action_contract:
+      on_click: SelectChargeBearer(value)
+      effect: "sets content.chargeBearer"
+      writes_to: "PayInternationalSingleUiState.Content.chargeBearer"
+    note: >-
+      MANDATORY — omitting ChargeBearer returns U004, proven by R18-B01 with control R18-B02.
+      All three values stage 201, so none is a bank default and the PSU genuinely chooses. The
+      labels describe who pays the receiving bank's fees in plain terms rather than echoing the
+      OBIE codes.
+
+  - type: text
+    id: no_charge_note
+    content: "{strings.payment.intl_no_charge_note}"
+    style: { typography: bodySmall, color: onSurfaceVariant }
+    visibility: "step == Charges"
+    test_context:
+      tag: payInternationalSingle:noChargeNote
+    note: >-
+      States that HSBC quotes no fee for this payment type. True and unusual: this is the only
+      shape in the entire surface that returns no Charges array at any stage, verified across
+      33 consents and 4 authorised resources. The note also prevents anyone later "fixing" the
+      empty fee row by inventing an estimate.
+
+  # ── Step 5: review ──────────────────────────────────────────────────────
+  - type: summary_card
+    id: review_card
+    visibility: "step == Review"
+    rows:
+      - { label: "{strings.payment.review.from}", value: debtorAccountLabel }
+      - { label: "{strings.payment.review.to}", value: creditorIbanLabel }
+      - { label: "{strings.payment.review.bank}", value: bicLabel, visibility: "bic is not blank" }
+      - { label: "{strings.payment.review.amount}", value: instructedAmountLabel }
+      - { label: "{strings.payment.review.arrives_in}", value: transferCurrencyLabel }
+      - { label: "{strings.payment.review.charges}", value: chargeBearerLabel }
+    test_context:
+      tag: payInternationalSingle:reviewCard
+    note: "No fee row — this rail returns no Charges. No reference row — the field does not exist."
+
+  - type: button
+    id: confirm_button
+    label: "{strings.payment.confirm}"
+    style: { variant: filled_pill }
+    visibility: "step == Review AND uiState is Content"
+    test_context:
+      tag: payInternationalSingle:confirmButton
+    action_contract:
+      on_click: ConfirmAndStageConsent
+      effect: "POST /international-payment-consents, then hands off to payment-consent"
+      writes_to: "PayInternationalSingleUiState -> Submitting(StagingConsent)"
+
+  - type: progress
+    id: submitting_indicator
+    visibility: "uiState is Submitting"
+    labels:
+      StagingConsent: "{strings.payment.staging}"
+      AwaitingAuthorisation: "{strings.payment.awaiting_authorisation}"
+      ConfirmingFunds: "{strings.payment.confirming_funds}"
+      SubmittingPayment: "{strings.payment.submitting}"
+    test_context:
+      tag: payInternationalSingle:submittingIndicator
+
+  - type: error_panel
+    id: error_panel
+    visibility: "uiState is Error"
+    renders: "one row per entry in the 400 body's Errors array, in WIRE ORDER"
+    test_context:
+      tag: payInternationalSingle:errorPanel
+      row_tag: payInternationalSingle:errorPanelRow
+    error_contract_ref: dtos/ObPaymentError.yaml
+    note: >-
+      Errors is an ARRAY and can carry TWO entries. R13-10 returns U027 @
+      CreditorAccount.SchemeName THEN U002 'Debtor and Creditor Account cannot be same'; R9-11 is
+      the same pair; INT-05 and INT-06 return two Global Money rules together. A panel bound to
+      Errors[0] hides the actionable half — on R13-10 the first entry is a scheme fault this form
+      has already made unreachable and the SECOND is the one a PSU could act on.
+
+      Rows render in WIRE ORDER, not sorted and not de-duplicated. The server puts the scheme
+      check (U027) ahead of the business rule (U002) deliberately, and re-ordering by severity
+      would invert a sequence that encodes which fault was evaluated first.
+
+      Each row's copy is selected by ErrorCode + Path, NEVER by Message. U004 alone carries four
+      different Messages across the corpus for one code; a Message-keyed lookup silently stops
+      matching the day HSBC edits a string, and the failure mode is a blank error row.
+
+states:
+  initial_state: loading
+  loading: { layout: { visible_components: [step_indicator] } }
+  content: { layout: { visible_components: [step_indicator, debtor_account_list, ineligible_accounts_note] } }
+  content_no_eligible_accounts: { layout: { visible_components: [step_indicator, no_eligible_accounts] } }
+  submitting: { layout: { visible_components: [step_indicator, submitting_indicator] } }
+  error: { layout: { visible_components: [step_indicator, error_panel] } }
+
+state_model:
+  view_model: PayInternationalSingleViewModel
+  ui_state_type: PayInternationalSingleUiState
+  states: ["Loading", "Content(step)", "Submitting(stage)", "Error(type)"]
+  actions:
+    - LoadPaymentSources
+    - SelectDebtorAccount
+    - EnterIban
+    - EnterPayeeName
+    - EnterBic
+    - EnterAmount
+    - SelectInstructedCurrency
+    - SelectTransferCurrency
+    - SelectChargeBearer
+    - ReviewPayment
+    - ConfirmAndStageConsent
+    - ConfirmFunds
+    - SubmitPayment
+    - RetrySubmit
+    - BackStep
+    - CancelPayment
+  events: [NavigateToPaymentConsent, NavigateToPaymentStatus]
+  di: [AccountsOverviewRepository, PaymentInitiationRepository]
+  di_note: >-
+    BeneficiariesRepository is NOT injected. Saved payees carry sort-code identifiers, which
+    this rail refuses with U027 — offering them would surface a list where every entry fails.
+
+form_submit_guard: state-transition-unmount
+
+dependencies:
+  tier: feature
+  features: [accounts, payment-consent, payment-status]
+  # fx-rates deliberately NOT a dependency. OBIE has no FX rate endpoint and no observed
+  # response on this family carries a rate, so there is nothing for this screen to consume —
+  # which is exactly why fx_disclosure says the bank sets the final converted amount.

@@ -1,0 +1,156 @@
+id: consumer-accounts-payments
+version: "1.0.0"
+name: "Consumer Accounts & Payments"
+description: "Returning consumer checks their account balance, reviews transactions, and sends money to a beneficiary — the core daily banking workflow."
+
+persona:
+  archetype: "returning consumer"
+  jtbd: "check my balance and pay someone quickly without errors"
+  context: "weekday morning, needs to pay rent or transfer funds before work"
+  knowledge_level: familiar
+  emotional_state: "confident"
+
+goal: "View account balance and complete a money transfer to a beneficiary within the same session."
+
+success_metric:
+  name: payment_completion_rate
+  kind: task_completion
+  target: ">=85% of payment initiations reach a submitted payment"
+  measurement: "funnel: payments_hub_opened → type_tile_tapped → confirm_tapped → consent_authorised → payment_submitted"
+  note: >-
+    The funnel gained a stage on 2026-08-06. Under the old linear form, confirm and submit were
+    one step; under OBIE they are separated by an app-to-app trip to HSBC, which is a real drop-off
+    point the metric now has to see.
+
+screen_sequence:
+  - screen_id: home_content
+    feature_id: home
+    state: content
+    user_intent: "see balance summary and navigate to accounts"
+    success_signal: "taps Accounts tile or bottom nav"
+  - screen_id: accounts_content
+    feature_id: accounts
+    state: content
+    user_intent: "view all accounts and balances"
+    success_signal: "sees account list with balances"
+  - screen_id: account_detail_content
+    feature_id: account-detail
+    state: content
+    user_intent: "see account details and recent activity"
+    success_signal: "views account detail with mini statement"
+  - screen_id: transactions_content
+    feature_id: transactions
+    state: content
+    user_intent: "review recent transactions"
+    success_signal: "transaction list loaded with categories"
+  - screen_id: transaction_detail_content
+    feature_id: transaction-detail
+    state: content
+    user_intent: "view a specific transaction detail"
+    success_signal: "full transaction detail visible"
+  # transaction-tags removed 2026-08-06 — OBP v1.2.1 metadata API, no OBIE counterpart.
+  - screen_id: payments
+    feature_id: payments
+    state: content
+    user_intent: "choose how to pay"
+    success_signal: "seven type tiles render; taps Domestic single"
+  - screen_id: pay-domestic-single
+    feature_id: pay-domestic-single
+    state: content
+    user_intent: "choose the funding account"
+    success_signal: "only scheme-eligible accounts are offered; picks one"
+  - screen_id: beneficiaries
+    feature_id: beneficiaries
+    state: content
+    user_intent: "select a saved payee"
+    success_signal: "payee selected, returns to the payment form"
+  - screen_id: pay-domestic-single
+    feature_id: pay-domestic-single
+    state: content
+    user_intent: "enter amount and reference, then review"
+    success_signal: "review card shows from / to / amount; taps Confirm"
+  - screen_id: payment-consent
+    feature_id: payment-consent
+    state: content
+    user_intent: "authorise the payment at the bank"
+    success_signal: "app-to-app redirect completes; consent polls to AUTH"
+    note: >-
+      The step that did not exist in the old journey. The PSU leaves the app entirely and
+      authenticates on HSBC's own site — the single largest drop-off risk in the whole flow.
+  - screen_id: payment-status
+    feature_id: payment-status
+    state: content
+    user_intent: "confirm the payment actually went"
+    success_signal: "status reads in progress (ACSP), then settles to ACCC"
+    note: >-
+      Must NOT read as 'sent' on ACSP. A successful submit means accepted, not settled.
+  - screen_id: home_content
+    feature_id: home
+    state: content
+    user_intent: "verify payment reflected on home"
+    success_signal: "home reloads with updated balance"
+
+expected_outcome: "Consumer has reviewed their accounts, inspected a transaction, and successfully sent money to a beneficiary."
+
+flows:
+  - feature_id: home
+    flow_id: consumer-banking
+    role: primary
+  - feature_id: accounts
+    flow_id: consumer-banking
+    role: primary
+  - feature_id: payments
+    flow_id: consumer-banking
+    role: primary
+  - feature_id: pay-domestic-single
+    flow_id: consumer-banking
+    role: primary
+  - feature_id: payment-consent
+    flow_id: consumer-banking
+    role: primary
+  - feature_id: payment-status
+    flow_id: consumer-banking
+    role: primary
+  - feature_id: beneficiaries
+    flow_id: consumer-banking
+    role: branch
+
+# has_payments REMOVED 2026-08-06. That capability means IN-APP-PURCHASE / store-billing
+# compliance — SKUs, receipts, restore-purchases, App Store subscription rules — not bank
+# payment initiation. Declaring it would raise inapplicable errors and make the generators emit
+# StoreKit boilerplate. Bank payments are has_api + has_form_input + has_system_integration.
+capabilities_used: [has_ui, has_api, has_form_input, has_system_integration]
+
+tier: maximum
+
+preconditions:
+  - "user is authenticated as consumer"
+  - "at least one active account exists"
+  - "device is online"
+
+failure_modes:
+  - cause: "insufficient funds (funds-confirmation returns FundsAvailable false)"
+    recovery_screen: pay-domestic-single
+    notes: "Returns to the Amount step. The payment is not submitted."
+  - cause: "network timeout on submit"
+    recovery_screen: pay-domestic-single
+    notes: "Retry reuses the original x-idempotency-key, so no second payment can be created."
+  - cause: "payee account details wrong"
+    recovery_screen: pay-domestic-single
+    notes: "Sort code and account number are validated locally before advance."
+  - cause: "PSU abandons the authorisation at HSBC"
+    recovery_screen: payment-consent
+    notes: >-
+      Poll deadline yields a NON-terminal awaiting state with a manual retry. The consent is not
+      abandoned — the PSU may still be authenticating.
+  - cause: "PSU denies the payment at HSBC (consent RJCT)"
+    recovery_screen: pay-domestic-single
+    notes: "Offers a NEW payment, never a resubmit. A rejected consent cannot be reused."
+  - cause: "the only account held is a credit card"
+    recovery_screen: pay-domestic-single
+    notes: >-
+      A real terminal state, not an error. The card is refused as a debtor on every rail, so the
+      Account step shows an explained empty state rather than an unusable list.
+
+tags: [consumer, payments, accounts, transactions]
+deprecated: false

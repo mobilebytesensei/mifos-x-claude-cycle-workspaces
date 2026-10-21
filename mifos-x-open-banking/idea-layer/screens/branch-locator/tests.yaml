@@ -1,0 +1,201 @@
+sibling: tests
+schema_version: "4.0"
+feature_id: branch-locator
+
+# Every scenario below is derived from an OBSERVED property of the live feed, not from the
+# swagger. Where a test asserts absence (no Sunday, no 401), the absence was measured.
+
+scenarios:
+
+  - id: TC-BRANCH-001
+    name: "Three-level envelope is fully traversed"
+    given: "A response with data[] length 1, Brand[] length 1, Branch[] length 3"
+    when: "The list loads"
+    then: "All 3 branches render"
+    guards_against: >-
+      Reading data.Brand (fails outright) or data[0].Brand (works today, silently drops records
+      if HSBC ever returns a second data element).
+
+  - id: TC-BRANCH-002
+    name: "Closed days are rendered as Closed, not omitted"
+    given: "The Balham fixture, which has five Day entries — Monday to Friday, no Saturday, no Sunday"
+    when: "The opening-hours table renders"
+    then: "Seven rows appear; Saturday and Sunday both read Closed"
+    severity: high
+    guards_against: >-
+      The single most likely bug on this screen. A renderer that iterates only what the API sent
+      shows five rows and leaves the user unable to tell 'closed on Sunday' from 'we have no data
+      for Sunday'. NOT ONE of the 327 branches in the HSBC UK estate publishes a Sunday, so this
+      fires on every record in the country, not on an edge case.
+
+  - id: TC-BRANCH-003
+    name: "Saturday-open and Saturday-closed branches differ visibly"
+    given: "Baker Street (has Saturday 09:30-13:00) and Balham (no Saturday) in the same list"
+    when: "Both detail views render"
+    then: "Baker Street shows Saturday hours; Balham shows Saturday Closed"
+    note: "The paired positive/negative case. Both fixtures are live records captured the same day."
+
+  - id: TC-BRANCH-004
+    name: "Trailing whitespace is trimmed before display"
+    given: "BuildingNumber values '90 ', '117 ' and '1-3 ' — all real, all trailing-spaced"
+    when: "The address line is composed"
+    then: "No double space appears between the building number and the street name"
+    guards_against: "A visible defect that ships because the fixture data looks fine at a glance."
+
+  - id: TC-BRANCH-005
+    name: "No Open-now badge is rendered"
+    given: "Any branch, on any date"
+    when: "The detail view renders"
+    then: "No badge or label asserts that the branch is currently open"
+    rationale: >-
+      The feed publishes only StandardAvailability. There is no holiday or exception data in it,
+      so open-now cannot be computed correctly. The failure mode is an Open now badge on
+      Christmas Day.
+
+  - id: TC-BRANCH-006
+    name: "Accessibility filter discriminates"
+    given: "Bishopsgate lacks LevelAccess; Baker Street and Balham have it"
+    when: "The LevelAccess filter is applied"
+    then: "Bishopsgate is excluded, the other two remain"
+    rationale: "Proves the filter is meaningful. The same filter on atm-locator would return zero results for every user, because Accessibility is 0/135 there."
+
+  - id: TC-BRANCH-007
+    name: "ATM branch reference resolves"
+    given: "ATM M01M0035 carries Branch.Identification '400231'"
+    when: "The reference is resolved"
+    then: "Branch 400231 — Bishopsgate — is returned"
+    note: >-
+      A real cross-API join. Both fixture sets were captured live on 2026-08-07, so this is not
+      a staged correspondence. Also asserts that resolution costs a SEPARATE call — the ATM feed
+      carries only the id, never the name.
+
+  - id: TC-BRANCH-008
+    name: "Location refusal keeps the screen usable"
+    given: "Device location permission denied"
+    when: "The screen opens"
+    then: "The location_denied state renders with search available; no error and no sign-in prompt"
+    rationale: "Refusal is a supported path. The postcode, town and sort-code endpoints exist for exactly this."
+
+  - id: TC-BRANCH-009
+    name: "No authentication path exists"
+    given: "No session, no consent, no token"
+    when: "The screen opens"
+    then: "Branches load normally"
+    and_then: "No code path renders a sign-in prompt or a session-expired state"
+    rationale: >-
+      The swagger declares no security scheme and no path returns 401 or 403. An auth branch here
+      is unreachable code. This test exists because the previous atm-locator fixture set carried
+      exactly such a state and it had to be deleted.
+
+  - id: TC-BRANCH-010
+    name: "Filters do not refetch"
+    given: "A loaded branch list"
+    when: "An accessibility or service filter is toggled"
+    then: "No network request is issued"
+    rationale: >-
+      No endpoint accepts these as parameters — filtering is client-side by necessity. Refetching
+      is both pointless and the most likely way to hit the 429 this API actually enforces.
+
+  - id: TC-BRANCH-011
+    name: "Radius is always sent and never exceeds 10"
+    given: "Any geo-location search"
+    when: "The request is built"
+    then: "radius is present in the query string and is between 1 and 10"
+    rationale: >-
+      radius is marked required despite documenting a default of 1 — the default is the server's
+      fallback, not permission to omit it. 10 miles is a hard ceiling.
+
+  - id: TC-BRANCH-012
+    name: "Split opening ranges are all rendered"
+    given: "A day whose OpeningHours list carries two ranges"
+    when: "That day renders"
+    then: "Both ranges appear"
+    status: synthetic
+    note: >-
+      No observed branch had a split day — all 1802 Day entries in the national estate carry
+      exactly one range. The test is constructed because OpeningHours IS a list in the contract,
+      and a client reading [0] works until the first lunchtime closure is published.
+
+  # ── Added 2026-08-07 from the full-population scan + targeted probes ──────
+  # Every scenario below guards a failure that is SILENT: the API returns HTTP 200 in all of
+  # these cases, so none of them surface as an exception during development.
+
+  - id: TC-BRANCH-013
+    name: "Temporarily-closed branch does not advertise opening hours"
+    given: >-
+      The Birmingham New Street fixture (401118), whose NonStandardAvailability window is
+      2025-10-06 to 2027-03-21 and whose StandardAvailability is a full Monday-to-Saturday
+      09:30-16:30 pattern
+    when: "The detail view renders on any date inside that window"
+    then: "A closure banner is shown carrying the Notes text, and the weekly hours table is suppressed or visibly overridden"
+    and_then: "No part of the screen states that the branch opens at 09:30 on Monday"
+    severity: high
+    guards_against: >-
+      Sending a user to a building that has been shut for eighteen months. The record publishes
+      an entirely ordinary weekly schedule, so a renderer reading StandardAvailability alone has
+      no signal that anything is wrong. Only 1 of 327 branches carries this field and it is not
+      in London, so no radius-based manual test will ever surface it — the fixture is the only
+      thing that will catch a regression here.
+
+  - id: TC-BRANCH-014
+    name: "Sort code is normalised to six digits before the request"
+    given: "A stored sort code in hyphenated form, '40-01-06', as the API itself returns it 327/327"
+    when: "The sort-code lookup is issued"
+    then: "The request path is /sortcode/400106 and the Baker Street branch is returned"
+    severity: high
+    guards_against: >-
+      The round-trip trap: the API's own output format is rejected by its own input. Verified
+      2026-08-07 — the hyphenated form returns HTTP 200 with zero results, byte-identical to a
+      bogus sort code. Passing the stored value straight through fails silently and looks
+      exactly like 'no such branch'.
+
+  - id: TC-BRANCH-015
+    name: "Radius is clamped client-side and never sent out of range"
+    given: "A radius input of 16, e.g. from a kilometre-to-mile conversion"
+    when: "The geo-location request is built"
+    then: "The value sent is 10, not 16, and results are returned"
+    rationale: >-
+      radius=11 returns HTTP 200 with zero results rather than a 400 — measured 2026-08-07. An
+      unclamped out-of-range value produces a confident and false 'no branches near you'. The
+      clamp is a correctness requirement, not input polish.
+
+  - id: TC-BRANCH-016
+    name: "No filter chip is a dead control"
+    given: "The rendered accessibility and service filters"
+    when: "Each available filter option is applied in turn against the full estate"
+    then: "Every option changes the result set for at least some input"
+    and_then: "No chip exists for InductionLoop, AudioCashMachine, MeetingRooms, SelfServiceAccountOpening, StatementPrinter, WiFi, OnlineBankingPoint or any CustomerSegment value"
+    rationale: >-
+      Each of those values is carried by all or nearly all 327 UK branches, so a chip for one can
+      never exclude anything. A control that looks functional and silently does nothing is worse
+      than an absent one — especially on the accessibility row, where the user selecting it has
+      a real access need.
+
+  - id: TC-BRANCH-017
+    name: "Empty results are not cached under the epoch timestamp"
+    given: "An empty response carrying meta.LastUpdated '1970-01-01T00:00:00.000Z'"
+    when: "The cache layer processes it"
+    then: "The response is not written to cache, and no refetch storm follows"
+    rationale: >-
+      Every empty response from this API carries the Unix epoch as its LastUpdated. A cache
+      keyed on that field either treats the entry as infinitely stale and refetches forever —
+      the fastest route to the 429 this API genuinely enforces — or pins an empty result under a
+      key that never invalidates.
+
+resolved_2026_08_07:
+  note: "Both items previously listed here as open were closed by live probe on 2026-08-07. Kept visible rather than deleted so the resolution is auditable."
+  items:
+    - question: "Whether the sortcode path accepts '40-01-06', '400106', or both."
+      answer: "Six digits only. The hyphenated form returns HTTP 200 with zero results and no error. Now covered by TC-BRANCH-014."
+    - question: "Whether first direct branches ever appear."
+      answer: >-
+        No, and not by accident of sampling. The full 327-branch estate contains exactly one
+        BrandName value, 'HSBC UK'. Two first direct sort codes returned nothing. first direct
+        is a branchless telephone and internet bank, so its absence from a branch feed is
+        structural and permanent — the brand split that is real in Product Finder does not
+        apply here.
+
+still_untested:
+  - "Whether HSBC ever publishes a split OpeningHours day. Zero exist across all 1802 Day entries today; TC-BRANCH-012 remains synthetic and guards the contract, not an observed case."
+  - "Whether a 429 is actually reachable at normal interaction rates. The risk is inferred from the API being unauthenticated and rate-limited by origin, not measured — deliberately not probed, since provoking it would be abusive."
+  - "Whether NonStandardAvailability is ever an ARRAY. The single live instance is an object; the swagger shape was not re-checked against a multi-window branch because none exists to test."

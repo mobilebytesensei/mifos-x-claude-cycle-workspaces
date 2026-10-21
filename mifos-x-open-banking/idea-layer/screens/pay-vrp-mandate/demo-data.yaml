@@ -1,0 +1,299 @@
+sibling: demo-data
+schema_version: "4.0"
+feature_id: pay-vrp-mandate
+
+inherits_fixtures_from: pay-domestic-single
+inherits: [debtor_accounts]
+
+content:
+  eligibility_override:
+    note: >-
+      Same base accounts, but the exclusion reasons differ. On VRP the credit card is refused by
+      BOTH routes — the only family where bank-selection does not rescue it.
+    eligible: ["123456791 current", "123456792 current", "1123456841 savings"]
+    excluded:
+      - { AccountId: "1123456843", name: "Global Money", reason: "U002 Invalid Field @ DebtorAccount.Identification when TPP-named", note: "Still fundable if the BANK nominates it — 19933 and 19934 settled that way." }
+      - { AccountId: "1123456842", name: "Credit card", reason: "U021 'the Debtor Identification is not a UK.OBIE.SortCodeAccountNumber account'", note: "Refused by BOTH routes. The bank wrote a PAN debtor into consent 45224 and POST /domestic-vrps then rejected that exact payload." }
+    savings_note: >-
+      Savings IS eligible, contradicting Guide §28.8's PCA-only 'hard-stop error'. It authorised
+      and settled two payments (19931, 19932).
+
+  control_parameters_fixture:
+    note: "The parameters used across all three authorised runs."
+    MaximumIndividualAmount: { Amount: "10.00", Currency: "GBP" }
+    PeriodicLimits:
+      - { PeriodType: "Week", PeriodAlignment: "Calendar", Amount: "50.00", Currency: "GBP" }
+    VRPType: ["UK.OBIE.VRPType.Sweeping"]
+    PSUAuthenticationMethods: ["UK.OBIE.SCANotRequired"]
+    PSUInteractionTypes: ["InSession"]
+
+  pro_rating_examples:
+    status: documented-never-observed
+    note: >-
+      RECLASSIFIED 2026-08-07. These figures come from VRP-RESEARCH.md, which is documentation.
+      NO pro-rating was observed in ANY response in the corpus — the consent echoes PeriodicLimits
+      byte-for-byte with no period start, no period end, no consumed amount and no
+      PeriodicLimitsUsed member. The previous wording said "these are the figures
+      pro_rating_notice must show", which would have had the app print an invented number as fact.
+      They are now a hypothesis to verify, not a fixture to render.
+    examples:
+      - { limit: "300.00 GBP", period: "Month", alignment: "Calendar", created: "6 June", documented_first_period: "250.00 GBP", covering: "6-30 June" }
+      - { limit: "500.00 GBP", period: "Year", alignment: "Calendar", created: "5 June", documented_first_period: "286.30 GBP", calculation: "500 x 209 / 365" }
+    how_to_verify: >-
+      Stage a Month/Calendar limit mid-month, authorise, then attempt a payment between the
+      pro-rated figure and the headline one. A U014 proves pro-rating is live; a 201 proves it is
+      not. One authorised run settles the question that this corpus could not.
+
+  no_usage_data_anywhere:
+    note: >-
+      THE FIXTURE THAT IS AN ABSENCE. Recorded because a reader looking for headroom data will
+      otherwise assume it was simply not captured. It does not exist.
+    consent_response_control_parameters_members: [MaximumIndividualAmount, PeriodicLimits, VRPType, PSUAuthenticationMethods, PSUInteractionTypes]
+    absent_everywhere: [PeriodicLimitsUsed, ConsumedAmount, RemainingAmount, PeriodStartDateTime, PeriodEndDateTime]
+    consequence: "Every headroom figure the app shows is its own arithmetic over its own ledger. See data-flow.yaml#periodic_limit_ledger."
+
+  control_parameter_probes:
+    accepted:
+      - { shape: "VRPType Sweeping", result: 201 }
+      - { shape: "VRPType Other", result: 201, note: "Sandbox laxity — no documented rule permits it on HSBC Personal." }
+      - { shape: "PeriodType Day / Week / Month", result: "201 all", note: "Fortnight, Half-year and Year are in the OBIE enum and were NEVER SENT." }
+      - { shape: "PeriodAlignment Calendar / Consent", result: "201 both", note: "All three authorised runs used Calendar." }
+      - { shape: "Two periodic limits (Week 50.00 + Month 150.00)", result: 201, note: "TWO is the maximum OBSERVED. Docs claim six, one per period type; three or more was never tried. Unknown, not proven unlimited." }
+      - { shape: "PSUInteractionTypes OffSession", result: 201 }
+      - { shape: "ReadRefundAccount No", result: 201 }
+    refused:
+      - { shape: "ControlParameters omitted", error: "U004 Field is missing @ Data.ControlParameters" }
+      - { shape: "PeriodicLimits omitted", error: "U004 Field is missing @ ControlParameters.PeriodicLimits" }
+      - { shape: "MaximumIndividualAmount omitted", error: "U004 Field is missing @ ControlParameters.MaximumIndividualAmount" }
+      - { shape: "PSUAuthenticationMethods UK.OBIE.SCA", error: "U002 Invalid value @ PSUAuthenticationMethods.0" }
+      - { shape: "MaximumIndividualAmount in a non-GBP currency", error: "U023 MaximumIndividualAmount.Currency is invalid. Only 'GBP' is allowed" }
+      - { shape: "PeriodicLimits in a non-GBP currency", error: "U005 Invalid Currency @ Data.ControlParameters.PeriodicLimits[0].Currency" }
+
+  error_shape_fixtures:
+    note: >-
+      The envelope contract lives in dtos/ObPaymentError.yaml. These are the VRP-specific shapes
+      the create form must survive — two of them break the obvious implementation.
+    batched_at_the_same_level:
+      scenario: "VRP-16 — both currency fields non-GBP"
+      http: 400
+      body:
+        Errors:
+          - { ErrorCode: "U023", Message: "MaximumIndividualAmount.Currency is invalid. Only 'GBP' is allowed", Path: "Data.ControlParameters.MaximumIndividualAmount.Currency" }
+          - { ErrorCode: "U005", Message: "Invalid Currency", Path: "Data.ControlParameters.PeriodicLimits[0].Currency" }
+      note: >-
+        TWO errors, in field order. A form rendering Errors[0] fixes the individual maximum,
+        resubmits, and is refused again for a limit it was never told about.
+    parent_short_circuits_the_nested:
+      scenario: "VRP-09 — ControlParameters omitted entirely"
+      http: 400
+      body:
+        Errors:
+          - { ErrorCode: "U004", Message: "Field is missing", Path: "Data.ControlParameters" }
+      note: >-
+        ONLY the parent. PeriodicLimits and MaximumIndividualAmount are also missing and are NOT
+        reported. So the form cannot get a full fault list in one round trip — validate everything
+        client-side first.
+    two_path_notations_one_api:
+      bracket: '"Data.ControlParameters.PeriodicLimits[0].Currency" — VRP-16'
+      dot_index: '"Data.ControlParameters.PSUAuthenticationMethods.0" — VRP-12'
+      note: "A field mapper must handle both, in the same response family."
+    two_messages_one_code:
+      cases:
+        - { code: "U002", message: "Invalid Field", scenario: "VRP-03, TPP-named Global Money debtor" }
+        - { code: "U002", message: "Invalid value", scenario: "VRP-12, PSUAuthenticationMethods UK.OBIE.SCA" }
+      note: "Key off ErrorCode + Path. Never off Message."
+
+  staged_consent_response:
+    Data:
+      ConsentId: "45223"
+      CreationDateTime: "2026-08-06T15:10:59+00:00"
+      Status: "AWAU"
+      StatusUpdateDateTime: "2026-08-06T15:10:59+00:00"
+      ControlParameters:
+        MaximumIndividualAmount: { Amount: "10.00", Currency: "GBP" }
+        PeriodicLimits: [{ PeriodType: "Week", PeriodAlignment: "Calendar", Amount: "50.00", Currency: "GBP" }]
+        VRPType: ["UK.OBIE.VRPType.Sweeping"]
+        PSUAuthenticationMethods: ["UK.OBIE.SCANotRequired"]
+      Initiation:
+        DebtorAccount: null
+        CreditorAccount: { SchemeName: "UK.OBIE.SortCodeAccountNumber", Identification: "40180000133787", Name: "test user" }
+
+  authorised_consent_response:
+    note: >-
+      THE CRITICAL FIXTURE. Staged with DebtorAccount null; the bank has written the PSU's own
+      choice into Initiation.DebtorAccount. Submitting the staged copy would be refused. Note
+      also Status AUTH with StatusUpdateDateTime unchanged.
+    Data:
+      ConsentId: "45223"
+      Status: "AUTH"
+      CreationDateTime: "2026-08-06T15:10:59+00:00"
+      StatusUpdateDateTime: "2026-08-06T15:10:59+00:00"
+      Initiation:
+        DebtorAccount:
+          SchemeName: "UK.OBIE.SortCodeAccountNumber"
+          Identification: "80119770009652"
+          Name: "Global Money GMA"
+        CreditorAccount: { SchemeName: "UK.OBIE.SortCodeAccountNumber", Identification: "40180000133787", Name: "test user" }
+    data_debtor_account_note: "Data.DebtorAccount (outside Initiation) is NEVER populated on VRP, in any run."
+
+  bank_wrote_unusable_debtor:
+    note: >-
+      Consent 45224. The PSU selected the credit card at the bank; the bank wrote a UK.OBIE.PAN
+      debtor into the authorised consent, and POST /domestic-vrps then rejected that exact
+      payload. Reading the Initiation back is necessary but NOT sufficient.
+    authorised_consent:
+      Data:
+        ConsentId: "45224"
+        Status: "AUTH"
+        Initiation:
+          DebtorAccount: { SchemeName: "UK.OBIE.PAN", Identification: "1234567890123456" }
+    funds_confirmation_before_the_attempt:
+      http: 201
+      body: { Data: { FundsAvailableResult: { FundsAvailable: "Available" } } }
+      note: >-
+        THE FALSE POSITIVE. The funds check passed cleanly on a mandate that could never pay. It
+        answers whether the amount is present, not whether the debtor is a payer this rail
+        accepts, so it must never be rendered as a promise.
+    payment_attempt:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U021", Message: "Sorry, We cannot process the Payment Instruction as the Debtor Identification is not a UK.OBIE.SortCodeAccountNumber account." }] }
+      message_note: >-
+        Verbatim, including the non-standard capital "We". The creditor variant reads "…the
+        Creditor Identification is not a UK.OBIE.SortCodeAccountNumber account." This is the ONLY
+        endpoint that states the scheme rule in prose; elsewhere the same constraint appears as a
+        bare U027 with no explanation.
+    attempts: 3
+    consent_after: "still AUTH, despite three failed payments"
+    ui_mapping: >-
+      health = unpayable, recorded LOCALLY. The consent reports nothing — a live mandate, past
+      SCA, that will refuse every payment. No retry: the payload was taken verbatim from the
+      bank's own authorised consent, so the result is deterministic.
+
+  funds_confirmation:
+    psu_token:
+      http: 201
+      body: { Data: { FundsAvailableResult: { FundsAvailable: "Available" } } }
+    client_credentials_token:
+      http: 401
+      note: "Reproduced on all three runs. A locally-generated yaml claimed client-credentials and was wrong."
+
+  payment_response:
+    note: >-
+      NOTE THE STATUS ENCODING. This endpoint returns the v3.1 LONG form where every other
+      endpoint returns the v4.0 short code. A short-code-only mapper reads this as unknown.
+    Data:
+      DomesticVRPId: "19929"
+      ConsentId: "45223"
+      Status: "AcceptedCreditSettlementCompleted"
+      CreationDateTime: "2026-08-06T15:19:18+00:00"
+      ExpectedExecutionDateTime: "2026-08-06T15:19:48+00:00"
+      ExpectedSettlementDateTime: "2026-08-06T15:19:48+00:00"
+      Charges:
+        - { Type: "UK.OBIE.CHAPSOut", Amount: { Amount: "0.05", Currency: "GBP" } }
+    short_form_equivalent: "ACCC"
+    charges_note: >-
+      0.05 GBP UK.OBIE.CHAPSOut on EVERY VRP payment, on every debtor type — current, savings and
+      bank-selected Global Money alike. Charged per payment, never on the consent, so a mandate
+      itself is free and each draw under it is not.
+    settling_window_note: >-
+      Both Expected* fields are identical and are exactly CreationDateTime + 30 SECONDS, on all
+      eight payments (e.g. 15:12:26 → 15:12:56). This is the ONE place in the payment surface
+      where they carry usable information — on the deferred families they are stubs equal to
+      CreationDateTime. A 30-second settling indicator is legitimate here and nowhere else.
+
+  many_payments_one_consent:
+    note: "The defining VRP property. Two payments per run, no re-authentication, consent still AUTH."
+    runs:
+      - { run: "flow-vrp-debtor-current", debtor: "current …3349", how_set: "TPP-named", payments: ["19929", "19930"], both: "ACCC", consent_after: "AUTH" }
+      - { run: "flow-vrp-debtor-savings", debtor: "savings …3695", how_set: "TPP-named", payments: ["19931", "19932"], both: "ACCC", consent_after: "AUTH" }
+      - { run: "flow-vrp-bankpick-gm", debtor: "Global Money", how_set: "bank-selected", payments: ["19933", "19934"], both: "ACCC", consent_after: "AUTH" }
+    # terminal-success is CORRECT and unchanged here: VRP payments settle to ACCC. This rail
+    # never emits INCO, so the fourth disposition (instruction_established, added 2026-08-07)
+    # does not apply to it — a VRP payment really did move money.
+    cold_read: "All eight payments re-read hours later on a client-credentials token: every one terminal-success, consent 45223 still AUTH."
+    what_this_proves: >-
+      The defining property, three times over: ONE authorisation funded TWO payments with no PSU
+      re-authentication, and the consent never left AUTH. Every other family moves its consent to
+      COND on first use — the VRP state model explicitly omits Consumed. This is the observable
+      difference between a mandate and a one-shot consent, and it is what the whole feature is for.
+
+  bank_selected_debtor_default:
+    note: >-
+      Consent 45223, staged with DebtorAccount null. The bank defaulted to the SAVINGS account,
+      not a current account. Do not assume bank selection lands on a PCA — it did not.
+    written_by_bank: { SchemeName: "UK.OBIE.SortCodeAccountNumber", Identification: "80122590953695", Name: "ACCNT SHORT" }
+    outcome: "Payable. Savings is eligible on the scheme rule despite Guide §28.8's PCA-only claim."
+
+  limit_breach:
+    note: "GBP 20.00 against a GBP 10.00 MaximumIndividualAmount."
+    http: 400
+    body: { ErrorCode: "U014", Message: "Invalid request parameters", Path: "Data.Instruction.InstructedAmount.Amount" }
+    spec_note: >-
+      In v4.0, U014 IS UK.OBIE.Rules.FailsControlParameters — the spec re-coded every UK.OBIE.*
+      string to a short code. HSBC is conformant.
+    limitation: >-
+      Path points at the amount regardless of WHICH limit was breached, so a TPP cannot
+      distinguish 'over individual max' from 'over periodic limit'. The spec is partly at fault:
+      it tells ASPSPs to populate a `Field` member that does not exist on OBError1 in v4.0.
+
+  revocation:
+    delete:
+      request: "DELETE /v4.0/pisp/domestic-vrp-consents/45205"
+      http: 204
+      body: null
+    subsequent_get:
+      http: 400
+      body: { Code: "400", Id: "80d40b2d-f06d-4d6e-bfd7-4d85ae195cf0", Message: "Bad Request", Errors: [{ ErrorCode: "U011", Message: "Resource cannot be found", Path: "/domestic-vrp-consents/45205" }] }
+    ui_mapping: "This 400 renders as REVOKED, from the local record. It is the expected steady state, not a fault."
+
+  local_mandate_record:
+    note: >-
+      What the app persists. Everything here is the app's own knowledge of what it created —
+      none of it is bank-supplied financial data that could go stale and be shown as current.
+    fields:
+      consentId: "45223"
+      creditorName: "test user"
+      creditorIdentification: "40180000133787"
+      controlParameters: "<as staged>"
+      createdAt: "2026-08-06T15:10:59+00:00"
+      revokedAt: null
+      unpayableAt: null
+      lastKnownHealth: "active"
+      paymentLedger:
+        - { domesticVrpId: "19929", amountMinor: "500", creationDateTime: "2026-08-06T15:19:18+00:00", status: "ACCC" }
+        - { domesticVrpId: "19930", amountMinor: "500", creationDateTime: "2026-08-06T15:21:04+00:00", status: "ACCC" }
+    ledger_note: >-
+      `referenceMode` REMOVED — it served the withdrawn create-time reference decision.
+      `paymentLedger` and `unpayableAt` ADDED. The ledger is the app's only source of
+      spend-against-limit information: with a 50.00 GBP weekly limit and these two entries,
+      headroom is 40.00 and NOTHING in the API would ever say so.
+
+  health_states:
+    active: { consent: "AUTH", recent_payments: "no ExemptionNotApplied", chip: "Active" }
+    failing:
+      consent: "AUTH"
+      recent_payments: "StatusReason UK.OBIE.ExemptionNotApplied"
+      chip: "Payments failing"
+      cause: "The PSU deleted the payee from their beneficiary list in the HSBC app, so the Trusted Beneficiary exemption check fails at fulfilment."
+      note: "The consent gives no signal at all. A two-state healthy/revoked model renders this mandate as fine."
+    unpayable:
+      consent: "AUTH"
+      funds_confirmation: "Available"
+      payment_attempts: "400 U021, three times"
+      chip: "Cannot pay"
+      cause: "The PSU chose an account at the bank whose scheme the bank's own payment endpoint refuses. Consent 45224, credit card."
+      note: >-
+        The second authorised-but-broken state, and distinct from `failing`. That one fails at
+        FULFILMENT with a StatusReason and may recover if the PSU re-adds the payee; this one
+        fails at SUBMISSION with an error code and can never recover. Different signal, different
+        remedy, different chip.
+    revoked:
+      source: "local record, or consent GET 400 U011, or an event poll returning UK.OBIE.Consent-Authorization-Revoked"
+      chip: "Cancelled"
+
+  event_poll_response:
+    request: { returnImmediately: true, maxEvents: 5 }
+    body:
+      events:
+        - { EventType: "UK.OBIE.Consent-Authorization-Revoked", ConsentId: "45223" }
+    note: "The only mechanism that surfaces an out-of-band revocation before the next consent GET 400s."

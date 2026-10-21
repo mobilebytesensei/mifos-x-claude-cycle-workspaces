@@ -1,0 +1,276 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: pay-international-scheduled
+
+feature: pay-international-scheduled
+contract_version: "2.0.0"
+status: designed
+score: 91
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. RESTORED 2026-08-07 (/idea-sync) — this key existed before
+# and was removed in error earlier today, leaving only `score`.
+quality_score: 91
+quality_justification: >-
+  91. The two behaviours that are genuinely this rail's own — never emitting PDNG, and the charge
+  arriving only at resource creation — are now specified with their full consequence rather than
+  just their fact: a PISP structurally cannot show an international deferred fee before
+  authorisation, and the absent-not-empty Charges key is what turns that into a false 'free' at
+  the consent step. The FX question is closed by R16-S1/S2/S3 against controls. Held below the
+  single rail's 93 because this feature inherits most of its field contract rather than measuring
+  it, and because the same PaymentContextCode / FR-015 gap applies here with no rail-specific
+  evidence of its own.
+cluster: payment-initiation
+acceptance_refs: [FR-012, FR-015, FR-016, FR-017, FR-018, FR-019, FR-020, FR-021]
+scaffolded_by: /idea-sync
+archetype: form
+flow_ref: pay-international-scheduled
+description: >-
+  International scheduled payment — one overseas payment to an IBAN, on a single future date.
+  Six steps: funding account, recipient, amount and currencies, date, charge bearer, review.
+  The intersection of the international field contract and the scheduled date contract; it adds
+  no new input control of its own. No funds-confirmation. Cannot be amended or cancelled
+  through a PISP.
+has_ui: true
+has_server: false
+capabilities: [has_ui, has_api, has_flow, has_form_input, has_system_integration]
+system_capabilities:
+  - { kind: deep_link, detail: "Hands off to payment-consent for the app-to-app authorise leg." }
+
+inherits_from: pay-international-single
+also_inherits_from: pay-domestic-scheduled
+
+rail_position:
+  time_dimension: "one date — RequestedExecutionDateTime"
+  amount_field: InstructedAmount
+  creditor_scheme: UK.OBIE.IBAN
+  funds_confirmation: none
+  remittance_information: "REFUSED — U005"
+  mandatory_additions: [Permission, RequestedExecutionDateTime, CurrencyOfTransfer, ChargeBearer]
+  charge_at_consent: none
+  charge_at_resource: "0.50 in the INSTRUCTED currency"
+  consent_ladder: "AWAU -> AUTH -> COND"
+  resource_ladder: "INCO -> INCO — never PDNG"
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE TWO BEHAVIOURS THAT ARE GENUINELY THIS RAIL'S OWN
+# ─────────────────────────────────────────────────────────────────────────
+# Everything else is inherited. These two are not, and both are easy to get wrong by
+# generalising from a neighbouring rail.
+own_behaviours:
+  - behaviour: "Never emits PDNG"
+    detail: >-
+      Reads INCO at creation AND on read-back. The domestic deferred rails go PDNG then INCO.
+      Both converge on INCO, so the difference is only whether a PDNG stage is ever observed.
+    risk: >-
+      A mapper that treats INCO-at-creation as anomalous — because every other deferred family
+      it has seen starts at PDNG — will mis-flag every payment on this rail.
+
+  - behaviour: "Charge appears at RESOURCE creation, not at consent"
+    detail: >-
+      0 charges on the consent, then 0.50 in the INSTRUCTED currency on the resource. Confirmed
+      across three resources that separate instructed from transfer currency: 19918 (GBP
+      instructed, USD transfer, 0.50 GBP), 19921 (GBP -> EUR, 0.50 GBP), against 19917 (USD ->
+      USD, 0.50 USD).
+    risk: >-
+      The international SINGLE rail returns no charge ever. Generalising that to "international
+      is free" is wrong here, and the empty fee row at review would read as "free" to a PSU.
+      deferred_charge_note exists to prevent exactly that reading.
+
+divergence_traps:
+  - trap: "Assuming international means no fee"
+    why_wrong: "True only of international single. The deferred international shapes charge 0.50 at resource creation."
+    correct: "deferred_charge_note states a fee applies but is not quoted until setup."
+  - trap: "Expecting a PDNG stage"
+    why_wrong: "This rail goes straight to INCO. PDNG never appears."
+    correct: "The status mapper accepts INCO as a valid creation status on this family."
+  - trap: "Rejecting SCASupportData"
+    why_wrong: >-
+      Prior research reported HSBC rejecting SCASupportData on international payments. This
+      endpoint accepts it — Authorisation and SCASupportData together stage 201.
+    correct: "Both blocks are permitted; the app simply does not need them."
+
+  - trap: "Defaulting Charges to an empty list"
+    why_wrong: >-
+      The consent OMITS Charges, CutOffDateTime, ExpectedExecutionDateTime and
+      ExpectedSettlementDateTime — the keys are ABSENT, not empty. A defaulted [] cannot
+      distinguish 'no charge' from 'no charge information', and on this rail it renders a 0.50
+      payment as free at the exact step where the PSU consents to it.
+    correct: "Nullable Charges; the fee row reads unknown, never blank and never '0.00'."
+
+  - trap: "Promising to show the fee 'once we fetch it' before authorisation"
+    why_wrong: >-
+      The charge first appears at RESOURCE CREATION. It is absent at AWAU and absent at AUTH, so
+      there is no earlier call to make and no endpoint to add. A PISP structurally cannot show an
+      international deferred fee before the PSU authorises.
+    correct: >-
+      deferred_charge_note states that a fee applies and is not quoted until setup. That is the
+      final answer, not a placeholder for a better data source.
+
+  - trap: "Rendering Errors[0]"
+    why_wrong: >-
+      SP-I04 returns TWO entries — the first names the creditor, the second names the currency.
+      Fixing only the first leaves the payment refused for a reason the PSU was never shown.
+    correct: "Every entry, wire order, keyed by ErrorCode + Path. See dtos/ObPaymentError.yaml."
+
+  - trap: "Gating the creditor picker on scheme alone"
+    why_wrong: >-
+      U027 @ CreditorAccount.SchemeName is resolved-account dependent, not scheme dependent.
+      SP-I08 is refused for a sort-code creditor while SP-I05 sends the SAME SCHEME with
+      Identification 80119770009652 (Global Money GMA) and gets 201. SO-I07 shows the identical
+      split on the standing-order rail.
+    correct: >-
+      The right statement is that the identifier must resolve to an internationally-addressable
+      account, and only Global Money does so by sort code. This form takes an IBAN, so the
+      distinction is unreachable — but the wrong explanation is what gets copied onward.
+
+  - trap: "Verifying the submit echo by string comparison"
+    why_wrong: >-
+      The server REORDERS Initiation keys on echo — ChargeBearer, CurrencyOfTransfer,
+      InstructedAmount, MandateRelatedInformation, [CreditorAgent], [DebtorAccount],
+      CreditorAccount regardless of request order. A byte comparison fails on a correct payload.
+    correct: "Echo the parsed read-back object."
+
+  - trap: "Coupling the instructed and transfer currency controls"
+    why_wrong: "They are INDEPENDENT — 1.00 GBP with USD transfer and 5.00 GBP with EUR transfer both staged 201."
+    correct: "Two controls, no auto-sync."
+
+  - trap: "Building a bank-country or bank-name field to help find the BIC"
+    why_wrong: >-
+      Inherited from the international single rail: sending CreditorAgent at all makes
+      Identification mandatory (R8-01/02/03/09/10 and R3-08 all return U004 @
+      CreditorAgent.Identification; control R8-11 removes the key and gets 201). A half-populated
+      block is worse than none.
+    correct: "One BIC field, validated on LENGTH only — R2-07's matching-country 8-character BIC was still refused."
+
+error_contract_ref:
+  dto: dtos/ObPaymentError.yaml
+  note: >-
+    Envelope, Path quirks, Message instability and the rail-dependent code mapping are specified
+    once in the DTO. This feature's local addition is SP-I04 — its own two-entry case, where the
+    first error names the creditor and the second names the currency.
+
+open_questions:
+  - question: "Does the international rail accept PaymentContextCode?"
+    status: UNTESTED
+    evidence: "CategoryPurposeCode 'EPAY' in 25 of 25 international scenarios; ZERO sent PaymentContextCode."
+    why_it_matters: >-
+      FR-015 requires a consumer PaymentContextCode on every payment. No international scenario
+      satisfies it, and the domestic rail's acceptance cannot be read across — this rail refuses
+      RemittanceInformation, which the domestic rail takes.
+    consequence: >-
+      If it is refused with U005, FR-015 is unsatisfiable on the international rails and the
+      REQUIREMENT needs amending. Do not ship one here on the strength of FR-015 alone.
+
+closed_questions:
+  - question: "Would an international endpoint accept ExchangeRateInformation?"
+    now: >-
+      CLOSED — REFUSED. R16-S1/S2/S3 on this rail, plus R16-P1/P2/P3 (single) and R16-O1/O2/O3
+      (standing order), including the Agreed form with ExchangeRate 1.15 and
+      ContractIdentification 'FX-CONTRACT-001'. Controls R16-C1/C2/C3 staged 201.
+    consequence: >-
+      No rate can be shown before authorisation, and a TPP cannot assert even a contracted one.
+      Combined with the fee's invisibility until resource creation, the PSU authorises this
+      payment without a rate AND without a fee. The form says both plainly.
+    divergence_retained: >-
+      ExchangeRateInformation is absent from the v4.0 request dictionary but present in the
+      published usage examples. Recorded, not resolved.
+
+amendment_prohibition:
+  permitted: false
+  basis: "OBL Customer Experience Guidelines — mandatory obligation to redirect the PSU"
+  ui_requirement: "amend_notice on the Review step AND the Success state"
+
+spec_ahead_of_source:
+  scope: feature
+  cluster: payment-initiation
+  declared_at: "2026-08-06"
+  declared_by: "/idea-sync (PISP-tests research rewrite)"
+  owed_by: /kmp-implement
+  reason: "Type brought in scope by the 2026-08-06 seven-type rewrite."
+  source_state_measured:
+    present: ["core/network/.../pisp/internationalScheduledPayment request + response — NO serialization tests"]
+    absent: ["no Ktorfit service", "no store", "no repository", "no feature module"]
+  consequence_for_verification: "drift and source-test checks UNASSERTABLE, not failing. Score N/A."
+
+regulatory:
+  note: "PISP is a distinct FCA permission from AISP. Sandbox unaffected; production needs authorisation this project does not hold."
+  affects_production: true
+  affects_sandbox: false
+  adr_required: true
+
+vm_actions:
+  - name: ConfirmAndStageConsent
+    signature: 'suspend fun confirmAndStageConsent()'
+    state_mutations:
+      - uiState = Submitting(StagingConsent)
+      - uiState = Submitting(AwaitingAuthorisation, consentId = response.Data.ConsentId)
+    side_effects:
+      - "POST /international-scheduled-payment-consents"
+      - "Body carries Permission 'Create', RequestedExecutionDateTime, CurrencyOfTransfer and ChargeBearer"
+      - "Body carries NO RemittanceInformation"
+    error_handling:
+      on_400_U004: uiState = Error(MissingRequiredField)
+      on_400_U005: uiState = Error(FieldNotExpected)
+      on_400_U003: uiState = Error(DateInPast)
+      on_400_U002: uiState = Error(DateOutOfRange)
+      on_400_U019: uiState = Error(SignatureMissing)
+  - name: SubmitPayment
+    signature: 'suspend fun submitPayment(consentId: String)'
+    state_mutations:
+      - uiState = Submitting(SubmittingPayment)
+      - "uiState = Success(paymentId = response.Data.InternationalScheduledPaymentId, status = INCO)"
+    side_effects: ["POST /international-scheduled-payments echoing the AUTHORISED consent's Initiation"]
+    notes: "No funds-confirmation precedes this. The success status is INCO, not PDNG and not ACSP."
+
+error_cases:
+  - { id: MissingRequiredField, trigger: "400 U004", user_message: '{strings.error.payment.missing_field}', recovery: "Implementation fault." }
+  - { id: FieldNotExpected, trigger: "400 U005", user_message: '{strings.error.payment.field_not_expected}', recovery: "Implementation fault — RemittanceInformation must not be sent." }
+  - { id: DateInPast, trigger: "400 U003", user_message: '{strings.error.payment.date_in_past}', recovery: "Return to the date step." }
+  - { id: DateOutOfRange, trigger: "400 U002 on the date", user_message: '{strings.error.payment.date_out_of_range}', recovery: "Return to the date step." }
+  - { id: UnsupportedScheme, trigger: "400 U027", user_message: '{strings.error.payment.unsupported_scheme}', recovery: "Should be unreachable — the form takes an IBAN." }
+  - { id: SignatureMissing, trigger: "400 U019", user_message: '{strings.error.payment.signature_missing}', recovery: "Not user-recoverable." }
+  - { id: ConsentNotAuthorised, trigger: "400 U009", user_message: '{strings.error.payment.consent_not_authorised}', recovery: "Re-authorise." }
+  - { id: NetworkError, trigger: "IOException / timeout", user_message: '{strings.error.payment.network_error}', recovery: "Retry — idempotency key reused." }
+
+test_fixtures:
+  source: idea-layer/screens/pay-international-scheduled/tests.yaml
+  fixture_data: idea-layer/screens/pay-international-scheduled/demo-data.yaml
+  scenario_count: 12
+  priority_distribution: { p0: 7, p1: 4, p2: 1 }
+
+status_history:
+  - from: null
+    to: draft
+    at: "2026-08-06"
+    by: "/idea-sync — seven-type payments rewrite"
+    note: "Brought in scope. 25 scenarios in captures/by-type/scheduled-international.md; resource 19921 authorised."
+
+  - from: draft
+    to: enriched
+    at: "2026-08-07"
+    by: "/idea-sync"
+    note: >-
+      Corpus-derived enrichment from the full HSBC capture corpus. Folded in: the four response
+      keys the international rails OMIT (Charges, CutOffDateTime, ExpectedExecutionDateTime,
+      ExpectedSettlementDateTime) and the absent-not-empty parse rule, which on THIS rail turns a
+      0.50 payment into a rendered 'free'; the pre-authorisation fee impossibility — the charge
+      appears only at resource creation, so a PISP cannot show it at review, at hand-off or on
+      the return leg; SP-I04 as this rail's own two-entry Errors case and the shared error
+      contract via dtos/ObPaymentError.yaml; the SP-I08 / SP-I05 split proving U027 on the
+      creditor is RESOLVED-ACCOUNT dependent rather than scheme dependent; ExchangeRateInformation
+      refused for all three RateTypes (R16-S1/S2/S3 against controls R16-C1/C2/C3), closing the
+      open FX experiment; the server's Initiation key reordering on echo; independence of
+      InstructedAmount.Currency and CurrencyOfTransfer; and the inherited CreditorAgent
+      partial-object trap. Opened the PaymentContextCode / FR-015 question as UNTESTED.
+
+  - from: enriched
+    to: designed
+    at: "2026-08-07"
+    by: "/idea-feature-export"
+    exports_produced: [spec_md, api_md, mockup_md, prompts_figma_md, prompts_per_state]
+    note: >-
+      /idea-feature-export --all, owner-scoped to the ten payment-initiation features. Roundtrip
+      verification PASSED on all five checks — state coverage, endpoint coverage, ViewModel
+      coverage, forbidden content, and prompt size (6 per-state prompts, all under the 4000-char
+      limit).

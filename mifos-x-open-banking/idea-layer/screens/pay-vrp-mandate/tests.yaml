@@ -1,0 +1,292 @@
+sibling: tests
+schema_version: "4.0"
+feature_id: pay-vrp-mandate
+
+feature: pay-vrp-mandate
+scenario_count: 19
+
+scenarios:
+  - id: TC-VRP-001
+    priority: p0
+    title: "Create — all three mandatory control blocks are sent, in GBP"
+    given: "An eligible debtor, a sort-code creditor, a max-individual amount and one periodic limit"
+    when: "The PSU confirms"
+    then:
+      - "Data.ControlParameters is present"
+      - "ControlParameters.MaximumIndividualAmount is present, Currency GBP"
+      - "ControlParameters.PeriodicLimits has at least one entry, Currency GBP"
+      - "PSUAuthenticationMethods is exactly ['UK.OBIE.SCANotRequired']"
+      - "The consent stages 201 AWAU"
+    rationale: "All three blocks return U004 if omitted; non-GBP returns U023; UK.OBIE.SCA returns U002. FR-022."
+
+  - id: TC-VRP-002
+    priority: p0
+    title: "The credit card is never offered, on either route"
+    given: "The PSU holds the UK.OBIE.PAN credit card"
+    when: "The create form's Account step renders"
+    then:
+      - "The card is absent from the debtor list"
+    rationale: >-
+      Refused with U021 when TPP-named AND when bank-selected — the one family where
+      bank-selection does not rescue it. FR-018.
+
+  - id: TC-VRP-003
+    priority: p0
+    title: "Funds-confirmation is a POST on the PSU token, carrying an amount"
+    given: "An active mandate and a payment amount"
+    when: "Pay now is tapped"
+    then:
+      - "The request method is POST, not GET"
+      - "The body carries Data.InstructedAmount"
+      - "The Authorization header holds the PSU authorisation-code token"
+    rationale: >-
+      A client-credentials token returns 401, reproduced on all three runs. The verb is a POST
+      because a VRP consent has no fixed amount for the bank to check against. FR-022.
+
+  - id: TC-VRP-004
+    priority: p0
+    title: "Paying under a mandate never re-authenticates"
+    given: "An active mandate that has already funded one payment"
+    when: "A second payment is made"
+    then:
+      - "No navigation to payment-consent occurs"
+      - "No app-to-app redirect is triggered"
+      - "The consent status is still AUTH afterwards"
+    rationale: >-
+      The defining VRP property. Two payments per run on a single authorisation across all three
+      runs, consent still AUTH. Every other family moves its consent to COND on first use.
+
+  - id: TC-VRP-005
+    priority: p0
+    title: "The payment echoes the bank-written Initiation, not the staged one"
+    given: "A consent staged with DebtorAccount null, which the bank filled with Global Money"
+    when: "A payment is made under it"
+    then:
+      - "The consent is re-read before the payment"
+      - "The submitted Data.Initiation equals the authorised consent's Initiation"
+      - "The payment succeeds"
+    rationale: >-
+      The bank overwrites Initiation.DebtorAccount with the PSU's choice. On the six PIS families
+      a stale echo blocks re-use; here the payment is refused outright.
+
+  - id: TC-VRP-006
+    priority: p0
+    title: "A bank-written unusable debtor is handled, not crashed on"
+    given: "An authorised consent into which the bank wrote a UK.OBIE.PAN debtor"
+    when: "A payment is attempted with that Initiation echoed verbatim"
+    then:
+      - "The 400 U021 is caught"
+      - "The PSU is told the account chosen at the bank cannot fund a variable payment"
+      - "A create-new-mandate CTA is offered"
+      - "The mandate is not silently marked broken"
+    rationale: >-
+      Reading the Initiation back is necessary but NOT sufficient — the bank may write an account
+      its own payment endpoint refuses. Observed on consent 45224, which stayed AUTH despite
+      three failed payments.
+
+  - id: TC-VRP-007
+    priority: p0
+    title: "The v3.1 long status form is mapped correctly"
+    given: "A payment response with Status 'AcceptedCreditSettlementCompleted'"
+    when: "The status is mapped"
+    then:
+      - "The disposition is terminal_success"
+      - "It does not fall through to the unknown branch"
+      - "It is not rendered as in progress"
+    rationale: >-
+      This endpoint returns the v3.1 LONG name where every other endpoint returns the v4.0 short
+      'ACCC'. Per the fail-open rule an unrecognised status maps to in_progress, so a
+      short-code-only mapper renders every completed VRP payment as permanently in progress —
+      silent, and permanent. FR-021.
+    fail_open_scope: >-
+      Note what is actually being tested: the fail-open rule is a SAFETY NET for codes nobody
+      anticipated, not a substitute for mapping a status that is in the enum. ACCC is in the enum
+      in both encodings, so reaching the unknown branch here is a mapping defect, not fail-open
+      working as designed. The same class recurred with INCO, which was in the enum and still fell
+      through because the disposition vocabulary had nowhere to put it until a fourth disposition
+      was added 2026-08-07.
+    not_applicable_to_this_rail: >-
+      VRP payments map ACSP then ACCC and this rail NEVER emits INCO, so instruction_established
+      does not arise here. The mapper is shared with the deferred rails, though, and must carry
+      all four dispositions — see screens/payment-status TC-PSTAT-010..012.
+
+  - id: TC-VRP-008
+    priority: p0
+    title: "The mandate survives a process restart"
+    given: "A created mandate and a killed process"
+    when: "The app relaunches and the list loads"
+    then:
+      - "The mandate is present, seeded from the local record"
+    rationale: >-
+      There is no AIS read for VRP mandates. A memory-only store loses every mandate on process
+      death and leaves the PSU unable to find, use or revoke them.
+
+  - id: TC-VRP-009
+    priority: p0
+    title: "A revoked mandate renders as cancelled, not as an error"
+    given: "A mandate revoked via DELETE, whose consent GET now returns 400 U011"
+    when: "The list and detail load"
+    then:
+      - "DELETE returned 204 and the local revoked flag was written"
+      - "The health chip reads revoked"
+      - "revoked_mandate_banner is shown on the detail"
+      - "No generic error state is rendered"
+      - "Payments already made under it still read back correctly"
+    rationale: >-
+      OBIE mandates the 400 after deletion — it is the expected steady state, not a fault. The
+      API forgets; the app must remember. FR-023.
+
+  - id: TC-VRP-010
+    priority: p1
+    title: "An authorised-but-failing mandate is distinguishable from a healthy one"
+    given: "A consent reading AUTH whose recent payments carry StatusReason UK.OBIE.ExemptionNotApplied"
+    when: "The list and detail render"
+    then:
+      - "The health chip reads failing, not active"
+      - "failing_mandate_banner explains the payee is no longer a trusted beneficiary"
+      - "The pay_now button is hidden"
+    rationale: >-
+      HSBC documents that VRPs are rejected at fulfilment if the Trusted Beneficiary check fails —
+      which happens when the PSU deletes the payee in the HSBC app. The consent gives no signal
+      at all, so a two-state healthy/revoked model renders a broken mandate as fine. FR-024.
+
+  - id: TC-VRP-011
+    priority: p1
+    title: "An over-limit amount is blocked locally, before any call"
+    given: "A mandate with a 10.00 GBP individual max and 50.00 GBP weekly limit, 45.00 already spent this week"
+    when: "The PSU enters 20.00, then 8.00"
+    then:
+      - "20.00 is rejected locally as over the individual maximum, with no request sent"
+      - "8.00 is rejected locally as over the remaining weekly headroom, with no request sent"
+      - "RJCT and BLCK payments are excluded from the headroom tally"
+    rationale: >-
+      A breach returns U014 with Path pointing at the amount regardless of WHICH limit was hit,
+      so the bank cannot tell the PSU which one. Preventing the breach is the only way to explain it.
+
+  - id: TC-VRP-012
+    priority: p1
+    title: "The pro-rating notice cautions without inventing a figure"
+    given: "A 300.00 GBP Month/Calendar limit created mid-month"
+    when: "The Limits step renders"
+    then:
+      - "pro_rating_notice is shown at severity info, not warning"
+      - "It contains NO computed first-period amount"
+      - "No pro-rated figure appears on the review card either"
+    rationale: >-
+      REWRITTEN 2026-08-07. The previous version asserted the notice must state 250.00. NO
+      pro-rating was ever observed — the consent echoes PeriodicLimits byte-for-byte with no
+      period window and no consumed amount, and the worked figures come from VRP-RESEARCH.md,
+      which is documentation. Printing a number the app invented is the same class of error as
+      hiding the caution, and this direction is the one where the app is wrong.
+
+  - id: TC-VRP-013
+    priority: p2
+    title: "Each payment carries its own reference, independent of the consent's"
+    given: "A mandate whose consent carried RemittanceInformation.Unstructured ['VRP20260806']"
+    when: "A payment is made carrying ['VRP-5.00']"
+    then:
+      - "The payment's own reference is submitted and honoured"
+      - "The consent's remittance does not propagate into the payment"
+      - "Data.Initiation on the payment has no RemittanceInformation member"
+      - "No create-time reference-mode question is presented anywhere in the 4-step form"
+    rationale: >-
+      REWRITTEN 2026-08-07 — it previously asserted the opposite. The old scenario tested a
+      create-step warning that a consent-level reference binds every payment; the capture corpus
+      shows per-payment remittance is INDEPENDENT and the payment's value settles. Only
+      `Unstructured` was ever sent, so the documented rule remains untested for `Reference` — but
+      an untested rule is not a reason to build a step that contradicts what WAS observed.
+
+  - id: TC-VRP-014
+    priority: p0
+    title: "A funds-confirmed mandate that refuses every payment is rendered as unpayable"
+    given: >-
+      Consent 45224 — the PSU chose the credit card at the bank, the consent reads AUTH, and
+      funds-confirmation returned 'Available'
+    when: "A payment is attempted with the bank-written Initiation echoed verbatim"
+    then:
+      - "The 400 U021 marks the mandate unpayable in the LOCAL record"
+      - "The health chip reads unpayable, not active — even though the consent is still AUTH"
+      - "unpayable_mandate_banner is shown at severity error"
+      - "pay_now is hidden"
+      - "No automatic retry is issued"
+      - "The successful funds-confirmation is not shown as reassurance"
+    rationale: >-
+      THE defining failure of this rail. The funds check gave a clean FALSE POSITIVE for a payer
+      that can never pay, so the TPP holds a live mandate, past SCA, that will refuse everything —
+      with nothing in the consent status to say so. Observed three times on 45224, consent AUTH
+      throughout. VRP is also the only family where bank-selection does not rescue the card.
+
+  - id: TC-VRP-015
+    priority: p1
+    title: "Both errors of a batched response are rendered"
+    given: "VRP-16 — both MaximumIndividualAmount.Currency and PeriodicLimits[0].Currency non-GBP"
+    when: "The consent is submitted and 400 returns with two Errors entries"
+    then:
+      - "Both the U023 and the U005 are surfaced"
+      - "Both bind to their own field via Path"
+      - "The bracket notation PeriodicLimits[0].Currency resolves"
+      - "The dot-index notation PSUAuthenticationMethods.0 also resolves"
+    rationale: >-
+      Errors is an array and carries two entries here, in field order. A form rendering Errors[0]
+      fixes the individual maximum, resubmits, and is refused again for a limit it was never told
+      about. Both Path notations occur in this same API.
+
+  - id: TC-VRP-016
+    priority: p1
+    title: "U011's URL Path does not reach the field mapper"
+    given: "A revoked mandate whose consent GET returns 400 U011 with Path '/domestic-vrp-consents/45205'"
+    when: "The error is handled"
+    then:
+      - "U011 is intercepted BEFORE the generic Path-to-field mapper runs"
+      - "No form field is highlighted and no crash occurs on the leading slash"
+      - "The mandate renders as revoked from the local record"
+      - "The 400 is not treated as a 404 branch"
+    rationale: >-
+      Every other error on this API carries a JSON field pointer; this one carries a URL path. A
+      generic mapper misfires on it. OBIE specifies 400 rather than 404, so a 404 branch never
+      fires either.
+
+  - id: TC-VRP-017
+    priority: p0
+    title: "Spend is tracked locally against every limit, because the API tracks none"
+    given: "A mandate with a 50.00 GBP weekly limit and two settled 5.00 payments in the ledger"
+    when: "The detail screen renders and a payment is composed"
+    then:
+      - "headroom_list shows EVERY periodic limit, not just the binding one"
+      - "Weekly headroom reads 40.00, computed from the local ledger"
+      - "Each settled payment is appended to the ledger before the flow completes"
+      - "No headroom figure is read from any API response — none exists"
+      - "After a restore with no ledger, limits render WITHOUT a spent figure rather than a zero"
+    rationale: >-
+      The consent echoes PeriodicLimits byte-for-byte: no period window, no consumed amount, no
+      PeriodicLimitsUsed member anywhere. The app is the only ledger that exists. A missing entry
+      silently overstates headroom and the resulting U014 names no limit, so neither the app nor
+      the PSU can work out what happened.
+
+  - id: TC-VRP-018
+    priority: p2
+    title: "The 30-second settling window is driven by the response, not hardcoded"
+    given: "A payment whose ExpectedSettlementDateTime is CreationDateTime + 30 seconds"
+    when: "The settling indicator renders"
+    then:
+      - "The countdown is derived from the returned ExpectedSettlementDateTime"
+      - "It lapses into a plain in-progress state rather than an error if settlement runs long"
+    rationale: >-
+      Both Expected* fields are identical and exactly Creation + 30s on all eight payments. This
+      is the ONE place in the payment surface where they carry usable information — on the
+      deferred families they are stubs equal to CreationDateTime, where a countdown would be a lie.
+
+  - id: TC-VRP-019
+    priority: p2
+    title: "An evening fraud-window rejection does not condemn the mandate"
+    given: "A healthy mandate and a payment rejected between 18:00 and 23:45"
+    when: "The rejection is handled"
+    then:
+      - "evening_window_notice explains the window"
+      - "No automatic retry is issued"
+      - "The mandate's health stays active — it is not marked failing or unpayable"
+    rationale: >-
+      HSBC documents that requests in that window may be rejected pending additional fraud checks.
+      It is a property of the clock, not the mandate: the same payment succeeds at 09:00. On a
+      rail whose appeal is unattended repeat payments, an automatic retry loop is exactly the
+      wrong reflex.

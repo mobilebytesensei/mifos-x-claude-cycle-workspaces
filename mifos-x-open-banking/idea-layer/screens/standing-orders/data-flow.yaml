@@ -1,0 +1,63 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: standing-orders
+
+screen_id: standing-orders
+_last_enriched_at: "2026-06-29T15:00:00Z"
+
+on_mount:
+  - trigger: standing_orders_load
+    description: "Load standing orders for the given AccountId, decode OBIE frequency codes, map status variants, and compute summary label."
+    steps:
+      - call: standing-orders-list
+        path_params:
+          AccountId: "{params.accountId}"
+        store_as: standingOrders
+        transform:
+          # Frequency code → human-readable label (OBIE ISO 20022 codes)
+          - field: frequency_label
+            from: Frequency
+            mapping: |
+              IntrvlMnthDay:01:01=Monthly on the 1st
+              IntrvlMnthDay:01:15=Monthly on the 15th
+              IntrvlMnthDay:01:28=Monthly on the 28th
+              IntrvlMnthDay:03:01=Quarterly on the 1st
+              IntrvlMnthDay:06:01=Every 6 months on the 1st
+              IntrvlWkDay:01:1=Weekly every Monday
+              IntrvlWkDay:01:2=Weekly every Tuesday
+              IntrvlWkDay:01:3=Weekly every Wednesday
+              IntrvlWkDay:01:4=Weekly every Thursday
+              IntrvlWkDay:01:5=Weekly every Friday
+              IntrvlWkDay:02:1=Every 2 weeks on Monday
+              IntrvlDay:14=Every 14 days
+              IntrvlDay:28=Every 28 days
+              IntrvlYear:01:01:01=Annually on 1 January
+            fallback: "{Frequency}"
+          # Status code → badge variant
+          - field: status_variant
+            from: StandingOrderStatusCode
+            mapping: "Active=primary,Inactive=secondary"
+          # Presence flag for conditional FinalPaymentDateTime row
+          - field: hasFinalPayment
+            from: FinalPaymentDateTime
+            mapping: "null=false"
+            fallback: "true"
+      # Compute aggregated summary label across all orders
+      - compute: standingOrders_summary_label
+        expression: "{count(Active)} Active · {count(Inactive)} Inactive"
+        source_field: StandingOrderStatusCode
+    on_loading: loading
+    on_success: content
+    on_empty: empty
+    on_error: error
+    # Error code → typed error variant for ViewModel
+    error_mapping:
+      "401": TokenExpired
+      "403": ConsentRevoked
+      "429": RateLimited
+      "5xx": ServerError
+      "network": NetworkError
+
+on_user_action:
+  - trigger: retry_load
+    re_runs: [standing_orders_load]

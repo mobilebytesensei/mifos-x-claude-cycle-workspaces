@@ -1,0 +1,107 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: payment-status
+
+feature: payment-status
+flow_ref: payment-initiation
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CORRECTED 2026-08-07 (/idea-sync). `flow_ref`, the entry point, both transitions and the
+# parent dependency all named `send-money`, a screen DELETED by the 2026-08-06 seven-type
+# rewrite. Live edges to a non-existent screen — a broken navigation graph, not stale prose.
+# The identical defect was fixed in payment-consent/flow.yaml in the same pass.
+#
+# payment-status is a SHARED tracker across all seven PIS rails plus VRP. It returns to the
+# rail that produced the payment, and "new payment" goes to the payments HUB — not to any one
+# type screen, because the PSU may want a different rail next time.
+# ═══════════════════════════════════════════════════════════════════════════
+
+originating_screen_contract:
+  rule: "payment-status is reached from whichever rail produced the payment, and Back returns there."
+  the_seven_originators:
+    - pay-domestic-single
+    - pay-domestic-scheduled
+    - pay-domestic-standing-order
+    - pay-international-single
+    - pay-international-scheduled
+    - pay-international-standing-order
+    - pay-vrp-mandate
+  nav_param: "The originating feature id is carried alongside paymentId and paymentFamily."
+  why_family_matters: >-
+    paymentFamily selects which of the FOUR status ladders applies and which resource GET to
+    poll. There are seven resource endpoints, not one — an implementation that hardcodes
+    /domestic-payments is correct for a single family in seven.
+
+entry_points:
+  - source: "{originating type screen}"
+    label: "Tap View status after a payment or instruction is created"
+    params: [paymentId, paymentFamily]
+
+  - source: app_shell_bottom_nav
+    label: "Pay tab (order 2), when a payment is already in progress"
+    params: [paymentId, paymentFamily]
+    condition: "the most recent payment has an in_progress disposition"
+    notes: >-
+      Secondary entry so a PSU who leaves the app mid-settlement can find the payment again
+      rather than being dropped back onto an empty form. This matters more than it looks:
+      settlement is BATCHED on five-minute boundaries, so ACSP can persist for minutes after a
+      submit that will succeed.
+
+transitions:
+  - from: payment-status
+    to: "{originating type screen}"
+    trigger: "Back button (top-app-bar leading)"
+    params: []
+    notes: "Returns to the rail that produced the payment, resolved from paymentFamily."
+
+  - from: payment-status
+    to: payments
+    trigger: "New payment button (shown only on a Rejected status)"
+    params: []
+    condition: "disposition == terminal_failure"
+    # ── CHANGED 2026-08-07: target is the HUB, not the originating screen ──
+    why_the_hub_not_the_rail: >-
+      The old edge reopened the same screen with a cleared form. Returning to the HUB is better
+      after a rejection: the PSU may want a different rail — a refused international payment is
+      often retried domestically, and a refused VRP has no retry at all. The hub also makes the
+      fresh-instruction intent explicit.
+    fresh_instruction_rule: >-
+      Deliberately a NEW instruction, never a resubmit. A rejected payment must not be retried
+      against the same consent — a PISP consent is single-use and moves to COND, and an
+      already-AUTH consent cannot be re-authorised.
+
+  - from: payment-status
+    to: pay-vrp-mandate
+    trigger: "Manage mandate"
+    params: [consentId]
+    condition: "paymentFamily == domestic-vrp"
+    # ── ADDED 2026-08-07 ──
+    vrp_only_edge: >-
+      VRP is the only family whose consent OUTLIVES the payment — it stays AUTH and funds many
+      payments rather than moving to COND. So a VRP payment's status screen must offer a route
+      back to the living mandate; the other six have nothing to return to, their consent being
+      spent.
+
+dependencies:
+  tier: feature
+  features:
+    - name: "{originating type screen}"
+      relation: parent
+      params: [paymentId, paymentFamily]
+      note: "Dynamic — one of the seven. Never a fixed screen."
+    - name: payments
+      relation: retry-target
+      condition: "disposition == terminal_failure"
+  libraries:
+    - name: ktorfit
+      coords: "de.jensklingenberg.ktorfit:ktorfit-lib:2.x"
+      purpose: >-
+        REST client for the SEVEN resource-status GETs — domestic-payments,
+        domestic-scheduled-payments, domestic-standing-orders, international-payments,
+        international-scheduled-payments, international-standing-orders, domestic-vrps.
+        The endpoint is resolved from paymentFamily, not hardcoded.
+
+removed_2026_08_07:
+  - { was: "flow_ref: send-money-payment", reason: "send-money deleted 2026-08-06; the flow is payment-initiation across seven rails." }
+  - { was: "source / to / dependencies name: send-money", occurrences: 4, reason: "Live edges to a deleted screen." }
+  - { was: "to: send-money on the New payment button", reason: "Retargeted to the payments hub — see why_the_hub_not_the_rail." }

@@ -1,0 +1,162 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: consent-callback
+
+feature: consent-callback
+contract_version: "2.0.0"
+status: approved
+approve_hash: "sha256:87e44950da4fa4c79784b17dc8bbf593ddfdc64356533927007b5050e9038ab9"
+approved_at: "2026-08-05T05:15:00Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+score: 95
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. Added 2026-08-07 (/idea-sync).
+quality_score: 95
+cluster: consent
+acceptance_refs:
+  - FR-002
+scaffolded_by: /idea-heal
+archetype: empty_state
+# flow_ref backfilled 2026-08-02 (/idea-sync) from flows/*.yaml#screens[] membership.
+# This screen is reachable ONLY via the flow (an external redirect return), never by a nav
+# edge — which is why orphan-screen checks here must count flow reachability, not nav.
+flow_ref: onboarding-consent
+description: >-
+  Return leg from HSBC's authorisation portal. Validates the FAPI state parameter and hybrid-flow id_token nonce on
+  arrival; surfaces security_error immediately on mismatch. Handles OAuth error redirects (error=access_denied)
+  without attempting token exchange. On a valid code, exchanges it for a PSU bearer token (authorization_code grant,
+  private_key_jwt client auth), stores tokens in EncryptedSharedPreferences, then polls consent-status to confirm
+  Status: Authorised. On success,
+  auto-navigates to accounts. On AwaitingAuthorisation, shows manual re-poll state. On PSU rejection or token-exchange
+  failure, shows error state with retry path back to login.
+has_ui: true
+has_server: false
+# has_system_integration: app-to-app redirect return leg via ConsentRedirectBus (deep_link).
+# NOT is_auth_feature — that capability means the feature IS signin/signup/OTP and demands
+# auth_screens[], OTP TTL, resend rate limits and lockout policy. Authentication happens at
+# the bank; this screen only consumes the redirect.
+capabilities: [has_ui, has_api, has_flow, has_system_integration]
+# V1. V2/V3 N/A — zero device permissions app-wide (see login/docs.yaml).
+system_capabilities:
+  - kind: deep_link
+    detail: "AIS consent return leg — consumes the redirect via ConsentRedirectBus, single-use state/nonce match."
+metadata:
+  category: composite
+  implementation_ready: true
+  impl_ready_at: '2026-06-29T12:00:00Z'
+  impl_ready_schema: v2
+contracts: []
+libraries:
+  - capability: rest-client
+    library: ktorfit
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+      - web
+  - capability: secure-storage
+    library: encrypted-shared-preferences
+    version: latest
+    targets:
+      - android
+vm_actions:
+  - name: ValidateStateParam
+    signature: 'fun validateStateParam(receivedState: String, receivedNonce: String): StateValidationResult'
+    state_mutations:
+      - uiState=SecurityError on mismatch
+    side_effects: []
+    error_handling:
+      StateMismatch: Immediately transition to security_error state on state or nonce mismatch; do NOT proceed to token exchange
+  - name: ClassifyOAuthError
+    signature: 'fun classifyOAuthError(error: String, errorDescription: String?): OAuthErrorClass'
+    state_mutations:
+      - uiState=AccessDenied on access_denied; uiState=Error on other errors
+    side_effects: []
+    error_handling:
+      access_denied: Transition to access_denied state; do NOT proceed to token exchange
+      temporarily_unavailable: Transition to error state
+      server_error: Transition to error state
+  - name: ExchangeAuthCode
+    signature: 'suspend fun exchangeAuthCode(code: String, state: String) -> Unit'
+    state_mutations:
+      - uiState=Loading
+    side_effects:
+      - TokenService.exchangeAuthCode(code, clientAssertion)
+      - EncryptedSharedPreferences.storePsuToken(accessToken, refreshToken)
+      - ConsentService.getConsentStatus(consentId)
+    error_handling:
+      HttpException(400): Transition to error state — bad or expired code
+      HttpException(401): Transition to error state — private_key_jwt auth failed
+      NetworkError: Transition to error state with retry
+  - name: PollConsentStatus
+    signature: suspend fun pollConsentStatus() -> Unit
+    state_mutations:
+      - uiState=Loading
+    side_effects:
+      - ConsentService.getConsentStatus(consentId)
+    error_handling:
+      ConsentStatus.Rejected: Transition to error state
+      ConsentStatus.Revoked: Transition to error state
+      ConsentStatus.AwaitingAuthorisation: Transition to awaiting state
+      ConsentStatus.Authorised: Transition to content then auto-navigate to accounts
+  - name: NavigateRetry
+    signature: fun navigateRetry() -> Unit
+    state_mutations: []
+    side_effects:
+      - LocalStorage.clearOAuthState()
+      - LocalStorage.clearConsentId()
+      - Navigator.navigate(Route.Login)
+    error_handling: {}
+  - name: NavigateLogin
+    signature: fun navigateLogin() -> Unit
+    state_mutations: []
+    side_effects:
+      - LocalStorage.clearAll()
+      - TokenStore.revokeAll()
+      - Navigator.navigate(Route.Login)
+    error_handling: {}
+error_cases:
+  - TokenExchangeFailed
+  - ConsentRejected
+  - ConsentRevoked
+  - NetworkError
+  - InvalidState
+  - AccessDenied
+  - SecurityStateMismatch
+test_fixtures:
+  source: screens/consent-callback/tests.yaml
+  scenario_count: 6
+  priority_distribution:
+    high: 5
+    medium: 1
+    low: 0
+status_history:
+  - from: enriched
+    to: designed
+    at: '2026-07-01T10:51:08.406Z'
+    by: /idea-export-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-14T00:00:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: ""
+  - from: approved
+    to: enriched
+    at: "2026-08-05T05:05:00Z"
+    by: "/idea approve --unapprove"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "Stored approve_hash predated the 2026-08-04 export regeneration and no longer matched the sibling set."
+  - from: enriched
+    to: approved
+    at: "2026-08-05T05:15:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "--all-ready bulk approval; predicate C1-C6 green."

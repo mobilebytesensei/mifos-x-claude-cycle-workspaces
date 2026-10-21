@@ -1,0 +1,283 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: payment-status
+
+screen_id: payment-status
+archetype: detail_screen
+name: "{strings.payment_status.screen_title}"
+# status: REMOVED 2026-08-04 (CROSS_LEAK repair — sibling-layout.json assigns `status` to
+# the docs sibling). This copy held `enriched`; docs.yaml is the single owner.
+# RECONCILED 2026-08-07 (/idea-sync): was 88, disagreed with docs.yaml `score: 91` (the
+# post-enrichment value). The matrix averages every top-level quality_score under
+# screens/payment-status/**, so 88 dragged the feature below its enriched score.
+quality_score: 91
+initial_state: loading
+
+capability_tags:
+  - rest-client
+  - detail-display
+  - status-polling
+  - error-recovery
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  top_app_bar_title: "{strings.payment_status.screen_title}"
+  top_app_bar_leading: back
+  fab_visible: false
+
+states: [loading, content, error]
+
+# TEST TAGS — deferred, not missing. Recorded 2026-08-02 by /idea-sync (source-truth pass).
+test_tags:
+  status: deferred-until-implemented
+  reason: >-
+    No source module yet (see docs.yaml#spec_ahead_of_source), so there is no
+    PaymentStatusTestTags.kt to copy from.
+  owed_by: /kmp-implement
+
+business_logic:
+  kind: crud
+  description: >-
+    Reads GET /domestic-payments/{PaymentId} and maps OBIE's payment status onto a FOUR-value
+    disposition — in_progress, terminal_success, terminal_failure, instruction_established —
+    rather than a success/failure boolean, because AcceptedSettlementInProcess means
+    accepted-but-not-yet-moved and calling that "sent" is a false statement about the PSU's money.
+    The fourth disposition was added 2026-08-07 for INCO (InitiationCompleted), the TERMINAL
+    status of all four deferred families: the previous triad had nowhere true to put it, since
+    terminal_success would tick an instruction whose first payment has not happened and may be
+    months away, and falling through the fail-open rule would render a dormant standing order as
+    perpetually in progress. Its rendering is deliberately NEUTRAL rather than tonal
+    (surfaceVariant / onSurfaceVariant, icon event_repeat) — a hue-less treatment makes no claim
+    about money, which is exactly the claim available — and its label names the INSTRUCTION
+    ("Standing order set up"), never the payment. While the disposition is in_progress the
+    ViewModel re-polls on a backing-off interval and stops the instant any non-in_progress
+    disposition is reached; the poll never runs on terminal_success, terminal_failure or
+    instruction_established. instruction_established is a RESTING disposition, not a transient
+    one — INCO will not change on a re-read, so polling it would burn requests suggesting
+    something is still moving. The echoed Data.Initiation supplies the
+    amount, payee, reference and funding account, all formatted in the ViewModel via core/common
+    FormatMoney so composables receive finished label strings.
+  external_library_refs:
+    - "ktorfit"
+    - "hsbc-obie-pisp-v4.0:domestic-payments"
+  description_author: claude
+  description_authored_at: "2026-07-30T00:00:00Z"
+
+state_model:
+  PaymentStatusViewModel:
+    state:
+      name: PaymentStatusState
+      fields:
+        - name: paymentId
+          type: String
+        - name: uiState
+          type: PaymentStatusUiState
+    screen_state:
+      sealed_class: PaymentStatusUiState
+      members:
+        - Loading
+        - Content   # statusCode: String, disposition: Disposition(InProgress|TerminalSuccess|TerminalFailure|InstructionEstablished), statusLabel: String, amountLabel: String, creditorName: String, referenceLabel: String?, debtorAccountLabel: String, submittedAtLabel: String
+        - Error     # type: PaymentStatusErrorKind, message: String
+    errors:
+      types:
+        - PaymentNotFound   # 404 / 400 U011 — not retryable
+        - TokenExpired      # 401
+        - ConsentRevoked    # 403 — informational, does not undo a settled payment
+        - NetworkError
+    actions:
+      members:
+        - RefreshStatus
+        - StartNewPayment
+    nav_callbacks:
+      - "onBack -> popBackStack()"
+      - "onStartNewPayment -> navigate(SendMoneyRoute)"
+    di:
+      - SavedStateHandle          # supplies the paymentId route arg
+      - PaymentStatusRepository
+
+# dependencies: MOVED to flow.yaml 2026-07-31 (CROSS_LEAK repair —
+# sibling-layout.json assigns `dependencies` to the flow sibling).
+
+components:
+  - type: progress_circular
+    state_binding: [loading]
+    accessibility_label: "{strings.payment_status.loading_label}"
+    test_context:
+      purpose: "Indicate the initial fetch of the payment resource"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  - type: icon_button
+    keyboard:
+      focusable: true
+    id: back_button
+    icon: arrow_back
+    accessibility_label: "{strings.payment_status.back_label}"
+    on_click:
+      action: navigate_back
+      target: send-money
+      action_contract:
+        effect: navigate
+        description: >-
+          Returns the PSU to wherever they opened this screen from without altering the payment;
+          tracking is read-only, so leaving has no effect on settlement.
+    test_context:
+      purpose: "Leave the tracking screen"
+      required_fields: []
+      interaction_type: navigate
+      data_driven: false
+
+  - type: chip
+    id: status_chip
+    state_binding: [content]
+    label: "{content.statusLabel}"
+    variant: "{content.disposition | chipVariant}"
+    # icon added 2026-08-02 (/design-validate C-4). design-tokens.yaml#semantic.payment_disposition
+    # ._contract declares required_per_state: [icon, text_label] with a glyph per disposition
+    # (in_progress: schedule / terminal_success: check_circle / terminal_failure: error /
+    # instruction_established: event_repeat — the fourth added 2026-08-07), and this is the one
+    # screen that contract was written for — yet the chip declared no icon at all.
+    # Bound per disposition, mirroring consent-list#status_chip's {item.status_icon}.
+    # instruction_established MUST resolve to event_repeat: neither check_circle (which claims the
+    # money moved) nor schedule (which claims something is happening now) is true of a deferred
+    # instruction. Its container is hue-less surfaceVariant, not a tonal variant. See
+    # design-system/components/status_chip.yaml SC-5.
+    icon: "{content.disposition | dispositionIcon}"
+    accessibility_label: "{content.statusLabel}"
+    test_context:
+      purpose: "Show the payment's disposition as progress, success, failure, or instruction-established — never a bare boolean, and never a triad"
+      required_fields: ["content.statusCode", "content.disposition", "content.statusLabel"]
+      interaction_type: display
+      data_driven: true
+
+  - type: card
+    id: payment_summary
+    state_binding: [content]
+    accessibility_label: "{strings.payment_status.summary_a11y}"
+    test_context:
+      purpose: "Render the echoed Initiation — amount, payee, reference, funding account, submitted-at"
+      required_fields: ["content.amountLabel", "content.creditorName", "content.debtorAccountLabel", "content.submittedAtLabel"]
+      interaction_type: display
+      data_driven: true
+
+  - type: text
+    id: in_progress_note
+    state_binding: [content]
+    visibility_condition: "{content.disposition | isInProgress}"
+    content: "{strings.payment_status.in_progress_note}"
+    accessibility_label: "{strings.payment_status.in_progress_note}"
+    test_context:
+      purpose: "Explain that an accepted payment has not necessarily moved yet, so the PSU is not misled"
+      required_fields: ["content.disposition"]
+      interaction_type: display
+      data_driven: true
+
+  # ADDED 2026-08-07 alongside the fourth disposition. Without it the deferred rails render a
+  # neutral chip and nothing else — the chip alone does not tell a PSU that NO payment has been
+  # made. The in_progress_note is not reusable here: it says the bank "accepted this payment",
+  # which is a claim about a payment that does not exist yet on a deferred instruction.
+  - type: text
+    id: instruction_established_note
+    state_binding: [content]
+    visibility_condition: "{content.disposition | isInstructionEstablished}"
+    content: "{strings.payment_status.instruction_established_note}"
+    accessibility_label: "{strings.payment_status.instruction_established_note}"
+    test_context:
+      purpose: >-
+        State that the INSTRUCTION is set up and that no payment has happened, so a deferred rail
+        is never read as paid. Wording is forbidden from containing paid, sent or complete.
+      required_fields: ["content.disposition"]
+      interaction_type: display
+      data_driven: true
+
+  - type: button
+    keyboard:
+      focusable: true
+    id: refresh_button
+    variant: tonal
+    state_binding: [content]
+    visibility_condition: "{content.disposition | isInProgress}"
+    label: "{strings.payment_status.refresh}"
+    accessibility_label: "{strings.payment_status.refresh_a11y}"
+    on_click:
+      action: refresh_status
+      action_contract:
+        effect: call_api
+        reads_from: domestic-payment-read
+        external_library_refs: [ktorfit, "hsbc-obie-pisp-v4.0:domestic-payments"]
+        description: >-
+          Re-reads GET /domestic-payments/{PaymentId} on demand so a PSU watching an in-progress
+          payment can check immediately rather than waiting for the next backing-off automatic
+          poll; hidden once the status is terminal because it can no longer change.
+    test_context:
+      purpose: "Manual re-poll, offered only while the disposition is in_progress"
+      required_fields: ["content.disposition"]
+      interaction_type: action
+      data_driven: true
+
+  - type: button
+    keyboard:
+      focusable: true
+    id: new_payment_button
+    variant: filled
+    state_binding: [content]
+    visibility_condition: "{content.disposition | isTerminalFailure}"
+    label: "{strings.payment_status.new_payment}"
+    accessibility_label: "{strings.payment_status.new_payment_a11y}"
+    on_click:
+      action: navigate
+      target: send-money
+      action_contract:
+        effect: navigate
+        description: >-
+          Opens send-money with a cleared form after the bank rejected the payment, so the PSU can
+          try again deliberately rather than the app silently resubmitting a rejected instruction.
+    test_context:
+      purpose: "Offer a fresh payment after a Rejected status"
+      required_fields: ["content.disposition"]
+      interaction_type: navigate
+      data_driven: true
+
+  - type: error_state
+    id: error_state
+    state_binding: [error]
+    icon: error_outline
+    title: "{strings.payment_status.error_title}"
+    body: "{error.message}"
+    accessibility_label: "{strings.payment_status.error_title}"
+    test_context:
+      purpose: "Surface read failures; a not-found payment is terminal and gets no Retry"
+      required_fields: ["error.message", "error.type"]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: button
+        keyboard:
+          focusable: true
+        id: retry_button
+        variant: filled
+        label: "{strings.payment_status.retry}"
+        visibility_condition: "{error.type | isRetryable}"
+        accessibility_label: "{strings.payment_status.retry_a11y}"
+        on_click:
+          action: refresh_status
+          action_contract:
+            effect: call_api
+            reads_from: domestic-payment-read
+            external_library_refs: [ktorfit, "hsbc-obie-pisp-v4.0:domestic-payments"]
+            description: >-
+              Re-reads the payment resource after a transient failure (401 TokenExpired or a
+              network drop); this is a pure read so retrying it cannot affect the payment.
+        test_context:
+          purpose: "Retry a transient read failure"
+          required_fields: []
+          interaction_type: action
+          data_driven: false
+
+status_history:
+  - from: null
+    to: draft
+    at: "2026-07-30"
+    by: "/idea-evolve -> /idea-plan-add add-feature"

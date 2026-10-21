@@ -1,0 +1,178 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: pay-international-single
+
+screen_id: pay-international-single
+
+cache_strategy: memory
+cache_rationale: "Reuses the consent-scoped accounts store. No beneficiaries read — sort-code payees are unusable on this rail."
+store_shape: "reuses AccountsOverviewStore; no store of its own"
+
+on_mount:
+  - trigger: load_payment_sources
+    description: "Read accounts and filter to payable schemes. Global Money is excluded — it is a conversion product here, not a payment product."
+    steps:
+      - { call: accounts-list, auth: psu_aisp_session, store_as: accounts }
+      - compute:
+          eligibleDebtorAccounts: >-
+            accounts.filter { it.SchemeName == 'UK.OBIE.SortCodeAccountNumber'
+                              && !it.isGlobalMoney }
+          hiddenAccountCount: "accounts.size - eligibleDebtorAccounts.size"
+    on_loading: loading
+    on_success: content
+    on_error: error
+
+on_user_action:
+  - trigger: stage_consent
+    description: "Stage the international-payment-consent."
+    steps:
+      - compute:
+          idempotencyKey: "stableKeyFor(stagedPayment)   # once, reused on every retry"
+          amountMajorUnits: "toMajorUnitString(amountMinorUnits)"
+      - call: international-payment-consent-create
+        auth: client_credentials_payments_scope
+        headers: [x-jws-signature, x-idempotency-key]
+        body_requires:
+          - "Data.Initiation.CurrencyOfTransfer"
+          - "Data.Initiation.ChargeBearer"
+          - "Data.Initiation.CreditorAccount.SchemeName == 'UK.OBIE.IBAN'"
+        body_forbids:
+          - "Data.Initiation.RemittanceInformation   # U005 Field is not expected"
+        body_conditional:
+          - "Data.Initiation.CreditorAgent — sent only when the BIC field is non-blank, and only as an 11-character value"
+          - >-
+            When sent, CreditorAgent carries Identification. It is NEVER emitted as a partial
+            object — no Name-only, no PostalAddress-only form. See api.yaml#creditor_agent_contract.partial_object_trap.
+        store_as: stagedConsent
+      - navigate: payment-consent
+        params: { consentId: "{stagedConsent.Data.ConsentId}", paymentFamily: "international-payment" }
+
+  - trigger: resume_after_authorisation
+    description: "Re-read the authorised consent, confirm funds, then submit."
+    steps:
+      - call: international-payment-consent-read
+        auth: client_credentials_payments_scope
+        store_as: authorisedConsent
+        note: "Mandatory — the bank may have written its own DebtorAccount if the TPP omitted one."
+      - call: international-payment-funds-confirmation
+        auth: psu_authorization_code
+        store_as: fundsResult
+      - branch:
+          when: "fundsResult.Data.FundsAvailableResult.FundsAvailable == false"
+          then: "uiState = Error(InsufficientFunds); return to the Amount step"
+      - call: international-payment-create
+        auth: psu_authorization_code
+        headers: [x-jws-signature, x-idempotency-key]
+        body:
+          Data:
+            ConsentId: "{authorisedConsent.Data.ConsentId}"
+            Initiation: "{authorisedConsent.Data.Initiation}"
+          Risk: "{authorisedConsent.Risk}"
+        store_as: payment
+      - navigate: payment-status
+        params: { paymentId: "{payment.Data.InternationalPaymentId}", paymentFamily: "international-payment" }
+
+  - trigger: retry_submit
+    description: "Re-run submit reusing the original idempotency key."
+    re_runs: [resume_after_authorisation]
+
+# ─────────────────────────────────────────────────────────────────────────
+# INVARIANTS
+# ─────────────────────────────────────────────────────────────────────────
+mandatory_field_invariant:
+  rule: "CurrencyOfTransfer and ChargeBearer are present on every staged and submitted body."
+  proof: "R18-B01 omitted ChargeBearer and returned U004; R18-B02, the identical body with it present, staged 201."
+  enforced_by: "TC-PIS-002"
+
+forbidden_field_invariant:
+  rule: "RemittanceInformation is never sent on this rail."
+  proof: "U005 Field is not expected @ Data.Initiation.RemittanceInformation (INT-16)."
+  enforced_by: "TC-PIS-003"
+
+creditor_scheme_invariant:
+  rule: "CreditorAccount.SchemeName is always UK.OBIE.IBAN."
+  proof: "Sort-code creditors return U027 across GBP and USD instructed, and GBP and USD transfer."
+  enforced_by: "TC-PIS-004"
+
+bic_length_invariant:
+  rule: "CreditorAgent is either absent, or present with an exactly-11-character Identification."
+  proof: >-
+    8-character BICs return 'Invalid Bank Code'; 11-character forms stage 201. Omitting the block
+    entirely also stages 201. The refusal is LENGTH-driven — R2-07's MATCHING French BIC
+    'NWBKFRPP' with a French IBAN was still refused, and R3-04's 11-character 'COBADEFFXXX'
+    passed — so the local check is length only, with no BIC-to-IBAN country correlation.
+  enforced_by: "TC-PIS-005"
+
+creditor_agent_wholeness_invariant:
+  rule: >-
+    CreditorAgent is emitted WHOLE or not at all. There is no code path that can produce a
+    CreditorAgent object without an Identification.
+  proof: >-
+    Sending the key at all makes Identification mandatory. R8-01/02/03/09/10 each sent
+    {"CreditorAgent":{"PostalAddress":{"Country":"DE"|"FR"}}} and each returned U004 'Field is
+    missing' @ Data.Initiation.CreditorAgent.Identification; R3-08 sent { Name, PostalAddress.Country }
+    and failed identically. R8-11 — R8-01 with the CreditorAgent key REMOVED — staged 201.
+  why_it_matters: >-
+    Omitting is SAFE; half-populating is WORSE than omitting. The serialiser must not emit an
+    empty-but-present object when the BIC field is blank, which is the default behaviour of a
+    naive nested-model mapper.
+  enforced_by: "TC-PIS-012"
+
+error_rendering_invariant:
+  rule: "Every entry in the 400 body's Errors array is rendered, in wire order, keyed by ErrorCode + Path."
+  proof: >-
+    Errors carries TWO entries on R13-10 (U027 @ CreditorAccount.SchemeName, then U002 'Debtor
+    and Creditor Account cannot be same') and on R9-11, INT-05, INT-06. The scheme check precedes
+    the business rule in both two-entry cases.
+  why_it_matters: >-
+    Errors[0] alone hides the actionable half. And Message is not stable for a given code — U004
+    has four wordings — so copy selection keys off ErrorCode + Path.
+  reference: dtos/ObPaymentError.yaml
+  enforced_by: "TC-PIS-013"
+
+echo_fidelity_invariant:
+  rule: >-
+    The submit body's Initiation is the PARSED object read back from the authorised consent. It is
+    never reconstructed from the local form model, and never string-compared against one.
+  proof: >-
+    The server REORDERS Initiation keys on echo. The international order is ChargeBearer,
+    CurrencyOfTransfer, InstructedAmount, MandateRelatedInformation, [CreditorAgent],
+    [DebtorAccount], CreditorAccount — regardless of the order sent.
+  why_it_matters: >-
+    A re-serialise-and-compare 'echo verification' fails on a CORRECT payload and would abort a
+    journey the bank accepts. Compare field-by-field or not at all.
+  enforced_by: "TC-PIS-014"
+
+absent_key_parse_invariant:
+  rule: >-
+    Charges, CutOffDateTime, ExpectedExecutionDateTime and ExpectedSettlementDateTime are parsed
+    as ABSENT/nullable. Charges is NOT defaulted to an empty list.
+  proof: "Every international 201 omits all four keys. The domestic rails return them."
+  why_it_matters: >-
+    A defaulted [] cannot distinguish 'no charge' from 'no charge information'. On THIS rail the
+    answer happens to be a genuine no-charge (0/33 consents, 0/4 resources), but the same parser
+    serves the deferred international rails where 0.50 arrives at resource creation — and there
+    a defaulted [] renders 'free' for a payment that is not.
+  enforced_by: "TC-PIS-015"
+
+consent_id_handling_invariant:
+  rule: "ConsentId is never logged, deep-linked, sent to analytics, or shown in an error string."
+  proof: 'ConsentIds are short sequential integers-as-strings — "45264", "45121", "45176".'
+  why_it_matters: "They are ENUMERABLE, not UUIDs. A leaked one is a guess away from its neighbours."
+
+no_invented_figures_invariant:
+  rule: >-
+    The screen displays no estimated fee, no exchange rate, and no computed received amount.
+  rationale: >-
+    This rail returns NO Charges at any stage — 0 of 33 consents and none on any of the four
+    authorised resources — and no observed response carries a quoted rate. Any figure would be
+    fabricated, and it would be a claim about the PSU's money.
+  enforced_by: "TC-PIS-007, TC-PIS-008"
+
+no_fx_timer_invariant:
+  rule: "No countdown, timeout or expiry is presented for the FX quote."
+  rationale: >-
+    Guide §21.10.1 describes a 40-second window with 5 seconds for the TPP to POST. Both
+    authorised FX flows called funds-confirmation and submitted minutes later without rejection.
+    A timer would abort journeys the bank accepts.
+  enforced_by: "TC-PIS-009"

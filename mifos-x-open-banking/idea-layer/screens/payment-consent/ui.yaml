@@ -1,0 +1,247 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: payment-consent
+
+screen_id: payment-consent
+archetype: empty_state
+name: "{strings.payment_consent.screen_title}"
+# status: REMOVED 2026-08-04 (CROSS_LEAK repair — sibling-layout.json assigns `status` to
+# the docs sibling). This copy held `enriched`; docs.yaml is the single owner.
+# RECONCILED 2026-08-07 (/idea-sync): was 88, disagreed with docs.yaml `score: 90` (the
+# post-enrichment value). The matrix averages every top-level quality_score under
+# screens/payment-consent/**, so 88 dragged the feature below its enriched score.
+quality_score: 90
+initial_state: validating
+
+capability_tags:
+  - rest-client
+  - oauth-callback
+  - error-recovery
+
+shell:
+  bottom_navigation_visible: false
+  top_app_bar_visible: true
+  top_app_bar_title: "{strings.payment_consent.screen_title}"
+  top_app_bar_leading: none
+  fab_visible: false
+
+states: [validating, exchanging, checking, authorised, error]
+
+# TEST TAGS — deferred, not missing. Recorded 2026-08-02 by /idea-sync (source-truth pass).
+test_tags:
+  status: deferred-until-implemented
+  reason: >-
+    No source module yet (see docs.yaml#spec_ahead_of_source), so there is no
+    PaymentConsentTestTags.kt to copy from.
+  owed_by: /kmp-implement
+  mirror_when_implemented: >-
+    feature/consent-callback — its ConsentCallbackTestTags is the closest shape (one tag per
+    journey step plus the restart affordances) and this screen's states map onto it directly.
+
+# Canonical-role mapping for the journey states above.
+#
+# This screen composes no literal `loading` or `content` state, which reads as a STATE-001
+# gap unless the mapping is written down. It is deliberate: the return leg of the PISP
+# app-to-app authorisation has three DISTINCT waiting phases that fail differently and each
+# render their own preview — validating the redirect params, exchanging the code for a
+# token, and checking consent status. Collapsing them into one `loading` would erase that
+# and make a failed exchange indistinguishable from a failed status check.
+#
+# So the roles are declared rather than the states renamed. Consumers resolving canonical
+# roles (STATE-001, codegen, reviewers) read this block; the journey granularity survives.
+state_roles:
+  loading: [validating, exchanging, checking]
+  content: [authorised]
+  error: [error]
+  empty: null   # n/a — no collection is rendered; this screen is a single-outcome readout
+
+business_logic:
+  kind: composite
+  description: >-
+    Handles the return leg of the PISP app-to-app authorisation. Receives the redirect through
+    the already-shipped per-platform ConsentRedirectBus, consumes the pending authorisation from
+    PendingAuthStore (single-use) and rejects the redirect outright if the returned state does not
+    match. On a match it exchanges the authorisation code for a PSU access token via POST
+    /oauth2/token with a private_key_jwt client assertion, then polls GET
+    /domestic-payment-consents/{ConsentId} until Data.Status reaches AUTH. The poll is
+    load-bearing rather than best-effort — submitting a payment against a consent that is not
+    Authorised returns 400 U009 — so the screen does not hand back until AUTH is confirmed or a
+    deadline passes. Critically, the resulting token is scoped to this one payment and is NEVER
+    written to ConsentSession: doing so would overwrite the AIS session token and conflate a
+    payment authorisation with a data-sharing session. On success the feature emits an event and
+    send-money performs the submit; it never navigates to Home the way consent-callback does.
+  external_library_refs:
+    - "ktorfit"
+    - "hsbc-obie-pisp-v4.0:domestic-payment-consents"
+  description_author: claude
+  description_authored_at: "2026-07-30T00:00:00Z"
+
+state_model:
+  PaymentConsentViewModel:
+    state:
+      name: PaymentConsentState
+      fields:
+        - name: uiState
+          type: PaymentConsentUiState
+        - name: consentId
+          type: String
+    screen_state:
+      sealed_class: PaymentConsentUiState
+      members:
+        - Validating   # checking state/nonce against the pending authorisation
+        - Exchanging   # authorisation code -> PSU access token
+        - Checking     # polling consent status until AUTH
+        - Authorised   # consentId + payment-scoped token ready to hand back
+        - Error        # type: PaymentConsentErrorKind, message: String
+    errors:
+      types:
+        - StateMismatch            # returned state does not match the pending authorisation
+        - NoPendingAuthorisation   # app restarted mid-authorisation
+        - CodeExpired              # 400 invalid_grant
+        - ConsentRejected          # PSU declined at the bank
+        - AuthorisationTimedOut    # still AwaitingAuthorisation past the deadline
+        - NetworkError
+    actions:
+      members:
+        - CheckAgain               # re-poll the consent status
+        - RetryAuthorisation       # re-stage and relaunch
+        - AbandonPayment
+    events:
+      sealed_class: PaymentConsentEvent
+      members:
+        - Authorised               # data class — consentId + payment-scoped token; send-money submits
+        - RestartAuthorisation
+        - Abandoned
+      notes: >-
+        Non-Nothing event type. Success is handed back as an event rather than a navigation so
+        send-money keeps ownership of the idempotency key and the staged Initiation.
+    di:
+      - SavedStateHandle           # supplies consentId
+      - PaymentConsentRepository
+      - PendingAuthStore           # already shipped for the AIS callback
+
+# dependencies: MOVED to flow.yaml 2026-07-31 (CROSS_LEAK repair —
+# sibling-layout.json assigns `dependencies` to the flow sibling).
+
+components:
+  - type: progress_circular
+    id: authorising_indicator
+    state_binding: [validating, exchanging, checking]
+    accessibility_label: "{strings.payment_consent.progress_label}"
+    test_context:
+      purpose: "Indicate redirect validation, token exchange, or consent-status polling in flight"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  - type: text
+    id: progress_detail
+    state_binding: [validating, exchanging, checking]
+    content: "{strings.payment_consent.progress_detail}"
+    accessibility_label: "{strings.payment_consent.progress_detail}"
+    test_context:
+      purpose: "Explain which stage of the authorisation is running so a slow poll does not read as a hang"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  - type: button
+    keyboard:
+      focusable: true
+    id: check_again_button
+    variant: text
+    state_binding: [checking]
+    label: "{strings.payment_consent.check_again}"
+    accessibility_label: "{strings.payment_consent.check_again_a11y}"
+    on_click:
+      action: check_again
+      action_contract:
+        effect: call_api
+        reads_from: payment-consent-status
+        external_library_refs: [ktorfit, "hsbc-obie-pisp-v4.0:domestic-payment-consents"]
+        description: >-
+          Re-polls GET /domestic-payment-consents/{ConsentId} so a PSU who finished at the bank
+          slightly after the automatic poll window can advance without restarting the payment.
+    test_context:
+      purpose: "Manual re-poll of the consent status during the checking state"
+      required_fields: []
+      interaction_type: action
+      data_driven: false
+
+  - type: empty_state
+    id: authorised_state
+    variant: success
+    state_binding: [authorised]
+    icon: verified_user
+    title: "{strings.payment_consent.authorised_title}"
+    body: "{strings.payment_consent.authorised_body}"
+    accessibility_label: "{strings.payment_consent.authorised_title}"
+    test_context:
+      purpose: "Confirm the payment consent reached Authorised before the submit is attempted"
+      required_fields: ["state.consentId"]
+      interaction_type: display
+      data_driven: true
+
+  - type: error_state
+    id: error_state
+    state_binding: [error]
+    icon: error_outline
+    title: "{strings.payment_consent.error_title}"
+    body: "{error.message}"
+    accessibility_label: "{strings.payment_consent.error_title}"
+    test_context:
+      purpose: "Surface authorisation failures with recovery differentiated by cause"
+      required_fields: ["error.message", "error.type"]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: button
+        keyboard:
+          focusable: true
+        id: restart_authorisation_button
+        variant: filled
+        label: "{strings.payment_consent.restart}"
+        visibility_condition: "{error.type | isRestartable}"
+        accessibility_label: "{strings.payment_consent.restart_a11y}"
+        on_click:
+          action: retry_authorisation
+          action_contract:
+            effect: emit_event
+            external_library_refs: [kotlinx-coroutines]
+            description: >-
+              Emits RestartAuthorisation so send-money can stage a fresh consent and relaunch the
+              bank authorisation; offered for CodeExpired, AuthorisationTimedOut and NetworkError,
+              all of which leave no payment submitted.
+        test_context:
+          purpose: "Restart the authorisation after an expired code, a timeout, or a network failure"
+          required_fields: []
+          interaction_type: action
+          data_driven: false
+
+      - type: button
+        keyboard:
+          focusable: true
+        id: abandon_button
+        variant: text
+        label: "{strings.payment_consent.abandon}"
+        accessibility_label: "{strings.payment_consent.abandon_a11y}"
+        on_click:
+          action: abandon_payment
+          action_contract:
+            effect: emit_event
+            external_library_refs: [kotlinx-coroutines]
+            description: >-
+              Emits Abandoned and drops the payment. The staged consent is deliberately left
+              unauthorised rather than deleted — an unauthorised consent expires on its own and
+              can never be submitted against, so no revocation call is warranted.
+        test_context:
+          purpose: "Abandon the payment from any error state"
+          required_fields: []
+          interaction_type: action
+          data_driven: false
+
+status_history:
+  - from: null
+    to: draft
+    at: "2026-07-30"
+    by: "/idea-evolve -> /idea-plan-add add-feature"

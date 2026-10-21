@@ -1,0 +1,330 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: pay-domestic-single
+
+id: pay-domestic-single
+name: Pay someone
+feature: pay-domestic-single
+flavor: consumer
+quality_score: 94
+contract_version: "2.1.0"
+capabilities:
+  - has_ui
+  - has_api
+
+# ─────────────────────────────────────────────────────────────────────────
+# Domestic single payment — the reference form the other five PIS rails vary from.
+# Four steps in one route: Account -> Payee -> Amount -> Review. A single ViewModel with a
+# `step` discriminator, not four routes; back is a step transition, not a pop.
+# ─────────────────────────────────────────────────────────────────────────
+
+screens:
+  - id: pay-domestic-single
+    name: Pay someone
+    archetype: form
+    shell:
+      top_bar:
+        title: "{strings.pay_domestic_single.title}"
+        navigation_icon: back
+        actions: []
+      bottom_nav: true
+
+components:
+  - type: stepper
+    id: step_indicator
+    steps: 4
+    labels:
+      - "{strings.payment.step.account}"
+      - "{strings.payment.step.payee}"
+      - "{strings.payment.step.amount}"
+      - "{strings.payment.step.review}"
+    test_context:
+      tag: payDomesticSingle:stepIndicator
+
+  # ── Step 1: funding account ─────────────────────────────────────────────
+  - type: list
+    id: debtor_account_list
+    label: "{strings.payment.debtor_list_label}"
+    item_source: eligibleDebtorAccounts
+    visibility: "step == Account"
+    a11y:
+      label: "{strings.payment.debtor_list_a11y}"
+      role: list
+    test_context:
+      tag: payDomesticSingle:debtorList
+    action_contract:
+      on_click: SelectDebtorAccount(accountId)
+      effect: "sets content.debtorAccountId and advances to the Payee step"
+      writes_to: "PayDomesticSingleUiState.Content.debtorAccountId"
+    note: >-
+      Bound to eligibleDebtorAccounts, NOT to the raw accounts list. The filter is
+      SchemeName == UK.OBIE.SortCodeAccountNumber, which excludes the credit card (U027 on this
+      rail) and Global Money (U002 when TPP-named). FR-018.
+
+  - type: text
+    id: ineligible_accounts_note
+    content: "{strings.payment.ineligible_accounts_note}"
+    visibility: "step == Account AND hiddenAccountCount > 0"
+    style:
+      typography: bodySmall
+      color: onSurfaceVariant
+    test_context:
+      tag: payDomesticSingle:ineligibleNote
+    note: >-
+      States that some accounts are not shown and why, rather than silently omitting them. A
+      PSU who owns a credit card and cannot find it in the list needs to know the rail refuses
+      it, not wonder whether the app is broken.
+
+  - type: empty_state
+    id: no_eligible_accounts
+    title: "{strings.payment.no_eligible_accounts_title}"
+    body: "{strings.payment.no_eligible_accounts_body}"
+    visibility: "step == Account AND eligibleDebtorAccounts is empty"
+    test_context:
+      tag: payDomesticSingle:noEligibleAccounts
+
+  # ── Step 2: payee ───────────────────────────────────────────────────────
+  - type: list
+    id: beneficiary_list
+    label: "{strings.payment.creditor_list_label}"
+    item_source: beneficiaries
+    visibility: "step == Payee"
+    test_context:
+      tag: payDomesticSingle:beneficiaryList
+    action_contract:
+      on_click: SelectCreditor(BeneficiarySelection(beneficiaryId))
+      effect: "sets content.creditor and advances to the Amount step"
+      writes_to: "PayDomesticSingleUiState.Content.creditor"
+    note: >-
+      Filtered the same way the debtor list is: SchemeName == UK.OBIE.SortCodeAccountNumber. A
+      UK.OBIE.PAN destination is refused with U027 on all eight scenarios that tried it
+      (BT-01..BT-06, BT-09, R6-08), including BT-09 which paired it with LocalInstrument
+      UK.OBIE.BalanceTransfer and a valid sort-code debtor. There is no pay-your-card path here,
+      so offering a card as a payee can only end in a 400.
+
+  - type: button
+    id: enter_manually_button
+    label: "{strings.payment.enter_manually}"
+    style:
+      variant: text
+    visibility: "step == Payee"
+    test_context:
+      tag: payDomesticSingle:enterManually
+    action_contract:
+      on_click: ShowManualCreditorEntry
+      effect: "reveals sort code and account number fields"
+      writes_to: "PayDomesticSingleUiState.Content.manualEntryVisible"
+
+  - type: text_field
+    id: sort_code_field
+    label: "{strings.payment.sort_code_label}"
+    placeholder: "00-00-00"
+    keyboard: number
+    max_length: 8
+    visibility: "step == Payee AND manualEntryVisible"
+    test_context:
+      tag: payDomesticSingle:sortCodeField
+    validation: "6 digits after stripping separators"
+
+  - type: text_field
+    id: account_number_field
+    label: "{strings.payment.account_number_label}"
+    keyboard: number
+    max_length: 8
+    visibility: "step == Payee AND manualEntryVisible"
+    test_context:
+      tag: payDomesticSingle:accountNumberField
+    validation: "exactly 8 digits"
+
+  - type: text_field
+    id: payee_name_field
+    label: "{strings.payment.payee_name_label}"
+    visibility: "step == Payee AND manualEntryVisible"
+    test_context:
+      tag: payDomesticSingle:payeeNameField
+    required: true
+    note: >-
+      Goes out as CreditorAccount.Name, and it is MANDATORY on this rail — R9-07 omits it and
+      gets U004 "CreditorAccount.Name is missing". Validate presence client-side; the API
+      reports one shape fault per round trip, so letting this through costs a whole retry. Note
+      the asymmetry: DebtorAccount.Name is optional, this one is not.
+
+  # ── Step 3: amount ──────────────────────────────────────────────────────
+  - type: text_field
+    id: amount_field
+    label: "{strings.payment.amount_label}"
+    keyboard: number
+    visibility: "step == Amount"
+    test_context:
+      tag: payDomesticSingle:amountField
+    note: >-
+      Held as MINOR UNITS in state. The wire format is a major-unit decimal string, converted
+      once at the OBIE boundary using integer arithmetic — a payment amount must not pick up a
+      floating-point representation error on its way out.
+
+  - type: text
+    id: amount_error
+    style:
+      typography: bodySmall
+      color: error
+    visibility: "step == Amount AND amountProblem != null"
+    test_context:
+      tag: payDomesticSingle:amountError
+    variants:
+      - problem: NotANumber
+        content: "{strings.payment.amount_not_a_number}"
+      - problem: NotPositive
+        content: "{strings.payment.amount_too_small}"
+      - problem: ExceedsAvailableBalance
+        content: "{strings.payment.amount_exceeds_balance}"
+
+  - type: text_field
+    id: reference_field
+    label: "{strings.payment.reference_label}"
+    helper_text: "{strings.payment.reference_helper}"
+    max_length: 35
+    visibility: "step == Amount"
+    test_context:
+      tag: payDomesticSingle:referenceField
+    note: >-
+      Goes out as RemittanceInformation.Unstructured[0], omitted entirely when blank. This
+      field exists ONLY on the domestic rails — the international schema refuses
+      RemittanceInformation with U005.
+    structured_alternative:
+      note: >-
+        RemittanceInformation.Structured is also accepted on this rail (R6-10 -> 201) and is
+        where a creditor reference belongs if one is ever collected. It MUST be sent as an
+        ARRAY of objects — [ { CreditorReferenceInformation: { Reference: "…" } } ]. Sent as a
+        bare object it returns U002 "Invalid value" (BT-07, BT-08), a shape error whose wording
+        gives no clue that shape is the problem. This screen sends Unstructured only; the note
+        exists so the array shape is not rediscovered the hard way when Structured is added.
+
+  # ── Step 4: review ──────────────────────────────────────────────────────
+  - type: summary_card
+    id: review_card
+    visibility: "step == Review"
+    rows:
+      - { label: "{strings.payment.review.from}", value: debtorAccountLabel }
+      - { label: "{strings.payment.review.to}", value: creditorLabel }
+      - { label: "{strings.payment.review.amount}", value: amountLabel }
+      - { label: "{strings.payment.review.reference}", value: referenceLabel, visibility: "reference is not blank" }
+      - { label: "{strings.payment.review.fee}", value: feeLabel }
+    test_context:
+      tag: payDomesticSingle:reviewCard
+    note: >-
+      feeLabel is only populated AFTER staging, from the consent's Charges[]. Before staging it
+      renders "{strings.payment.fee_unknown}". The domestic rail does return a charge at
+      staging (0.05 GBP UK.OBIE.CHAPSOut on all 14 observed consents), so the figure is real
+      rather than an estimate — but it is not knowable before the consent exists, which is why
+      the old OBP-era "Estimated fee: Free (SEPA)" banner was wrong twice over.
+
+  - type: button
+    id: confirm_button
+    label: "{strings.payment.confirm}"
+    style:
+      variant: filled_pill
+    visibility: "step == Review AND uiState is Content"
+    test_context:
+      tag: payDomesticSingle:confirmButton
+    action_contract:
+      on_click: ConfirmAndStageConsent
+      effect: "POST /domestic-payment-consents, then hands off to payment-consent"
+      writes_to: "PayDomesticSingleUiState -> Submitting(StagingConsent)"
+    note: >-
+      No `disabled` flag. Confirming transitions the screen to Submitting, which UNMOUNTS this
+      button and renders submitting_indicator instead. The control cannot be double-tapped
+      because it no longer exists — a stronger guarantee than a disabled attribute, and the
+      mechanism the idempotency-key test depends on.
+
+  # ── Error surface ───────────────────────────────────────────────────────
+  # ADDED 2026-08-07 — referenced by states.error since 2026-08-06 but never declared.
+  - type: error_panel
+    id: error_panel
+    visibility: "uiState is Error"
+    title: "{strings.payment.error_title}"
+    item_source: uiState.errors
+    test_context:
+      tag: payDomesticSingle:errorPanel
+    renders_all_entries: true
+    note: >-
+      Iterates the WHOLE Errors[] array. The OB envelope carries an array and has been observed
+      returning TWO entries at once (R13-10 — U027 on the creditor scheme THEN U002 on the
+      debtor; R9-11 similarly). Rendering Errors[0] alone hides the actionable half: the PSU
+      fixes the first fault, resubmits, and is refused again for a reason they were never
+      shown. See dtos/ObPaymentError.yaml#errors_is_an_array.
+    copy_selection: >-
+      The user-facing string is chosen from ErrorCode + Path, NEVER from Message. U004 alone has
+      four observed wordings for one code, and Path casing is not stable (R2-05 returns a
+      lowercase "identification"), so the Path match is case-insensitive.
+
+  - type: progress
+    id: submitting_indicator
+    visibility: "uiState is Submitting"
+    labels:
+      StagingConsent: "{strings.payment.staging}"
+      AwaitingAuthorisation: "{strings.payment.awaiting_authorisation}"
+      ConfirmingFunds: "{strings.payment.confirming_funds}"
+      SubmittingPayment: "{strings.payment.submitting}"
+    test_context:
+      tag: payDomesticSingle:submittingIndicator
+
+responsive:
+  mobile_only: false
+  baseline_width: 390
+
+states:
+  initial_state: loading
+  loading:
+    note: "Fetching the PSU's accounts and the selected account's beneficiaries."
+    layout:
+      visible_components: [step_indicator]
+  content:
+    layout:
+      visible_components: [step_indicator, debtor_account_list, ineligible_accounts_note]
+  content_no_eligible_accounts:
+    note: >-
+      The PSU holds accounts, but none on a payable scheme — e.g. a credit-card-only PSU. A
+      real terminal state on this rail, not an error.
+    layout:
+      visible_components: [step_indicator, no_eligible_accounts]
+  submitting:
+    layout:
+      visible_components: [step_indicator, submitting_indicator]
+  error:
+    layout:
+      visible_components: [step_indicator, error_panel]
+
+state_model:
+  view_model: PayDomesticSingleViewModel
+  ui_state_type: PayDomesticSingleUiState
+  states: ["Loading", "Content(step)", "Submitting(stage)", "Error(type)"]
+  actions:
+    - LoadPaymentSources
+    - SelectDebtorAccount
+    - ShowManualCreditorEntry
+    - SelectCreditor
+    - EnterAmount
+    - EnterReference
+    - ReviewPayment
+    - ConfirmAndStageConsent
+    - ConfirmFunds
+    - SubmitPayment
+    - RetrySubmit
+    - BackStep
+    - CancelPayment
+  events: [NavigateToPaymentConsent, NavigateToPaymentStatus]
+  nav_params: []
+  di:
+    - AccountsOverviewRepository
+    - BeneficiariesRepository
+    - PaymentInitiationRepository
+
+form_submit_guard: state-transition-unmount
+
+dependencies:
+  tier: feature
+  features:
+    - accounts
+    - beneficiaries
+    - payment-consent
+    - payment-status

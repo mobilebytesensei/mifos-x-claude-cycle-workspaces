@@ -1,0 +1,152 @@
+sibling: demo-data
+schema_version: "4.0"
+feature_id: pay-international-scheduled
+
+inherits_fixtures_from: pay-international-single
+inherits: [eligibility_override, charge_bearer_options, bic_probes, currency_probes]
+
+content:
+  date_boundaries:
+    note: "Measured on THIS rail where stated; the T+365 upper edge was confirmed identical on both rails."
+    refused_past: { value: "T-1", error: "U003 date in the past (SP-I13)" }
+    accepted: ["T+7", "T+365"]
+    refused_above: ["T+370", "T+400"]
+    omitted: { error: "U004 Initiation.RequestedExecutionDateTime is missing" }
+
+  staged_consent_response:
+    note: "Consent 45176 -> resource 19921 (flow-sched-international.md)."
+    Data:
+      ConsentId: "45176"
+      CreationDateTime: "2026-08-06T10:42:35+00:00"
+      Status: "AWAU"
+      StatusUpdateDateTime: "2026-08-06T10:42:35+00:00"
+      Permission: "Create"
+      Initiation:
+        InstructionIdentification: "WmZAtMt7rFgu1hXDjPND"
+        EndToEndIdentification: "Gu4seLC66TLVN9BUo9m9"
+        LocalInstrument: "UK.OBIE.SWIFT"
+        RequestedExecutionDateTime: "2026-08-13T00:00:00+00:00"
+        InstructedAmount: { Amount: "1.01", Currency: "GBP" }
+        CreditorAccount:
+          SchemeName: "UK.OBIE.IBAN"
+          Identification: "FR29NWBK60161331926819"
+          Name: "Mr Lee"
+        CurrencyOfTransfer: "EUR"
+        ChargeBearer: "BorneByCreditor"
+    Risk: { CategoryPurposeCode: "EPAY" }
+    charges_note: "NO Charges on the consent — matching the international single rail."
+    absent_keys_note: >-
+      Charges, CutOffDateTime, ExpectedExecutionDateTime and ExpectedSettlementDateTime are ALL
+      ABSENT here — the keys are missing, not empty. The domestic rails return all four. A parser
+      that defaults Charges to [] renders this consent as a free payment; the resource below
+      proves it costs 0.50.
+    key_order_note: >-
+      The Initiation keys are in the SERVER's echo order — ChargeBearer, CurrencyOfTransfer,
+      InstructedAmount, MandateRelatedInformation, [CreditorAgent], [DebtorAccount],
+      CreditorAccount — not the request's. Never re-serialise a local model and string-compare it
+      against this fixture.
+    risk_note: >-
+      CategoryPurposeCode 'EPAY', and NO PaymentContextCode — as in all 25 international
+      scenarios. Whether this rail would accept a PaymentContextCode is UNTESTED, which is why
+      FR-015 is carried as an open question rather than as satisfied.
+    consent_id_note: '"45176" — a short sequential integer-as-string. Enumerable, not a UUID. Never logged or deep-linked.'
+
+  authorised_consent_response:
+    Data: { ConsentId: "45176", Status: "AUTH", StatusUpdateDateTime: "2026-08-06T10:42:35+00:00" }
+
+  submit_response:
+    note: >-
+      Status is INCO at CREATION. This rail never emits PDNG. And the charge appears HERE,
+      absent from the consent above — 0.50 in the INSTRUCTED currency (GBP), not the transfer
+      currency (EUR).
+    Data:
+      InternationalScheduledPaymentId: "19921"
+      ConsentId: "45176"
+      Status: "INCO"
+      CreationDateTime: "2026-08-06T10:44:12+00:00"
+      Charges:
+        - { ChargeBearer: "BorneByCreditor", Type: "UK.OBIE.CHAPSOut", Amount: { Amount: "0.50", Currency: "GBP" } }
+
+  status_readback_response:
+    Data: { InternationalScheduledPaymentId: "19921", Status: "INCO" }
+    note: "INCO at creation and INCO on read-back. No transition to observe on this rail."
+
+  charge_currency_evidence:
+    note: >-
+      Three resources that separate instructed from transfer currency, all agreeing the charge
+      follows the INSTRUCTED currency. This is what makes the 0.50 GBP above correct rather than
+      0.50 EUR.
+    resources:
+      - { id: "19918", instructed: GBP, transfer: USD, charge: "0.50 GBP" }
+      - { id: "19921", instructed: GBP, transfer: EUR, charge: "0.50 GBP" }
+      - { id: "19917", instructed: USD, transfer: USD, charge: "0.50 USD" }
+
+  optional_blocks_probe:
+    note: >-
+      Authorisation and SCASupportData together stage 201 on this endpoint. Prior research
+      reported HSBC rejecting SCASupportData on international payments; this endpoint does not.
+    accepted:
+      - { block: "Authorisation { AuthorisationType: Single, CompletionDateTime: 2030-05-05T05:11:43.008Z }", result: 201 }
+      - { block: "SCASupportData { RequestedSCAExemptionType, AppliedAuthenticationApproach, ReferencePaymentOrderId }", result: 201 }
+
+  charge_visibility_timeline:
+    note: >-
+      The whole point in one place. The fee is INVISIBLE until after the PSU has authorised — a
+      PISP cannot show it at review, at hand-off, or on the return leg before submit.
+    stages:
+      - { stage: "consent staged (AWAU)", charges: "key ABSENT", fee_row: "unknown" }
+      - { stage: "consent authorised (AUTH)", charges: "key ABSENT", fee_row: "unknown" }
+      - { stage: "resource created", charges: "0.50 in the INSTRUCTED currency", fee_row: "0.50 GBP" }
+    forbidden_rendering: ["blank", "0.00", "free", "no fee"]
+
+  currency_independence_probes:
+    note: "InstructedAmount.Currency and CurrencyOfTransfer are INDEPENDENT. Do not couple the two controls."
+    accepted:
+      - { instructed: "1.00 GBP", transfer: "USD", result: 201 }
+      - { instructed: "5.00 GBP", transfer: "EUR", result: 201 }
+
+  creditor_resolution_probes:
+    note: >-
+      U027 @ CreditorAccount.SchemeName is decided by the RESOLVED ACCOUNT, not the scheme
+      string. The same scheme appears on both sides of this split.
+    refused:
+      - { scenario: "SP-I08", creditor_scheme: "UK.OBIE.SortCodeAccountNumber", error: "U027 @ Data.Initiation.CreditorAccount.SchemeName" }
+    accepted:
+      - { scenario: "SP-I05", creditor_scheme: "UK.OBIE.SortCodeAccountNumber", identification: "80119770009652", account: "Global Money GMA", result: 201 }
+    same_split_on_the_so_rail: "SO-I07 refused against the intl-SO Global Money scenarios accepted."
+    conclusion: "Global Money is the only account addressable as an international creditor by sort code."
+
+  exchange_rate_information_probes:
+    note: "Refused on this rail for all three RateType values. Not merely unquoted — rejected."
+    refused:
+      - { scenario: "R16-S1", rate_type: Actual }
+      - { scenario: "R16-S2", rate_type: Indicative }
+      - { scenario: "R16-S3", rate_type: Agreed, sent: "ExchangeRate 1.15 + ContractIdentification 'FX-CONTRACT-001'" }
+    controls: ["R16-C1 → 201", "R16-C2 → 201", "R16-C3 → 201"]
+    breadth: "Identical refusal on the single (R16-P1/P2/P3) and standing-order (R16-O1/O2/O3) rails."
+
+  error_responses:
+    envelope_ref: "dtos/ObPaymentError.yaml"
+    two_entry_error:
+      note: >-
+        This rail's own two-entry case. The FIRST error names the creditor and the SECOND names
+        the currency — fixing only the first leaves the payment refused for a reason the PSU was
+        never shown.
+      scenario: "SP-I04"
+      http: 400
+      shape: "Errors carries TWO entries; the scheme/creditor fault precedes the currency fault."
+    permission_omitted:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U004", Message: "Field is missing", Path: "Data.Permission" }] }
+    charge_bearer_omitted:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U004", Message: "Field is missing", Path: "Data.Initiation.ChargeBearer" }] }
+    remittance_information_sent:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U005", Message: "Field is not expected", Path: "Data.Initiation.RemittanceInformation" }] }
+    date_in_past:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U003", Message: "You cannot trigger a Payment request for a date in the past", Path: "Data.Initiation.RequestedExecutionDateTime" }] }
+    sort_code_creditor:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U027", Message: "Unsupported scheme", Path: "Data.Initiation.CreditorAccount.SchemeName" }] }

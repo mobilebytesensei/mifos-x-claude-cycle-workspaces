@@ -1,0 +1,102 @@
+sibling: api
+schema_version: "4.0"
+feature_id: home
+
+screen_id: home
+
+# The home screen makes three API calls — all via HSBC OBIE AIS v4.0.
+# The /accounts call populates the switcher; balance + transactions are loaded
+# in parallel for the selected account.
+
+endpoints:
+  - id: accounts-list
+    method: GET
+    path: "/accounts"
+    response_dto: BankAccount
+    response_dto_path: "Data.Account[]"
+    permission: ReadAccountsDetail
+    requires_auth: true
+    network_policy: cellular_allowed
+    notes: >
+      Called on mount to populate the account-switcher chip strip. Empty
+      Data.Account[] → empty state reason=no_accounts. This call is the
+      same resource as the Accounts screen; results are cached in memory
+      to avoid redundant round-trips if navigating back-and-forth.
+    error_codes:
+      - code: 401
+        cause: "Access token expired."
+        recovery: "Clear token store → navigate to login."
+      - code: 403
+        cause: "ReadAccountsDetail permission absent from consent."
+        recovery: "Non-recoverable — navigate to consent-list for re-authorisation."
+      - code: 429
+        cause: "HSBC rate-limit exceeded."
+        recovery: "Exponential back-off + surface retry CTA."
+      - code: 503
+        cause: "HSBC sandbox unavailable."
+        recovery: "Surface retry CTA after brief delay."
+
+  - id: selected-account-balances
+    method: GET
+    path: "/accounts/{AccountId}/balances"
+    response_dto: AccountBalance
+    response_dto_path: "Data.Balance[]"
+    permission: ReadBalances
+    requires_auth: true
+    network_policy: cellular_allowed
+    path_params:
+      AccountId:
+        type: string
+        description: "Currently selected account's AccountId."
+    notes: >
+      Fetched in parallel with transactions (see below). Balance type preference:
+      InterimAvailable → InterimBooked → OpeningBooked. Both InterimAvailable
+      (hero balance) and the second-best type (available balance label) are
+      surfaced on the hero card. CreditCard + CreditDebitIndicator=Debit renders
+      balance in error colour. Multi-currency (GlobalWallet) displays native
+      currency code without GBP conversion.
+    error_codes:
+      - code: 401
+        cause: "Access token expired."
+        recovery: "Error state with navigate_to_login recovery."
+      - code: 403
+        cause: "ReadBalances not in consent."
+        recovery: "Non-recoverable; userMessage directs PSU to consent-list."
+      - code: 404
+        cause: "AccountId stale — consent revoked mid-session."
+        recovery: "Clear selected account; reload /accounts."
+
+  - id: recent-transactions
+    method: GET
+    path: "/accounts/{AccountId}/transactions"
+    response_dto: TransactionListItem
+    response_dto_path: "Data.Transaction[]"
+    permission: ReadTransactionsDetail
+    requires_auth: true
+    network_policy: cellular_allowed  # home preview: last 30 days sliced to 5 rows — small payload
+    path_params:
+      AccountId:
+        type: string
+        description: "Currently selected account's AccountId."
+    query_params:
+      fromBookingDateTime:
+        type: string
+        format: "ISO-8601 date-time"
+        description: "30 days before today — limits result set to recent activity."
+    notes: >
+      Fetched in parallel with balances (coroutineScope async/awaitAll). Only
+      the 5 most-recent Booked transactions are displayed (sorted descending by
+      BookingDateTime, client-side slice). Pending transactions are excluded from
+      the home preview but visible in the full transactions screen. 'View all'
+      routes to the full transactions screen. Category icon is derived from
+      ProprietaryBankTransactionCode.Code or MerchantCategoryCode.
+    error_codes:
+      - code: 401
+        cause: "Access token expired."
+        recovery: "Error state with navigate_to_login recovery."
+      - code: 403
+        cause: "ReadTransactionsDetail not in consent."
+        recovery: "Non-recoverable; surface advisory in recent_transactions section."
+      - code: 429
+        cause: "Rate-limit exceeded."
+        recovery: "Recoverable; retry CTA."

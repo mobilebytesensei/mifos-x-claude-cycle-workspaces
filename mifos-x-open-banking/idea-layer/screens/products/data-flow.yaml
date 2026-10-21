@@ -1,0 +1,358 @@
+sibling: data-flow
+schema_version: "4.0"
+feature_id: products
+
+# ═══════════════════════════════════════════════════════════════════════════
+# REWRITTEN 2026-08-07 by /idea-sync, against screens/products/api.yaml.
+#
+# This is the THIRD data model described for this screen. The two before it:
+#   2026-05..06  OBP: one read of GET /obp/v3.0.0/banks/{bankId}/products, fanned out
+#                per bank via awaitAll, with a client-side Personal/Business split.
+#   2026-08-06   AIS: GET /aisp/accounts → GET /aisp/accounts/{AccountId}/product, once
+#                per account, on the premise "OBIE HAS NO PRODUCT CATALOGUE".
+#
+# THAT PREMISE WAS FALSE. It reasoned about OBIE Read/Write — the consented AIS surface —
+# and concluded about OBIE entire. OBIE **Open Data** has a product catalogue, HSBC
+# publishes it, and it needs no consent, no token and no session. The per-account read is
+# real, but it answers a different question and now lives at screens/product/ (singular).
+#
+# The flow below reads a PUBLIC CATALOGUE. It touches nothing belonging to the PSU.
+# ═══════════════════════════════════════════════════════════════════════════
+
+auth: none
+auth_note: >-
+  No token, no consent, no session, no API key, no cookie. This is the only data flow in
+  the app with no credential at any stage. Two consequences that shape everything below:
+  the screen is reachable before login, and there is NO 401/403 error path to handle.
+
+cache_strategy: memory_session
+cache_rationale: >-
+  Public reference data, not PSU data, so nothing here expires with a consent and there is
+  no privacy reason to drop it. Cache per family for the session. The reason to cache is
+  WEIGHT, not privacy: the Business family is 966 KB unpaged and re-fetching it on every
+  tab switch is the difference between a usable screen and an unusable one. Deliberately
+  NOT persisted to disk — a stale published rate is worse than a spinner, and the feed
+  carries its own LastUpdated so staleness would be visible and embarrassing.
+
+# ─────────────────────────────────────────────────────────────────────────
+# FETCH SCHEDULE — one family eagerly, three lazily
+# ─────────────────────────────────────────────────────────────────────────
+entries:
+
+  - screen_id: products
+    trigger: on_mount
+    endpoints:
+      - get_personal_current_accounts
+    direction: read
+    order: first
+    eager: true
+    weight: "~83 KB"
+    dtos:
+      - { name: PcaProduct, role: response, api_id: get_personal_current_accounts }
+      - { name: ProductBrand, role: nested, api_id: get_personal_current_accounts }
+      - { name: PcaMarketingState, role: nested, api_id: get_personal_current_accounts }
+    produces_state: content
+    note: >-
+      The only eager fetch. Personal current accounts is the family a consumer opening
+      this screen is nearly always after, and at 83 KB it is affordable on open.
+
+  - screen_id: products
+    trigger: on_tab_selected
+    tab: BCA
+    endpoints:
+      - get_business_current_accounts
+    direction: read
+    eager: false
+    once_per_session: true
+    weight: "~966 KB"
+    dtos:
+      - { name: BcaProduct, role: response, api_id: get_business_current_accounts }
+      - { name: ProductBrand, role: nested, api_id: get_business_current_accounts }
+      - { name: BcaMarketingState, role: nested, api_id: get_business_current_accounts }
+    produces_state: content
+    hard_rule: >-
+      NEVER on screen open, NEVER prefetched, NEVER as part of a "load everything in
+      parallel" pass. 966 KB in one unpaged response — roughly 11x the Personal feed —
+      with no limit, offset or cursor anywhere in the spec. Fetch on first selection of the
+      Business tab, show the loading state while it downloads, cache for the session.
+    narrowing_option:
+      endpoint: get_bca_by_segment
+      measured_2026_08_07:
+        - { segment: Standard, bytes: 271206, products: 7 }
+        - { segment: Startup,  bytes: 500203, products: 6 }
+        - { segment: Switcher, bytes: 504338, products: 6 }
+      honest_reading: >-
+        Segment narrowing roughly halves the payload at best and still costs a quarter of
+        a megabyte. It reduces the problem; it does not solve it. And products repeat
+        across segments — BCAHSBCKinetic, BCASBBA and BCABBA each appear under Standard
+        AND Startup AND Switcher — so fetching one segment per chip and concatenating
+        produces duplicates. Use it as an opening narrow, never as a pagination substitute.
+
+  - screen_id: products
+    trigger: on_tab_selected
+    tab: CCC
+    endpoints:
+      - get_commercial_credit_cards
+    direction: read
+    eager: false
+    once_per_session: true
+    weight: "~8 KB"
+    dtos:
+      - { name: CccProduct, role: response, api_id: get_commercial_credit_cards }
+      - { name: ProductBrand, role: nested, api_id: get_commercial_credit_cards }
+      - { name: CccMarketingState, role: nested, api_id: get_commercial_credit_cards }
+    produces_state: content
+    note: "Lazy for consistency with the other tabs rather than for weight — 8 KB is trivial."
+
+  - screen_id: products
+    trigger: on_tab_selected
+    tab: SMEL
+    endpoints:
+      - get_unsecured_sme_loans
+    direction: read
+    eager: false
+    once_per_session: true
+    weight: "~5 KB"
+    dtos:
+      - { name: SmeLendingProduct, role: response, api_id: get_unsecured_sme_loans }
+      - { name: ProductBrand, role: nested, api_id: get_unsecured_sme_loans }
+      - { name: SmeLoanMarketingState, role: nested, api_id: get_unsecured_sme_loans }
+    produces_state: content
+
+  - screen_id: products
+    trigger: on_segment_selected
+    direction: none
+    note: >-
+      Segment selection FILTERS IN MEMORY. It does not call the /x-open-banking segment
+      path, because a product carries several segments and per-segment fetching returns
+      the same product in more than one response. The segment endpoint is reserved for the
+      Business family's opening narrow (see above), where the unfiltered weight justifies it.
+
+# ─────────────────────────────────────────────────────────────────────────
+# PARSE — where this flow actually breaks
+# ─────────────────────────────────────────────────────────────────────────
+parse_pipeline:
+
+  - step: 1
+    name: unwrap_three_levels
+    shape: "data[] → data[i].Brand[] → Brand[j].<FAMILY_KEY>[]"
+    family_key:
+      PCA: PCA
+      BCA: BCA
+      CCC: CCC
+      SMEL: SMELoan
+    hard_rule: >-
+      The innermost key MUST be passed in per family. It follows neither the endpoint
+      segment nor the swagger definition name — `unsecured-sme-loans` +
+      `SMELendingDefinition` → `SMELoan`. A parser that derives the key gets an empty list
+      back and reports an empty family, which is indistinguishable from a real empty family
+      and is exactly how the "HSBC publishes zero SME loans" error happened. If the key is
+      absent from the brand object, that is a PARSE FAILURE, not an empty family — raise it
+      rather than defaulting to an empty list.
+    also: "`data` is an ARRAY, not an object. It is a common assumption that it is a single wrapper."
+
+  - step: 2
+    name: do_not_filter_on_on_sale
+    hard_rule: >-
+      Do NOT apply a shared `filter { onSale }`. The field is not uniformly present:
+        PCA   — true on both brands and all 10 products
+        BCA   — FALSE at BRAND level, and false on 9 of the 14 products
+        CCC   — key ABSENT at brand and product level
+        SMEL  — key ABSENT at brand and product level
+      A brand-level filter empties the whole Business family; a nullable-boolean filter
+      empties Commercial cards and Business loans as well. Three families out of four
+      disappear against four successful responses, and the empty_family_rule then hides
+      their tabs — so the bug presents as a missing tab, not as an error.
+    correct_handling: "Treat an absent OnSaleIndicator as on-sale. Surface a `false` as a 'not currently offered' label rather than dropping the row."
+
+  - step: 3
+    name: group_by_brand_then_identification
+    key: "(BrandName, Identification)"
+    why: >-
+      Identification is NOT unique on the Personal feed. fdFirAcc, BankAcc and PremAcc each
+      appear TWICE — 10 records for 7 distinct products. The duplicate is the SAME product
+      in a different PCAMarketingState. A list keyed on Identification renders "Bank
+      Account" twice, "HSBC Premier Account" twice and "1st Account" twice with no visible
+      difference. This is the single most likely bug on this screen and it is present in
+      the very first response.
+    brand_in_the_key_because: >-
+      Identification is only claimed unique within a brand. Grouping on Identification
+      alone would silently merge a first direct product into an HSBC one.
+    not_uniform_across_families:
+      PCA: "Identification REPEATS across records. Collapse sibling records."
+      BCA: "Identification is UNIQUE (14/14). The multiplicity is nested INSIDE BCAMarketingState — up to four states per product. Choose among states; there are no sibling records to collapse."
+      CCC: "One product whose CCCMarketingState holds TWO IDENTICAL entries — same Identification, same MarketingState, same dates. Dedupe the states too."
+      SMEL: "One product. The marketing state's Identification is 'Small Business Loan1' while the product's is 'Small Business Loan' — do not join them on equality."
+    consequence: >-
+      There is no single 'dedupe products' helper that is correct for all four families.
+      Write the grouping per family; a shared one written against PCA does nothing useful
+      on BCA and silently mis-handles CCC.
+
+  - step: 4
+    name: resolve_offer_from_marketing_state
+    rule: >-
+      A product's OFFER is a marketing state whose MarketingState is `Promotional`. Its
+      label is that state's own Identification — 'HSBC Bank £220 Switch and Spend',
+      '£175 Switch Incentive', 'HSBC Premier £500 Welcome Reward'.
+    liveness: >-
+      An offer is live when LastMarketedDate is ABSENT **or** equals the 2099-12-31
+      sentinel. Both occur live: the fdFirAcc and BankAcc promotions omit the key entirely,
+      while the PremAcc promotion carries 2099-12-31. So "absent means live" is sufficient
+      but NOT necessary — a rule written only on absence marks the Premier reward as expired.
+    sentinels_never_rendered:
+      - { value: "2099-12-31", meaning: "indefinite", never: "render as a date" }
+      - { value: "1970-01-01T00:00:00.000Z", meaning: "never — appears in meta.LastUpdated of an empty response", never: "render as 'Last updated 1 January 1970'" }
+
+  - step: 5
+    name: lift_the_url_out_before_discarding_the_marketing_state
+    rule: >-
+      CoreProduct.ProductURL and CoreProduct.TcsAndCsURL live INSIDE the marketing state,
+      which is also where nearly all the payload weight sits. A list mapper that drops the
+      marketing state for weight has thereby dropped the card's only outbound affordance.
+      Lift both URLs out during the same pass that discards the rest.
+    normalise:
+      - "trim() — one live Business URL carries three trailing TAB characters inside the string"
+      - "prefix https:// when no scheme is present — BCAEBT and BCASBT publish the bare host 'www.business.hsbc.uk', which openUri cannot handle"
+      - "the Commercial card URL is http://, not https:// — upgrade or accept, but know it differs"
+    null_case: "No published URL ⇒ the card renders non-clickable. Do not fabricate a URL from the product name."
+
+  - step: 6
+    name: trim_every_display_string
+    rule: "trim() at the mapper boundary, not at render time."
+    live_examples:
+      - '"Small Business Loan " — the SMEL product Name'
+      - '"HSBC Small Business Banking Account " — a BCA Name'
+      - '"HSBC Start up account for Small Business Banking " — a BCA Name'
+      - '"...Overdrafts are subject to status. " — Overdraft.Notes body copy'
+    note: >-
+      These are display fields with trailing whitespace on the wire. Untrimmed they produce
+      ragged titles and, more awkwardly, break exact-text assertions against a string that
+      looks identical in a diff.
+
+  - step: 7
+    name: dont_parse_the_deep_block_for_a_list
+    rule: >-
+      A LIST view needs Identification, Name, Segment, BrandName, the marketing-state
+      HEADER (Identification / MarketingState / dates) and the two URLs. Everything else —
+      Eligibility, FeaturesAndBenefits, Overdraft, OtherFeesCharges, CreditInterest,
+      LoanInterest, Repayment, Ucodes — is COMPARE-view data and should not be
+      deserialised for a list. It is where nearly all of the 83 KB (and essentially all of
+      the 966 KB) sits.
+    schema_is_per_family:
+      PCA: "Overdraft + OtherFeesCharges + Ucodes + PredecessorID"
+      BCA: "CreditInterest + Overdraft + OtherFeesCharges + Ucodes, sometimes StateTenureLength/StateTenurePeriod, PredecessorID often absent"
+      CCC: "Repayment + OtherFeesCharges. No Overdraft, no Ucodes, no PredecessorID."
+      SMEL: "LoanInterest + Repayment. No OtherFeesCharges, no Ucodes, no PredecessorID."
+    consequence: "There is no shared marketing-state model. Model the header once; model the body per family."
+    also_optional_within_a_family: >-
+      Even inside PCA the shape varies — the Basic Bank Account carries NO Overdraft block
+      at all, which is precisely the product where "no overdraft" is the defining feature.
+      A compare view that reads Overdraft unconditionally throws on it.
+
+  - step: 8
+    name: numbers_arrive_as_strings
+    examples: ['TierValueMinimum "1000.00"', 'TierValueMaximum "25000.00"', 'RepAPR "11.3"', 'MonthlyMaximumCharge "0.00"']
+    rule: "Parse before comparing or sorting. Lexicographic order puts £10001 before £1000."
+
+  - step: 9
+    name: segments_are_per_family_and_observed_not_declared
+    observed_2026_08_07:
+      PCA: [Basic, General, Graduate, Premium, Student, Youth]
+      BCA: [Standard, Startup, Switcher, Religious, NonCommercial]
+      CCC: [General]
+      SMEL: [Business]
+    declared_by_spec_for_pca: [Basic, General, Graduate, Packaged, Premium, Reward, Student, YoungAdult, Youth]
+    never_published: [Packaged, Reward, YoungAdult]
+    rule: >-
+      Build the chip set from the segments PRESENT in the loaded response. A chip for a
+      segment HSBC does not publish returns nothing and reads to the user as "no accounts
+      for students like me". Note also that Personal's six and Business's five share not
+      one value — there is no app-wide segment enum.
+    also: "Segment is an ARRAY on the record. Several Business products carry two or three."
+
+# ─────────────────────────────────────────────────────────────────────────
+# ERRORS
+# ─────────────────────────────────────────────────────────────────────────
+error_paths:
+  - error_code: 429
+    behavior: rate_limited_state
+    priority: highest
+    note: >-
+      The realistic failure on this screen, and the one the previous drafts never had.
+      An unauthenticated public API rate-limits by ORIGIN, so a retry loop is throttled
+      against every user behind the same egress, not just this device. Back off; do not
+      auto-retry on a timer.
+  - { error_code: 408, behavior: error_state }
+  - { error_code: 500, behavior: error_state }
+  - { error_code: 503, behavior: error_state }
+  - error_code: offline
+    behavior: no_network_state
+    note: "Live-only feed with no disk cache, so offline is a total blank rather than stale data."
+
+failure_is_scoped_to_the_family: >-
+  Each family is its own request, so one family failing leaves the others rendered and
+  selectable. Retry re-issues the CURRENT family only — never re-downloading the 966 KB
+  Business feed to recover an 8 KB card feed. This replaces the removed per-BANK failure
+  degradation, which had the right shape for the wrong unit.
+
+no_auth_error_paths: >-
+  There is NO 401 and NO 403 on any path in this contract. Any error handling that
+  branches on them, redirects to login, refreshes a token or clears a session is dead code
+  on this screen. The `unauthenticated` ScreenState has been removed from ui.yaml for this
+  reason.
+
+the_empty_case_is_a_200: >-
+  An unrecognised or unpublished segment returns HTTP 200 with `data: []`, TotalResults 0
+  and meta.LastUpdated "1970-01-01T00:00:00.000Z". It is NOT a 400. Verified live
+  2026-08-07 against segment/Zzz (nonsense), segment/Packaged (declared but unpublished)
+  and unsecured-sme-loans/segment/General (real segment, wrong family) — all three
+  identical, all three 322 bytes. Code that distinguishes bad input from no results on the
+  status code cannot tell them apart here.
+
+empty_family_rule:
+  decided_by: "repository owner, 2026-08-07"
+  rule: "HIDE a family's tab when its product array is empty."
+  derivation: "runtime, from the response — never a hardcoded tab list"
+  do_not: "Do not render the tab with an empty-state message inside it. The decision is to hide it."
+  current_reachability: >-
+    NOT triggered by anything in the live catalogue. All four families return products
+    today: PCA 10 records / 7 products, BCA 14, CCC 1, SMEL 1. The rule is defensive. The
+    reachable empty case is the segment-filtered 200 above, not an empty family.
+
+# ─────────────────────────────────────────────────────────────────────────
+# HISTORY — retained deliberately; do not delete
+# ─────────────────────────────────────────────────────────────────────────
+removed_2026_08_06:
+  - { endpoint: obp_products, was: "GET /obp/v3.0.0/banks/{bankId}/products", reason_2026_08_06: "OBIE has no product catalogue.", reason_corrected_2026_08_07: "OBP sandbox endpoint superseded by the Open Data Product Finder — not by nothing. The removal stands; the reason given for it was wrong." }
+  - behaviour: "per-bank parallel fan-out via awaitAll"
+    reason: "There is one bank group. Note the BRAND split (HSBC UK / first direct) IS real and does need handling — but by grouping one response, not by fanning out N requests."
+  - behaviour: "client-side Personal/Business audience split (scopeOf / BUSINESS_MARKERS)"
+    reason_2026_08_06: "OBIE carries ProductType, and this is a consumer-only app with no Business audience."
+    reason_corrected_2026_08_07: >-
+      Both halves of that were wrong. Open Data separates the audiences by ENDPOINT —
+      personal-current-accounts vs business-current-accounts — so the split is a routing
+      decision. And the app DOES now show business products: the repository owner scoped
+      this screen to all four families on 2026-08-07, which is coherent because a public
+      catalogue is a browse surface, not a business-banking capability.
+  - behaviour: "per-card category badge derived from code + name (categoryOf)"
+    reason: "The Open Data record has no category field at all, and the four families are not the four old buckets. Replaced by the SEGMENT badge, which is real data on the record."
+
+removed_2026_08_07:
+  - { endpoint: get_account_product, was: "GET /obie/open-banking/v4.0/aisp/accounts/{AccountId}/product", reason: "Real, but it answers 'what are the terms of MY account'. Different question, different host, opposite auth model. Moved to screens/product/ (singular)." }
+  - { endpoint: get_accounts, was: "GET /obie/open-banking/v4.0/aisp/accounts", reason: "Only existed to drive the per-account loop. This screen reads nothing belonging to the PSU." }
+  - behaviour: "per-account fan-out, one request per account held"
+    reason: "The unit is the family, not the account. Four requests total, three of them lazy."
+  - behaviour: "401 → navigate_login, 403 → consent-revoked error"
+    reason: "No credential is sent, so neither code occurs. Dead branches."
+  - behaviour: "400 on Global Money → skip_account"
+    reason: "Belonged to the per-account AIS flow. There are no accounts in this flow to skip."
+  - { field: cache_strategy_rationale, was: "consent-scoped, must not outlive the session", reason: "No consent exists. The reason to cache is payload weight; the reason not to persist is staleness." }
+
+_removed_empty_state_note_2026_08_06:
+  was: >-
+    "A PSU whose only account is Global Money sees an empty screen, because that product
+    returns 400. The empty state must say the terms are not available for their accounts,
+    not that the bank has no products."
+  reason: >-
+    Belonged to the per-account AIS reading. This screen has no PSU, no accounts and no
+    400-on-Global-Money case. The empty copy is now about the published catalogue.

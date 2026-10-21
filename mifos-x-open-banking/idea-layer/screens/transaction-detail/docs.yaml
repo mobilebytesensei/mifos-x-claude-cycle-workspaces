@@ -1,0 +1,176 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: transaction-detail
+
+screen_id: transaction-detail
+contract_version: "2.0.0"
+feature: transactions
+score: 95
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. Added 2026-08-07 (/idea-sync).
+quality_score: 95
+archetype: detail_screen
+cluster: transactions
+acceptance_refs:
+  - FR-005
+flow_ref: transaction-review
+scaffolded_by: /idea-heal
+status: approved
+approve_hash: "sha256:b198a6880888d669858230ef9c88b82f29376a260999aa8c944892609a9e683d"
+approved_at: "2026-08-05T05:15:00Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+i18n_ready: true
+# cache_strategy: MOVED to api.yaml 2026-07-31 (CROSS_LEAK repair — sibling-layout.json
+# assigns `cache_strategy` to the api sibling, capability_gate has_offline_cache).
+description: >
+  Displays the full detail for a single transaction. Shows a large colour-coded amount header (credit = primary, debit =
+  error) with ISO 4217 currency label, merchant name (fallback to TransactionInformation for non-card credits),
+  Booked/Pending status badge, booking and value dates, client-derived Category, conditionally rendered
+  MerchantCategoryCode (MCC), running balance after the transaction, copyable free-text reference, and proprietary bank
+  transaction code. No payment initiation — read-only AISP view only. Retry gated by error.recoverable; non-recoverable
+  errors (403, TransactionNotFound) show Go Back instead of Retry.
+has_ui: true
+has_server: true
+# NOT has_offline_cache despite cache_strategy: cache — see statements/payment-status.
+capabilities: [has_ui, has_api, has_flow]
+permissions_required:
+  - ReadTransactionsDetail
+obie_resources:
+  - OBReadTransaction6
+notes: >
+  The transactions list endpoint is reused — client filters by transactionId from the cache (TTL 300 s) or
+  freshly-fetched list when cache absent. No single-transaction endpoint exists in OBIE v4.0 AIS. Two distinct
+  missing-data outcomes: (1) API error (401/403/network) → error state with recoverable/non-recoverable Retry/Go Back
+  buttons; (2) API returned 200 but transactionId absent in result set → empty state (transaction_empty_state) with a
+  single outlined Go Back button, distinct from the error state. MerchantCategoryCode row conditionally hidden when null
+  (e.g. direct credits, bank transfers).
+impl_notes: >
+  Use ClipboardManager (Android) / UIPasteboard (iOS) via expect/actual for copy_to_clipboard side-effect in
+  TransactionDetailViewModel. Show a one-shot snackbar after clipboard write. i18n strings defined in
+  transaction_detail_* namespace (22 keys). MCC lookup table (MCC→category string) lives in
+  TransactionCategoryMapper.kt and is pure-Kotlin common code. Empty state (transactionId absent in a successful
+  OBReadTransaction6 response) is distinct from error state — ViewModel transitions to
+  TransactionDetailUiState.Empty on client_filter returning zero matches; no error is emitted, no Retry offered.
+metadata:
+  category: transaction-detail
+  implementation_ready: true
+  impl_ready_at: '2026-06-29'
+  impl_ready_schema: v3
+  enrichment_quality: 95
+contracts: []
+libraries:
+  - capability: rest-client
+    library: ktorfit
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+      - web
+vm_actions:
+  - name: LoadTransactionDetail
+    signature: 'suspend fun loadTransactionDetail(transactionId: String, accountId: String)'
+    state_mutations:
+      - uiState = TransactionDetailUiState.Loading
+      - uiState = TransactionDetailUiState.Content(transaction) on success
+      - uiState = TransactionDetailUiState.Error(message, recoverable) on failure or not-found
+    side_effects:
+      - >-
+        Checks in-memory cache (transactions_{accountId}) first; fetches OBReadTransaction6 via GET
+        /accounts/{accountId}/transactions on cache miss; filters result list by transactionId; maps to
+        TransactionDetailUiModel including client-derived Category from MCC lookup
+    error_handling:
+      on_401: emit TokenExpiredError(recoverable=true); surface error state with Retry
+      on_403: emit ConsentWithdrawnError(recoverable=false); surface error state with Go Back
+      on_not_found: >-
+        emit TransactionNotFoundError(recoverable=false) when transactionId absent in response list; surface error state
+        with Go Back
+      on_network: emit NetworkError(recoverable=true); surface error state with Retry
+  - name: NavigateBack
+    signature: fun navigateBack()
+    state_mutations: []
+    side_effects:
+      - Pop screen off nav stack returning to transactions list; accountId retained by nav back-stack
+    error_handling: {}
+  - name: RetryLoad
+    signature: fun retryLoad()
+    state_mutations:
+      - delegates to LoadTransactionDetail with current transactionId and accountId
+    side_effects: []
+    error_handling:
+      guard: only invokable when uiState is Error with recoverable=true
+  - name: CopyTransactionReference
+    signature: 'fun copyTransactionReference(reference: String)'
+    state_mutations:
+      - sideEffectChannel.send(CopyToClipboard(reference))
+    side_effects:
+      - >-
+        Writes reference string to system ClipboardManager (Android) / UIPasteboard (iOS) via platform ClipboardService
+        expect/actual
+      - 'Emits one-shot snackbar event: strings.transaction_detail_copy_success'
+    error_handling:
+      on_failure: silently ignore; clipboard write failure is non-critical
+error_cases:
+  - id: TokenExpiredError
+    http_status: 401
+    user_message: Session expired. Please log in again.
+    recoverable: true
+    recovery_action: retry_load
+  - id: ConsentWithdrawnError
+    http_status: 403
+    user_message: Access to transactions has been withdrawn.
+    recoverable: false
+    recovery_action: navigate_back
+  - id: TransactionNotFoundError
+    http_status: null
+    user_message: "This transaction is no longer available. It may have been removed or your consent has expired."
+    recoverable: false
+    recovery_action: navigate_back
+    routes_to_state: empty
+    notes: >
+      Raised when client_filter returns zero matches after a successful OBReadTransaction6 fetch. Routes to the
+      empty state (transaction_empty_state), NOT the error state. The empty state shows a single outlined Go Back
+      button — no Retry, as the fetch itself succeeded.
+  - id: NetworkError
+    http_status: null
+    user_message: No network connection. Please check your connection and retry.
+    recoverable: true
+    recovery_action: retry_load
+test_fixtures:
+  source: >-
+    HSBC sandbox — TX-20260626-0001 (Tesco Stores, Debit, Booked, MCC 5411), TX-20260625-0001 (ACME LTD, Credit, Booked,
+    MCC null), TX-20260629-0001 (Pret A Manger, Pending, MCC 5812)
+  scenario_count: 11
+  priority_distribution:
+    critical: 5
+    high: 4
+    medium: 2
+status_history:
+  - from: enriched
+    to: designed
+    at: '2026-07-01T11:05:42.134Z'
+    by: /idea-export-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-14T00:00:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: ""
+  - from: approved
+    to: enriched
+    at: "2026-08-05T05:05:00Z"
+    by: "/idea approve --unapprove"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "Stored approve_hash predated the 2026-08-04 export regeneration and no longer matched the sibling set."
+  - from: enriched
+    to: approved
+    at: "2026-08-05T05:15:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "--all-ready bulk approval; predicate C1-C6 green."

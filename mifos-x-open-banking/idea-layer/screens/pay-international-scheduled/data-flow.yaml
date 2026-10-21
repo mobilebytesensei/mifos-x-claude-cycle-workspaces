@@ -1,0 +1,138 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: pay-international-scheduled
+
+screen_id: pay-international-scheduled
+
+cache_strategy: memory
+cache_rationale: "Reuses the consent-scoped accounts store. No beneficiaries read — sort-code payees are refused on this rail."
+store_shape: "reuses AccountsOverviewStore; no store of its own"
+
+on_mount:
+  - trigger: load_payment_sources
+    description: "Read accounts and filter to payable schemes, excluding Global Money."
+    steps:
+      - { call: accounts-list, auth: psu_aisp_session, store_as: accounts }
+      - compute:
+          eligibleDebtorAccounts: "accounts.filter { it.SchemeName == 'UK.OBIE.SortCodeAccountNumber' && !it.isGlobalMoney }"
+          hiddenAccountCount: "accounts.size - eligibleDebtorAccounts.size"
+          minSelectableDate: "today + 1 day"
+          maxSelectableDate: "today + 365 days"
+    on_loading: loading
+    on_success: content
+    on_error: error
+
+on_user_action:
+  - trigger: stage_consent
+    description: "Stage the international-scheduled-payment-consent."
+    steps:
+      - compute:
+          idempotencyKey: "stableKeyFor(stagedPayment)"
+          amountMajorUnits: "toMajorUnitString(amountMinorUnits)"
+          requestedExecutionDateTime: "isoAtMidnightUtc(selectedDate)"
+      - call: international-scheduled-payment-consent-create
+        auth: client_credentials_payments_scope
+        headers: [x-jws-signature, x-idempotency-key]
+        body_requires:
+          - "Data.Permission == 'Create'"
+          - "Data.Initiation.RequestedExecutionDateTime"
+          - "Data.Initiation.CurrencyOfTransfer"
+          - "Data.Initiation.ChargeBearer"
+          - "Data.Initiation.CreditorAccount.SchemeName == 'UK.OBIE.IBAN'"
+        body_forbids:
+          - "Data.Initiation.RemittanceInformation   # U005"
+        store_as: stagedConsent
+      - navigate: payment-consent
+        params: { consentId: "{stagedConsent.Data.ConsentId}", paymentFamily: "international-scheduled-payment" }
+
+  - trigger: resume_after_authorisation
+    description: "Re-read the authorised consent, then submit. No funds check on this family."
+    steps:
+      - call: international-scheduled-payment-consent-read
+        auth: client_credentials_payments_scope
+        store_as: authorisedConsent
+      - call: international-scheduled-payment-create
+        auth: psu_authorization_code
+        headers: [x-jws-signature, x-idempotency-key]
+        body:
+          Data:
+            ConsentId: "{authorisedConsent.Data.ConsentId}"
+            Initiation: "{authorisedConsent.Data.Initiation}"
+          Risk: "{authorisedConsent.Risk}"
+        store_as: payment
+      - compute:
+          feeLabel: >-
+            payment.Data.Charges?.firstOrNull()?.let { formatMoney(it.Amount) } ?: FEE_UNKNOWN
+            # 0.50 in the INSTRUCTED currency. Charges is NULLABLE — absent on the consent, present
+            # only from the RESOURCE. Never default it to an empty list.
+      - navigate: payment-status
+        params: { paymentId: "{payment.Data.InternationalScheduledPaymentId}", paymentFamily: "international-scheduled-payment" }
+
+  - trigger: retry_submit
+    re_runs: [resume_after_authorisation]
+
+# ─────────────────────────────────────────────────────────────────────────
+# INVARIANTS
+# ─────────────────────────────────────────────────────────────────────────
+inherited_invariants:
+  from_pay_international_single:
+    - mandatory_field_invariant
+    - forbidden_field_invariant
+    - creditor_scheme_invariant
+    - bic_length_invariant
+    - creditor_agent_wholeness_invariant
+    - error_rendering_invariant
+    - echo_fidelity_invariant
+    - absent_key_parse_invariant
+    - consent_id_handling_invariant
+    - no_fx_timer_invariant
+  from_pay_domestic_scheduled: [date_boundary_invariant, no_funds_check_invariant, amendment_notice_invariant]
+  notes:
+    absent_key_parse_invariant: >-
+      Inherited, but it is LOAD-BEARING here rather than academic. On the single rail a defaulted
+      empty Charges list happens to describe the truth; on this rail it renders a 0.50 payment as
+      free at the consent step. Same parser, opposite consequence.
+    error_rendering_invariant: >-
+      SP-I04 is this rail's own two-entry case — first error names the creditor, second names the
+      currency. Errors[0] alone sends the PSU to fix the wrong thing.
+
+charge_timing_invariant:
+  rule: >-
+    The fee row reads UNKNOWN — never blank, never '0.00' — until the RESOURCE is created, then
+    shows the 0.50 charge in the INSTRUCTED currency. deferred_charge_note is displayed at review
+    to say a fee applies.
+  rationale: >-
+    The consent carries no Charges, exactly like the international single rail — but unlike that
+    rail a charge DOES arrive at resource creation. An empty fee row with no note would read as
+    "free", which is true of international single and false here.
+  evidence: >-
+    Three resources separating instructed from transfer currency all agree the charge follows
+    the INSTRUCTED currency: 19918 (GBP -> USD, 0.50 GBP), 19921 (GBP -> EUR, 0.50 GBP),
+    19917 (USD -> USD, 0.50 USD).
+  parse_rule: >-
+    Charges is parsed as NULLABLE. The consent response OMITS the key — it does not send an empty
+    array — along with CutOffDateTime, ExpectedExecutionDateTime and ExpectedSettlementDateTime.
+    A model defaulting Charges to [] loses the distinction between 'no charge' and 'no charge
+    information', and on this rail the second is what is true at consent time.
+  enforced_by: "TC-PISCH-004, TC-PISCH-009"
+
+pre_authorisation_fee_impossibility:
+  rule: >-
+    No fee figure is displayed at ANY point before the PSU has authorised — not at review, not on
+    the consent hand-off, not on the return leg before submit.
+  rationale: >-
+    The charge first appears at RESOURCE CREATION. It is absent at AWAU and absent at AUTH, so
+    there is no earlier call that could fetch it and no endpoint to add. A PISP structurally
+    cannot show an international deferred fee before authorisation.
+  consequence: >-
+    The PSU authorises this payment without a rate (ExchangeRateInformation is refused —
+    R16-S1/S2/S3 against controls R16-C1/C2/C3) and without a fee. Both absences are the API's.
+    The form states both plainly rather than leaving two blank rows that read as zero.
+  enforced_by: "TC-PISCH-009"
+
+status_ladder_invariant:
+  rule: "INCO is accepted as a valid CREATION status on this family. PDNG is never expected."
+  rationale: >-
+    This rail goes straight to INCO; the domestic deferred rails pass through PDNG first. A
+    mapper that treats INCO-at-creation as anomalous would mis-flag every payment here.
+  enforced_by: "TC-PISCH-005"

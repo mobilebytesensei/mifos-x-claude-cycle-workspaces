@@ -1,0 +1,131 @@
+sibling: demo-data
+schema_version: "4.0"
+feature_id: pay-domestic-standing-order
+
+# No debtor_accounts fixture — this rail has no funding-account step.
+inherits_fixtures_from: pay-domestic-single
+inherits: [beneficiaries]
+
+content:
+  frequency_options:
+    note: "Exactly what HSBC Personal accepts. All nine OBIE values were tested on this rail."
+    accepted:
+      - { code: WEEK, label: "Weekly" }
+      - { code: FRTN, label: "Every 2 weeks" }
+      - { code: MNTH, label: "Monthly" }
+      - { code: QURT, label: "Every 3 months" }
+      - { code: YEAR, label: "Yearly" }
+    refused:
+      - { code: ADHO, error: "U002 Invalid value @ Data.Initiation.MandateRelatedInformation.Frequency.Type" }
+      - { code: INDA, error: "U002 Invalid value" }
+      - { code: MIAN, error: "U002 Invalid value" }
+      - { code: DAIL, error: "U002 Invalid value" }
+      - { code: MONT, error: "U002 Invalid value", note: "Not an OBIE value — a typo for MNTH made during testing. Recorded so it is not mistaken for a bank restriction." }
+
+  staged_consent_response:
+    note: "Shape from flow-so-domestic.md (consent 45171 -> resource 19916)."
+    Data:
+      ConsentId: "45171"
+      CreationDateTime: "2026-08-06T10:32:58+00:00"
+      Status: "AWAU"
+      StatusUpdateDateTime: "2026-08-06T10:32:58+00:00"
+      Permission: "Create"
+      Initiation:
+        MandateRelatedInformation:
+          Frequency: { Type: "WEEK" }
+          FirstPaymentDateTime: "2026-08-13T10:32:55+00:00"
+          FinalPaymentDateTime: "2026-12-04T10:32:55+00:00"
+        FirstPaymentAmount: { Amount: "0.01", Currency: "GBP" }
+        CreditorAccount:
+          SchemeName: "UK.OBIE.SortCodeAccountNumber"
+          Identification: "80200110203349"
+          Name: "Mr Mark"
+      Charges:
+        - { ChargeBearer: "BorneByDebtor", Type: "UK.OBIE.CHAPSOut", Amount: { Amount: "0.05", Currency: "GBP" } }
+    Risk: {}
+    date_note: >-
+      FirstPaymentDateTime and FinalPaymentDateTime echo BYTE-IDENTICAL with the time component
+      intact. This is the opposite of RequestedExecutionDateTime on the scheduled rail, which is
+      truncated to midnight. The asymmetry holds across every shape in the corpus.
+
+  authorised_consent_response:
+    note: >-
+      Status moved to AUTH; StatusUpdateDateTime did NOT. Also note the bank has written a
+      DebtorAccount the TPP could not send — and one its own endpoint would refuse on a fresh
+      consent (UK.OBIE.PAN returns U027 here). Echo it anyway; it is what the submit must match.
+    Data:
+      ConsentId: "45171"
+      CreationDateTime: "2026-08-06T10:32:58+00:00"
+      Status: "AUTH"
+      StatusUpdateDateTime: "2026-08-06T10:32:58+00:00"
+      Initiation:
+        DebtorAccount:
+          SchemeName: "UK.OBIE.PAN"
+          Identification: "1234567890123456"
+        MandateRelatedInformation:
+          Frequency: { Type: "WEEK" }
+          FirstPaymentDateTime: "2026-08-13T10:32:55+00:00"
+          FinalPaymentDateTime: "2026-12-04T10:32:55+00:00"
+        FirstPaymentAmount: { Amount: "0.01", Currency: "GBP" }
+
+  submit_response:
+    Data:
+      DomesticStandingOrderId: "19916"
+      ConsentId: "45171"
+      Status: "PDNG"
+      CreationDateTime: "2026-08-06T10:35:56+00:00"
+
+  status_readback_response:
+    note: "PDNG converges to INCO. Neither means an instalment was paid."
+    Data:
+      DomesticStandingOrderId: "19916"
+      Status: "INCO"
+
+  ais_correlation_probe:
+    note: >-
+      The negative result that matters. Standing order 19936 was pinned to 80200110203349, the
+      ONE account whose AIS standing-orders read returns 200. Five minutes after creation the
+      read still returned only the two pre-seeded fixtures.
+    pis_resource: { DomesticStandingOrderId: "19936", Status: "INCO", consent: "COND" }
+    ais_read_after_5_min:
+      StandingOrder:
+        - { StandingOrderStatusCode: "ACTV", FirstPaymentDateTime: "2019-01-01T00:00:00+00:00", Frequency: { PointInTime: "01", Type: "WEEK" } }
+        - { StandingOrderStatusCode: "ACTV", FirstPaymentDateTime: "2019-01-01T00:00:00+00:00", Frequency: { PointInTime: "01", Type: "MNTH" } }
+      note: >-
+        The pre-seeded fixtures carry PointInTime — the field the WRITE side refuses with U005.
+        Both facts together mean an AIS-read mandate cannot be round-tripped into a PIS consent
+        without stripping it.
+    conclusion: "Write-to-read correlation is impossible by construction. Do not build a post-creation list refresh."
+
+  varying_amounts_probe:
+    note: "Staging does not enforce the Guide's equality rule. Whether authorisation or execution does is untested."
+    unequal: { FirstPaymentAmount: "1.00", RecurringPaymentAmount: "2.00", FinalPaymentAmount: "3.00", result: "201 AWAU, all three echoed (consent 45133)" }
+    equal_control: { FirstPaymentAmount: "1.00", RecurringPaymentAmount: "1.00", FinalPaymentAmount: "1.00", result: "201 AWAU" }
+    guide_rule: "§20.2.1 — if Recurring or Final are present they must EQUAL FirstPaymentAmount"
+
+  count_per_period_probe:
+    note: "All four combinations stage 201, contradicting §20.2.1's mutual-exclusivity claim. Not offered in the UI."
+    combinations:
+      - { CountPerPeriod: 12, FinalPaymentDateTime: absent, result: "201 (R15-C01) — the documented form" }
+      - { CountPerPeriod: 12, FinalPaymentDateTime: present, result: "201 (R15-C02) — both present, accepted" }
+      - { CountPerPeriod: 0, result: "201 (R15-C03) — despite §23.2.1's 'Must be > 0'" }
+      - { CountPerPeriod: absent, FinalPaymentDateTime: absent, result: "201 (SO-D09) — 'Until Further Notice'" }
+
+  error_responses:
+    instructed_amount_on_domestic_so:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U005", Message: "Field is not expected", Path: "Data.Initiation.InstructedAmount" }] }
+    point_in_time_sent:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U005", Message: "Field is not expected", Path: "Data.Initiation.MandateRelatedInformation.Frequency.PointInTime" }] }
+    invalid_frequency:
+      http: 400
+      body: { Errors: [{ ErrorCode: "U002", Message: "Invalid value", Path: "Data.Initiation.MandateRelatedInformation.Frequency.Type" }] }
+    final_date_invalid:
+      http: 400
+      body:
+        Errors:
+          - ErrorCode: "U003"
+            Message: "Sorry, We cannot process the Standing Order Instruction as the final transfer date cannot be today or tomorrow, and must be within 12 months. Also the final transfer date cannot be less than or equal to FirstPaymentDateTime."
+            Path: "Data.Initiation.MandateRelatedInformation.FinalPaymentDateTime"
+      note: "The most descriptive error HSBC produced anywhere in this testing — three rules in one message, two of them undocumented."

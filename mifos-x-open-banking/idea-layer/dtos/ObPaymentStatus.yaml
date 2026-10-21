@@ -1,0 +1,183 @@
+name: ObPaymentStatus
+version: "1.0.0"
+source:
+  origin: external_api
+  api_ref: API-003
+  api_path: "Data.Status on every PISP consent-status GET and resource-status GET across all 7 families"
+  spec: "OBIE Read/Write v4.0, with v3.1 long forms also served"
+description: >-
+  The status vocabulary the shared payment-status tracker maps. There is no single ladder: the
+  seven families use FOUR different ones, and one endpoint returns a different ENCODING from
+  every other. This DTO is the single source of truth for that mapping, because getting it
+  wrong produces either a false "completed" or a permanent "unknown".
+
+fields:
+  - name: Status
+    type: String
+    required: true
+    pii: false
+    primary_key: false
+    enum_ref: ObStatusCode
+    description: "The status code. Read this and only this — see status_update_datetime_trap."
+  - name: StatusUpdateDateTime
+    type: DateTime
+    required: true
+    pii: false
+    primary_key: false
+    description: "Present, but UNRELIABLE as a change signal. See status_update_datetime_trap."
+  - name: StatusReason
+    type: String
+    required: false
+    pii: false
+    primary_key: false
+    description: >-
+      Populated on VRP failures. UK.OBIE.ExemptionNotApplied is the trusted-beneficiary failure
+      mode — the consent stays AUTH while payments silently fail because the PSU deleted the
+      payee in the HSBC app.
+
+enums:
+  - name: ObStatusCode
+    description: "Union of consent statuses and resource statuses across all 7 families."
+    values:
+      # ── Consent statuses ──
+      - { value: AWAU, long_form: AwaitingAuthorisation, applies_to: consent, disposition: in_progress, description: "Staged; the PSU has not yet approved." }
+      - { value: AUTH, long_form: Authorised, applies_to: consent, disposition: in_progress, description: "Approved. May now be submitted. On VRP this is the STEADY state, not a transient one." }
+      - { value: COND, long_form: Consumed, applies_to: consent, disposition: terminal_success, description: "A resource was created from it. Single-use consents reach this on first use. VRP NEVER does." }
+      - { value: RJCT, long_form: Rejected, applies_to: [consent, resource], disposition: terminal_failure, description: "The PSU denied it at the bank, or the payment was refused." }
+      # ── Resource statuses ──
+      - { value: ACSP, long_form: AcceptedSettlementInProcess, applies_to: resource, disposition: in_progress, description: "Accepted, NOT settled. MUST NOT be rendered as sent, paid or complete." }
+      - { value: ACCC, long_form: AcceptedCreditSettlementCompleted, applies_to: resource, disposition: terminal_success, description: "Terminal success. Settlement is asynchronous and batched, so this arrives after a delay." }
+      - { value: PDNG, long_form: Pending, applies_to: resource, disposition: in_progress, description: "Deferred instruction is set up and waiting. Says NOTHING about any execution." }
+      # ── disposition CHANGED 2026-08-07: terminal_success -> instruction_established ──
+      - { value: INCO, long_form: InitiationCompleted, applies_to: resource, disposition: instruction_established, description: "The INSTRUCTION is established. NOT 'the money moved'. Every deferred resource converges here." }
+      - { value: BLCK, long_form: Blocked, applies_to: resource, disposition: terminal_failure, description: "Excluded from VRP periodic totals alongside RJCT." }
+
+status_ladders:
+  note: "Four distinct ladders. The tracker resolves which to use from the paymentFamily nav param."
+  domestic_single:
+    consent: "AWAU -> AUTH -> COND"
+    resource: "ACSP -> ACCC"
+  international_single:
+    consent: "AWAU -> AUTH -> COND"
+    resource: "ACSP -> ACCC"
+  domestic_deferred:
+    families: [domestic-scheduled-payment, domestic-standing-order]
+    consent: "AWAU -> AUTH -> COND"
+    resource: "PDNG -> INCO"
+  international_deferred:
+    families: [international-scheduled-payment, international-standing-order]
+    consent: "AWAU -> AUTH -> COND"
+    resource: "INCO -> INCO"
+    note: "This rail NEVER emits PDNG. It goes straight to INCO at creation."
+  vrp:
+    consent: "AWAU -> AUTH, and stays AUTH forever"
+    resource: "ACSP -> ACCC"
+    note: >-
+      The consent never reaches COND — the VRP state model explicitly omits Consumed. One
+      authorisation funds many payments. After DELETE the consent GET returns 400 U011 and can
+      never report a revoked state.
+
+# ─────────────────────────────────────────────────────────────────────────
+# THE TWO TRAPS
+# ─────────────────────────────────────────────────────────────────────────
+dual_encoding_trap:
+  # CORRECTED 2026-08-07 after reading captures/OBSERVATIONS.md in full. The previous version of
+  # this block said domestic-vrps "returns the v3.1 LONG form" as though that were a stable
+  # per-endpoint property. The evidence does not support a per-endpoint rule — it is stronger and
+  # less predictable than that.
+  finding: >-
+    The SAME endpoint rendered the SAME field BOTH ways at different times. Payment 19933 on
+    domestic-vrps read "ACCC" at 15:12:26 and "AcceptedCreditSettlementCompleted" on a later
+    re-read. Nothing in the request changed.
+  observed:
+    - 'GET /domestic-vrps/19933 at 15:12:26 → "Status": "ACCC"'
+    - 'GET /domestic-vrps/19933 on re-read  → "Status": "AcceptedCreditSettlementCompleted"'
+    - "A same-session probe of the other endpoints still showed short codes: domestic-payments 19908 ACCC, international-payments 19911 ACCC, domestic-standing-orders 19916 INCO."
+  what_is_NOT_established: >-
+    That domestic-vrps always returns the long form, or that the other endpoints always return the
+    short one. OBSERVATIONS.md is explicit: "what caused the change is not observable from here",
+    and "every short-code reading recorded elsewhere in this file is therefore a point-in-time
+    rendering, not a stable contract."
+  corroboration: >-
+    Version-mixing is real elsewhere — the AIS consent header check returns the v3.1 long
+    UK.OBIE.Header.Unexpected where v4.0 codes the condition U020. So HSBC does serve both
+    generations; what is not true is that the split is predictable by endpoint.
+  requirement: >-
+    The mapper MUST accept both encodings for EVERY code on EVERY endpoint. Do not special-case
+    domestic-vrps — that would encode a rule the evidence does not support, and would break the
+    moment another endpoint renders long, which is exactly what this endpoint did.
+  failure_mode: >-
+    A short-code-only mapper reads a long-form status as unrecognised and, per the fail-open rule,
+    renders a COMPLETED payment as permanently in progress. Silent, unrecoverable, and it would
+    have been caught by neither a unit test written from the short list nor a single live probe.
+  enforced_by: "FR-021, TC-PSTAT-004"
+
+status_update_datetime_trap:
+  finding: "StatusUpdateDateTime does NOT move on AWAU -> AUTH."
+  evidence: >-
+    All five authorised consents in the corpus (45171, 45173, 45174, 45175, 45176) transitioned
+    to AUTH with StatusUpdateDateTime still equal to CreationDateTime. Generalises the VRP
+    finding to every family tested.
+  requirement: "Authorisation is detected from Data.Status alone. A poll keyed on the timestamp never fires."
+  enforced_by: "FR-021, TC-PDS-007"
+
+# ─────────────────────────────────────────────────────────────────────────
+# DISPOSITION VOCABULARY — FOUR, not three (changed 2026-08-07)
+# ─────────────────────────────────────────────────────────────────────────
+dispositions:
+  in_progress:
+    meaning: "Accepted, outcome not yet known. Never render as sent, paid or complete."
+    members: [AWAU, AUTH, ACSP, PDNG]
+  terminal_success:
+    meaning: "The money moved. Settlement completed."
+    members: [ACCC, COND]
+  terminal_failure:
+    meaning: "Refused. Terminal."
+    members: [RJCT, BLCK]
+  instruction_established:
+    meaning: >-
+      The INSTRUCTION exists and is set up. NOTHING is claimed about any money moving — because
+      on the four deferred families nothing has, and the first execution may be months away.
+    members: [INCO]
+    added_2026_08_07:
+      why: >-
+        A three-way triad cannot express the deferred rails. INCO is the TERMINAL status of all
+        four of them, and neither available answer was true: calling it terminal_success renders
+        a success tick on an instruction whose first payment has not happened, and letting the
+        fail-open rule catch it renders a standing order as perpetually in-progress — implying
+        live activity on something that will not execute for months.
+      previous_mapping: "terminal_success — withdrawn, it invited a green tick for money that had not moved."
+      surfaced_by: "/design-system 1.4.0, which hit the same wall from the visual side and added a fourth disposition rather than force INCO into the triad."
+      rendering_contract: >-
+        Deliberately NEUTRAL, not tonal — surfaceVariant/onSurfaceVariant, icon event_repeat,
+        never a tick and never a clock. A hue-less treatment makes no claim about money, which
+        is exactly the claim available. See design-system/DESIGN.md "Instruction set up".
+      ui_rule: "The label must name the INSTRUCTION, never the payment. 'Standing order set up', never 'Paid'."
+
+fail_open_rule:
+  rule: "An UNRECOGNISED status maps to in_progress, never to success or failure."
+  rationale: >-
+    Guessing success tells a PSU their money moved when it may not have; guessing failure sends
+    them to retry a payment that already succeeded. In progress is the only safe default, and it
+    degrades to a stale-but-honest display rather than a false claim.
+  scope_correction_2026_08_07: >-
+    This is a SAFETY NET for codes nobody anticipated — not a substitute for mapping a status
+    that is in the enum. INCO was in the enum and still fell through, because the disposition
+    vocabulary had nowhere to put it. Every value in ObStatusCode must map explicitly; the
+    fail-open rule should fire only on something genuinely new from HSBC.
+
+per_execution_status:
+  exists: false
+  scope: [domestic-scheduled-payment, domestic-standing-order, international-scheduled-payment, international-standing-order]
+  finding: >-
+    There is NO per-execution status anywhere in OBIE. The resource status describes the
+    mandate's or instruction's SETUP, not the Nth payment. A TPP cannot learn that execution #3
+    failed for insufficient funds by any API means — the only route is AIS transaction polling
+    plus inference, and even that is closed for accounts whose standing-orders read returns 400.
+  ui_requirement: >-
+    For these four families the UI reports that the instruction is set up and must never imply
+    anything about individual executions.
+
+used_by:
+  - { feature: payment-status, api_id: "all 7 resource-status GETs", role: response }
+  - { feature: payment-consent, api_id: "all 7 consent-status GETs", role: response }

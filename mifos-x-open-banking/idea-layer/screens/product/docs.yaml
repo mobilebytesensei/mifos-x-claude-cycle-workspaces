@@ -1,0 +1,149 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: product
+
+feature: product
+contract_version: "2.0.0"
+status: approved
+approve_hash: "sha256:68777d410d59c492aba60d59b212a040b33db06c590e18d690ba878ef8240ad5"
+approved_at: "2026-08-05T05:15:00Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+score: 95
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. Added 2026-08-07 (/idea-sync).
+quality_score: 95
+cluster: account-extras
+acceptance_refs: [FR-007]
+scaffolded_by: "/idea-heal"
+archetype: detail_screen
+# flow_ref backfilled 2026-08-02 (/idea-sync) from flows/*.yaml#screens[] membership.
+flow_ref: account-browsing
+description: "Product terms for a PCA or BCA account. Displays product name/type header, monthly maximum charge, credit interest AER tiers (with ApplicationFrequency and band range), overdraft EAR tiers by type, and feature list. Handles empty product data (account types without OBProduct2 entries, e.g. GlobalMoney) as a dedicated informational empty state separate from network errors. Backed by the OBIE GET /accounts/{AccountId}/product endpoint returning OBReadProduct2."
+has_ui: true
+has_server: false
+capabilities: [has_ui, has_api, has_flow]
+
+metadata:
+  category: crud
+  implementation_ready: true
+  impl_ready_at: "2026-06-29"
+  impl_ready_schema: "v2"
+  i18n_coverage: true
+  i18n_key_count: 28
+  state_count: 4
+
+contracts:
+  - dto: OBReadProduct2
+    source: "hsbc-obie-ais-v4.0"
+    endpoint: "GET /accounts/{AccountId}/product"
+    permission: ReadProducts
+    notes: "Top-level wrapper; Data[0].PCA or Data[0].BCA carries the product definition. Empty Data[] treated as empty state, not error."
+
+capability_completeness:
+  CC5_permission_visibility: "ReadProducts permission required; 403 error message explicitly informs user that consent is missing the required scope."
+  CC7_network_data_policy: "No caching; always-fresh read from OBIE endpoint on mount. cache_strategy:none declared in data-flow.yaml."
+  CC8_cache_lifecycle: "No local cache. Product terms may change after bank updates; fresh fetch on every screen mount prevents stale charge information."
+  CC9_error_recovery: "retry_load VM action re-runs product_load; Retry button always visible in error state. Empty state (GlobalMoney/Savings) intentionally has no Retry — it is informational, not recoverable."
+
+libraries:
+  - capability: rest-client
+    library: ktorfit
+    version: latest
+    targets: [android, ios, desktop, web]
+
+vm_actions:
+  - name: product_load
+    signature: "suspend fun productLoad(accountId: String)"
+    state_mutations:
+      - "uiState = ProductUiState.Loading"
+      - "uiState = ProductUiState.Content(product)  // OBProduct2 non-null PCA or BCA"
+      - "uiState = ProductUiState.Empty              // OBReadProduct2.Data is empty or PCA/BCA null"
+      - "uiState = ProductUiState.Error(message)"
+    side_effects:
+      - "GET /accounts/{accountId}/product → OBReadProduct2"
+    error_handling:
+      http_401: "emit Error('Session expired. Please re-authenticate.')"
+      http_403: "emit Error('Consent does not include ReadProducts.')"
+      http_404: "emit Error('No product data available for this account.')"
+      network: "emit Error(e.localizedMessage)"
+    empty_handling: "If OBReadProduct2.Data is empty list OR product.PCA == null AND product.BCA == null → emit Empty"
+
+  - name: retry_load
+    signature: "suspend fun retryLoad(accountId: String)"
+    state_mutations:
+      - "delegates to productLoad(accountId)"
+    side_effects: []
+    error_handling: {}
+
+error_cases:
+  - code: HTTP_401
+    description: "PSU access token expired; re-authentication required."
+  - code: HTTP_403
+    description: "Consent scope does not include ReadProducts permission."
+  - code: HTTP_404
+    description: "No OBProduct2 record associated with this AccountId."
+  - code: NETWORK_ERROR
+    description: "Device offline or AIS endpoint unreachable."
+  - code: EMPTY_DATA
+    description: "OBReadProduct2 returned 200 but Data[] is empty or account type (GlobalMoney, Savings, CreditCard) has no PCA/BCA entry — not an error, rendered as informational empty state."
+
+test_fixtures:
+  source: "idea-layer/screens/product/tests.yaml"
+  scenario_count: 9
+  priority_distribution:
+    critical: 3
+    normal: 6
+
+exports:
+  spec_md:
+    source_hash: regenerated-2026-07-14
+    at: "2026-07-14T21:00:00Z"
+    path: "idea-layer/exports/product/SPEC.md"
+  api_md:
+    source_hash: regenerated-2026-07-14
+    at: "2026-07-14T21:00:00Z"
+    path: "idea-layer/exports/product/API.md"
+
+status_history:
+  - from: enriched
+    to: designed
+    at: "2026-07-14"
+    by: "/idea export"
+    exports: [spec_md, api_md]
+  - from: designed
+    to: approved
+    at: "2026-07-14T00:00:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: ""
+  - from: approved
+    to: enriched
+    at: "2026-08-05T05:05:00Z"
+    by: "/idea approve --unapprove"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "Stored approve_hash predated the 2026-08-04 export regeneration and no longer matched the sibling set."
+  - from: enriched
+    to: approved
+    at: "2026-08-05T05:15:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "--all-ready bulk approval; predicate C1-C6 green."
+
+score_history:
+  - score: 0
+    at: "2026-06-29"
+    note: "score field absent pre-2026-07-14 enrichment pass"
+  - score: 93
+    at: "2026-07-14"
+    by: /idea-enrich
+    note: "4 states, OBProduct2 tier-band credit interest + overdraft EAR rows, features list, informational empty state distinct from error, full i18n"
+  - score: 95
+    at: "2026-07-14"
+    by: /idea-enrich
+    note: "5 container-level a11y labels (card, 3 lists, back nav); explicit on_empty branch in data-flow; cache_strategy:none declared; api error_responses (401/403/404/network); 2 new test scenarios (BCA path, offline/network error); contracts + capability_completeness (CC5/CC7/CC8/CC9) in docs.yaml; i18n key count 23→28"

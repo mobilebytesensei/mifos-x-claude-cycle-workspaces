@@ -1,0 +1,468 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: login
+
+screen_id: login
+archetype: form
+name: "Connect with HSBC"
+# status: REMOVED 2026-08-04 (CROSS_LEAK repair — sibling-layout.json assigns `status` to
+# the docs sibling). This copy held `implemented`; docs.yaml is the single owner.
+quality_score: 95
+initial_state: content
+
+# ─────────────────────────────────────────────────────────────────────
+# STATE MODEL — ConsentOnboardingViewModel contract
+# Migrated to C6 format; vm_class/ui_state_sealed/flat states map removed.
+# Derived from ui.yaml#view_state_fields + docs.yaml#vm_actions + error_cases.
+# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
+# SOURCE BINDING — reverse-synced from source 2026-07-28
+# ─────────────────────────────────────────────────────────────────────
+implementation:
+  status: implemented
+  source_module: "feature/login"
+  package: "org.mifosx.openbanking.feature.login"
+  viewmodel: LoginViewModel        # NOT ConsentOnboardingViewModel — the idea-layer name never existed in source
+  screen: LoginScreen
+  test_tags_object: LoginTestTags
+  routes:
+    - "LoginRoute — the onboarding-entry consent screen"
+    - "LoginRenewRoute — the same screen reached WITHOUT the onboarding intro, used for re-consent"
+    - "IntroRoute — the onboarding intro (see the user-onboarding screen, which ships inside this module)"
+  reached_by:
+    - "consent-list — onConnectBank and onReauthenticate both navigate(LoginRenewRoute)"
+    - "consent-detail — onReconfirm navigates(LoginRenewRoute)"
+  platform_expect_actual:
+    - "BrowserLauncher — androidMain/AndroidBrowserLauncher, desktopMain/DesktopBrowserLauncher, nativeMain/IosBrowserLauncher, jsCommonMain/JsBrowserLauncher"
+  synced_from_source_at: "2026-07-28"
+  added_in_sync:
+    - "Cancel action — LoginAction.Cancel aborts the in-flight authorisation"
+    - "Retry action — LoginAction.Retry re-attempts after an error"
+    - "LoginRenewRoute — a second, intro-less entry point with three inbound callers"
+  removed_in_sync:
+    - "navigateBack action — LoginAction has no such member; back is a nav-host onBack callback"
+    - "ConsentOnboardingViewModel / ConsentOnboardingUiState / ConsentOnboardingState names — source uses the Login* prefix throughout"
+
+state_model:
+  LoginViewModel:
+    state:
+      name: LoginState
+      fields:
+        - name: uiState
+          type: LoginUiState
+    screen_state:
+      sealed_class: LoginUiState
+      members:
+        - Loading     # consent-create POST in flight
+        - Content     # requested permissions + consent expiry rendered
+        - Authorising # FAPI redirect launched; PSU authenticating on HSBC
+        - Empty       # zero OBIE permissions staged; prevents a zero-scope consent
+        - Error
+    actions:
+      members:
+        - LoadPermissionsConfig  # reads the permission set; computes the consent expiry label
+        - StartOAuth             # POST consent-create; build FAPI URL; launch app-to-app redirect
+        - Cancel                 # abort the in-flight authorisation and return to Content
+        - Retry                  # re-attempt after an error
+    di:
+      - LoginRepository   # Koin single; consent creation + FAPI URL construction
+      - BrowserLauncher   # expect/actual per platform; launches the app-to-app redirect
+      - PendingAuthStore  # persists the in-flight authorisation (state, nonce, ConsentId) across the redirect
+
+# dependencies: MOVED to flow.yaml 2026-07-31 (CROSS_LEAK repair —
+# sibling-layout.json assigns `dependencies` to the flow sibling).
+
+screens:
+  - id: login
+    name: "{strings.screen.login.title}"
+    viewmodel: LoginViewModel
+
+i18n_coverage: true
+
+status_history:
+  - { from: draft, to: enriched, at: "2026-06-29", by: "/idea-enrich" }
+  - { from: enriched, to: enriched, at: "2026-06-29", by: "/idea-enrich",
+      note: "quality 85→93: i18n coverage added (22 keys), authorising state, initial_state fixed (loading→content), security badge, consent_expiry_display, data-flow error_mapping, aria_live on states" }
+  - from: enriched
+    to: enriched
+    at: "2026-07-14"
+    by: "/idea-enrich"
+    quality_before: 93
+    quality_after: 95
+    changes:
+      - "state_model: full ConsentOnboardingViewModel spec added (vm_class, ui_state_sealed, 5 states, view_state_fields, actions, di, errors)"
+      - "dependencies: tier-0 declared with feature deps (consent-callback, user-onboarding) and library refs (ktorfit, jose4j)"
+      - "screens[]: login screen registered with ConsentOnboardingViewModel binding"
+      - "accessibility_label: added to hsbc_explainer_card and permissions_list (Cat 9 coverage)"
+      - "i18n_coverage: true set"
+
+business_logic:
+  kind: composite
+  description: "Stages OBReadConsent1 to hsbc-obie-ais-v4.0:account-access-consents (10 read scopes incl. ReadAccountsDetail, ReadBalances, ReadTransactionsDetail) via ktorfit after obtaining a client_credentials token. Stores ConsentId in local storage, builds a FAPI 1.0 Advanced /authorize URL (response_type=code id_token, scope=openid accounts) with a PS256-signed request object (jose4j) containing ConsentId, nonce, and state. Launches app-to-app redirect to HSBC for SCA and account selection; screen transitions to authorising state once redirect is launched. Consumer returns via the consent-callback deep link."
+  external_library_refs:
+    - "hsbc-obie-ais-v4.0:account-access-consents"
+    - "fapi-1.0-advanced"
+    - "ktorfit"
+    - "jose4j"
+  description_author: claude
+  description_authored_at: "2026-06-29T12:00:00Z"
+
+shell:
+  bottom_navigation_visible: false
+  top_app_bar_visible: true
+  top_app_bar_title: "{strings.screen.login.title}"
+  top_app_bar_leading: back
+  fab_visible: false
+
+states: [content, loading, authorising, error, empty]
+
+# TEST TAGS — reconciled against source 2026-08-02 by /idea-sync (source-truth pass).
+test_tags:
+  source: "feature/login/src/commonMain/kotlin/org/mifosx/openbanking/feature/login/LoginTestTags.kt"
+  declared_in_source: 10
+  bound: 9
+  convention_note: >-
+    login_* on every const EXCEPT two — EXPLAINER_CARD is "hsbc_explainer_card" and
+    AUTHORISING_SPINNER is "authorising_spinner", both without the prefix. Copied verbatim;
+    adding the prefix for tidiness would break the tests that already assert on them.
+  unbound:
+    - tag: "login_authorising"
+      source_ref: "LoginScreen.kt:242"
+      why: >-
+        Tags the Box that fills the authorising state and centres the spinner + labels. The
+        idea-layer models authorising_spinner / authorising_label / authorising_hint as three
+        siblings bound to [authorising] with no wrapper component.
+
+components:
+
+  # ────────────────────────────────────────
+  # LOADING state — consent-create POST in flight
+  # ────────────────────────────────────────
+  - type: progress_linear
+    id: loading_indicator
+    test_tag: "login_loading_progress"     # LoginTestTags.LOADING_PROGRESS @ LoginScreen.kt:114
+    state_binding: [loading]
+    accessibility_label: "{strings.screen.login.loading.a11y}"
+    test_context:
+      purpose: "Linear progress indicator shown while the consent-create POST is in flight"
+      required_fields: [variant]
+      interaction_type: display
+      data_driven: false
+
+  - type: text
+    id: loading_label
+    content: "{strings.screen.login.loading.label}"
+    style: bodyMedium
+    color: "onSurfaceVariant"
+    state_binding: [loading]
+    accessibility_label: "{strings.screen.login.loading.a11y}"
+    test_context:
+      purpose: "Status label shown alongside the progress indicator during consent-create"
+      required_fields: [value]
+      interaction_type: display
+      data_driven: false
+
+  # ────────────────────────────────────────
+  # AUTHORISING state — FAPI redirect launched, user in HSBC
+  # ────────────────────────────────────────
+  - type: progress_circular
+    id: authorising_spinner
+    test_tag: "authorising_spinner"        # LoginTestTags.AUTHORISING_SPINNER @ LoginScreen.kt:244
+    state_binding: [authorising]
+    accessibility_label: "{strings.screen.login.authorising.a11y}"
+    test_context:
+      purpose: "Circular spinner shown after FAPI redirect launches while user authenticates in HSBC"
+      required_fields: [variant]
+      interaction_type: display
+      data_driven: false
+
+  - type: text
+    id: authorising_label
+    content: "{strings.screen.login.authorising.label}"
+    style: bodyMedium
+    color: "onSurfaceVariant"
+    state_binding: [authorising]
+    accessibility_label: "{strings.screen.login.authorising.a11y}"
+    test_context:
+      purpose: "Status message shown while user authenticates in HSBC's app or portal"
+      required_fields: [value]
+      interaction_type: display
+      data_driven: false
+
+  - type: text
+    id: authorising_hint
+    content: "{strings.screen.login.authorising.hint}"
+    style: bodySmall
+    color: "onSurfaceVariant"
+    state_binding: [authorising]
+    test_context:
+      purpose: "Hint telling the user to complete sign-in in HSBC then return; shown below spinner"
+      required_fields: [value]
+      interaction_type: display
+      data_driven: false
+
+  # ────────────────────────────────────────
+  # CONTENT state — HSBC connect explainer card
+  # ────────────────────────────────────────
+  - type: card
+    id: hsbc_explainer_card
+    test_tag: "hsbc_explainer_card"        # LoginTestTags.EXPLAINER_CARD — note the value has no login_ prefix, unlike its siblings
+    state_binding: [content]
+    elevation: 1
+    accessibility_label: "{strings.screen.login.card.a11y}"
+    test_context:
+      purpose: "Card contextualising the app-to-app redirect: HSBC will ask the PSU to approve permissions and select accounts"
+      required_fields: [children]
+      interaction_type: display
+      data_driven: false
+    children:
+      - type: image
+        id: hsbc_logo
+        asset: "ic_hsbc_logo"
+        alt: "{strings.screen.login.hsbc_logo.description}"
+        content_description: "{strings.screen.login.hsbc_logo.description}"
+        accessibility_label: "{strings.screen.login.hsbc_logo.description}"
+        test_context:
+          purpose: "HSBC brand identity confirming which bank the PSU is being redirected to"
+          required_fields: [asset, content_description]
+          interaction_type: display
+          data_driven: false
+
+      - type: text
+        id: ob_regulated_badge
+        content: "{strings.screen.login.security.badge}"
+        style: labelSmall
+        color: "primary"
+        icon_leading: verified_user
+        icon_leading_color: "primary"
+        accessibility_label: "{strings.screen.login.security.badge_a11y}"
+        test_context:
+          purpose: "Inline badge confirming this is a regulated UK Open Banking connection (FCA-authorised TPP)"
+          required_fields: [value]
+          interaction_type: display
+          data_driven: false
+
+      - type: text
+        id: explainer_headline
+        content: "{strings.screen.login.explainer.headline}"
+        style: titleMedium
+        color: "onSurface"
+        test_context:
+          purpose: "Headline confirming the app-to-app redirect destination for informed PSU consent"
+          required_fields: [value]
+          interaction_type: display
+          data_driven: false
+
+      - type: text
+        id: explainer_body
+        content: "{strings.screen.login.explainer.body}"
+        style: bodySmall
+        color: "onSurfaceVariant"
+        test_context:
+          purpose: "Clarifies FAPI redirect behaviour and credential-protection guarantee to the PSU"
+          required_fields: [value]
+          interaction_type: display
+          data_driven: false
+
+      - type: divider
+        id: card_divider
+        test_context:
+          purpose: "Visual separator between PSU-facing explainer copy and technical security notice"
+          required_fields: []
+          interaction_type: display
+          data_driven: false
+
+      - type: text
+        id: security_notice
+        content: "{strings.screen.login.security.notice}"
+        style: labelSmall
+        color: "onSurfaceVariant"
+        icon_leading: lock_outline
+        icon_leading_color: "onSurfaceVariant"
+        test_context:
+          purpose: "FAPI/mTLS/PS256 security notice for technically-aware PSUs and Open Banking developers evaluating AISP capability"
+          required_fields: [value]
+          interaction_type: display
+          data_driven: false
+
+  # Permissions being requested
+  - type: section_header
+    id: permissions_header
+    label: "{strings.screen.login.permissions.header}"
+    state_binding: [content]
+    test_context:
+      purpose: "Section heading introducing the dynamic list of OBIE read permissions staged in OBReadConsent1"
+      required_fields: [label]
+      interaction_type: display
+      data_driven: false
+
+  - type: list
+    id: permissions_list
+    state_binding: [content]
+    scroll_direction: vertical
+    items_source: "{requested_permissions}"
+    accessibility_label: "{strings.screen.login.permissions.list.a11y}"
+    test_context:
+      purpose: "Dynamic list rendering each OBIE permission with its human-readable label and description (10 rows)"
+      required_fields: [items_source]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: list_item
+        id: permission_row
+        icon: check_circle_outline
+        icon_color: "primary"
+        headline_text: "{item.label}"
+        supporting_text: "{item.description}"
+        accessibility_label: "{item.label}: {item.description}"
+        test_context:
+          purpose: "Individual OBIE permission row — rendered once per entry in requested_permissions (10 rows expected)"
+          required_fields: [headline_text, supporting_text]
+          interaction_type: display
+          data_driven: true
+
+  # Consent validity + expiry
+  - type: text
+    id: consent_validity_note
+    content: "{strings.screen.login.consent_validity}"
+    style: bodySmall
+    color: "onSurfaceVariant"
+    state_binding: [content]
+    test_context:
+      purpose: "OBIE-mandated disclosure of consent validity period and TransactionFromDateTime window"
+      required_fields: [value]
+      interaction_type: display
+      data_driven: false
+
+  - type: text
+    id: consent_expiry_display
+    content: "{consent_expiry_label}"
+    style: labelMedium
+    color: "primary"
+    state_binding: [content]
+    accessibility_label: "{strings.screen.login.consent_expiry.a11y}"
+    test_context:
+      purpose: "VM-computed formatted expiry label from ExpirationDateTime (e.g. 'Expires 26 Sep 2026'); shown below validity note"
+      required_fields: [value]
+      interaction_type: display
+      data_driven: true
+
+  # Primary CTA
+  - type: button
+    keyboard:
+      focusable: true
+    id: continue_hsbc_button
+    test_tag: "login_continue_hsbc"        # LoginTestTags.CONTINUE_HSBC
+    variant: filled
+    label: "{strings.screen.login.cta.continue}"
+    icon: open_in_new
+    state_binding: [content]
+    accessibility_label: "{strings.screen.login.cta.continue_a11y}"
+    on_click:
+      action: start_oauth
+      action_contract:
+        effect: share_external
+        external_library_refs: [ktorfit, jose4j, private_key_jwt, "fapi-1.0-advanced", "hsbc-obie-ais-v4.0:account-access-consents"]
+        description: "Stages OBReadConsent1 via POST to /account-access-consents (ktorfit), builds a FAPI 1.0 Advanced /authorize URL with PS256-signed request object (jose4j, private_key_jwt), then launches app-to-app redirect to HSBC for SCA and account selection."
+    test_context:
+      purpose: "Primary CTA triggering consent-create POST, FAPI URL build, and app-to-app redirect to HSBC"
+      required_fields: [on_click.action]
+      interaction_type: action
+      data_driven: false
+
+  # Secondary CTA
+  - type: button
+    keyboard:
+      focusable: true
+    id: cancel_button
+    test_tag: "login_cancel"               # LoginTestTags.CANCEL
+    variant: text
+    label: "{strings.screen.login.cta.cancel}"
+    state_binding: [content]
+    accessibility_label: "{strings.screen.login.cta.cancel_a11y}"
+    on_click:
+      action: navigate_back
+      target: user-onboarding
+      action_contract:
+        effect: navigate
+        description: "Navigates back to user-onboarding, abandoning the HSBC consent flow; no consent is staged and no OAuth state is stored when this path is taken."
+    test_context:
+      purpose: "Secondary CTA allowing PSU to abandon the flow and return to the onboarding screen"
+      required_fields: [on_click.action, on_click.target]
+      interaction_type: navigate
+      data_driven: false
+
+  # ────────────────────────────────────────
+  # ERROR state — consent-create failed
+  # ────────────────────────────────────────
+  - type: error_state
+    id: error_state
+    test_tag: "login_error"                # LoginTestTags.ERROR
+    state_binding: [error]
+    icon: error_outline
+    title: "{strings.screen.login.error.title}"
+    body: "{error.user_message}"
+    accessibility_label: "{strings.screen.login.error.a11y}"
+    test_context:
+      purpose: "Error state displayed when consent-create POST fails (network, 400, 500); body shows VM-mapped user-friendly message"
+      required_fields: [icon, title, body]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: button
+        keyboard:
+          focusable: true
+        id: retry_button
+        test_tag: "login_error_retry"      # LoginTestTags.ERROR_RETRY
+        variant: filled
+        label: "{strings.screen.login.error.retry}"
+        accessibility_label: "{strings.screen.login.error.retry_a11y}"
+        on_click:
+          action: start_oauth
+          action_contract:
+            effect: share_external
+            external_library_refs: [ktorfit, jose4j, private_key_jwt, "fapi-1.0-advanced", "hsbc-obie-ais-v4.0:account-access-consents"]
+            description: "Re-triggers consent-create POST (ktorfit) and FAPI 1.0 Advanced /authorize URL construction (jose4j, private_key_jwt) after a prior failure, then relaunches the HSBC app-to-app redirect for SCA."
+        test_context:
+          purpose: "Retry CTA that re-triggers start_oauth after consent-create failure"
+          required_fields: [on_click.action]
+          interaction_type: action
+          data_driven: false
+
+  # ────────────────────────────────────────
+  # EMPTY state — no permissions staged
+  # ────────────────────────────────────────
+  - type: empty_state
+    id: login_empty_state
+    test_tag: "login_empty"                # LoginTestTags.EMPTY
+    variant: neutral
+    state_binding: [empty]
+    icon: manage_search
+    title: "{strings.screen.login.empty.title}"
+    body: "{strings.screen.login.empty.body}"
+    accessibility_label: "{strings.screen.login.empty.a11y}"
+    test_context:
+      purpose: "Shown when ViewModel resolves zero OBIE permissions for the consent request (empty requested_permissions list); prevents PSU from initiating a zero-scope consent which the HSBC API would reject"
+      required_fields: [icon, title, body]
+      interaction_type: display
+      data_driven: false
+    children:
+      - type: button
+        keyboard:
+          focusable: true
+        id: login_empty_back_button
+        test_tag: "login_empty_go_back"    # LoginTestTags.EMPTY_GO_BACK
+        variant: filled
+        label: "{strings.screen.login.empty.go_back}"
+        accessibility_label: "{strings.screen.login.empty.go_back_a11y}"
+        on_click:
+          action: navigate_back
+          target: user-onboarding
+          action_contract:
+            effect: navigate
+            description: "Navigates back to user-onboarding when no OBIE permissions are available to stage, preventing the PSU from initiating a zero-scope consent that HSBC would reject."
+        test_context:
+          purpose: "Navigates back to user-onboarding when no OBIE permissions are available to stage; PSU can review scope requirements before retrying"
+          required_fields: [on_click.action, on_click.target]
+          interaction_type: navigate
+          data_driven: false

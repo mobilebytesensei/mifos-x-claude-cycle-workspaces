@@ -1,0 +1,161 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: pay-domestic-scheduled
+
+screen_id: pay-domestic-scheduled
+
+cache_strategy: memory
+cache_rationale: "Same as the reference rail — reuses the consent-scoped account and beneficiary stores; the staged payment is never persisted."
+store_shape: "reuses AccountsOverviewStore and BeneficiariesStore; no store of its own"
+
+on_mount:
+  - trigger: load_payment_sources
+    description: "Read accounts, filter to payable schemes, and read beneficiaries."
+    steps:
+      - { call: accounts-list, auth: psu_aisp_session, store_as: accounts }
+      - compute:
+          eligibleDebtorAccounts: "accounts.filter { it.SchemeName == 'UK.OBIE.SortCodeAccountNumber' }"
+          hiddenAccountCount: "accounts.size - eligibleDebtorAccounts.size"
+          minSelectableDate: "today + 1 day"
+          maxSelectableDate: "today + 365 days"
+      - { call: beneficiaries-list, auth: psu_aisp_session, store_as: beneficiaries }
+    on_loading: loading
+    on_success: content
+    on_error: error
+
+on_user_action:
+  - trigger: stage_consent
+    description: "Stage the domestic-scheduled-payment-consent."
+    steps:
+      - compute:
+          idempotencyKey: "stableKeyFor(stagedPayment)   # once, reused on every retry"
+          amountMajorUnits: "toMajorUnitString(amountMinorUnits)"
+          requestedExecutionDateTime: "isoAtMidnightUtc(selectedDate)"
+      - call: domestic-scheduled-payment-consent-create
+        auth: client_credentials_payments_scope
+        headers: [x-jws-signature, x-idempotency-key]
+        body_requires: ["Data.Permission == 'Create'", "Data.Initiation.RequestedExecutionDateTime"]
+        store_as: stagedConsent
+      - navigate: payment-consent
+        params: { consentId: "{stagedConsent.Data.ConsentId}", paymentFamily: "domestic-scheduled-payment" }
+
+  - trigger: resume_after_authorisation
+    description: "Re-read the authorised consent, then submit. No funds check on this family."
+    steps:
+      - call: domestic-scheduled-payment-consent-read
+        auth: client_credentials_payments_scope
+        store_as: authorisedConsent
+        note: "Mandatory — the bank may have written its own DebtorAccount if the TPP omitted one."
+      - call: domestic-scheduled-payment-create
+        auth: psu_authorization_code
+        headers: [x-jws-signature, x-idempotency-key]
+        body:
+          Data:
+            ConsentId: "{authorisedConsent.Data.ConsentId}"
+            Initiation: "{authorisedConsent.Data.Initiation}"
+          Risk: "{authorisedConsent.Risk}"
+        store_as: payment
+      - navigate: payment-status
+        params: { paymentId: "{payment.Data.DomesticScheduledPaymentId}", paymentFamily: "domestic-scheduled-payment" }
+
+  - trigger: retry_submit
+    description: "Re-run submit reusing the original idempotency key."
+    re_runs: [resume_after_authorisation]
+
+# ─────────────────────────────────────────────────────────────────────────
+# INVARIANTS
+# ─────────────────────────────────────────────────────────────────────────
+date_boundary_invariant:
+  rule: "tomorrow <= requestedExecutionDate <= today + 365"
+  measured: "T+0 -> U003 (today counts as past); T+7 -> 201; T+365 -> 201; T+366 -> U002"
+  weekends: "selectable — a Saturday staged 201 despite the Guide requiring a working day"
+  enforced_by: "TC-PSCH-002, TC-PSCH-003"
+  # ── SHARPENED 2026-08-07 — the two bounds do NOT have equal standing ──
+  asymmetry_of_evidence:
+    upper_bound: "MEASURED. T+365 stages, T+366 returns U002. The picker's ceiling rests on observation."
+    lower_bound: >-
+      NOT MEASURED. Only T+0 (refused) and T+7 (accepted) were ever sent; T+1..T+6 were never
+      probed. "Tomorrow" comes from HSBC's Guide §22.2.1 ("Today +1"), which is documentation.
+      If the real floor is later than tomorrow, the picker offers dates that stage a 400 — the
+      failure mode is a user-visible error on a date the UI presented as valid.
+    do_not: "Do not restate the floor as measured. Six bisecting requests would close the gap; until then it stays declared."
+
+timestamp_display_invariant:
+  rule: >-
+    The success and review states display the REQUESTED execution date only. CutOffDateTime,
+    StatusUpdateDateTime, ExpectedExecutionDateTime and ExpectedSettlementDateTime are never
+    rendered.
+  rationale: >-
+    ADDED 2026-08-07. All five of those fields plus CreationDateTime carry the SAME value on a
+    domestic 201 — they are stubs, not clocks. CutOffDateTime is the trap: it reads as a
+    submit-by deadline and is in fact a copy of the creation timestamp, so it is already in the
+    past whenever it is read. Rendering it would put a false and alarming deadline in front of
+    the PSU. StatusUpdateDateTime being the same value is also why authorisation must be
+    detected from Data.Status alone.
+  also_covers: >-
+    Data.Authorisation.CompletionDateTime is midnight-truncated on echo (SP-D11, SP-I14), so no
+    countdown may be built from the returned value either.
+  enforced_by: "TC-PSCH-008, TC-PSCH-010"
+
+no_funds_check_invariant:
+  rule: >-
+    This screen makes NO funds-availability call, and must not substitute a comparison against
+    today's balance presented as one.
+  rationale: >-
+    The family has no funds-confirmation endpoint by design — today's balance says nothing
+    about the balance on the execution date. A synthesised check would be a stronger claim than
+    the data supports.
+  enforced_by: "TC-PSCH-005"
+
+truthfulness_invariant:
+  rule: >-
+    Neither PDNG nor INCO may be rendered as 'paid', 'sent' or 'completed'. Both describe the
+    INSTRUCTION being established.
+  rationale: >-
+    OBIE exposes no per-execution status. The resource says the scheduled payment is set up; it
+    can never say whether the payment on the execution date succeeded. Claiming otherwise is a
+    false statement about the PSU's money.
+  dispositions: >-
+    PDNG maps to in_progress and INCO to instruction_established — the FOURTH disposition, added
+    2026-08-07. They are NOT the same disposition even though this invariant forbids the same
+    words of both: PDNG is a transient the tracker still polls, INCO is terminal for this rail
+    and stops the poll. INCO must not map to terminal_success (a tick on a payment that has not
+    happened) and must not reach the fail-open branch (a dormant instruction rendered as live).
+  enforced_by: "TC-PSCH-006"
+
+amendment_notice_invariant:
+  rule: "The use-your-bank-channel notice is present on the Review step and on the Success state."
+  rationale: "OBL Customer Experience Guidelines make the disclosure mandatory, not optional."
+  enforced_by: "TC-PSCH-007"
+
+# ── ADDED 2026-08-07 from the full by-type capture read ──
+request_shape_invariant:
+  rule: >-
+    The consent body carries NO ExchangeRateInformation block, and no member of it, under any
+    condition.
+  rationale: >-
+    U005 "Field is not expected" for all three RateTypes — Indicative, Actual and Agreed, the
+    last refused even with a concrete ExchangeRate of 1.15 and a ContractIdentification. There
+    is no rate to request or pin anywhere in the corpus. Beyond being useless, sending it is
+    actively harmful: U005 fires BEFORE U004, so an unexpected block masks a genuinely missing
+    mandatory field and turns one round trip into two.
+  enforced_by: "TC-PSCH-011"
+
+sca_support_data_invariant:
+  rule: >-
+    An SCA exemption request never shortens the flow. The app always routes through
+    payment-consent for the app-to-app authorisation leg.
+  rationale: >-
+    SCASupportData is echoed back verbatim, RequestedSCAExemptionType "BillPayment" included,
+    and the consent still lands AWAU. Acceptance is not honouring — the echo proves only that
+    the field parsed. A "skip authorisation" branch keyed off a 201 carrying an exemption would
+    strand the PSU on a consent that was never authorised.
+  enforced_by: "TC-PSCH-012"
+
+error_rendering_invariant:
+  rule: "The error surface renders EVERY entry in Errors[], keyed off ErrorCode + Path, never Message."
+  rationale: >-
+    Errors is an array and has been observed carrying two entries at once. U004 has four
+    wordings for one code — including the contentless "Field is missing" — and Path casing is
+    not stable. See dtos/ObPaymentError.yaml.
+  enforced_by: "TC-PSCH-013"

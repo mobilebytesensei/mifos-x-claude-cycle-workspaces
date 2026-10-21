@@ -1,0 +1,178 @@
+sibling: docs
+schema_version: "4.0"
+feature_id: beneficiaries
+
+feature: beneficiaries
+contract_version: "2.0.0"
+status: approved
+approve_hash: "sha256:1ff2320e0cf5f3fc177bf87df77f680b5cac1f8447b44df8bfcf79207f6e0d89"
+approved_at: "2026-08-05T05:15:00Z"
+approved_by: "/idea approve"
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+score: 95
+# quality_score is the key core/registries/COMMAND_MATRIX_REGISTRY.yaml reads
+# (yaml_number_avg over screens/{feature}/**/*.yaml). `score` is retained for
+# existing references. Added 2026-08-07 (/idea-sync).
+quality_score: 95
+cluster: payments-context
+acceptance_refs:
+  - FR-006
+scaffolded_by: /idea-heal
+archetype: index_list
+flow_ref: recurring-and-statements
+description: >-
+  Read-only list of saved payees for an account, sourced from OBReadBeneficiary5 via GET
+  /accounts/{AccountId}/beneficiaries. Reached from account-detail Beneficiaries chip. Displays avatar initials,
+  creditor name, scheme-type label (Sort Code / IBAN / Paym), account identifier, and payment reference. Supports
+  client-side search filtering by name or reference. Differentiates error recovery: Retry for transient failures, View
+  Consents for 403 ConsentRevoked.
+has_ui: true
+has_server: false
+# has_search: dedicated search_bar component over the payee list.
+capabilities: [has_ui, has_api, has_flow, has_search]
+metadata:
+  category: crud
+  implementation_ready: true
+  impl_ready_at: '2026-06-29T12:00:00Z'
+  impl_ready_schema: v2
+  quality_score: 95
+  quality_last_updated: '2026-07-14'
+  quality_improvements:
+    - Typed error recovery per HTTP code (401 TokenExpired/retry, 403 ConsentRevoked/view-consents, 429 RateLimited/backoff, network/retry)
+    - Client-side search filter by Name and Reference with no API round-trip
+    - Avatar initials derived from CreditorAccount.Name for visual identity
+    - Scheme-type label mapping (Sort Code/IBAN/Paym/Card/Account) from OBIE SchemeName
+    - Empty state for zero-beneficiary accounts distinct from error state
+    - i18n string-key wrapping across all UI strings
+    - Formal state_model block declaring BeneficiariesUiState sealed variants (Loading/Content/Empty/Error) with field types, error enum, events, actions, and DI
+    - Formal dependencies block (tier + features[] + libraries[]) linking account-detail parent, consent-list error-recovery, and ktorfit library
+    - HTTP 500 ServerError coverage added to error_cases, LoadBeneficiaries.error_handling, data-flow error_type_mapping, and strings
+    - Fixed misleading beneficiary_row accessibility_label (removed "tap to view payment details" — row has no on_click); now runtime template giving CreditorAccount.Name + scheme + Identification to screen readers
+    - Distinct search_bar accessibility_label key (search_a11y) separate from placeholder text
+    - Added navigate_back trigger to data-flow.yaml on_user_action for completeness
+    - Added capability_tags (rest-client, list-display, search-filter, error-recovery) for library awareness
+    - TC-BEN-010: reference-based search test (filter by payment reference, not just creditor name)
+contracts: []
+libraries:
+  - capability: rest-client
+    library: ktorfit
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+      - web
+# vm_actions RELOCATED 2026-08-01 (/idea-sync): loadBeneficiaries -> initial_load;
+# navigateToConsents + navigateBack -> nav_callbacks. Nothing deleted — each moved to the block
+# that states how it actually works. ui.yaml#state_model declares members [RetryLoad, Search].
+# FilterBeneficiaries is retained: it is the same behaviour ui.yaml names `Search`.
+initial_load:
+  mechanism: init-stream-collection
+  what: "GET /accounts/{accountId}/beneficiaries via Ktorfit AisApiService"
+  states: "Loading -> Content(beneficiaries, beneficiariesFiltered) | Empty when the list is empty"
+  error_handling:
+    on_401: uiState = Error(type=TokenExpired, message=strings.error.beneficiaries.token_expired)
+    on_403: uiState = Error(type=ConsentRevoked, message=strings.error.beneficiaries.consent_revoked)
+    on_429: uiState = Error(type=RateLimited, message=strings.error.beneficiaries.rate_limited)
+    on_500: uiState = Error(type=ServerError, message=strings.error.beneficiaries.server_error)
+    on_network: uiState = Error(type=NetworkError, message=strings.error.beneficiaries.network_error)
+  note: >-
+    NOT a dispatched action. ui.yaml#implementation.removed_in_sync: "loadBeneficiaries action —
+    the initial load is stream collection in init{}".
+
+nav_callbacks:
+  # ui.yaml#implementation.removed_in_sync: "navigateToConsents / navigateBack actions — both are
+  # nav-host callbacks, not action members".
+  - signature: "onNavigateToConsents -> navigate(ConsentListRoute)"
+    shown_when: "error.type == ConsentRevoked"
+  - signature: "onBack -> popBackStack()"
+
+vm_actions:
+  - name: FilterBeneficiaries
+    signature: 'fun filterBeneficiaries(query: String)'
+    state_mutations:
+      - >-
+        uiState = uiState.copy(beneficiariesFiltered = beneficiaries.filter { it.CreditorAccount.Name.contains(query,
+        ignoreCase=true) || it.Reference.contains(query, ignoreCase=true) })
+    side_effects: []
+    error_handling: {}
+    notes: Pure in-memory filter; does not re-invoke the AIS endpoint.
+  - name: RetryLoad
+    signature: fun retryLoad()
+    state_mutations:
+      - re-invokes LoadBeneficiaries with same accountId
+    side_effects: []
+    error_handling: {}
+    visibility_condition: error.type in {TokenExpired, RateLimited, NetworkError}
+scheme_label_mapping:
+  description: 'ViewModel-layer helper: maps OBIE SchemeName to human-readable display label.'
+  entries:
+    - scheme: UK.OBIE.SortCodeAccountNumber
+      label: Sort Code
+    - scheme: UK.OBIE.IBAN
+      label: IBAN
+    - scheme: UK.OBIE.Paym
+      label: Paym
+    - scheme: UK.OBIE.PAN
+      label: Card
+    - default: null
+      label: Account
+error_cases:
+  - id: TokenExpired
+    trigger: HTTP 401 from HSBC AIS
+    user_message: '{strings.error.beneficiaries.token_expired}'
+    recovery: Retry CTA re-triggers LoadBeneficiaries; ViewModel clears stale token first
+  - id: ConsentRevoked
+    trigger: HTTP 403 from HSBC AIS
+    user_message: '{strings.error.beneficiaries.consent_revoked}'
+    recovery: View Consents CTA navigates to consent-list
+  - id: RateLimited
+    trigger: HTTP 429 from HSBC AIS
+    user_message: '{strings.error.beneficiaries.rate_limited}'
+    recovery: Retry CTA with exponential back-off
+  - id: NetworkError
+    trigger: IOException / timeout
+    user_message: '{strings.error.beneficiaries.network_error}'
+    recovery: Retry CTA re-triggers LoadBeneficiaries
+  - id: ServerError
+    trigger: HTTP 500 from HSBC AIS
+    user_message: '{strings.error.beneficiaries.server_error}'
+    recovery: Retry CTA re-triggers LoadBeneficiaries
+  - id: EmptyResult
+    trigger: Data.Beneficiary[] is empty in OBIE response
+    user_message: '{strings.beneficiaries.empty_body}'
+    recovery: Empty state; no action needed
+test_fixtures:
+  source: idea-layer/screens/beneficiaries/demo-data.yaml
+  scenario_count: 10
+  priority_distribution:
+    p0: 3
+    p1: 5
+    p2: 2
+status_history:
+  - from: enriched
+    to: designed
+    at: '2026-07-01T10:51:08.404Z'
+    by: /idea-export-stitch
+  - from: designed
+    to: approved
+    at: "2026-07-14T00:00:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: ""
+  - from: approved
+    to: enriched
+    at: "2026-08-05T05:05:00Z"
+    by: "/idea approve --unapprove"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "Stored approve_hash predated the 2026-08-04 export regeneration and no longer matched the sibling set."
+  - from: enriched
+    to: approved
+    at: "2026-08-05T05:15:00Z"
+    by: "/idea approve"
+    contract_version: "2.0.0"
+    bypass_flags: []
+    reason: "--all-ready bulk approval; predicate C1-C6 green."

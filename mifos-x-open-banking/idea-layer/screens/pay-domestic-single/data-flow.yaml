@@ -1,0 +1,150 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: pay-domestic-single
+
+screen_id: pay-domestic-single
+
+cache_strategy: memory
+cache_rationale: >-
+  Accounts and beneficiaries come from existing consent-scoped memory stores. The staged
+  payment itself is NEVER persisted to disk: a half-finished payment written to Room could
+  outlive the consent that permitted it and be resumed against a revoked authorisation.
+store_shape: "reuses AccountsOverviewStore and BeneficiariesStore; no store of its own"
+
+on_mount:
+  - trigger: load_payment_sources
+    description: "Read the PSU's accounts and filter to payable ones, plus the beneficiaries."
+    steps:
+      - call: accounts-list
+        auth: psu_aisp_session
+        store_as: accounts
+      - compute:
+          eligibleDebtorAccounts: "accounts.filter { it.SchemeName == 'UK.OBIE.SortCodeAccountNumber' }"
+          hiddenAccountCount: "accounts.size - eligibleDebtorAccounts.size"
+      - call: beneficiaries-list
+        auth: psu_aisp_session
+        store_as: beneficiaries
+    on_loading: loading
+    on_success: content
+    on_error: error
+
+on_user_action:
+  - trigger: stage_consent
+    description: "Stage the domestic-payment-consent."
+    steps:
+      - compute:
+          idempotencyKey: "stableKeyFor(stagedPayment)   # generated ONCE, reused on every retry"
+          instructionIdentification: "random(<=35)"
+          endToEndIdentification: "random(<=35)"
+          amountMajorUnits: "toMajorUnitString(amountMinorUnits)   # integer arithmetic only"
+      - call: domestic-payment-consent-create
+        auth: client_credentials_payments_scope
+        headers: [x-jws-signature, x-idempotency-key]
+        store_as: stagedConsent
+      - navigate: payment-consent
+        params: { consentId: "{stagedConsent.Data.ConsentId}", paymentFamily: "domestic-payment" }
+
+  - trigger: resume_after_authorisation
+    description: "payment-consent has polled the consent to AUTH and handed back."
+    steps:
+      - call: domestic-payment-consent-read
+        auth: client_credentials_payments_scope
+        store_as: authorisedConsent
+        note: >-
+          Re-read is MANDATORY, not an optimisation. When the TPP omits DebtorAccount the bank
+          writes the PSU's own choice into Initiation.DebtorAccount, and submitting the locally
+          staged copy would fail U008. The Initiation echoed on submit is taken from HERE.
+      - call: domestic-payment-funds-confirmation
+        auth: psu_authorization_code
+        store_as: fundsResult
+      - branch:
+          when: "fundsResult.Data.FundsAvailableResult.FundsAvailable == false"
+          then: "uiState = Error(InsufficientFunds); return to the Amount step"
+
+  - trigger: submit_payment
+    description: >-
+      Submit, FORWARDING the parsed Initiation object read back from the authorised consent.
+      Corrected 2026-08-07: this was described as a byte-for-byte echo, which is wrong and
+      would produce a broken implementation. The server normalises key ORDER on every echo, so
+      the bytes it returns are not the bytes that were staged. Forward the parsed object; never
+      re-serialise it and string-compare, and never hash it for comparison.
+    steps:
+      - call: domestic-payment-create
+        auth: psu_authorization_code
+        headers: [x-jws-signature, x-idempotency-key]
+        body:
+          Data:
+            ConsentId: "{authorisedConsent.Data.ConsentId}"
+            Initiation: "{authorisedConsent.Data.Initiation}"
+          Risk: "{authorisedConsent.Risk}"
+        store_as: payment
+      - navigate: payment-status
+        params: { paymentId: "{payment.Data.DomesticPaymentId}", paymentFamily: "domestic-payment" }
+
+  - trigger: retry_submit
+    description: "Re-run submit after a network failure, reusing the original idempotency key."
+    re_runs: [submit_payment]
+
+# ─────────────────────────────────────────────────────────────────────────
+# INVARIANTS
+# ─────────────────────────────────────────────────────────────────────────
+idempotency_invariant:
+  rule: >-
+    One idempotency key per staged payment, generated before the first stage call and reused
+    for the consent stage, the submit, and every retry of either.
+  rationale: >-
+    A retry after a network timeout is indistinguishable, from the client's side, from a
+    request that never arrived. Without a stable key the safe-looking action (retry) is the
+    one that takes the money twice.
+  enforced_by: "TC-PDS-008"
+
+amount_precision_invariant:
+  rule: "Amounts are held as minor units and converted to a major-unit decimal string with integer arithmetic."
+  rationale: >-
+    A payment amount must not acquire a floating-point representation error between the
+    keyboard and the wire.
+  enforced_by: "TC-PDS-009"
+
+eligibility_invariant:
+  rule: >-
+    BOTH pickers render only UK.OBIE.SortCodeAccountNumber accounts — the debtor list and the
+    payee list. (Widened 2026-08-07: the creditor side was previously unstated.)
+  rationale: >-
+    The credit card returns U027 on this rail and Global Money returns U002 when TPP-named.
+    Both refusals are avoidable in the UI, and a 400 after the PSU has composed a whole payment
+    is a worse experience than an account that was never offered — provided the omission is
+    explained, which ineligible_accounts_note does.
+    On the creditor side a PAN is refused with U027 under every LocalInstrument tried, including
+    UK.OBIE.BalanceTransfer (BT-09), so there is no configuration that makes a card payable.
+    The debtor refusal is additionally UNDIAGNOSABLE from the response — U002 @
+    DebtorAccount.Identification means three different things and the app cannot tell which —
+    so client-side pre-filtering is not merely nicer, it is the only design that can produce a
+    truthful message.
+  enforced_by: "TC-PDS-003, TC-PDS-004, TC-PDS-013"
+
+# ── ADDED 2026-08-07 from the full by-type capture read ──
+client_side_validation_invariant:
+  rule: >-
+    Every shape constraint on the Initiation is validated CLIENT-SIDE before the first stage
+    call. The API is never used as the form validator.
+  rationale: >-
+    Shape validation is fail-fast and one-error-at-a-time: U005 "not expected" strictly precedes
+    U004 "missing", and a parent omission short-circuits its children (R17-B03). R15-E01 is the
+    clearest case — an unexpected field is reported while a MISSING MANDATORY field in the same
+    body is not. So a form cannot obtain its fault list in one round trip; each fix surfaces the
+    next, which for a four-step payment form means a maddening sequence of full re-submissions.
+  scope:
+    - "CreditorAccount.Name present"
+    - "Amount is a positive 2dp major-unit string"
+    - "RemittanceInformation.Structured, if ever sent, is an ARRAY"
+    - "No Creditor party block unless a complete postal address including BuildingNumber exists"
+  enforced_by: "TC-PDS-011, TC-PDS-012"
+
+error_rendering_invariant:
+  rule: "The error surface renders EVERY entry in Errors[], keyed off ErrorCode + Path, never Message."
+  rationale: >-
+    Errors is an array and has been observed carrying two entries whose causes are unrelated
+    (R13-10, R9-11). Showing only the first leaves the payment refused for an unshown reason.
+    Message is not stable for a given code — U004 has four wordings — and Path casing is not
+    stable either (R2-05).
+  enforced_by: "TC-PDS-014"

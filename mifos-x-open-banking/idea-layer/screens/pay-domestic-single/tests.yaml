@@ -1,0 +1,231 @@
+sibling: tests
+schema_version: "4.0"
+feature_id: pay-domestic-single
+
+feature: pay-domestic-single
+scenario_count: 16
+
+error_contract_ref:
+  dto: dtos/ObPaymentError.yaml
+  note: >-
+    TC-PDS-014 and TC-PDS-015 assert this screen's obligations under that contract. The envelope
+    shape, the Errors[]-is-an-array finding, the fail-fast ordering, the Path casing instability
+    and the four U004 wordings are all stated ONCE in the DTO. Do not restate them per scenario.
+
+scenarios:
+  - id: TC-PDS-001
+    priority: p0
+    title: "Happy path — stage, authorise, confirm funds, submit"
+    given: "The PSU has an eligible account and a saved payee"
+    when: "They complete all four steps and confirm"
+    then:
+      - "POST /domestic-payment-consents is sent with x-jws-signature and x-idempotency-key"
+      - "Risk.PaymentContextCode is TransferToThirdParty or TransferToSelf"
+      - "The app navigates to payment-consent with consentId and paymentFamily"
+      - "After AUTH, funds-confirmation runs on the PSU token"
+      - "POST /domestic-payments is sent and the app navigates to payment-status"
+
+  - id: TC-PDS-002
+    priority: p0
+    title: "No merchant fields are ever sent"
+    given: "Any staged or submitted payment"
+    when: "The request body is inspected"
+    then:
+      - "Risk contains no MerchantCategoryCode"
+      - "Risk contains no MerchantCustomerIdentification"
+      - "Risk contains no DeliveryAddress"
+      - "PaymentContextCode is not one of the four merchant contexts"
+    rationale: >-
+      HSBC's own Postman body for this endpoint sends EcommerceMerchantInitiatedPayment with
+      MerchantCategoryCode 5432 and a DeliveryAddress. Copying the reference body verbatim is
+      the obvious mistake, and this is the guard against it. FR-015.
+
+  - id: TC-PDS-003
+    priority: p0
+    title: "The credit card is never offered as a debtor"
+    given: "The PSU holds the UK.OBIE.PAN credit card 1123456842"
+    when: "The Account step renders"
+    then:
+      - "The card is absent from the debtor list"
+      - "ineligible_accounts_note is displayed"
+    rationale: "U027 Unsupported scheme on this rail. Avoidable in the UI. FR-018."
+
+  - id: TC-PDS-004
+    priority: p0
+    title: "Global Money is not offered as a TPP-named debtor"
+    given: "The PSU holds Global Money account 1123456843"
+    when: "The Account step renders"
+    then:
+      - "Global Money is absent from the debtor list"
+    rationale: >-
+      U002 when TPP-named. Note this is NOT the same as unpayable — the bank funded payment
+      19909 from it. The exclusion is of TPP nomination only.
+
+  - id: TC-PDS-005
+    priority: p0
+    title: "A PSU with no eligible account gets an explained terminal state"
+    given: "The PSU holds only the credit card"
+    when: "The Account step renders"
+    then:
+      - "no_eligible_accounts is displayed"
+      - "The screen does not present an empty list with no explanation"
+
+  - id: TC-PDS-006
+    priority: p0
+    title: "Submit echoes the AUTHORISED consent's Initiation, not the staged copy"
+    given: "A consent staged with DebtorAccount omitted, which the bank then filled with the PSU's choice"
+    when: "The payment is submitted"
+    then:
+      - "The consent is re-read after authorisation"
+      - "The submitted Data.Initiation equals the authorised consent's Data.Initiation FIELD FOR FIELD"
+      - "The comparison is made on the parsed object, never on a re-serialised string or a hash of one"
+      - "No U008 is returned"
+    rationale: >-
+      The bank overwrites Initiation.DebtorAccount with the PSU's selection when the TPP omits
+      it, and enriches it with a Name. Echoing the local staged copy fails U008 on every
+      bank-selected run.
+      CORRECTED 2026-08-07: this scenario previously asserted a BYTE-FOR-BYTE match. That
+      assertion is unsatisfiable and would fail on a perfectly valid payment — the server
+      normalises Initiation key order on every echo (LocalInstrument lands in different
+      positions in SP-I07 and SP-D06; Frequency emits CountPerPeriod before Type). Only ORDER
+      changes; values are preserved. A field-by-field comparison, or simply forwarding the
+      parsed object, is the only implementation that works.
+
+  - id: TC-PDS-007
+    priority: p1
+    title: "Authorisation is detected from Status, never from StatusUpdateDateTime"
+    given: "A consent that has moved AWAU -> AUTH with StatusUpdateDateTime unchanged"
+    when: "The consent-status poll runs"
+    then:
+      - "The poll observes AUTH and proceeds"
+      - "The poll does not wait for StatusUpdateDateTime to change"
+    rationale: >-
+      All five authorised consents in the corpus transitioned with StatusUpdateDateTime still
+      equal to CreationDateTime. A timestamp-keyed poll hangs forever. FR-021.
+
+  - id: TC-PDS-008
+    priority: p0
+    title: "A retry after a network failure creates no second payment"
+    given: "The submit call times out after the bank has received it"
+    when: "The PSU taps Retry"
+    then:
+      - "The same x-idempotency-key is sent"
+      - "The same request body is sent"
+      - "Exactly one payment resource exists"
+    rationale: "FR-017. The safe-looking action must not be the one that takes the money twice."
+
+  - id: TC-PDS-009
+    priority: p1
+    title: "Amount conversion is exact"
+    given: "An amount entered as 1055 minor units"
+    when: "The consent body is built"
+    then:
+      - "InstructedAmount.Amount is the string '10.55'"
+      - "No floating-point type is used in the conversion"
+
+  - id: TC-PDS-010
+    priority: p2
+    title: "The fee is shown only once it is known"
+    given: "The Review step before staging"
+    when: "The review card renders"
+    then:
+      - "The fee row reads the unknown-fee string, not a guess"
+      - "After staging, the fee row shows 0.05 GBP from the consent's Charges[]"
+    rationale: >-
+      The superseded OBP-era screen rendered 'Estimated fee: Free (SEPA)' before staging. It
+      was wrong on both counts — the rail is not SEPA and the fee is not free — and it was
+      unknowable at that point regardless.
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # ADDED 2026-08-07 from the full by-type capture read
+  # Error contract: dtos/ObPaymentError.yaml
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: TC-PDS-011
+    priority: p0
+    title: "A payee with no name is rejected by the form, not by the bank"
+    given: "Manual creditor entry with sort code and account number filled and the name field blank"
+    when: "The PSU attempts to advance from the Payee step"
+    then:
+      - "The form blocks the step transition and marks payee_name_field"
+      - "No POST /domestic-payment-consents is sent"
+    rationale: >-
+      R9-07 returns U004 "CreditorAccount.Name is missing". Catching it at the bank costs the
+      PSU a full round trip through Review, and because shape validation is fail-fast they may
+      then be told about a SECOND missing field only on the next attempt. DebtorAccount.Name is
+      optional — the asymmetry is easy to get backwards.
+
+  - id: TC-PDS-012
+    priority: p1
+    title: "RemittanceInformation.Structured is serialised as an array"
+    given: "A payment carrying a creditor reference in Structured form"
+    when: "The consent body is built"
+    then:
+      - 'Data.Initiation.RemittanceInformation.Structured is a JSON ARRAY'
+      - 'Its first element is an object of shape { CreditorReferenceInformation: { Reference } }'
+      - "It is never serialised as a bare object"
+    rationale: >-
+      R6-10 sends the array form and gets 201. BT-07 and BT-08 send the same content as a bare
+      object and get U002 "Invalid value" @ Data.Initiation.RemittanceInformation.Structured —
+      a SHAPE error reported with wording that points at the value. A Kotlin model declaring
+      Structured as a single object will fail every time with nothing to debug against.
+    note: "Guards a field this screen does not yet send. It exists so the shape is not rediscovered the hard way."
+
+  - id: TC-PDS-013
+    priority: p0
+    title: "A credit card is never offered as a PAYEE"
+    given: "The beneficiary list contains a UK.OBIE.PAN destination"
+    when: "The Payee step renders"
+    then:
+      - "The PAN destination is absent from the list"
+      - "No LocalInstrument value re-enables it"
+    rationale: >-
+      U027 on all eight scenarios that tried it: BT-01..BT-06, BT-09 and R6-08. BT-09 is the
+      decisive one — LocalInstrument UK.OBIE.BalanceTransfer with a valid sort-code debtor, and
+      still refused. BalanceTransfer does not unlock a PAN creditor, so there is no
+      configuration under which offering a card as a payee can succeed. Mirror of TC-PDS-003 on
+      the creditor side. FR-018.
+
+  - id: TC-PDS-014
+    priority: p0
+    title: "Every entry in Errors[] is rendered, and copy is keyed off code plus path"
+    given: "A 400 whose Errors array carries TWO entries — R13-10's U027 on the creditor scheme followed by U002 on the debtor"
+    when: "The error state renders"
+    then:
+      - "Both entries are displayed"
+      - "The screen does not render Errors[0] alone"
+      - "Each entry's copy is selected from ErrorCode + Path"
+      - "No branch in the selection logic reads Message"
+      - 'A Path of "Data.Initiation.CreditorAccount.identification" matches the same field as the capital-I form'
+    rationale: >-
+      R13-10 and R9-11 both return two unrelated faults at once; fixing only the shown one
+      leaves the payment refused for an invisible reason. U004 has four Messages for one code,
+      so Message-keyed copy silently stops matching when HSBC edits a string. R2-05 proves Path
+      casing is not stable. See dtos/ObPaymentError.yaml.
+
+  - id: TC-PDS-015
+    priority: p1
+    title: "The form does not rely on the API for its fault list"
+    given: "A body with several client-detectable faults"
+    when: "The PSU reaches Review"
+    then:
+      - "All client-detectable faults are surfaced together, before staging"
+      - "The screen never presents a one-error-at-a-time repair loop driven by 400s"
+    rationale: >-
+      Shape validation is fail-fast. R15-E01 returns ONLY the U005 for an unexpected field and
+      does not report the mandatory field missing from the same body; R17-B03 returns only the
+      parent U004 and not the nested error. Each fix surfaces the next. Only U002 business rules
+      batch (SO-I04 returns two). Using the API as a form validator produces exactly the
+      experience this scenario forbids.
+
+  - id: TC-PDS-016
+    priority: p1
+    title: "The ConsentId never leaves the process boundary"
+    given: 'A staged consent with ConsentId "45135"'
+    when: "The app logs, reports a crash, emits analytics or builds a deep link"
+    then:
+      - "The ConsentId appears in no log line, crash report, analytics event or URL"
+      - "Support references use x-fapi-interaction-id and the OB envelope Id instead"
+    rationale: >-
+      ConsentIds are short sequential integers-as-strings, not UUIDs, so the id space is
+      trivially enumerable. Anything that leaks one leaks its neighbours' existence too.

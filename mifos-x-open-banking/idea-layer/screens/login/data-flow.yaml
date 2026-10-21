@@ -1,0 +1,56 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: login
+
+screen_id: login
+
+on_mount:
+  - action: load_permissions_config
+    description: "Load the 10 OBIE read permissions from local constants (OBReadConsent1.Permissions enum) and compute consent_expiry_label from ExpirationDateTime (now + 90 days). No API call; synchronous. Sets initial_state to content."
+    store_as: requested_permissions
+    secondary_stores:
+      - key: consent_expiry_label
+        from: "DateFormatter.format(now + 90.days, pattern='d MMM yyyy', prefix='Expires ')"
+    on_success: content
+
+on_user_action:
+  - trigger: start_oauth
+    description: "POST consent-create to stage the OBReadConsent1 resource, then build the FAPI 1.0 Advanced /authorize URL (hybrid response_type=code id_token, PS256-signed request object, nonce, state). Launch app-to-app redirect to HSBC for SCA and account selection. Transitions to authorising once redirect is launched; transitions to error on any failure."
+    steps:
+      - call: consent-create
+        body:
+          Data:
+            Permissions: "{requested_permissions[].id}"
+            ExpirationDateTime: "{consent_expiry_datetime}"
+            TransactionFromDateTime: "{transaction_from_datetime}"
+            TransactionToDateTime: "{transaction_to_datetime}"
+          Risk: {}
+        store_as: staged_consent
+      - action: build_fapi_authorize_url
+        params:
+          ConsentId: "{staged_consent.Data.ConsentId}"
+          response_type: "code id_token"
+          scope: "openid accounts"
+          nonce: "{generate_nonce()}"
+          state: "{generate_state()}"
+          request_object_alg: "PS256"
+        store_as: authorize_url
+      - action: store_state_and_nonce
+        params:
+          state: "{generate_state()}"
+          nonce: "{generate_nonce()}"
+      - action: redirect_to_bank_authorize
+        params:
+          url: "{authorize_url}"
+    on_loading: loading
+    on_redirect_launched: authorising
+    on_error: error
+    error_mapping:
+      NetworkException: "Unable to reach HSBC. Check your connection and try again."
+      HttpException(400): "HSBC rejected the consent request. Please try again."
+      HttpException(500): "HSBC is temporarily unavailable. Try again in a moment."
+      HttpException(401): "Authorisation failed. The app may need to re-register with HSBC."
+      FapiRedirectException: "Could not open HSBC. Ensure the HSBC Mobile Banking app is installed, or try again."
+
+  - trigger: navigate_back
+    navigate_to: user-onboarding

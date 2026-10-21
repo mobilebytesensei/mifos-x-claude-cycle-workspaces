@@ -1,0 +1,325 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: statements
+
+screen_id: statements
+archetype: index_list
+name: "Statements"
+# status: REMOVED 2026-08-04 (CROSS_LEAK repair — sibling-layout.json assigns `status` to
+# the docs sibling). This copy held `implemented`; docs.yaml is the single owner.
+quality_score: 97
+initial_state: loading
+
+shell:
+  bottom_navigation_visible: true
+  top_app_bar_visible: true
+  top_app_bar_title: "{strings.statements.screen_title}"
+  top_app_bar_leading: back
+  fab_visible: false
+
+business_logic:
+  kind: crud
+  description: "Calls GET /accounts/{AccountId}/statements (OBIE OBReadStatement2, ReadStatementsDetail). Each OBStatement2 carries StatementId, StatementReference, StartDateTime, EndDateTime, and StatementAmount[]{OpeningBalance, ClosingBalance GBP}. ViewModel derives a period label ('May 2026') from StartDateTime via kotlinx-datetime, sorts descending, and exposes closingBalanceFormatted per row. Row tap navigates to statement-detail. Download icon triggers GET /statements/{StatementId}/file (PDF/CSV) dispatched to platform file handler."
+  external_library_refs:
+    - "hsbc-obie-ais-v4.0:statements"
+    - "hsbc-obie-ais-v4.0:statements-file"
+    - "ktorfit"
+    - "kotlinx-datetime"
+  description_author: claude
+  description_authored_at: "2026-06-29T12:00:00Z"
+
+status_history:
+  - from: draft
+    to: enriched
+    at: "2026-06-29"
+    by: "/idea-enrich"
+
+states: [loading, content, empty, error]
+
+# TEST TAGS — reconciled against source 2026-08-02 by /idea-sync (source-truth pass).
+test_tags:
+  source: "feature/statements/src/commonMain/kotlin/org/mifosx/openbanking/feature/statements/StatementsTestTags.kt"
+  declared_in_source: 12         # 9 const val + 3 builder fns
+  bound: 7
+  convention_note: >-
+    This file mixes two forms and BOTH are source truth: the flat consts read
+    "statements:camelCase" while row(), downloadButton() and downloadSpinner() emit
+    "statements_snake_case_$id". Do not harmonise either side.
+  interpolated:
+    - { tag: "statements_row_{item.StatementId}",      builder: "fun row(id: String)" }
+    - { tag: "statements_download_{item.StatementId}", builder: "fun downloadButton(id: String)" }
+  unbound:
+    - { tag: "statements_download_spinner_{id}", builder: "fun downloadSpinner(id: String)",
+        why: "The in-progress spinner replaces the download icon_button in place; the idea-layer models it as a state of that button rather than a separate component." }
+    - { tag: "statements:emptyTitle", parent: empty_statements, why: "Text node modelled as the parent's `title:` field." }
+    - { tag: "statements:emptyBody",  parent: empty_statements, why: "Text node modelled as the parent's `body:` field." }
+    - { tag: "statements:errorTitle", parent: error_state,      why: "Text node modelled as the parent's `title:` field." }
+    - { tag: "statements:errorBody",  parent: error_state,      why: "Text node modelled as the parent's `body:` field." }
+
+components:
+  - type: skeleton
+    id: statements_skeleton
+    test_tag: "statements:loadingSkeleton"
+    state_binding: [loading]
+    variant: list
+    item_count: 3
+    accessibility_label: "{strings.statements.skeleton.a11y}"
+    style:
+      background: surface
+      cornerRadius: "8dp"
+    test_context:
+      purpose: "Shimmer placeholder (3 rows) shown while OBReadStatement2 fetch is in flight; replaced by statements_list on success"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  - type: list
+    id: statements_list
+    test_tag: "statements:contentList"
+    state_binding: [content]
+    scroll_direction: vertical
+    items_source: "{statements}"
+    accessibility_label: "{strings.statements.list.a11y}"
+    style:
+      background: background
+      padding: "0dp"
+    test_context:
+      purpose: "Renders OBStatement2 records sorted descending by StartDateTime with period label, closing balance, and download icon"
+      required_fields: [statements]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: list_item
+        keyboard:
+          focusable: true
+        id: statement_row
+        # NOTE the convention break, which is source truth and must be preserved: the flat
+        # consts in this file use "statements:camelCase" but the three per-row builders emit
+        # "statements_snake_case_$id". Normalising either side breaks onNodeWithTag.
+        test_tag: "statements_row_{item.StatementId}"          # fun row(id) = "statements_row_$id"
+        headline: "{item.periodLabel}"
+        supporting_text: "{strings.statements.row.closing_balance_label}: {item.closingBalanceFormatted}"
+        trailing_content: "{item.startDateFormatted} – {item.endDateFormatted}"
+        trailing_style: bodySmall
+        accessibility_label: "{strings.statements.row.a11y}"
+        style:
+          background: surface
+          ripple: true
+          minHeight: "72dp"
+        test_context:
+          purpose: "Single OBStatement2 row; headline = ViewModel-derived period label ('May 2026'); supporting = 'Closing balance: £2,847.63'; trailing = formatted date range; tap navigates to statement-detail"
+          required_fields:
+            - item.StatementId
+            - item.StatementReference
+            - item.periodLabel
+            - item.closingBalanceFormatted
+            - item.startDateFormatted
+            - item.endDateFormatted
+          interaction_type: navigate
+          data_driven: true
+        on_click:
+          action: navigate_statement_detail
+          target: statement-detail
+          params:
+            statementId: "{item.StatementId}"
+            accountId: "{accountId}"
+          action_contract:
+            effect: navigate
+            description: "Opens statement-detail screen for the selected period, passing StatementId and accountId as navigation arguments."
+        children:
+          - type: icon_button
+            keyboard:
+              focusable: true
+            id: download_statement_button
+            test_tag: "statements_download_{item.StatementId}"  # fun downloadButton(id)
+            icon: file_download
+            loading_icon: circular_progress
+            loading_state_binding: "downloadState[item.StatementId] == InProgress"
+            variant: standard
+            accessibility_label: "{strings.statements.row.download.a11y}"
+            loading_accessibility_label: "{strings.statements.row.download.in_progress_a11y}"
+            style:
+              tint: primary
+              size: "24dp"
+            test_context:
+              purpose: "Triggers download_statement for this row's StatementId; shows circular_progress spinner while downloadState[statementId]==InProgress; stops event propagation so row-tap does not also fire"
+              required_fields: [item.StatementId]
+              interaction_type: action
+              data_driven: true
+            on_click:
+              action: download_statement
+              params:
+                statementId: "{item.StatementId}"
+                accountId: "{accountId}"
+              action_contract:
+                effect: persist_file
+                external_library_refs: ["ktor-client-download", "hsbc-obie-ais-v4.0:statements-file"]
+                description: "Calls GET /accounts/{AccountId}/statements/{StatementId}/file (Accept: application/pdf, text/csv) and streams the response bytes to the platform file handler, saving the statement PDF or CSV to device storage."
+
+  - type: divider
+    id: statement_row_divider
+    state_binding: [content]
+    test_context:
+      purpose: "Visual separator between statement rows inside the list"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  - type: empty_state
+    id: empty_statements
+    test_tag: "statements:emptyState"
+    state_binding: [empty]
+    icon: description
+    title: "{strings.statements.empty.title}"
+    body: "{strings.statements.empty.body}"
+    accessibility_label: "{strings.statements.empty.title}"
+    style:
+      icon_tint: onSurfaceVariant
+      title_style: titleMedium
+      body_style: bodyMedium
+    test_context:
+      purpose: "Shown when OBReadStatement2 Data.Statement[] is empty; uses description icon (document) to signal data-type"
+      required_fields: []
+      interaction_type: display
+      data_driven: false
+
+  - type: error_state
+    id: error_state
+    test_tag: "statements:errorState"
+    state_binding: [error]
+    icon: error_outline
+    title: "{strings.statements.error.title}"
+    body: "{error.message}"
+    accessibility_label: "{strings.statements.error.title}"
+    style:
+      icon_tint: error
+      title_style: titleMedium
+      body_style: bodyMedium
+    test_context:
+      purpose: "Shown on 401/403/429/network error; error.message is localised by ViewModel from http_error_map in docs.yaml"
+      required_fields: [error.message]
+      interaction_type: display
+      data_driven: true
+    children:
+      - type: button
+        keyboard:
+          focusable: true
+        id: retry_button
+        test_tag: "statements:retryButton"
+        variant: filled
+        label: "{strings.statements.retry.label}"
+        accessibility_label: "{strings.statements.retry.a11y}"
+        style:
+          cornerRadius: "20dp"
+          horizontalPadding: "24dp"
+        test_context:
+          purpose: "Re-triggers retry_load which delegates to statementsLoad(accountId)"
+          required_fields: []
+          interaction_type: action
+          data_driven: false
+        on_click:
+          action: retry_load
+          action_contract:
+            effect: call_api
+            reads_from: statements
+            external_library_refs: ["ktorfit", "hsbc-obie-ais-v4.0:statements"]
+            description: "Re-issues GET /accounts/{AccountId}/statements after a recoverable 401 or network error, returning the screen to Loading and then Content, Empty, or Error."
+
+layout:
+  loading:
+    type: column
+    scroll: false
+    padding: "16dp"
+    children: [statements_skeleton]
+  content:
+    type: lazy_column
+    scroll: vertical
+    padding: "0dp"
+    children: [statements_list]
+    separator: statement_row_divider
+  empty:
+    type: column
+    scroll: false
+    gravity: center
+    padding: "32dp"
+    children: [empty_statements]
+  error:
+    type: column
+    scroll: false
+    gravity: center
+    padding: "32dp"
+    children: [error_state]
+
+state_model:
+  StatementsViewModel:
+    state:
+      name: StatementsState
+      fields:
+        - name: uiState
+          type: StatementsUiState
+          initial: Loading
+        - name: downloadState
+          type: "Map<String, DownloadState>"
+          initial: "emptyMap()"
+    screen_state:
+      sealed_class: StatementsUiState
+      members:
+        - Loading
+        - Content                           # statements: List<StatementRowUiModel>
+        - Empty
+        - Error                             # message: String
+    errors:
+      types:
+        - TokenExpiredError                 # HTTP 401 — session expired
+        - ConsentScopeError                 # HTTP 403 — ReadStatements consent missing
+        - RateLimitedError                  # HTTP 429 — too many requests
+        - StatementDownloadUnsupportedError # HTTP 501 — download not available for account type
+        - NetworkError                      # network — AIS endpoint unreachable
+    actions:
+      members:
+        - RetryLoad
+        - DownloadStatement    # data class — per-row download, keyed by statementId
+    state_fields_extra:
+      - name: downloadState
+        type: Map<String, DownloadState>   # per-statement download tracking, keyed by statementId
+      - name: statements
+        type: List<StatementRowUiModel>
+    nav_callbacks:
+      - "onBack -> popBackStack()"
+      - "onNavigateToStatementDetail(statementId, accountId) -> StatementDetailRoute(...)"
+    di:
+      - SavedStateHandle         # supplies the accountId route arg
+      - StatementsRepository     # Koin single; statements stream
+      - StatementFileRepository  # fetches statement file bytes
+      - StatementFileHandler     # platform handler that opens/saves the downloaded file
+
+# ─────────────────────────────────────────────────────────────────────
+# SOURCE BINDING — reverse-synced from source 2026-07-28
+# ─────────────────────────────────────────────────────────────────────
+implementation:
+  status: implemented
+  source_module: "feature/statements"
+  package: "org.mifosx.openbanking.feature.statements"
+  route: "StatementsRoute(accountId: String)"
+  viewmodel: StatementsViewModel
+  screen: StatementsScreen
+  test_tags_object: StatementsTestTags
+  domain_model: StatementPeriod
+  file_handler: "StatementFileHandler.kt — provided by cmp-navigation/statements/StatementFileHandlerProvider (js and nonJs actuals)"
+  reachable_from:
+    - "account-detail — AccountDetailChip.Statements"
+  synced_from_source_at: "2026-07-28"
+  added_in_sync:
+    - "downloadState map — per-row download tracking keyed by statementId, so multiple rows can download independently"
+    - "StatementFileHandler DI"
+  removed_in_sync:
+    - "statementsLoad action — the initial load is stream collection in init{}"
+    - "navigateToStatementDetail action — it is a nav-host callback, not an action member"
+
+# dependencies: MOVED to flow.yaml 2026-07-31 (CROSS_LEAK repair —
+# sibling-layout.json assigns `dependencies` to the flow sibling).
+
+screens:
+  - id: statements
+    name: "Statements"
+    viewmodel: StatementsViewModel

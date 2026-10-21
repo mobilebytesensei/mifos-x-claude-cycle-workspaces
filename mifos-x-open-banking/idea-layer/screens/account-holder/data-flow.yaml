@@ -1,0 +1,44 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: account-holder
+
+screen_id: account-holder
+
+# Reverse-synced from source 2026-07-28. Source opens a single Store5-backed
+# stream on init; there is no parallel two-endpoint merge.
+
+on_mount:
+  - trigger: stream_collect
+    description: "init{} opens repository.profileStream(accountId, viewModelScope) and collects it through emptyIfContent { it.isEmpty }, mapping each ScreenState onto AccountHolderUiState."
+    steps:
+      - call: party
+        path_params:
+          AccountId: "{accountId}"
+        store_as: partyResponse
+      - map:
+          from: partyResponse
+          via: "PartyResponse.toPartyProfile()"
+          store_as: profile
+    on_loading: loading
+    on_success: content
+    on_empty: empty
+    on_error: error
+    error_routing:
+      unauthorized: error          # AccountHolderErrorKind.TokenExpired (retriable)
+      forbidden: error             # AccountHolderErrorKind.ConsentMissingParty (retry suppressed)
+      not_found: error             # AccountHolderErrorKind.ProfileNotFound (retry suppressed)
+      no_network: error            # AccountHolderErrorKind.LoadFailed (retriable)
+      blank_display_name: empty    # emptyIfContent { profile.isEmpty }
+
+on_user_action:
+  - trigger: RetryLoad
+    re_runs: [stream_collect]
+    via: "stream.refresh()"
+    available_in_states: [error]
+    note: "Only reachable when AccountHolderErrorKind.isRetriable is true."
+
+cache:
+  strategy: store5
+  store: "BankingStores.partyStore(aisp): Store<String, PartyProfile>"
+  key: AccountId
+  scope: "Stream is per-view-model, bound to viewModelScope, and dies with it. ProfileRepository deliberately exposes no refresh()."

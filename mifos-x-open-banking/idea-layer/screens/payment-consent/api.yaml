@@ -1,0 +1,215 @@
+sibling: api
+schema_version: "4.0"
+feature_id: payment-consent
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PAYMENT CONSENT — the shared app-to-app authorise return leg for ALL SEVEN families
+#
+# Rewritten 2026-08-06 (/idea-sync, PISP-tests research). Previously served
+# domestic-payment-consents only.
+#
+# Headless. Validates the redirect, exchanges the code, polls the ORIGINATING family's
+# consent-status GET to AUTH, then hands control back to the screen that started it.
+# ═══════════════════════════════════════════════════════════════════════════
+
+base_path: "/obie/open-banking/v4.0/pisp"
+api_source_ref: API-003
+
+# ── HOST SPLIT — added 2026-08-07 (/idea-sync, capture corpus) ────────────
+# The authorise leg and the resource calls are on DIFFERENT hosts, one subdomain apart.
+hosts:
+  resource: "secure.sandbox.ob.hsbc.co.uk"
+  resource_used_by: [exchange_authorization_code, get_consent_status, "every consent-staging call on every family"]
+  authorise: "sandbox.ob.hsbc.co.uk"
+  authorise_used_by: ["oauth2/authorize — the browser leg only"]
+  redirect_uri: "https://thekalpeshpawar.github.io/obp-callback/callback/"
+  rule: >-
+    The authorise host is a separate constant. NEVER derive it from the resource base URL by
+    stripping or rewriting the `secure.` prefix, and never the reverse.
+  failure_mode: >-
+    Sending the PSU to the resource host lands the browser somewhere that does not serve the
+    authorisation page. The app observes only a consent stuck at AWAU until its poll deadline —
+    indistinguishable from a PSU who abandoned the journey.
+
+# ── THE AUTHORISE URL IS CONSTRUCTED, NOT RETURNED ───────────────────────
+authorise_url_construction:
+  finding: >-
+    The consent-staging response carries NO authorisation link and no redirect member. Links
+    holds only Self; Meta holds only TotalPages. Confirmed on VRP; treated as the general shape.
+  rule: "The app builds the oauth2/authorize URL from the ConsentId itself. There is nothing to follow."
+  consequence: "A client written to follow an OBIE Links href finds none and has no fallback path."
+
+nav_params:
+  - { name: consentId, required: true }
+  - { name: paymentFamily, required: true, enum_ref: PaymentFamily, description: "Selects which consent-status endpoint to poll. Without it the return leg cannot resolve one." }
+
+operations:
+  - id: exchange_authorization_code
+    endpoint: "POST /v1.1/oauth2/token"
+    auth: private_key_jwt
+    grant_type: authorization_code
+    scope: payments
+    preconditions:
+      - "The redirect's `state` matches the one this app generated"
+      - "The id_token `nonce` matches the one this app generated"
+    ordering_rule: >-
+      Both checks run BEFORE the code is spent. An authorisation code is single-use, so
+      validating after the exchange leaves nothing to retry with.
+    exchange_first_rule: >-
+      Added 2026-08-07. The exchange is the VERY FIRST action after the state check — no
+      analytics, no persistence write, no navigation animation in front of it. Codes were lost
+      TWICE in the corpus by doing other work first. TTL is documented at 30-60s and observed as
+      minutes; the divergence is unresolved and the shorter figure is the safe one to build to.
+    lost_code_is_unrecoverable: >-
+      There is NO recovery for a spent or expired code. The consent it belongs to has already
+      reached AUTH and cannot be sent back through the authorise leg — see
+      no_reauthorisation_rule. Recovery is staging a NEW consent, nothing else.
+    response:
+      status: 200
+      content_type: application/json
+      dto: ObTokenResponse
+      envelope: flat
+      fields:
+        - { name: access_token, type: string, required: true, description: "The PSU token. Required by funds-confirmation and by payment submission on every family; the client-credentials token is refused there." }
+        - { name: token_type, type: string, required: true, const: "Bearer" }
+        - { name: expires_in, type: integer, required: true, description: "Observed 299 on the PIS authorise legs and 3599 on the AIS leg. Build to the shorter figure — a 299s budget must cover funds-confirmation AND submit." }
+        - { name: scope, type: string, required: true, observed: "openid payments" }
+        - { name: id_token, type: string, required: true, description: "Carries the nonce validated BEFORE the code is spent, per ordering_rule." }
+        - { name: refresh_token, type: string, required: false, description: "Returned on the VRP leg. Absent on the six single-use PIS families — their consent is COND after one payment, so there is nothing to refresh." }
+      redaction_rule: >-
+        access_token, refresh_token and id_token are NEVER written to a log, capture, analytics
+        event or crash report. Redact to length only.
+    error_responses:
+      - { status: 400, id: TokenExchangeFailed, description: "Code spent, expired, or redirect_uri mismatch. Unrecoverable — see lost_code_is_unrecoverable." }
+      - { status: 401, description: "client_assertion rejected. Signals a signing-key, kid or aud fault, not a PSU fault." }
+
+  - id: get_consent_status
+    endpoint_template: "GET /{familyConsentPath}/{consentId}"
+    auth: client_credentials_payments_scope
+    headers: []
+    polled_to: AUTH
+    response:
+      status: 200
+      content_type: application/json
+      dto: ObPaymentStatus
+      envelope: "Data + Risk + Links + Meta"
+      fields:
+        - { name: Data.ConsentId, type: string, required: true, description: "Echoes the nav param. Short sequential integer-as-string — see consent_id_shape." }
+        - { name: Data.Status, type: enum, required: true, enum: [AWAU, AUTH, COND, RJCT], description: "THE ONLY field this poll reads. See critical_note." }
+        - { name: Data.CreationDateTime, type: datetime, required: true }
+        - { name: Data.StatusUpdateDateTime, type: datetime, required: true, description: "Present but INERT — equals CreationDateTime even after AWAU -> AUTH. Never poll on it." }
+        - { name: Data.Initiation, type: object, required: true, description: "Authoritative after AUTH. Where the TPP omitted DebtorAccount the bank has overwritten it here — see initiation_read_back_rule." }
+        - { name: Data.Permission, type: string, required: false, description: "Present on the scheduled and standing-order families only; always 'Create'." }
+        - { name: Data.Charges, type: array, required: false, description: "Domestic families only, and quoted at staging before a payer exists. Always a single 0.05 GBP entry typed UK.OBIE.CHAPSOut with ChargeBearer BorneByDebtor. ABSENT from every international consent — an international fee is not disclosable before the PSU authorises." }
+        - { name: Data.CutOffDateTime, type: datetime, required: false, description: "Domestic consents only. Undocumented by HSBC but consistently returned." }
+        - { name: Data.ExpectedExecutionDateTime, type: datetime, required: false, description: "Domestic only; equals CreationDateTime at staging." }
+        - { name: Data.ExpectedSettlementDateTime, type: datetime, required: false, description: "Domestic only; equals CreationDateTime at staging." }
+        - { name: Risk, type: object, required: true }
+        - { name: Links.Self, type: string, required: true, description: "The ONLY Links member. There is no authorisation href — see authorise_url_construction." }
+        - { name: Meta.TotalPages, type: integer, required: true, observed: 1 }
+      absent_fields_rule: >-
+        ExchangeRateInformation is NEVER present, at any status, on any family. It is refused on
+        write with U005 and never emitted on read, so no FX rate is disclosed anywhere in the
+        lifecycle. Do not render a rate on this screen or the one that called it.
+    error_responses:
+      - { status: 400, code: U009, description: "Read against a consent in a status the operation does not allow. Submitting against a non-Authorised consent returns this on every family." }
+      - { status: 400, code: U011, description: "Resource cannot be found — observed after a VRP consent DELETE. The six PIS families have no DELETE, so this is VRP-only." }
+    family_resolution:
+      - { paymentFamily: domestic-payment, path: "domestic-payment-consents" }
+      - { paymentFamily: domestic-scheduled-payment, path: "domestic-scheduled-payment-consents" }
+      - { paymentFamily: domestic-standing-order, path: "domestic-standing-order-consents" }
+      - { paymentFamily: international-payment, path: "international-payment-consents" }
+      - { paymentFamily: international-scheduled-payment, path: "international-scheduled-payment-consents" }
+      - { paymentFamily: international-standing-order, path: "international-standing-order-consents" }
+      - { paymentFamily: domestic-vrp, path: "domestic-vrp-consents" }
+
+consent_status_contract:
+  ladder: "AWAU -> AUTH, then COND on first use for the six PIS families"
+  vrp_exception: "The VRP consent stays AUTH and never reaches COND. This screen only ever waits for AUTH, so the difference does not affect it."
+  terminal_rejected: "RJCT — the PSU denied it at the bank. Observed on consent 45121."
+  gating_rule: >-
+    Hand-back is GATED on AUTH. Submitting against a non-Authorised consent returns 400 U009 on
+    every family.
+  critical_note: >-
+    StatusUpdateDateTime does NOT move on AWAU -> AUTH. All five authorised consents in the
+    corpus (45171, 45173, 45174, 45175, 45176) transitioned with it still equal to
+    CreationDateTime. This poll reads Data.Status and nothing else — a timestamp-keyed poll
+    would spin until its deadline on every single payment. Full contract: dtos/ObPaymentStatus.yaml.
+  auth_is_not_payability: >-
+    Added 2026-08-07. AUTH means the PSU approved the consent — it does NOT mean the mandate can
+    pay. A credit-card VRP consent reaches AUTH, passes funds-confirmation, and then refuses
+    every payment with U021. No field on the consent reports this. Hand-back on AUTH is still
+    correct because no better signal exists; the defence is the type screens' debtor pre-filter
+    (FR-018). Do not add a compensating check here — this screen has no data for one.
+  initiation_read_back_rule: >-
+    Added 2026-08-07. Where the TPP OMITTED Initiation.DebtorAccount, the bank OVERWRITES it with
+    the PSU's picker choice and ENRICHES it with a Name; where the TPP supplied one, the bank
+    never touches it. The staged Initiation and the authorised Initiation are therefore different
+    documents. The final successful poll response is the source of truth — hand it back with the
+    consentId so the originating screen submits what the bank holds, not what it staged.
+
+token_isolation:
+  rule: "The payments-scope token obtained here is NEVER persisted into ConsentSession."
+  rationale: >-
+    ConsentSession holds the AIS data-sharing session. Writing a payments token into it would
+    give account-information reads a credential scoped to payment initiation, and would couple
+    the lifetime of a one-shot payment authorisation to a 90-day data consent.
+  lifetime:
+    six_pis_families: "Held only for the life of a single payment — the funds check and the submit."
+    vrp: >-
+      Longer-lived by design. OBIE: "unlike AIS consents, VRP access tokens should not be set to
+      expire at 90 days." The mandate funds many payments and each needs the PSU token for
+      funds-confirmation, so the token outlives any one payment. It is still never written into
+      ConsentSession.
+
+polling:
+  starts_after: "a successful code exchange"
+  stops_on: "AUTH, RJCT, or the deadline"
+  interval_ms: 2000
+  backoff_multiplier: 1.5
+  max_interval_ms: 15000
+  max_duration_ms: 180000
+  on_timeout: "Surface a non-terminal 'still awaiting authorisation' state with a manual retry. Do NOT abandon the consent — it may still be authorised."
+
+# ── NO RE-AUTHORISATION — added 2026-08-07, REFUTES A PRIOR RECOVERY PATH ─
+no_reauthorisation_rule:
+  evidence_grade: provisional
+  evidence_note: "Browser-side observation, no capture artefact. Operationally load-bearing; recorded, not resolved."
+  finding: >-
+    A fresh authorisation URL was generated for a consent that had already reached AUTH. The URL
+    builds correctly and the sandbox REJECTS the attempt.
+  rule: "A consent that has reached AUTH cannot be re-sent through the authorise leg. Ever."
+  supersedes: >-
+    The pre-2026-08-07 TokenExchangeFailed recovery read "Restart the authorise leg." That is
+    REFUTED as written — restarting the authorise leg means relaunching against the same
+    ConsentId, which is exactly what fails. The recovery below now says stage a NEW consent.
+
+consents_coexist:
+  finding: >-
+    Consent 45123 sat at AWAU while a LATER consent 45124 on the SAME endpoint was staged,
+    authorised and consumed to COND. Staging does not supersede.
+  consequence: >-
+    Everything here keys off the consentId nav param. There is no "current consent" for a family
+    to resolve — multiple live consents coexist and an abandoned one simply expires.
+
+consent_id_shape:
+  finding: 'Short sequential integers-as-strings — "45123", "45253" — shared across all seven families. Not UUIDs.'
+  consequence: "Enumerable; adjacent ids belong to other PSUs. Never place a ConsentId in a URL, log or share sheet."
+
+credential_split:
+  staging: "client-credentials token only — a background call, no browser and no person."
+  authorise: "browser AND a present PSU. Cannot be automated or headlessly retried."
+  status_poll: "client-credentials token only."
+
+error_cases:
+  - { id: StateMismatch, trigger: "redirect state does not match", recovery: "Reject BEFORE the code exchange. Return to the type screen and stage a NEW consent." }
+  - { id: NonceMismatch, trigger: "id_token nonce does not match", recovery: "Reject BEFORE the code exchange." }
+  - { id: ConsentRejected, trigger: "consent status RJCT", recovery: "The PSU denied it at the bank. Offer a NEW payment, never a resubmit — a rejected consent cannot be reused. Observed on consent 45121." }
+  - { id: AuthorisationTimeout, trigger: "poll deadline reached with the consent still AWAU", recovery: "Manual retry. Non-terminal — the PSU may still be authenticating at the bank." }
+  - id: TokenExchangeFailed
+    trigger: "token endpoint returns 4xx"
+    recovery: >-
+      Stage a NEW consent from the type screen. The code is spent and cannot be reused, AND the
+      existing consent cannot be re-authorised — see no_reauthorisation_rule. Amended 2026-08-07;
+      previously read "Restart the authorise leg", which the sandbox refuses.
+  - { id: NetworkError, trigger: "IOException / timeout", recovery: "Retry the poll — reads are idempotent." }

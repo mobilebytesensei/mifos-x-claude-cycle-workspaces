@@ -1,0 +1,196 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: pay-domestic-standing-order
+
+screen_id: pay-domestic-standing-order
+
+cache_strategy: memory
+cache_rationale: >-
+  Reuses the consent-scoped beneficiaries store. No accounts read at all — this rail has no
+  debtor field. The staged mandate is never persisted to disk.
+store_shape: "reuses BeneficiariesStore; no store of its own"
+
+on_mount:
+  - trigger: load_beneficiaries
+    description: "Read saved payees. NOTE: no accounts call — there is no debtor step on this rail."
+    steps:
+      - { call: beneficiaries-list, auth: psu_aisp_session, store_as: beneficiaries }
+      - compute:
+          minFirstPaymentDate: "today + 1 day"
+          maxFinalPaymentDate: "today + 12 months"
+          frequencyOptions: "[WEEK, FRTN, MNTH, QURT, YEAR]"
+    on_loading: loading
+    on_success: content
+    on_error: error
+
+on_user_action:
+  - trigger: stage_consent
+    description: "Stage the domestic-standing-order-consent."
+    steps:
+      - compute:
+          idempotencyKey: "stableKeyFor(stagedMandate)   # once, reused on every retry"
+          firstPaymentAmountMajor: "toMajorUnitString(firstPaymentAmountMinor)"
+          recurringPaymentAmountMajor: "toMajorUnitString(recurringAmountMinor)   # only when varyingAmounts"
+          finalPaymentAmountMajor: "toMajorUnitString(finalAmountMinor)           # only when varyingAmounts AND hasEndDate"
+      - call: domestic-standing-order-consent-create
+        auth: client_credentials_payments_scope
+        headers: [x-jws-signature, x-idempotency-key]
+        body_requires:
+          - "Data.Permission == 'Create'"
+          - "Data.Initiation.FirstPaymentAmount"
+          - "Data.Initiation.MandateRelatedInformation.Frequency.Type in the five accepted values"
+          - "Data.Initiation.MandateRelatedInformation.FirstPaymentDateTime   # see first_payment_date_invariant — optional to the BANK, required by THIS app"
+          - "Risk == {}"
+        body_optional:
+          # ── CORRECTED 2026-08-07. This was listed under body_forbids as 'not in the schema'. ──
+          - "Data.Initiation.RemittanceInformation.Unstructured   # R17-D01 -> 201, echoed verbatim"
+          - "Data.Initiation.RemittanceInformation.Structured     # R17-D03 -> 201, MUST be an ARRAY"
+        body_forbids:
+          - "Data.Initiation.InstructedAmount            # U005 — this rail uses FirstPaymentAmount"
+          - "Data.Initiation.DebtorAccount               # not in the schema"
+          - "Data.Initiation.LocalInstrument             # not in the schema"
+          - "Data.Initiation.InstructionIdentification   # not in the schema"
+          - "Data.Initiation.EndToEndIdentification      # not in the schema"
+          - "MandateRelatedInformation.Reference         # refused on BOTH rails — the reference goes in RemittanceInformation instead"
+          - "MandateRelatedInformation.Frequency.PointInTime   # U005 on write, though AIS returns it on read"
+        store_as: stagedConsent
+      - navigate: payment-consent
+        params: { consentId: "{stagedConsent.Data.ConsentId}", paymentFamily: "domestic-standing-order" }
+
+  - trigger: resume_after_authorisation
+    description: "Re-read the authorised consent, then submit. No funds check on this family."
+    steps:
+      - call: domestic-standing-order-consent-read
+        auth: client_credentials_payments_scope
+        store_as: authorisedConsent
+        note: >-
+          Mandatory. The bank writes its own DebtorAccount into the authorised consent even
+          though the TPP cannot send one — observed on 19916, where an omitted debtor came back
+          as a UK.OBIE.PAN card. Echo what the bank wrote, not what was staged.
+      - call: domestic-standing-order-create
+        auth: psu_authorization_code
+        headers: [x-jws-signature, x-idempotency-key]
+        body:
+          Data:
+            ConsentId: "{authorisedConsent.Data.ConsentId}"
+            Initiation: "{authorisedConsent.Data.Initiation}"
+          Risk: {}
+        store_as: mandate
+      - navigate: payment-status
+        params: { paymentId: "{mandate.Data.DomesticStandingOrderId}", paymentFamily: "domestic-standing-order" }
+
+  - trigger: retry_submit
+    description: "Re-run submit reusing the original idempotency key."
+    re_runs: [resume_after_authorisation]
+
+# ─────────────────────────────────────────────────────────────────────────
+# INVARIANTS
+# ─────────────────────────────────────────────────────────────────────────
+amount_field_invariant:
+  rule: "FirstPaymentAmount is sent. InstructedAmount is NEVER sent."
+  proof: >-
+    Round 15 crossed the two shapes deliberately. InstructedAmount with FirstPaymentAmount
+    removed returns U005; both present also returns U005 on InstructedAmount. The international
+    standing order is the exact inverse.
+  enforced_by: "TC-PSO-002"
+
+frequency_invariant:
+  rule: "Frequency.Type is one of exactly WEEK, FRTN, MNTH, QURT, YEAR."
+  proof: "All nine OBIE values tested on this rail; ADHO, INDA, MIAN and DAIL all return U002."
+  enforced_by: "TC-PSO-003"
+
+mandate_date_invariant:
+  rule: "FinalPaymentDateTime, when present, is after FirstPaymentDateTime, within 12 months, and not today or tomorrow."
+  proof: "All three rules arrived in a single U003 message. The 12-month horizon is in no published HSBC document."
+  enforced_by: "TC-PSO-004"
+  # ── SHARPENED 2026-08-07 ──
+  all_three_must_be_enforced_locally: >-
+    The U003 is ONE undiscriminated string carrying all three rules. Same code, same Path, same
+    Message whichever one fired, so the app cannot tell which broke and cannot highlight the
+    offending input. Enforcing only two of the three and letting the third fall through to the
+    API produces an error the screen can neither localise nor explain. Reaching this error at
+    all means the picker's bounds failed.
+  do_not_parse_the_message: >-
+    Message text is not stable for a given code anywhere in this API. A substring match on the
+    U003 wording to work out which rule fired is exactly the brittleness
+    dtos/ObPaymentError.yaml#iron_rule forbids.
+
+# ── ADDED 2026-08-07 from the full by-type capture read ──
+first_payment_date_invariant:
+  rule: "FirstPaymentDateTime is ALWAYS sent, even though the bank does not require it."
+  bank_behaviour: >-
+    R17-B01 omits it and stages 201 — and the RESPONSE omits it too. The bank substitutes
+    nothing and reveals no derived first date.
+  rationale: >-
+    Optional to the API is not optional to this screen. With the field omitted there is no first
+    date anywhere in the response, so the review and success screens have nothing to put in the
+    "first payment on …" row. The only alternatives would be to leave the row blank on a
+    recurring commitment the PSU is about to authorise, or to compute a guess and present it as
+    fact. Sending the field is what makes the row truthful.
+  enforced_by: "TC-PSO-011"
+
+date_echo_invariant:
+  rule: >-
+    Mandate dates are echoed BYTE-IDENTICAL and may be compared as strings. The Initiation
+    OBJECT around them may NOT.
+  detail: >-
+    FirstPaymentDateTime and FinalPaymentDateTime come back exactly as sent — +00:00 offset
+    preserved rather than converted to Z, original seconds intact. Only key ORDER is normalised
+    (MandateRelatedInformation echoes FirstPaymentDateTime, FinalPaymentDateTime, Frequency
+    although requests send Frequency first; Frequency echoes CountPerPeriod before Type).
+  cross_rail_trap: >-
+    The scheduled rail is the opposite — RequestedExecutionDateTime IS truncated to midnight,
+    as is Data.Authorisation.CompletionDateTime. A date-handling helper shared across the two
+    rails will be wrong on one of them.
+  enforced_by: "TC-PSO-012"
+
+reference_invariant:
+  rule: >-
+    A reference, when supplied, goes in Data.Initiation.RemittanceInformation. It is NEVER
+    placed in MandateRelatedInformation.Reference.
+  proof: >-
+    R17-D01 (Unstructured) and R17-D03 (Structured) both stage 201 and echo verbatim.
+    MandateRelatedInformation.Reference is refused on BOTH the domestic and the international
+    rail. CORRECTED 2026-08-07: this feature previously recorded RemittanceInformation as absent
+    from the standing-order schema entirely, which was wrong — only the mandate-level field is
+    refused, and that is the one that had been probed.
+  structured_shape: "If Structured is used it MUST be an ARRAY of objects; a bare object returns U002 'Invalid value'."
+  enforced_by: "TC-PSO-013"
+
+wire_type_invariant:
+  rule: "Amount is a QUOTED 2dp string; CountPerPeriod is an UNQUOTED JSON number; PointInTime is a QUOTED zero-padded string."
+  rationale: >-
+    The three types are not uniform and two of them are counter-intuitive. A model declaring
+    CountPerPeriod as String or PointInTime as Int produces a body the bank refuses with a
+    U002 "Invalid value" that names the field without saying the type was the problem.
+  enforced_by: "TC-PSO-014"
+
+error_rendering_invariant:
+  rule: "The error surface renders EVERY entry in Errors[], keyed off ErrorCode + Path, never Message."
+  rationale: >-
+    Errors is an array and has been observed carrying two entries at once. Shape errors arrive
+    one at a time — R15-E01 reports an unexpected InstructedAmount while NOT reporting the
+    missing FirstPaymentAmount in the same body, and R17-B03 reports only the parent U004 and
+    never the nested Frequency error. See dtos/ObPaymentError.yaml.
+  enforced_by: "TC-PSO-015"
+
+no_debtor_invariant:
+  rule: "No DebtorAccount is sent, and no funding-account step is presented."
+  rationale: >-
+    The field is not in the schema. A picker whose value has nowhere to go is worse than no
+    picker — it implies a choice the PSU does not actually have here.
+  enforced_by: "TC-PSO-005"
+
+truthfulness_invariant:
+  rule: "PDNG and INCO are rendered as the mandate being set up, never as a payment having been made."
+  rationale: >-
+    OBIE has no per-execution status. The resource describes the mandate's setup; it can never
+    say whether instalment N succeeded.
+  enforced_by: "TC-PSO-008"
+
+ais_correlation_invariant:
+  rule: "The app does not attempt to display the new mandate in the AIS standing-orders list."
+  rationale: >-
+    StandingOrderId is absent from every AIS element, so correlation is impossible by
+    construction. Tested directly with 19936 on the one account that returns 200.
+  enforced_by: "TC-PSO-009"

@@ -1,0 +1,179 @@
+schema_version: "4.0"
+api_group: accounts
+name: "Accounts API"
+base_url: "https://secure.sandbox.ob.hsbc.co.uk/obie/open-banking/v4.0/aisp"
+auth_scheme: "FAPI 1.0 Advanced — PSU authorization_code token on scope=accounts"
+# Rewritten 2026-08-06 (/idea-sync, OBP eviction). Was the Open Bank Project sandbox with
+# DirectLogin and /v4.0.0/banks/{bank_id}/accounts/{account_id}/{view} path shapes.
+#
+# ENDPOINT BODIES MIGRATED 2026-08-07. The 2026-08-06 pass rewrote the header — base_url,
+# auth_scheme, the ledger — and left every endpoint underneath it untouched, so the file
+# declared an OBIE base_url and then hung OBP paths, snake_case response fields and
+# OBP_SERVER_ERROR codes off it. That is worse than an un-migrated file: it reads as migrated.
+# What was actually wrong below the header:
+#   paths       /v3.0.0/banks/{bank_id}/accounts/... -> /accounts/... (relative to base_url)
+#               There is ONE bank. No bankId path parameter concept exists in OBIE.
+#   my/ paths   /v3.0.0/my/accounts and /v7.0.0/my/banks/... -> no OBIE analogue; /accounts
+#               already returns exactly the accounts the PSU authorised.
+#   balances    /v4.0.0/banks/{bank_id}/balances (bank-wide, one call) -> per-account
+#               /accounts/{AccountId}/balances, fanned out. There is no bank-wide balances read.
+#   fields      snake_case OBP bodies -> the OBIE Data.* envelope. Field-level shape is NOT
+#               restated here; it lives in the DTO registry, which is already migrated.
+#   errors      OBP_SERVER_ERROR / BANK_NOT_FOUND / USER_NOT_LOGGED_IN -> the observed HTTP set.
+generated_at: "2026-06-02"
+
+# ─────────────────────────────────────────────────────────────────────────
+# RESPONSE SHAPE — deliberately by reference, not restated
+#
+# Every OBIE read returns a { Data, Links, Meta } envelope. The per-field contract lives in the
+# DTO registry (dtos/*.yaml), which was migrated in the same 2026-08-06 pass and carries the
+# observations that matter — the masked-vs-unmasked PAN split, the absent AccountSubType, the
+# balance preference order. Restating those fields here would create a second copy free to drift.
+# ─────────────────────────────────────────────────────────────────────────
+
+endpoints:
+
+  - id: accounts-list
+    method: GET
+    path: "/accounts"
+    permission: ReadAccountsDetail
+    description: >-
+      All accounts the PSU authorised on the consent. Always the first resource call after
+      consent — every account-scoped call below is keyed by an AccountId returned here.
+      An empty Data.Account[] is the empty state, not an error.
+    response_dto: BankAccount
+    response_dto_path: "Data.Account[]"
+    # `cards` dropped from consumed_by 2026-08-07 — the screen was deleted. It was never a
+    # separate call: it filtered THIS response to the entries whose SchemeName is UK.OBIE.PAN.
+    consumed_by: [accounts, home, account-detail]
+
+  - id: get_account_detail
+    method: GET
+    path: "/accounts/{AccountId}"
+    permission: ReadAccountsDetail
+    description: "One account — identification, nickname, currency and product sub-type."
+    response_dto: AccountDetail
+    response_dto_path: "Data.Account[0]"
+    # `card-detail` dropped from consumed_by 2026-08-07 — the screen was deleted.
+    consumed_by: [account-detail]
+
+  - id: balances
+    method: GET
+    path: "/accounts/{AccountId}/balances"
+    permission: ReadBalances
+    description: >-
+      Balances for ONE account. There is no bank-wide balances read in OBIE — a total across
+      accounts is a client-side fan-out over accounts-list, not a single call. Balance type
+      preference order is InterimAvailable -> InterimBooked -> OpeningBooked. A multi-currency
+      account reports its native currency; do not convert to GBP for display.
+    response_dto: [AccountBalance, AccountBalanceLine]
+    response_dto_path: "Data.Balance[]"
+    response_dto_note: >-
+      AccountBalance is the collapsed single-figure projection the list and hero cards consume;
+      AccountBalanceLine is the uncollapsed per-type list account-detail consumes.
+    # `cards` and `card-detail` dropped from consumed_by 2026-08-07 — both screens were deleted.
+    consumed_by: [accounts, home, account-detail]
+
+  - id: product
+    method: GET
+    path: "/accounts/{AccountId}/product"
+    permission: ReadProducts
+    description: "Product terms attached to the account — interest tiers, overdraft tiers, features."
+    response_dto: ProductTerms
+    consumed_by: [product]
+    availability_note: >-
+      400 on Global Money, per the manifest's endpoint inventory. The other four sandbox accounts
+      were not enumerated for this resource, so no full matrix is asserted. Not every account
+      exposes a product block at all — ProductRepository.getProduct returns this nullable.
+
+  - id: party
+    method: GET
+    path: "/accounts/{AccountId}/party"
+    permission: ReadParty
+    description: "The account holder — OBReadParty2. Every field except the identifier is PSU personal data."
+    response_dto: PartyProfile
+    consumed_by: [account-holder, profile]
+    availability_note: "400 on Global Money, per the manifest's endpoint inventory."
+
+  - id: parties
+    method: GET
+    path: "/accounts/{AccountId}/parties"
+    permission: unresolved
+    permission_note: >-
+      No screen consumes this endpoint, so no migrated spec declares its permission and none is
+      asserted here. The sibling `party` reads under ReadParty; establish this one from the OBIE
+      v4.0 permission enum before building against it.
+    description: >-
+      All parties on the account — OBReadParty3, the multi-holder shape. Shipped on the network
+      client (Aisp.getParties) but consumed by no screen.
+    response_dto: unresolved
+    response_dto_note: >-
+      No DTO is registered for the OBReadParty3 envelope and no screen consumes it, so no shape
+      is asserted here. Register one from a captured response before building against it.
+    consumed_by: []
+
+# ─────────────────────────────────────────────────────────────────────────
+# ERRORS — the observed HTTP set, shared by every endpoint above
+#
+# OBIE returns an ErrorCode in a JSON body on most failures, but the AIS reads in this group are
+# keyed on the status line. The U0xx short codes catalogued in server/apis/pisp.yaml are a PISP
+# surface and do not appear here.
+# ─────────────────────────────────────────────────────────────────────────
+error_codes:
+  - code: 401
+    cause: "Access token expired or invalid."
+    recovery: "Clear the token store and navigate to login."
+    retry: false
+  - code: 403
+    cause: >-
+      Consent rejected or revoked, the required permission absent from the consent, OR the
+      SCA-recency gate below. These are not distinguishable from the status line alone.
+    recovery: "Navigate to consent-list for re-authorisation."
+    retry: false
+  - code: 404
+    cause: "AccountId not found — a stale reference, typically a consent revoked mid-session."
+    recovery: "Drop the stale account from the list and advise."
+    retry: false
+  - code: 429
+    cause: "Rate limit exceeded. OBIE mandates a 500-calls-per-5-minutes PSU limit."
+    recovery: "Exponential back-off, then surface a retry affordance."
+    retry: true
+  - code: 503
+    cause: "HSBC sandbox unavailable."
+    recovery: "Surface a retry affordance after a brief delay."
+    retry: true
+
+sca_recency_gate:
+  applies_to: [party]
+  note: >-
+    `party` is one of the five resources observed returning 403 with an EMPTY BODY on a token
+    whose SCA is ~7.4 hours old, while balances and transactions return 200 on that same token —
+    the PSD2 RTS Article 10 split. The other four are beneficiaries, standing-orders,
+    scheduled-payments and direct-debits; see server/apis/payments-context.yaml#sca_recency_gate
+    for the full finding and its provenance warning. accounts-list, account detail, balances and
+    product were not in the observed set.
+
+# ─────────────────────────────────────────────────────────────────────────
+# REMOVED 2026-08-07 — OBP endpoints with no OBIE successor in this group
+# ─────────────────────────────────────────────────────────────────────────
+removed_2026_08_07:
+  - endpoint: "GET /v3.0.0/my/accounts"
+    reason: >-
+      OBP consumer-scoped account list "across all banks the user has access to". There is one
+      bank and /accounts already returns exactly the authorised set. No successor needed.
+  - endpoint: "GET /v7.0.0/my/banks/{bank_id}/accounts/{account_id}/account"
+    reason: "OBP v7 'my' detail path. Superseded by GET /accounts/{AccountId}."
+  - endpoint: "GET /v4.0.0/banks/{bank_id}/balances"
+    reason: >-
+      OBP bank-wide balance aggregation in one call. OBIE has no such endpoint — the home
+      total-balance widget fans out /accounts/{AccountId}/balances per account instead.
+  - endpoint: "GET /v3.0.0/banks/{bank_id}/accounts/{account_id}/owner/transactions"
+    reason: >-
+      Belonged to the transactions group, not this one, and carried an OBP /owner/ view segment.
+      The home recent-activity feed reads server/apis/transactions.yaml#list_transactions.
+  - field: bank_id
+    reason: >-
+      OBP bank identifier (the 'gh.29.uk' shape). There is ONE bank. No bankId path parameter or
+      response field concept exists in OBIE.
+  - concept: "the {view} path segment (/owner/, /account/)"
+    reason: "OBP view model. OBIE scopes access by consent Permissions, not by a path-embedded view."

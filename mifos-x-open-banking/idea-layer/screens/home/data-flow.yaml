@@ -1,0 +1,159 @@
+sibling: data-flow
+schema_version: "2.1.0"
+feature_id: home
+
+screen_id: home
+
+on_mount:
+  - trigger: home_load
+    description: >
+      Fetch all authorised accounts for the switcher, resolve the selectedAccountId
+      (from DataStore or first account), then fire parallel requests for balance
+      and recent transactions for the selected account. Read cached PFM Room data
+      for the spending snapshot (no extra API call).
+    steps:
+      - call: accounts-list
+        store_as: allAccounts
+        on_empty_result:
+          state: empty
+          reason: no_accounts
+      - derive:
+          - field: selectedAccountId
+            from: "DataStore.get('selectedAccountId') ?: allAccounts[0].AccountId"
+          - field: selectedAccount
+            from: "allAccounts.first { it.AccountId == selectedAccountId }"
+      - parallel:
+          - call: selected-account-balances
+            path_params:
+              AccountId: "{selectedAccountId}"
+            store_as: rawBalances
+            on_error:
+              any:
+                action: mark_balance_unavailable
+                continue: true
+          - call: recent-transactions
+            path_params:
+              AccountId: "{selectedAccountId}"
+            query_params:
+              fromBookingDateTime: "{today.minusDays(30).atStartOfDay().toISO8601()}"
+            store_as: rawTransactions
+            on_error:
+              any:
+                action: mark_transactions_unavailable
+                continue: true
+      - derive:
+          - field: selectedAccountBalance
+            from: >
+              rawBalances.firstOrNull { it.Type == 'InterimAvailable' }
+                ?: rawBalances.firstOrNull { it.Type == 'InterimBooked' }
+                ?: rawBalances.firstOrNull { it.Type == 'OpeningBooked' }
+          - field: availableBalance
+            from: "rawBalances.firstOrNull { it.Type == 'InterimAvailable' }"
+          - field: recentTransactions
+            from: >
+              rawTransactions
+                .filter { it.Status == 'Booked' }
+                .sortedByDescending { it.BookingDateTime }
+                .take(5)
+                .map { it.copy(
+                    amountFormatted = formatCurrency(it.Amount.Currency, it.Amount.Amount, it.CreditDebitIndicator),
+                    amountColor = if (it.CreditDebitIndicator == 'Credit') 'primary' else 'error',
+                    categoryIcon = deriveCategoryIcon(it)
+                ) }
+          - field: spendThisMonth
+            from: >
+              roomDb.transactions
+                .filter { it.AccountId == selectedAccountId &&
+                           it.CreditDebitIndicator == 'Debit' &&
+                           it.BookingDateTime.month == today.month }
+                .sumOf { it.Amount.Amount }
+                .let { formatCurrency('GBP', it) }
+          - field: topCategoryName
+            from: >
+              roomDb.transactions
+                .filter { it.AccountId == selectedAccountId &&
+                           it.CreditDebitIndicator == 'Debit' &&
+                           it.BookingDateTime.month == today.month }
+                .groupBy { deriveCategoryName(it) }
+                .maxByOrNull { (_, txs) -> txs.sumOf { it.Amount.Amount } }
+                ?.key ?: ""
+    on_loading: loading
+    on_success:
+      default: content
+    on_empty: empty
+    on_error:
+      - code: 401
+        state: error
+        error_context:
+          userMessage: "Your session has expired. Please sign in again."
+          recovery_action: navigate_to_login
+          recoverable: true
+      - code: 403
+        state: error
+        error_context:
+          userMessage: "Account access permission denied. Please check your consent settings."
+          recovery_action: navigate_to_consent_list
+          recoverable: false
+      - code: 429
+        state: error
+        error_context:
+          userMessage: "Too many requests. Please try again in a moment."
+          recoverable: true
+      - code: network_error
+        state: error
+        error_context:
+          userMessage: "No internet connection. Please check your network and retry."
+          recoverable: true
+      - code: default
+        state: error
+        error_context:
+          userMessage: "Unable to load your account. Please retry."
+          recoverable: true
+
+on_user_action:
+  - trigger: select_account
+    description: >
+      User taps a different account chip. Persist new selection, re-run parallel
+      balance + transactions fetch for the new accountId. No full page reload.
+    updates:
+      - field: selectedAccountId
+        from: "{params.accountId}"
+      - field: selectedAccount
+        from: "allAccounts.first { it.AccountId == params.accountId }"
+    side_effects:
+      - "DataStore.put('selectedAccountId', params.accountId)"
+    re_runs: [home_load.parallel_steps_only]
+    state_during: loading
+
+  - trigger: retry_load
+    re_runs: [home_load]
+
+  # Reverse-synced 2026-07-28: homeGraph declares exactly two outward callbacks.
+  # navigate_account_detail, navigate_statements, navigate_consent_list and
+  # navigate_spending were removed — no such callback exists in source.
+  - trigger: navigate_transactions
+    navigate:
+      target: transactions
+      params:
+        accountId: "{selectedAccountId}"
+
+  - trigger: navigate_transaction_detail
+    navigate:
+      target: transaction-detail
+      params:
+        transactionId: "{params.transactionId}"
+        accountId: "{params.accountId}"
+
+  - trigger: navigate_login
+    navigate:
+      target: login
+
+cache_strategy:
+  - resource: allAccounts
+    ttl_seconds: 300
+    source: "memory"
+    invalidate_on: [account_switcher_tap, app_resume]
+  - resource: selectedAccountId
+    ttl_seconds: -1
+    source: "DataStore"
+    invalidate_on: []

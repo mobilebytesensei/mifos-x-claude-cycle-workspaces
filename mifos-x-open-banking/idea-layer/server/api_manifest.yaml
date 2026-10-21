@@ -1,0 +1,308 @@
+# server/api_manifest.yaml — HSBC UK Open Banking (OBIE v4.0) API manifest
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# REWRITTEN 2026-08-06 by /idea-sync (PISP-tests research + full OBP eviction)
+#
+# This file previously described the OPEN BANK PROJECT sandbox
+# (apisandbox.openbankproject.com/obp, DirectLogin auth, snake_case {bank_id}/{account_id}/{view}
+# paths, SEPA and SANDBOX_TAN transaction-request rails, counterparties). None of that describes
+# the app that ships. The app was rebuilt against HSBC's OBIE v4.0 surface, and this manifest —
+# the contract every screens/*/api.yaml resolves against — was never migrated with it.
+#
+# What changed structurally:
+#   base_url          apisandbox.openbankproject.com/obp -> secure.sandbox.ob.hsbc.co.uk/obie/open-banking
+#   auth_scheme       DirectLogin (username + password + consumer_key) -> FAPI 1.0 Advanced
+#   path shape        /v4.0.0/banks/{bank_id}/accounts/{account_id}/{view}/... -> /v4.0/aisp/accounts/{AccountId}/...
+#   payments          SEPA / COUNTERPARTY / SANDBOX_TAN transaction-requests -> 7 OBIE PISP families
+#   beneficiaries     counterparties -> /aisp/accounts/{AccountId}/beneficiaries
+#   auth-recovery     password reset + change -> REMOVED. There is no in-app password under FAPI.
+#
+# Provenance: endpoint inventory taken from the HSBC-shipped Postman collection
+# (sandbox-prod-ob-ukce-postman-collection.json, UK Personal brand folder) and confirmed against
+# observed responses in /home/kalpesh/OpenBankingProject/HSBC_Sandbox/pisp-tests/captures/**.
+# ═══════════════════════════════════════════════════════════════════════════
+
+schema_version: "2.0"
+generated_at: "2026-08-06"
+api: "HSBC UK Open Banking — OBIE Read/Write API Specification v4.0"
+
+# ─────────────────────────────────────────────────────────────────────────
+# TWO HOSTS, NOT ONE — corrected 2026-08-06 from the shipped Postman environment
+# (sandbox-prod-ob-ukce-postman-environment.json, "HSBC Sandbox - OB UK/CE v20260305")
+#
+# The resource host and the authorize host are DIFFERENT, and the difference is not cosmetic:
+# the resource host is mTLS-protected and the authorize host is the one the PSU's browser is
+# sent to. Pointing the app at one base_url for both is a real defect — the authorize redirect
+# would go to a host that does not serve it.
+# ─────────────────────────────────────────────────────────────────────────
+hosts:
+  resource_mtls: "secure.sandbox.ob.hsbc.co.uk"
+  authorize: "sandbox.ob.hsbc.co.uk"
+  note: >-
+    Note the `secure.` prefix is present on the resource host and ABSENT on the authorize host.
+    Postman variables: bank_sandbox_ob_uk_personal_mtls_hostname and
+    bank_sandbox_ob_uk_personal_authorize_hostname.
+  other_brands_in_collection: >-
+    first direct, M&S Bank, HSBC Business, Kinetic, HSBCnet, MiVision and Malta each have their
+    own host pair. This app targets UK Personal only.
+
+base_url: "https://secure.sandbox.ob.hsbc.co.uk/obie/open-banking"
+authorize_base_url: "https://sandbox.ob.hsbc.co.uk/obie/open-banking"
+redirect_uri: "https://thekalpeshpawar.github.io/obp-callback/callback/"
+default_version: "v4.0"
+oauth_version: "v1.1"
+version_policy: >-
+  Resources are v4.0. OAuth is v1.1 — the token and authorize endpoints come from the OIDC
+  well-known config, not from the resource swagger. Both are correct simultaneously.
+auth_scheme: "FAPI 1.0 Advanced"
+brand: "HSBC UK Personal"
+environment: sandbox
+
+# ─────────────────────────────────────────────────────────────────────────
+# SECURITY — this is not an ordinary REST API and cannot be treated as one
+# ─────────────────────────────────────────────────────────────────────────
+security:
+  transport: "Mutual TLS (mTLS) with an HSBC-issued sandbox client certificate"
+  client_auth: "private_key_jwt (PS256)"
+  authorization: "OAuth 2.0 authorization_code with a signed request object and PKCE S256, via app-to-app redirect"
+  client_credentials: "used for consent staging and all status reads"
+  no_in_app_credentials: >-
+    The app has NO password field and never receives PSU credentials. The PSU authenticates on
+    HSBC's own site. This is why the OBP-era auth.yaml and auth-recovery.yaml were deleted rather
+    than migrated — DirectLogin, change-password and forgot-password describe an authentication
+    model this app architecturally cannot have.
+  scopes:
+    - { name: accounts, used_for: "all AIS reads" }
+    - { name: payments, used_for: "all PIS writes and reads, INCLUDING VRP — there is no separate VRP scope" }
+  detached_jws:
+    required_on: "every PISP write (consent staging and payment submission)"
+    algorithm: PS256
+    b64: false
+    crit: [iat, iss, tan]
+    typ: JOSE
+    cty: application/json
+    omission_error: "400 U019"
+    forbidden_on: >-
+      AIS consent creation. Sending x-jws-signature there returns
+      UK.OBIE.Header.Unexpected — verified by R18-A01 with control R18-A02.
+  idempotency:
+    header: x-idempotency-key
+    max_length: 40
+    required_on: "every PISP write"
+    rule: "generated once per staged payment, reused across the consent stage, the submit, and every retry"
+  headers_not_sent:
+    - { header: x-fapi-financial-id, note: "Not sent on any call in the capture corpus; nothing rejected its absence." }
+
+# ─────────────────────────────────────────────────────────────────────────
+# API GROUPS
+# ─────────────────────────────────────────────────────────────────────────
+api_groups:
+
+  - id: oauth
+    name: "OAuth 2.0 / FAPI"
+    screens: [login, splash, consent-callback, payment-consent]
+    spec_file: "server/apis/auth.yaml"
+    note: "v1.1, from the OIDC well-known config — NOT the v4.0 resource surface."
+    endpoints:
+      - { method: POST, path: "/v1.1/oauth2/token", host: resource_mtls, description: "Token endpoint — client_credentials and authorization_code, private_key_jwt. On the mTLS host." }
+      - { method: GET, path: "/v1.1/oauth2/authorize", host: authorize, description: "PSU authorisation — signed request object, PKCE, app-to-app. On the AUTHORIZE host (sandbox.ob.hsbc.co.uk), NOT the mTLS one." }
+      - { method: POST, path: "/register", description: "Dynamic Client Registration v3.2.1, signed SSA. Separate spec." }
+
+  - id: aisp_consent
+    name: "Account access consent"
+    screens: [login, consent-list, consent-detail, consent-manager]
+    spec_file: "server/apis/consents.yaml"
+    endpoints:
+      - { method: POST, path: "/v4.0/aisp/account-access-consents", description: "Create consent with an explicit Permissions array. NO x-jws-signature." }
+      - { method: GET, path: "/v4.0/aisp/account-access-consents/{ConsentId}", description: "Consent status." }
+      - { method: DELETE, path: "/v4.0/aisp/account-access-consents/{ConsentId}", description: "Revoke consent." }
+
+  - id: accounts
+    name: "Accounts and balances"
+    screens: [accounts, account-detail, home]
+    spec_file: "server/apis/accounts.yaml"
+    endpoints:
+      - { method: GET, path: "/v4.0/aisp/accounts", description: "List authorised accounts." }
+      - { method: GET, path: "/v4.0/aisp/accounts/{AccountId}", description: "Account detail." }
+      - { method: GET, path: "/v4.0/aisp/accounts/{AccountId}/balances", description: "Account balances." }
+      - { method: GET, path: "/v4.0/aisp/accounts/{AccountId}/product", description: "Account product terms. 400 on Global Money." }
+      - { method: GET, path: "/v4.0/aisp/accounts/{AccountId}/party", description: "Account holder — OBReadParty2. 400 on Global Money." }
+      - { method: GET, path: "/v4.0/aisp/accounts/{AccountId}/parties", description: "Account parties — OBReadParty3." }
+
+  - id: transactions
+    name: "Transactions"
+    screens: [transactions, transaction-detail, home]
+    spec_file: "server/apis/transactions.yaml"
+    endpoints:
+      - { method: GET, path: "/v4.0/aisp/accounts/{AccountId}/transactions", description: "Transactions with date and credit/debit filters." }
+
+  - id: payments_context
+    name: "Payment-context read surfaces"
+    screens: [beneficiaries, standing-orders, standing-order-detail, scheduled-payments, direct-debits, direct-debit-detail]
+    spec_file: "server/apis/payments-context.yaml"
+    endpoints:
+      - { method: GET, path: "/v4.0/aisp/accounts/{AccountId}/beneficiaries", description: "Saved payees. 400 on the credit card." }
+      - { method: GET, path: "/v4.0/aisp/accounts/{AccountId}/standing-orders", description: "Standing orders. 400 on savings, Global Money and the card." }
+      - { method: GET, path: "/v4.0/aisp/accounts/{AccountId}/scheduled-payments", description: "Scheduled payments. 400 on Global Money and the card." }
+      - { method: GET, path: "/v4.0/aisp/accounts/{AccountId}/direct-debits", description: "Direct debits. 400 on savings, Global Money and the card." }
+    read_side_caveats:
+      standing_order_id_absent: >-
+        StandingOrderId is absent from every element of the standing-orders read. Conformant
+        (0..1), but it means write-to-read correlation with a PIS-created mandate is impossible
+        by construction.
+      point_in_time_asymmetry: >-
+        This read RETURNS Frequency.PointInTime, which the PIS write side refuses with U005. An
+        AIS-read mandate cannot be replayed as a PIS consent without stripping it first.
+      sca_recency_gate: >-
+        beneficiaries, standing-orders, scheduled-payments, direct-debits and party return 403
+        with an EMPTY BODY when the token's SCA is stale (~7.4h observed); balances and
+        transactions still return 200. Exactly the PSD2 RTS Article 10 boundary. There is no
+        error code to key on. Provisional — the 403 column is prose, not a captured artefact.
+
+  - id: statements
+    name: "Statements"
+    screens: [statements, statement-detail]
+    spec_file: "server/apis/statements.yaml"
+    endpoints:
+      - { method: GET, path: "/v4.0/aisp/accounts/{AccountId}/statements", description: "Statement list. 400 on every account except the credit card." }
+      - { method: GET, path: "/v4.0/aisp/accounts/{AccountId}/statements/{StatementId}", description: "Statement detail." }
+      - { method: GET, path: "/v4.0/aisp/accounts/{AccountId}/statements/{StatementId}/transactions", description: "Transactions within one statement." }
+
+  # ── PISP — added 2026-08-06 with the seven-type rewrite ─────────────────
+  - id: pisp_domestic_payment
+    name: "Domestic single payment"
+    screens: [pay-domestic-single]
+    spec_file: "server/apis/pisp.yaml"   # shared contract; per-family detail in the screen api.yaml for pay-domestic-payment
+    endpoints:
+      - { method: POST, path: "/v4.0/pisp/domestic-payment-consents", description: "Stage. JWS + idempotency key. Charges 0.05 GBP." }
+      - { method: GET, path: "/v4.0/pisp/domestic-payment-consents/{ConsentId}", description: "Consent status. AWAU -> AUTH -> COND." }
+      - { method: GET, path: "/v4.0/pisp/domestic-payment-consents/{ConsentId}/funds-confirmation", description: "Funds check. PSU token." }
+      - { method: POST, path: "/v4.0/pisp/domestic-payments", description: "Submit. PSU token, same idempotency key, byte-identical Initiation." }
+      - { method: GET, path: "/v4.0/pisp/domestic-payments/{DomesticPaymentId}", description: "Payment status. ACSP -> ACCC." }
+
+  - id: pisp_domestic_scheduled
+    name: "Domestic scheduled payment"
+    screens: [pay-domestic-scheduled]
+    spec_file: "server/apis/pisp.yaml"   # shared contract; per-family detail in the screen api.yaml for pay-domestic-scheduled
+    endpoints:
+      - { method: POST, path: "/v4.0/pisp/domestic-scheduled-payment-consents", description: "Stage. Permission 'Create' + RequestedExecutionDateTime mandatory." }
+      - { method: GET, path: "/v4.0/pisp/domestic-scheduled-payment-consents/{ConsentId}", description: "Consent status." }
+      - { method: POST, path: "/v4.0/pisp/domestic-scheduled-payments", description: "Submit. No funds-confirmation on this family." }
+      - { method: GET, path: "/v4.0/pisp/domestic-scheduled-payments/{DomesticScheduledPaymentId}", description: "Status. PDNG -> INCO." }
+
+  - id: pisp_domestic_standing_order
+    name: "Domestic standing order"
+    screens: [pay-domestic-standing-order]
+    spec_file: "server/apis/pisp.yaml"   # shared contract; per-family detail in the screen api.yaml for pay-domestic-standing-order
+    endpoints:
+      - { method: POST, path: "/v4.0/pisp/domestic-standing-order-consents", description: "Stage. FirstPaymentAmount, NOT InstructedAmount. Risk {}." }
+      - { method: GET, path: "/v4.0/pisp/domestic-standing-order-consents/{ConsentId}", description: "Consent status." }
+      - { method: POST, path: "/v4.0/pisp/domestic-standing-orders", description: "Create the mandate." }
+      - { method: GET, path: "/v4.0/pisp/domestic-standing-orders/{DomesticStandingOrderId}", description: "Status. PDNG -> INCO. No per-execution status." }
+
+  - id: pisp_international_payment
+    name: "International single payment"
+    screens: [pay-international-single]
+    spec_file: "server/apis/pisp.yaml"   # shared contract; per-family detail in the screen api.yaml for pay-international-payment
+    endpoints:
+      - { method: POST, path: "/v4.0/pisp/international-payment-consents", description: "Stage. CurrencyOfTransfer + ChargeBearer mandatory; RemittanceInformation refused. NO charges ever." }
+      - { method: GET, path: "/v4.0/pisp/international-payment-consents/{ConsentId}", description: "Consent status." }
+      - { method: GET, path: "/v4.0/pisp/international-payment-consents/{ConsentId}/funds-confirmation", description: "Funds check. PSU token." }
+      - { method: POST, path: "/v4.0/pisp/international-payments", description: "Submit." }
+      - { method: GET, path: "/v4.0/pisp/international-payments/{InternationalPaymentId}", description: "Status. ACSP -> ACCC." }
+
+  - id: pisp_international_scheduled
+    name: "International scheduled payment"
+    screens: [pay-international-scheduled]
+    spec_file: "server/apis/pisp.yaml"   # shared contract; per-family detail in the screen api.yaml for pay-international-scheduled
+    endpoints:
+      - { method: POST, path: "/v4.0/pisp/international-scheduled-payment-consents", description: "Stage." }
+      - { method: GET, path: "/v4.0/pisp/international-scheduled-payment-consents/{ConsentId}", description: "Consent status." }
+      - { method: POST, path: "/v4.0/pisp/international-scheduled-payments", description: "Submit. Charge 0.50 in the INSTRUCTED currency appears here." }
+      - { method: GET, path: "/v4.0/pisp/international-scheduled-payments/{InternationalScheduledPaymentId}", description: "Status. INCO -> INCO; never PDNG." }
+
+  - id: pisp_international_standing_order
+    name: "International standing order"
+    screens: [pay-international-standing-order]
+    spec_file: "server/apis/pisp.yaml"   # shared contract; per-family detail in the screen api.yaml for pay-international-standing-order
+    endpoints:
+      - { method: POST, path: "/v4.0/pisp/international-standing-order-consents", description: "Stage. InstructedAmount, NOT FirstPaymentAmount." }
+      - { method: GET, path: "/v4.0/pisp/international-standing-order-consents/{ConsentId}", description: "Consent status." }
+      - { method: POST, path: "/v4.0/pisp/international-standing-orders", description: "Create the mandate." }
+      - { method: GET, path: "/v4.0/pisp/international-standing-orders/{InternationalStandingOrderId}", description: "Status. INCO throughout." }
+
+  - id: pisp_vrp
+    name: "Variable Recurring Payments"
+    screens: [pay-vrp-mandate]
+    spec_file: "server/apis/pisp.yaml"   # shared contract; per-family detail in the screen api.yaml for pay-vrp-mandate
+    note: "Domestic only. No separate scope and no separate TPP role — a PISP calls VRP with scope=payments."
+    endpoints:
+      - { method: POST, path: "/v4.0/pisp/domestic-vrp-consents", description: "Create the mandate ONCE. ControlParameters mandatory, GBP only, SortCodeAccountNumber both sides." }
+      - { method: GET, path: "/v4.0/pisp/domestic-vrp-consents/{ConsentId}", description: "Consent status. AWAU -> AUTH forever; never COND. 400 U011 once deleted." }
+      - { method: DELETE, path: "/v4.0/pisp/domestic-vrp-consents/{ConsentId}", description: "Revoke. 204. The ONLY delete in the payment surface." }
+      - { method: POST, path: "/v4.0/pisp/domestic-vrp-consents/{ConsentId}/funds-confirmation", description: "Funds check. A POST carrying an explicit amount. PSU token — client-credentials returns 401." }
+      - { method: POST, path: "/v4.0/pisp/domestic-vrps", description: "Pay under the mandate. No re-authentication." }
+      - { method: GET, path: "/v4.0/pisp/domestic-vrps/{DomesticVRPId}", description: "Status. Returns the v3.1 LONG form, unlike every other endpoint." }
+
+  - id: events
+    name: "Event notification"
+    screens: [pay-vrp-mandate, consent-list]
+    spec_file: "server/apis/events.yaml"
+    note: "The only mechanism that surfaces an out-of-band consent revocation."
+    endpoints:
+      - { method: POST, path: "/v4.0/event-subscriptions", description: "Subscribe to UK.OBIE.Consent-Authorization-Revoked. Requires x-jws-signature." }
+      - { method: GET, path: "/v4.0/event-subscriptions", description: "List subscriptions." }
+      - { method: DELETE, path: "/v4.0/event-subscriptions/{EventSubscriptionId}", description: "Remove a subscription." }
+      - { method: POST, path: "/v4.0/events", description: "Poll events. Body carries returnImmediately + maxEvents." }
+
+  - id: atm
+    name: "ATM and branch locator"
+    screens: [atm-locator]
+    spec_file: "server/apis/atm-locator.yaml"
+    note: "HSBC Open Data — unauthenticated, outside the OBIE consent surface. Planned work, not built."
+
+# ─────────────────────────────────────────────────────────────────────────
+# GROUPS REMOVED 2026-08-06
+# ─────────────────────────────────────────────────────────────────────────
+removed_groups:
+  - id: auth_recovery
+    was: "server/apis/auth-recovery.yaml — password reset + change on /obp/v4.0.0/auth/password/*"
+    reason: >-
+      There is no in-app password under FAPI. The PSU authenticates at HSBC. Both screens
+      (forgot-password, change-password) were deleted in the same pass.
+  - id: payments_obp
+    was: "server/apis/payments.yaml — SEPA / COUNTERPARTY / SANDBOX_TAN transaction-requests, counterparty CRUD, IBAN check"
+    reason: >-
+      Open Bank Project payment model. Replaced by the seven OBIE PISP groups above. There is no
+      counterparty concept in OBIE — the read-side equivalent is beneficiaries, and it is
+      read-only.
+  - id: cards_obp
+    was: "server/apis/cards.yaml — /obp/v7.0.0/cards"
+    reason: >-
+      No OBIE equivalent. The credit card appears only as an account in the AIS accounts list,
+      with a masked UK.OBIE.PAN identification.
+    followed_2026_08_07: >-
+      The `cards` and `card-detail` SCREENS were deleted too, by the repository owner. When this
+      group went, the screens were retargeted onto the accounts group they were already a
+      projection of; that reprieve is now reversed and the feature is removed with the rest of
+      the OBP planning it came from. No screens entry anywhere in this manifest named them, so
+      nothing else changes here. Unaffected: the Open Data Product Finder's commercial-credit-
+      cards family, which is a public catalogue on api.hsbc.com, not a PSU resource.
+
+# ─────────────────────────────────────────────────────────────────────────
+# ERROR CODES — observed, and mostly undocumented
+# ─────────────────────────────────────────────────────────────────────────
+error_codes:
+  documented_in_guide: [U001, U002, U005, U007, U014]
+  observed_but_undocumented: [U000, U003, U004, U008, U009, U011, U019, U021, U023, U027]
+  note: >-
+    HSBC's Implementation Guide §30 error catalogue is five bare hyperlinks to external pages.
+    U000, U021, U023 and U027 are HSBC-proprietary and appear nowhere in the 160-page document.
+  v4_recoding:
+    note: "v4.0 re-coded every UK.OBIE.* error string to a short code. Both generations are served."
+    mapping:
+      U003: UK.OBIE.Field.InvalidDate
+      U004: UK.OBIE.Field.Missing
+      U009: UK.OBIE.Resource.InvalidConsentStatus
+      U014: UK.OBIE.Rules.FailsControlParameters
+      U027: UK.OBIE.Unsupported.Scheme

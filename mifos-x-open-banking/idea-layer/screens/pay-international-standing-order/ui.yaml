@@ -1,0 +1,281 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: pay-international-standing-order
+
+id: pay-international-standing-order
+name: Overseas standing order
+feature: pay-international-standing-order
+flavor: consumer
+quality_score: 89
+contract_version: "2.0.0"
+capabilities: [has_ui, has_api]
+
+# Five steps: Recipient -> Schedule -> Amount -> Charges -> Review.
+#
+# There is NO funding-account step. CORRECTED 2026-08-07: this is a deliberate simplification,
+# NOT a schema constraint. The earlier rationale — "DebtorAccount is not in the standing-order
+# schema on either rail" — is WRONG for the international rail. DebtorAccount is an OPTIONAL,
+# ACCEPTED member here: intl-SO scenarios staged 201 with a current account, with a savings
+# account, and with the key omitted, and 19918 carried one as both debtor and creditor. It must
+# never carry a Name. The form still sends none; the difference is that an unused field can be
+# revisited as a product decision, while an "impossible" one never is.
+#
+# Unlike the domestic mandate, there is no varying-amounts option: the Recurring and Final amount
+# siblings belong to the FirstPaymentAmount shape, which this rail refuses with U005.
+
+inherits_from: pay-domestic-standing-order
+inherits_components: [no_debtor_note, frequency_picker, first_payment_date_picker, has_end_date_switch, final_payment_date_picker]
+inherited_component_overrides:
+  no_debtor_note:
+    copy_must_not_say: >-
+      Anything implying the API has no debtor field. The domestic rail's wording is inherited
+      structurally, but its REASON does not transfer: the international rail accepts an optional
+      DebtorAccount { SchemeName, Identification } — never a Name — and staged 201 with a current
+      account, a savings account and no account at all.
+    copy_should_say: >-
+      That the payment is taken from the account the PSU picks at their bank during
+      authorisation. That is true on both rails and does not assert a schema fact that is false
+      here.
+  has_end_date_switch:
+    note: >-
+      Genuinely optional on the wire — omitting FinalPaymentDateTime stages 201 as an OPEN-ENDED
+      mandate. Combined with amendment_prohibition, that is a recurring overseas payment the PSU
+      cannot stop from this app. See open_ended_mandate_note.
+also_inherits_from: pay-international-single
+also_inherits_components: [iban_field, payee_name_field, bic_field, bic_length_error, instructed_currency_picker, transfer_currency_picker, charge_bearer_picker, no_reference_note]
+
+screens:
+  - id: pay-international-standing-order
+    name: Overseas standing order
+    archetype: form
+    shell:
+      top_bar:
+        title: "{strings.pay_international_standing_order.title}"
+        navigation_icon: back
+        actions: []
+      bottom_nav: true
+
+components:
+  - type: stepper
+    id: step_indicator
+    steps: 5
+    labels:
+      - "{strings.payment.step.recipient}"
+      - "{strings.payment.step.schedule}"
+      - "{strings.payment.step.amount}"
+      - "{strings.payment.step.charges}"
+      - "{strings.payment.step.review}"
+    test_context:
+      tag: payInternationalStandingOrder:stepIndicator
+
+  - type: text_field
+    id: amount_field
+    label: "{strings.payment.intl_so_amount_label}"
+    keyboard: number
+    visibility: "step == Amount"
+    test_context:
+      tag: payInternationalStandingOrder:amountField
+    note: >-
+      Goes out as InstructedAmount — NOT FirstPaymentAmount. This is the single field-level
+      divergence from the domestic mandate rail, and each rail refuses the other's field with
+      U005. There is no varying-amounts option here: the Recurring and Final siblings belong to
+      the FirstPaymentAmount shape this rail rejects.
+
+  - type: banner
+    id: fx_not_fixed_notice
+    content: "{strings.payment.intl_so_fx_not_fixed}"
+    severity: warning
+    visibility: "step == Amount OR step == Review"
+    test_context:
+      tag: payInternationalStandingOrder:fxNotFixedNotice
+    note: >-
+      The most important sentence on this screen. States that the exchange rate is NOT fixed for
+      the life of the mandate and that each payment converts at the rate applying on its own
+      date. Severity is warning because a PSU setting up a multi-month overseas mandate will
+      otherwise assume the amount they see is the amount that leaves every month.
+
+      There is genuinely no rate to show. OBIE has NO per-execution FX model — its three
+      RateType values are quote-shaped and only Indicative is coherent over a multi-month
+      mandate. HSBC's Guide calls FX quoting "not applicable" here and never says what rate is
+      used. Convergent evidence from Citi, Bank of Scotland and Coutts points to the rate
+      prevailing at each execution, but there is no standard and no HSBC statement.
+
+      This is now settled rather than merely unavailable. Sending ExchangeRateInformation is
+      REFUSED on this rail for all three RateType values — R16-O1, R16-O2, R16-O3 — including the
+      Agreed form carrying a real ExchangeRate 1.15 and ContractIdentification 'FX-CONTRACT-001'.
+      Controls R16-C1/C2/C3 with the block removed all staged 201, and the same refusal holds on
+      the single (R16-P) and scheduled (R16-S) rails. So a TPP cannot assert even a rate it holds
+      by contract. This closes what this feature previously recorded as the highest-value open FX
+      experiment available, and it means the notice is the final answer — not a placeholder for a
+      rate source someone might integrate later.
+
+  - type: text
+    id: no_varying_amounts_note
+    content: "{strings.payment.intl_so_no_varying_amounts}"
+    style: { typography: bodySmall, color: onSurfaceVariant }
+    visibility: "step == Amount"
+    test_context:
+      tag: payInternationalStandingOrder:noVaryingAmountsNote
+    note: >-
+      Explains that every payment is the same amount. The domestic mandate screen offers a
+      varying-amounts switch; its absence here would otherwise look like an oversight.
+
+  # ── Review ──────────────────────────────────────────────────────────────
+  - type: summary_card
+    id: review_card
+    visibility: "step == Review"
+    rows:
+      - { label: "{strings.payment.review.to}", value: creditorIbanLabel }
+      - { label: "{strings.payment.review.bank}", value: bicLabel, visibility: "bic is not blank" }
+      - { label: "{strings.payment.review.frequency}", value: frequencyLabel }
+      - { label: "{strings.payment.review.first_payment}", value: firstPaymentDateLabel }
+      - { label: "{strings.payment.review.final_payment}", value: finalPaymentDateLabel, visibility: "hasEndDate" }
+      - { label: "{strings.payment.review.amount}", value: instructedAmountLabel }
+      - { label: "{strings.payment.review.arrives_in}", value: transferCurrencyLabel }
+      - { label: "{strings.payment.review.charges}", value: chargeBearerLabel }
+      - { label: "{strings.payment.review.fee}", value: feeLabel, empty_value: "{strings.payment.fee_unknown}" }
+    test_context:
+      tag: payInternationalStandingOrder:reviewCard
+    note: >-
+      No projected total and no per-instalment received amount. Both would require an exchange
+      rate the API does not provide, over a horizon nobody can forecast.
+
+      The fee row reads UNKNOWN — never blank and never '0.00'. Charges is ABSENT from the
+      consent response, not an empty array, alongside CutOffDateTime, ExpectedExecutionDateTime
+      and ExpectedSettlementDateTime. A model defaulting Charges to [] renders a 0.50 mandate as
+      free at the step where the PSU consents to it. And the fee is UNKNOWABLE before
+      authorisation by design: the charge first appears at RESOURCE CREATION, never at AWAU and
+      never at AUTH, so there is no earlier call to make.
+
+      The API also never states whether the 0.50 recurs per execution or applies once at setup.
+      The row shows what the resource returned and claims nothing further.
+
+  - type: text
+    id: open_ended_mandate_note
+    content: "{strings.payment.intl_so_open_ended_note}"
+    style: { typography: bodySmall, color: onSurfaceVariant }
+    visibility: "step == Review AND NOT hasEndDate"
+    test_context:
+      tag: payInternationalStandingOrder:openEndedMandateNote
+    note: >-
+      Shown only when no end date was set. Omitting FinalPaymentDateTime stages 201 as an
+      OPEN-ENDED mandate — and amendment_prohibition means it cannot be amended or cancelled
+      through this app. A recurring overseas payment with no end date that the PSU cannot stop
+      from here is a materially different commitment from a bounded one, and the difference is a
+      single switch on the Schedule step. The copy says where it CAN be stopped: with the bank.
+
+  - type: banner
+    id: deferred_charge_note
+    content: "{strings.payment.deferred_charge_note}"
+    severity: info
+    visibility: "step == Review"
+    test_context:
+      tag: payInternationalStandingOrder:deferredChargeNote
+    note: "0 charges at consent, 0.50 in the INSTRUCTED currency at resource creation — same as the international scheduled rail."
+
+  - type: banner
+    id: amend_notice
+    content: "{strings.payment.amend_notice_standing_order}"
+    severity: warning
+    visibility: "step == Review OR uiState is Success"
+    test_context:
+      tag: payInternationalStandingOrder:amendNotice
+
+  - type: button
+    id: confirm_button
+    label: "{strings.payment.confirm_standing_order}"
+    style: { variant: filled_pill }
+    visibility: "step == Review AND uiState is Content"
+    test_context:
+      tag: payInternationalStandingOrder:confirmButton
+    action_contract:
+      on_click: ConfirmAndStageConsent
+      effect: "POST /international-standing-order-consents with InstructedAmount and Risk {}"
+      writes_to: "PayInternationalStandingOrderUiState -> Submitting(StagingConsent)"
+
+  - type: progress
+    id: submitting_indicator
+    visibility: "uiState is Submitting"
+    labels:
+      StagingConsent: "{strings.payment.staging}"
+      AwaitingAuthorisation: "{strings.payment.awaiting_authorisation}"
+      SubmittingPayment: "{strings.payment.creating_mandate}"
+    test_context:
+      tag: payInternationalStandingOrder:submittingIndicator
+
+  - type: error_panel
+    id: error_panel
+    visibility: "uiState is Error"
+    renders: "one row per entry in the 400 body's Errors array, in WIRE ORDER"
+    test_context:
+      tag: payInternationalStandingOrder:errorPanel
+      row_tag: payInternationalStandingOrder:errorPanelRow
+    error_contract_ref: dtos/ObPaymentError.yaml
+    note: >-
+      Errors is an ARRAY and can carry TWO entries — the scheme check (U027) fires BEFORE the
+      business rule (U002), and the second entry is usually the actionable one. SO-I04 returns
+      two Global Money rules together, and SO-I05 fixes the first and receives the second alone,
+      which is the batching behaviour of U002 rules.
+
+      Rows render in wire order, unsorted and unmerged. Copy is keyed by ErrorCode + Path, never
+      by Message: U004 alone carries four wordings across the corpus, and this rail's own U004 is
+      'Field is missing' @ Data.Initiation.ChargeBearer (SO-I11) while the domestic mandate's is
+      'Data.Permission is missing' (SO-D12) — same code, different string, different meaning.
+
+responsive: { mobile_only: false, baseline_width: 390 }
+
+states:
+  initial_state: content
+  content:
+    note: "No loading state — this rail reads neither accounts nor beneficiaries. The form opens directly on the Recipient step."
+    layout: { visible_components: [step_indicator, no_debtor_note, iban_field, payee_name_field, bic_field] }
+  submitting: { layout: { visible_components: [step_indicator, submitting_indicator] } }
+  error: { layout: { visible_components: [step_indicator, error_panel] } }
+
+state_model:
+  view_model: PayInternationalStandingOrderViewModel
+  ui_state_type: PayInternationalStandingOrderUiState
+  states: ["Content(step)", "Submitting(stage)", "Error(type)"]
+  actions:
+    - EnterIban
+    - EnterPayeeName
+    - EnterBic
+    - SelectFrequency
+    - SelectFirstPaymentDate
+    - ToggleEndDate
+    - SelectFinalPaymentDate
+    - EnterInstructedAmount
+    - SelectInstructedCurrency
+    - SelectTransferCurrency
+    - SelectChargeBearer
+    - ReviewMandate
+    - ConfirmAndStageConsent
+    - SubmitStandingOrder
+    - RetrySubmit
+    - BackStep
+    - CancelMandate
+  events: [NavigateToPaymentConsent, NavigateToPaymentStatus]
+  di: [PaymentInitiationRepository]
+  di_note: >-
+    The leanest DI of any payment screen. No AccountsOverviewRepository — because this form does
+    not OFFER a funding-account step, not because the rail lacks a debtor field. CORRECTED
+    2026-08-07: the international standing-order schema DOES accept an optional DebtorAccount
+    { SchemeName, Identification } — never a Name — and staged 201 with a current account, a
+    savings account and none at all. Adding a funding-account step here would need this
+    repository back; it is a product decision, not a blocked one.
+
+    No BeneficiariesRepository. The reason is narrower than "sort-code payees are refused":
+    U027 @ CreditorAccount.SchemeName is RESOLVED-ACCOUNT dependent, not scheme dependent —
+    SO-I07 is refused for a sort-code creditor while the Global Money GMA identifier
+    80119770009652 under the SAME SCHEME stages 201. Saved payees are still unusable, but because
+    none of them resolves to an internationally-addressable account, not because of their scheme
+    string.
+
+form_submit_guard: state-transition-unmount
+
+dependencies:
+  tier: feature
+  features: [payment-consent, payment-status]
+  # fx-rates deliberately NOT a dependency. There is no FX endpoint to consume, and this rail
+  # in particular must promise nothing about the rate — fx_not_fixed_notice says so at warning
+  # severity because the mandate spans months.

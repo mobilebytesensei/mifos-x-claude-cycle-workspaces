@@ -1,0 +1,308 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: branch-locator
+
+id: branch-locator
+name: "Branch Locator"
+feature: branch-locator
+flavor: consumer
+quality_score: 88
+contract_version: "2.0.0"
+capabilities:
+  - has_ui
+
+screens:
+  - id: branch_locator_main
+    name: "Branch Locator"
+    archetype: index_list
+    route: /branch-locator
+
+archetype: index_list
+
+shell:
+  top_app_bar:
+    show: true
+    title: "{strings.branch_locator.title}"
+    navigation_icon: arrow_back
+    navigation_action: navigate_back
+  bottom_nav: false
+
+components:
+
+  - id: branch_search_field
+    type: search_field
+    placeholder: "{strings.branch_locator.search.placeholder}"
+    a11y: { label: "{strings.branch_locator.search.a11y}" }
+    test: { tag: "branchLocator:searchField" }
+    behavior:
+      routing: >-
+        Input shape picks the endpoint — a UK postcode pattern goes to the postcode path, free
+        text goes to country/town with country fixed to GB, and a sort-code pattern goes to the
+        sortcode path. There is no combined search endpoint.
+    input_normalisation:
+      required: true
+      sort_code: >-
+        Strip every non-digit before building the sortcode path. The endpoint accepts SIX DIGITS
+        ONLY — verified 2026-08-07: /sortcode/400106 returns the branch, /sortcode/40-01-06
+        returns an empty result set with HTTP 200 and no error of any kind. Users type sort codes
+        with hyphens and spaces, and the app's own records store them hyphenated, so without this
+        step the most natural input silently finds nothing.
+      why_it_cannot_be_skipped: >-
+        There is no failure to detect. A wrongly-formatted sort code and a non-existent one
+        return byte-identical responses, so the screen would show "no branch found" and be
+        wrong. Normalise on the way in; do not try to recover on the way out.
+
+  - id: branch_use_my_location
+    type: icon_button
+    icon: my_location
+    a11y: { label: "{strings.branch_locator.use_location.a11y}" }
+    test: { tag: "branchLocator:useMyLocation" }
+    on_click: { action: request_device_location, then: get_branches_by_geolocation }
+
+  - id: branch_radius_control
+    type: slider
+    min: 1
+    max: 10
+    default: 3
+    unit: miles
+    label: "{strings.branch_locator.radius.label}"
+    test: { tag: "branchLocator:radius" }
+    constraint_note: >-
+      MILES, and 10 is a hard API ceiling — there is no wider search. A metric UI must convert,
+      and must not offer a value the endpoint will reject.
+    clamp_contract:
+      rule: "Clamp to 1..10 in the client BEFORE issuing the request. Never send a value outside the range."
+      why: >-
+        Out-of-range does not error. Measured 2026-08-07: radius=11 and radius=0 both return
+        HTTP 200 with zero results, identical to a genuine no-branches-nearby response. An
+        unclamped metric conversion that lands on 16 tells the user their city has no branches.
+        The slider bounds are the only thing preventing that, so they are a correctness
+        requirement rather than a convenience.
+    default_raised_from_1:
+      changed: "1 → 3"
+      reason: >-
+        Measured at 51.5074/-0.1278: radius=1 returns 6 branches and radius=10 returns 42. One
+        mile is the API's default but it is a poor product default — it opens the screen on the
+        narrowest possible result set and makes a dense city look empty. 3 miles is a better
+        first impression while staying well inside the ceiling.
+
+  # ── Filter design rule, applies to both groups below ──────────────────
+  # A chip earns its place by EXCLUDING branches, not by describing them. Values carried by all
+  # 327 UK branches were removed from both lists on 2026-08-07 after the full-population scan —
+  # they rendered as working controls that could never change a result. See
+  # api.yaml#enums_observed for the per-value counts behind every inclusion and exclusion.
+
+  - id: branch_filter_accessibility
+    type: filter_chip_group
+    label: "{strings.branch_locator.filter.accessibility}"
+    options_source: "Accessibility values that DISCRIMINATE across the 327-branch estate"
+    options: [WheelchairAccess, LevelAccess, AutomaticDoors, InternalRamp, ExternalRamp]
+    client_side: true
+    test: { tag: "branchLocator:filterAccessibility" }
+    why_here_and_not_on_atms: >-
+      Accessibility is populated 327/327 on branches and 0/135 on ATMs. This filter is meaningful
+      here and would return nothing for every user on the ATM screen.
+    removed_as_dead_controls:
+      values:
+        - { value: InductionLoop, count: "327/327", reason: "On every branch in the country. Selecting it excludes nothing." }
+        - { value: AudioCashMachine, count: "326/327", reason: "Excludes exactly one branch nationally. Not a filter." }
+      why_this_matters_more_here: >-
+        A dead chip is always bad, but on an accessibility row it is worse than elsewhere: the
+        user selecting it has a genuine access need and is entitled to read an unchanged result
+        list as "all of these meet my requirement" — which, by luck, is true for these two
+        values. The list is still misleading about what the app actually checked.
+    added_after_population_scan:
+      values:
+        - { value: ExternalRamp, count: "50/327", reason: "Strongly discriminating and entirely absent from the 25-branch London sample." }
+    trust_basis: >-
+      12 branches whose editorial Name says "Not Wheelchair Accessible" all omit WheelchairAccess
+      from the structured array. Free text and structured data agree, so filtering on the
+      structured field is safe.
+
+  - id: branch_filter_counter_service
+    type: filter_toggle
+    label: "{strings.branch_locator.filter.counter_service}"
+    client_side: true
+    test: { tag: "branchLocator:filterCounterService" }
+    replaces: "the former branch_filter_services chip group"
+    predicate: "ServiceAndFacility contains CounterServices"
+    why_a_toggle_and_not_chips: >-
+      The 11 observed service values collapse to one real question. CounterServices,
+      BureauDeChange and OnDemandCurrency all sit at exactly 175/327 and co-occur — a branch is
+      either full-service and has all three, or self-service and has none. The other eight values
+      are on effectively every branch. So there is precisely ONE axis worth exposing, and a
+      single toggle states it honestly where a chip row implied five independent choices.
+    user_facing_stake: >-
+      152 of 327 UK branches have no counter at all. "Can I speak to someone?" is the highest-value
+      question this screen can answer and it deserves more prominence than a chip.
+    removed_as_dead_controls:
+      - { value: MeetingRooms, count: "327/327" }
+      - { value: SelfServiceAccountOpening, count: "327/327" }
+      - { value: LodgementDevice, count: "326/327" }
+    corroboration: >-
+      164 branch names read "Counter Service Available (Monday-Friday)" and 149 read "Cash
+      Withdrawals and Note Deposits Through Self-Service". Two independent fields split the
+      estate the same way.
+
+  - id: branch_list
+    type: list
+    item: branch_row
+    empty_state: empty
+    test: { tag: "branchLocator:list" }
+
+  - id: branch_row
+    type: list_item
+    renders:
+      title: "Branch.Name — TRIMMED and title-cased"
+      subtitle: "composed from BuildingNumber + StreetName + TownName + PostCode, each TRIMMED"
+      trailing: "distance when location is known, otherwise nothing"
+    test: { tag: "branchLocator:row" }
+    a11y: { label: "{strings.branch_locator.row.a11y}" }
+
+  - id: branch_closure_banner
+    type: banner
+    severity: warning
+    source: "Availability.NonStandardAvailability"
+    test: { tag: "branchLocator:closureBanner" }
+    added: "2026-08-07, after the full-population scan found this field is real"
+    visible_when: "NonStandardAvailability is present AND today falls within [StartDate, EndDate]"
+    renders:
+      headline: "NonStandardAvailability.Name — e.g. 'Temporarily Closed'"
+      detail: "NonStandardAvailability.Notes, verbatim — the only human-readable explanation the feed gives"
+      dates: "StartDate to EndDate. Dates only; the field carries no time component."
+    suppresses: branch_opening_hours
+    rendering_contract:
+      rule: >-
+        Check this FIRST, before rendering opening hours. When a closure is in force the weekly
+        pattern must be suppressed or visibly struck through — never presented as if it applied.
+      why_it_is_not_optional: >-
+        Branch 401118, Birmingham New Street, is closed from 2025-10-06 to 2027-03-21 — a window
+        containing today — and still publishes a complete, ordinary Monday-to-Saturday
+        09:30-16:30 pattern. A screen that renders StandardAvailability alone tells the user it
+        opens at 09:30 on Monday and sends them to a shuttered building. There is nothing else
+        in the record that contradicts the hours.
+      rarity_is_the_hazard: >-
+        1 of 327 branches carries this field, and none of them are in London. Any developer
+        testing against a local radius search will never see it and will ship without handling
+        it. This is why branch 401118 is a required fixture in demo-data.yaml rather than an
+        optional extra.
+    do_not_derive_from_name: >-
+      The branch Name also reads "- Temporarily closed" here, but that is free text with no
+      guaranteed vocabulary. Parse the structured field; treat the name as corroboration only.
+
+  - id: branch_opening_hours
+    type: week_table
+    source: "Availability.StandardAvailability.Day[]"
+    test: { tag: "branchLocator:openingHours" }
+    rendering_contract:
+      must_render_all_seven_days: true
+      rule: >-
+        Build Monday-to-Sunday from a FIXED list and mark every day absent from the API response
+        as Closed. Absence means closed, not unknown. NOT ONE of the 327 branches in the entire
+        HSBC UK estate publishes a Sunday, so a renderer that only iterates what it receives
+        drops Sunday from every single branch in the country.
+      population_shape: >-
+        Measured across all 1802 Day entries: every branch publishes exactly Monday-to-Friday,
+        plus Saturday on 167 of 327. Saturday is the only variable day in the feed and Sunday is
+        universally absent. So the fixed-week renderer always fills at least Sunday, and fills
+        Saturday about half the time.
+      split_days: >-
+        OpeningHours is a list per day. Render every range, not just the first. Zero split days
+        exist today (all 1802 entries have exactly one range) — this is a contract-conformance
+        guard against a shape the API is permitted to send, not a fix for an observed case.
+      time_parsing: >-
+        All observed times use the colon form. The swagger pattern makes the colon OPTIONAL, so
+        "0930" is conformant and would break a strict HH:mm parser. Parse defensively.
+      forbidden: >-
+        NO "Open now" badge. The feed carries no bank-holiday or public-holiday calendar, so the
+        app cannot know whether a branch is open on a given date. An "Open now" badge on
+        Christmas Day is the failure this forbids.
+      what_IS_permitted: >-
+        "Temporarily closed" IS computable and IS required, because that date range is published
+        — see branch_closure_banner. "Open now" is not. These are different questions and only
+        the first has data behind it.
+
+  - id: branch_contact
+    type: contact_row
+    source: "ContactInfo[]"
+    test: { tag: "branchLocator:contact" }
+    label_contract: >-
+      Label it as HSBC's general contact number, NOT "Call this branch". The value is
+      03457 404 404 on ALL 327 branches — one distinct number in the entire national estate,
+      so it is definitively not per-branch data.
+    placement_note: >-
+      Because the number is identical everywhere, repeating it on every row in the list is pure
+      noise. Show it once on the detail view, not on the list item — a per-branch position
+      implies per-branch data that does not exist.
+
+  - id: branch_service_summary
+    type: label
+    source: "ServiceAndFacility"
+    test: { tag: "branchLocator:serviceSummary" }
+    renders: "Counter service vs self-service only — derived from whether ServiceAndFacility contains CounterServices."
+    why_only_this: >-
+      Eight of the 11 observed service values are on effectively every branch and carry no
+      information. Listing them produces a long identical badge row on every card. The single
+      counter-service distinction is the only one that varies (175/327) and the only one users
+      act on.
+    customer_segment_deliberately_absent: >-
+      CustomerSegment is NOT rendered anywhere on this screen. All eight values appear on all 327
+      branches — the field has zero variance nationally, so a badge or filter for it would imply
+      a difference between branches that does not exist.
+
+  - id: branch_attribution
+    type: caption
+    text: "{strings.branch_locator.attribution}"
+    test: { tag: "branchLocator:attribution" }
+    note: >-
+      meta.Agreement and meta.License are single-value enums in the API contract — the Open
+      Licence terms ship inside the payload. Attribution is a condition of use, not decoration.
+
+# CORRECTED 2026-08-07. This was written as an array of OBJECTS (`- { id: content, note: … }`),
+# which is neither of the two shapes the toolchain accepts — stitch-prompt-build.ts rejected the
+# whole feature with "screen `branch-locator` has no `states:` block", and it was the only one of
+# 42 screens to fail. The canonical form is a flat array of state names; the per-state prose moved
+# to state_notes below, where it is still read by humans but does not break the parser.
+states: [loading, content, empty, temporarily_closed, location_denied, error, rate_limited, no_network]
+
+state_notes:
+  content: "Branch list rendered."
+  empty: >-
+    No branches within the radius. Genuinely reachable — branch density is far lower than ATM
+    density and the radius ceiling is 10 miles. Only trustworthy once input is validated
+    client-side; see empty_state_integrity.
+  temporarily_closed: >-
+    A branch with an in-force NonStandardAvailability window. 1 of 327 nationally, and it STILL
+    publishes normal Mon-Sat hours — see branch_closure_banner. Read the closure before the
+    weekly pattern, or the screen sends someone to a building shut until 2027.
+  location_denied: "Device location refused. The screen stays useful via postcode / town / sort-code search."
+  rate_limited: "429. A real risk on an unauthenticated public API — do not refetch on every map pan."
+
+empty_state_integrity:
+  severity: high
+  finding: >-
+    The empty state cannot be trusted on this API without client-side validation first. Four
+    distinct causes were measured returning a byte-identical empty response with HTTP 200: a
+    genuinely empty area, a sort code in the wrong format, a sort code that does not exist, and
+    a radius outside 1..10. Nothing in the response distinguishes them.
+  consequence: >-
+    "No branches found" is a claim the screen cannot support unless the request was known-valid.
+    Clamp the radius and normalise the sort code BEFORE issuing the call, so that by the time an
+    empty response arrives, empty genuinely means empty.
+  epoch_tell: >-
+    Every empty response carries meta.LastUpdated = 1970-01-01T00:00:00.000Z. It is a reliable
+    marker that a response is empty, and it must not be written into any cache keyed on that
+    timestamp.
+
+forbidden_states:
+  unauthenticated: >-
+    The API declares no security scheme and returns no 401 or 403 on any path. A sign-in prompt
+    or session-expired state on this screen is unreachable code and a misleading message — the
+    screen works with no session at all.
+
+device_permission:
+  permission: location
+  note: >-
+    A DEVICE permission, not an API one. The app currently declares zero device permissions
+    app-wide, so this and atm-locator would be the first. Refusal is a supported path, not an
+    error — the postcode, town and sort-code endpoints exist precisely for it.
