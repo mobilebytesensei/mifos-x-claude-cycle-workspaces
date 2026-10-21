@@ -1,0 +1,158 @@
+sibling: api
+schema_version: "4.0"
+feature_id: vrp
+_source: source_analysis
+
+auth_common:
+  transport: "mTLS to HSBC UK sandbox; FAPI headers (x-fapi-financial-id) on every Vrp call"
+  client: "core/network api/Vrp.kt (Ktor) — base path v4.0/pisp; pisp/ excluded from the PSU-bearer interceptor"
+  write_headers: "signedPost: x-jws-signature (detached PS256 JWS, kid, iss = HSBC_SIGNING_ISSUER, iat now) + x-idempotency-key (≤ 40)"
+  request_bodies: >
+    VRP request bodies are typed kotlinx models (CreateConsent, CheckFunds, InitiatePayment under
+    core/network/model/vrp/*) serialised by obieBody(...) into a raw kotlinx JsonObject; that exact
+    JsonObject.toString() payload is what is signed and sent as TextContent(application/json).
+    Responses decode into the typed *Response models and are mapped to domain VrpConsent / VrpPayment.
+  tokens:
+    client_credentials: "OAuthApi.clientCredentialsToken(ConsentCreationScope.PAYMENTS) — consent create/get/delete and payment status reads"
+    psu: "VrpTokenProvider.accessToken(consentId) — redeemed from the per-consent refresh token in VrpAuthSession (refresh_token grant); callAsCustomer retries once with refreshAccessToken on auth failure"
+
+api:
+  - id: get_accounts
+    method: GET
+    path: "/v4.0/aisp/accounts"
+    description: "VRP payer candidates via AccountsOverviewRepository.overviewState (Store5 over Room accounts), filtered to HSBC products supporting AccountEndpoint.VrpPayer."
+    auth: PSU accounts token
+    response: "AccountWithBalance[] (domain)"
+    cache: { strategy: stale-while-revalidate, offline: show_cached }
+
+  - id: get_balances
+    method: GET
+    path: "/v4.0/aisp/accounts/{AccountId}/balances"
+    auth: PSU accounts token
+    response: "Balance (domain, joined into AccountWithBalance)"
+
+  - id: get_beneficiaries
+    method: GET
+    path: "/v4.0/aisp/accounts/{AccountId}/beneficiaries"
+    description: "Saved payees for the selected payer (VrpSetup payee row)."
+    auth: PSU accounts token
+    response: "BeneficiaryItem[] (domain)"
+
+  - id: post_token_client_credentials
+    method: POST
+    path: "/v1.1/oauth2/token"
+    description: "grant_type=client_credentials, scope=payments (private_key_jwt)."
+    response: TokenResponse
+
+  - id: post_vrp_consent
+    method: POST
+    path: "/v4.0/pisp/domestic-vrp-consents"
+    function: "Vrp.createConsent(paymentsScopeToken, CreateConsent, idempotencyKey)"
+    description: "Stage a domestic VRP consent (VrpConsentRepository.stageConsent). Response row is NOT stored until it is Authorised (store() only upserts when already stored or Authorised)."
+    auth: client_credentials (payments)
+    headers: { x-jws-signature: required, x-idempotency-key: "VrpConsentDraft.idempotencyKey = Uuid.random()" }
+    request: "CreateConsent → JsonObject"
+    request_fields:
+      ControlParameters.VRPType: "UK.OBIE.VRPType.Sweeping"
+      ControlParameters.MaximumIndividualAmount: "per-payment ceiling, GBP"
+      ControlParameters.PeriodicLimits: "exactly one {PeriodType ∈ Day|Week|Fortnight|Month|Half-year|Year, Amount GBP}"
+      ControlParameters.ValidToDateTime: "optional validTo (≥ today+2 UTC)"
+      Initiation.CreditorAccount: "UK.OBIE.SortCodeAccountNumber, 14 digits, name"
+      Initiation.DebtorAccount: "omitted when chosen at the bank"
+    response: "CreateConsentResponse → VrpConsent (consentId, status AWAU)"
+    errors: { network: "StagingFailure.NetworkUnavailable", other: "StagingFailure.BankRefused" }
+
+  - id: get_authorize
+    method: GET
+    path: "https://{HSBC_AUTHORIZE_HOST}/obie/open-banking/v1.1/oauth2/authorize"
+    description: "Signed URL built by VrpAuthRepository.beginAuthorisation(consentId) and opened in the system browser; not called by the HTTP client."
+    external: true
+
+  - id: post_token_authorization_code
+    method: POST
+    path: "/v1.1/oauth2/token"
+    description: "VrpAuthRepository.exchangeAndPersistCredential(code, consentId): authorization_code grant; the refresh token is persisted per consent in VrpAuthSession (secure settings vrp_auth_session) before the consent is read back."
+    response: TokenResponse
+    errors: { network: NetworkUnavailable, 400: CodeExpiredOrUsed, 401: CodeExpiredOrUsed, other: AuthorityNotSaved }
+
+  - id: post_token_refresh
+    method: POST
+    path: "/v1.1/oauth2/token"
+    description: "grant_type=refresh_token per consent (VrpTokenProvider.redeem) — PSU access token for funds checks and payments."
+    response: TokenResponse
+
+  - id: get_vrp_consent
+    method: GET
+    path: "/v4.0/pisp/domestic-vrp-consents/{ConsentId}"
+    function: "Vrp.getConsent(accessToken, consentId)"
+    description: "VrpConsentRepository.refreshStatus — on success upserts Room vrp_consent (syncedAt = now); on OBIE resource-not-found forgets the consent (tokens dropped, row marked revoked)."
+    auth: client_credentials (payments)
+    response: "CreateConsentResponse → VrpConsent"
+
+  - id: delete_vrp_consent
+    method: DELETE
+    path: "/v4.0/pisp/domestic-vrp-consents/{ConsentId}"
+    function: "Vrp.deleteConsent(accessToken, consentId)"
+    description: >
+      VrpConsentRepository.revoke — DELETEs first and forgets locally (refresh token removed, access
+      token invalidated, vrp_consent.revokedAt = now) ONLY when the bank confirms: 2xx, or 404 =
+      already gone. Every other outcome returns Unconfirmed(reason) with NO local mutation, so the
+      consent and sweeping stay active and VrpConsentDetail shows revoke_failed + Retry (NFR-006,
+      VRP-GAP-7; mirrors consent-detail revoke_account_access_consent).
+    auth: client_credentials (payments)
+    headers: { x-jws-signature: none, x-idempotency-key: none }
+    response: Unit
+    used_by_ui: true
+    used_by: [vrp-consent-detail-screen]
+    errors:
+      2xx: "Confirmed → local forget + event Revoked"
+      404: "Confirmed (already gone at the bank) → local forget + event Revoked"
+      token_mint_failed: "Unconfirmed(TokenUnavailable) → revoke_failed; local state untouched"
+      4xx: "Unconfirmed(BankRejected) → revoke_failed; local state untouched"
+      5xx: "Unconfirmed(BankRejected) → revoke_failed; local state untouched"
+      network: "Unconfirmed(Network) — outcome unknown, treated as unconfirmed → revoke_failed; local state untouched"
+
+  - id: post_vrp_funds_confirmation
+    method: POST
+    path: "/v4.0/pisp/domestic-vrp-consents/{ConsentId}/funds-confirmation"
+    function: "Vrp.checkFunds(psuAccessToken, consentId, CheckFunds, idempotencyKey)"
+    description: "VrpPaymentRepository.checkFunds (key = fundsCheckKey(consentId, amount)). Called by VrpPayment on Confirm BEFORE post_vrp_payment (DEF-005, plan AC 'Funds confirmation runs before domestic-vrps submit'); FundsAvailable false → Failed(InsufficientFunds) and no payment is submitted. Source does not call it yet — ui.yaml known_gaps VRP-GAP-1."
+    auth: "PSU (VrpTokenProvider)"
+    headers: { x-jws-signature: required, x-idempotency-key: "fundsCheckKey(consentId, amount)" }
+    request: "CheckFunds → JsonObject"
+    response: "CheckFundsResponse → FundsAvailability"
+    used_by_ui: true
+    used_by: [vrp-payment-screen]
+    precedes: post_vrp_payment
+    errors: { funds_unavailable: InsufficientFunds, network: NetworkUnavailable, 401: NeedsReauthorisation, 403: ConsentUnusable, other: Rejected }
+
+  - id: post_vrp_payment
+    method: POST
+    path: "/v4.0/pisp/domestic-vrps"
+    function: "Vrp.createPayment(psuAccessToken, InitiatePayment, idempotencyKey)"
+    description: "VrpPaymentRepository.pay — InitiatePayment built from the consent (consent.toInitiatePayment) with InstructionIdentification VRPINSTR+key[0..20] and EndToEndIdentification VRPE2E+key[0..20]; success upserts Room vrp_payment with localId = idempotencyKey."
+    auth: "PSU (VrpTokenProvider via callAsCustomer)"
+    headers: { x-jws-signature: required, x-idempotency-key: "VrpPaymentViewModel.idempotencyKey (Uuid.random, stable for retries)" }
+    request: "InitiatePayment → JsonObject"
+    response: "InitiatePaymentResponse → VrpPayment"
+    errors:
+      network: NetworkUnavailable
+      serialization: Unconfirmed
+      outside_control_parameters: OverLimit
+      401: NeedsReauthorisation
+      403: ConsentUnusable
+      other: Rejected
+
+  - id: get_vrp_payment
+    method: GET
+    path: "/v4.0/pisp/domestic-vrps/{DomesticVRPId}"
+    function: "Vrp.getPayment(accessToken, domesticVrpId)"
+    description: "VrpPaymentRepository.refreshStatus — merges the fresh status into the stored row (settledAt set once the payment has settled). Payments without a bank id are returned unchanged."
+    auth: client_credentials (payments)
+    response: "InitiatePaymentResponse → VrpPayment"
+
+local_reads:
+  - { id: observe_active_consents, source: "VrpConsentRepository.observeActive()", table: vrp_consent }
+  - { id: observe_consent, source: "VrpConsentRepository.observeById(consentId)", table: vrp_consent }
+  - { id: observe_payments, source: "VrpPaymentRepository.observeForConsent(consentId)", table: vrp_payment }
+  - { id: observe_usage, source: "VrpPaymentRepository.observeUsage(consentId) → currentUsage(consent, payments)", note: "client-side: settled payments since the current UTC period start, per periodic limit" }

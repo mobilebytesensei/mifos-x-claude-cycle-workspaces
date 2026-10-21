@@ -1,0 +1,359 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: payment-status
+status: enriched
+_source: source_analysis
+_source_modules: [":feature:payment-status"]
+_source_paths:
+  - feature/payment-status/src/commonMain/kotlin/org/mifosx/openbanking/feature/paymentstatus/
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/PaymentStatusRepository.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/impl/PaymentStatusRepositoryImpl.kt
+requirement_refs: [FR-036]
+
+screen_id: payment-status-screen
+name: PaymentStatus
+archetype: detail_screen
+states: [loading, content, refreshing, refresh_failed, rejected, error]
+initial_state: loading
+feature_profile:
+  combo_id: read_detail
+  facets: [receipt, status-timeline, manual-refresh]
+  archetype: detail
+  store_archetype: NETWORK_ONLY
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default
+components:
+  - { id: payment_status_root, type: screen, screen_ref: payment-status-screen, testTag: "paymentStatus:summaryCard" }
+
+route: "PaymentStatusRoute(paymentId: String)"
+entry_points:
+  - source: payment-consent
+    trigger: "PaymentConsentEvent.PaymentSubmitted(paymentId) → RootNavScreen onPaymentSubmitted"
+    via: "Intended (PST-GAP-1): navigateToAuthenticatedGraph then AuthenticatedNavHostScreen navigate(PaymentStatusRoute(paymentId)) { popUpTo(Home) } — HOST navigator, single registration. Current source still uses the ROOT registration (RootNavScreen)."
+    params: { paymentId: String }
+  - source: send-money
+    trigger: "History row tap / onNavigateToPayment(paymentId)"
+    via: "AuthenticatedNavHostScreen: navController.navigate(PaymentStatusRoute(paymentId)) — HOST navigator"
+    params: { paymentId: String }
+  - source: payments-schedule-payment
+    trigger: "History row tap / onNavigateToPayment(paymentId)"
+    via: "AuthenticatedNavHostScreen (host navigator)"
+    params: { paymentId: String }
+  - source: payments-standing-order
+    trigger: "Recent/history row tap / onNavigateToPayment(paymentId)"
+    via: "AuthenticatedNavHostScreen (host navigator)"
+    params: { paymentId: String }
+nav_params:
+  paymentId: { type: String, required: true, saved_state_key: "paymentId (PaymentStatusViewModel.PAYMENT_ID_ARG)" }
+
+business_logic:
+  kind: composite
+  description: >
+    Reads one submitted payment's receipt from the OBIE endpoint matching its own product. The product
+    (ConsentType) is read back from the local payment-history row written at submission; an id with no
+    row or an unknown type is an error, never a guess. Merges bank parties with locally stored parties
+    when the bank omits them, builds a newest-first timeline (3 steps for scheduled payments / standing
+    orders, 4 for immediate), and supports a manual, never-polled refresh that keeps the current answer
+    on screen and only shows a notice when the refresh fails.
+  library_refs: [core-data, core-network]
+
+screens:
+  - id: payment-status-screen
+    name: PaymentStatus
+    route: "PaymentStatusRoute(paymentId)"
+    archetype: detail_screen
+    title: "{{statusWord(status, consentType, disposition)}}"  # i18n: skip — resolved from string resources at runtime
+    description: >
+      Custom TopAppBar (testTag paymentStatus:appBar) whose container colour follows the disposition
+      (in-progress / completed / failed) and whose title is the plain-English status word; empty title
+      while loading or in error. Body: summary card (amount, "to {creditor}", status chip, OBIE status
+      meaning), optional refresh-failure note, optional in-progress note, Progress timeline, Details
+      list, a Refresh tonal pill (only while not settled) and a "Last checked · HH:mm" line.
+    states: [loading, content, refreshing, refresh_failed, rejected, error]
+    initial_state: loading
+    state_descriptions:
+      rejected: "uiState = Content with status == Rejected (RJCT, disposition TerminalFailure) — TERMINAL per FR-036. Top bar + status chip read 'Rejected' in failure colours; RejectionNote (paymentStatus:rejectionNote) shows the bank status code (RJCT) and the support reference (paymentId) to quote to the bank; timeline ends with Completed → Failed (label 'Rejected'). No Refresh / check-status action (settled == true), and no polling."
+      loading: "uiState = Loading. MifosProgressIndicator; top bar has default colours and no title."
+      content: "uiState = Content. Summary card + timeline + details. Refresh button visible only when !settled."
+      refreshing: "Content.refreshing = true. Content stays on screen; Refresh button disabled (enabled = !refreshing)."
+      refresh_failed: "Content.refreshFailure != null. RefreshFailureNote (paymentStatus:refreshFailure, 'Could not refresh just now. This is last status.') shown above the in-progress note; content kept."
+      error: "uiState = Error(kind) — first load failed. MifosErrorComponent with kind-specific body and Retry (RefreshStatus)."
+
+    state_model:
+      PaymentStatusViewModel:
+        base: "BaseViewModel<PaymentStatusState, Nothing, PaymentStatusAction>"
+        state:
+          name: PaymentStatusState
+          fields:
+            paymentId: { type: String, default: "savedStateHandle[paymentId].orEmpty()" }
+            uiState: { type: PaymentStatusUiState, default: "PaymentStatusUiState.Loading" }
+        ui_state:
+          name: PaymentStatusUiState
+          members:
+            - { name: Loading }
+            - name: Content
+              fields:
+                paymentId: { type: String }
+                status: { type: PaymentStatus, values: [Received, Pending, AcceptedSettlementInProcess, AcceptedTechnicalValidation, InitiationCompleted, PartiallyAccepted, AcceptedSettlementCompleted, AcceptedCreditSettlementCompleted, AcceptedWithoutPosting, Rejected, Cancelled, InitiationFailed, Unknown] }
+                disposition: { type: PaymentDisposition, values: [InProgress, TerminalSuccess, TerminalFailure] }
+                amountLabel: { type: String }
+                creditorName: { type: String }
+                reference: { type: String }
+                debtorName: { type: String, default: '""' }
+                debtorIdentification: { type: String, default: '""' }
+                debtorScheme: { type: String, default: '""' }
+                creditorIdentification: { type: String, default: '""' }
+                creditorScheme: { type: String, default: '""' }
+                submittedAt: { type: String, note: "from CreationDateTime" }
+                settledAt: { type: String, default: '""', note: "row omitted when blank" }
+                scheduledForAt: { type: String, default: '""', note: "from requestedExecutionDateTime, date only" }
+                consentType: { type: "ConsentType?", default: "null" }
+                frequency: { type: "StandingOrderFrequency?", default: "null" }
+                finalPaymentAt: { type: String, default: '""' }
+                recurringAmountLabel: { type: String, default: '""' }
+                statusChangedAt: { type: String, default: '""', note: "from StatusUpdateDateTime" }
+                charges: { type: "List<PaymentCharge>", default: "emptyList()" }
+                lastCheckedAt: { type: String, default: '""' }
+                refreshing: { type: Boolean, default: "false" }
+                refreshFailure: { type: "PaymentStatusErrorKind?", default: "null" }
+                timeline: { type: "List<PaymentTimelineEntry>", default: "emptyList()" }
+              derived:
+                inProgress: "disposition == InProgress"
+                settled: "consentType?.let { status.dispositionFor(it) != InProgress } ?: false"
+            - { name: Error, fields: { kind: PaymentStatusErrorKind } }
+        errors:
+          name: PaymentStatusErrorKind
+          types:
+            - { type: PaymentNotFound, from: "404 NotFound", retry: true, message_key: feature_payment_status_error_not_found }
+            - { type: TokenExpired, from: "401 Unauthorized", retry: true, message_key: feature_payment_status_error_token_expired }
+            - { type: ConsentRevoked, from: "403 Forbidden", retry: true, message_key: feature_payment_status_error_consent_revoked }
+            - { type: NetworkError, from: "anything else", retry: true, message_key: feature_payment_status_error_network }
+        timeline_model:
+          steps: [RequestCreated, ApprovedAtBank, Submitted, Completed]
+          step_states: [Done, Current, Pending, Failed]
+          rules:
+            - "Newest first. Submitted, ApprovedAtBank, RequestCreated are always Done (the id only exists after submission)."
+            - "RequestCreated is always undated; Submitted/Approved timestamps come from PaymentHistoryRepository.stageTimestampsOf and are dropped when missing."
+            - "consentType.setsUpAnInstruction (scheduled / standing order) → 3 steps only, no Completed."
+            - "Completed: TerminalSuccess → Done(settledAt); TerminalFailure → Failed(statusChangedAt); InProgress → Current for ACSP/ACTC else Pending."
+        events: { name: "Nothing", members: [] }
+        actions:
+          name: PaymentStatusAction
+          members:
+            - { name: RefreshStatus, trigger: "Tap Refresh pill or Retry on the error page" }
+        di: [SavedStateHandle, PaymentStatusRepository, PaymentHistoryRepository, Clock, TimeZone]
+
+    components:
+      - id: app_bar
+        type: top-bar
+        testTag: "paymentStatus:appBar"
+        title: "{{statusWord}}"  # i18n: skip — runtime status word from string resources
+        title_testTag: "paymentStatus:appBarStatus"
+        style: { container: "dispositionColours(disposition).container", content: "dispositionColours(disposition).onContainer" }
+        navigation_icon: arrow_back
+        navigation_content_description: "{strings.feature_payment_status_back_a11y}"
+        on_navigation_click:
+          action: onBack
+          target: back
+          action_contract:
+            effect: navigate
+            description: "Invokes onBack → popBackStack() on the single authenticated-host registration. Reached after payment-consent submission (pushed with popUpTo(Home)) it lands on Home; reached from a history row it returns to that list. (Current source still has a second root registration — PST-GAP-1.)"
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: summary_card
+        type: card
+        testTag: "paymentStatus:summaryCard"
+        content:
+          - { id: amount, type: text, testTag: "paymentStatus:amount", value: "{{amountLabel}}" }  # i18n: skip — formatted money
+          - { id: creditor_line, type: text, value: "{strings.feature_payment_status_to}" }
+          - { id: status_chip, type: chip, testTag: "paymentStatus:statusChip", label: "{strings.feature_payment_status_in_progress | feature_payment_status_completed | feature_payment_status_failed}", style: "dispositionColours(disposition)" }
+          - { id: status_detail, type: text, testTag: "paymentStatus:statusDetail", value: "{strings.feature_payment_status_detail_<code>}" }
+
+      - id: refresh_failure_note
+        type: banner
+        testTag: "paymentStatus:refreshFailure"
+        visible: "{{refreshFailure != null}}"
+        message: "{strings.feature_payment_status_refresh_failed}"
+
+      - id: rejection_note
+        type: banner
+        testTag: "paymentStatus:rejectionNote"
+        visible: "{{status == Rejected}}"
+        style: { container: errorContainer, content: onErrorContainer }
+        message: "{strings.feature_payment_status_rejected_note}"
+        rows:
+          - { id: rejection_bank_code, testTag: "paymentStatus:rejectionBankCode", label: "{strings.feature_payment_status_bank_code}", value: "RJCT" }  # i18n: skip — ISO 20022 status code
+          - { id: rejection_support_reference, testTag: "paymentStatus:rejectionSupportReference", label: "{strings.feature_payment_status_support_reference}", value: "{{paymentId}}" }  # i18n: skip — binding
+
+      - id: in_progress_note
+        type: banner
+        testTag: "paymentStatus:inProgressNote"
+        visible: "{{inProgress}}"
+        message: "{{scheduledForAt.isNotBlank() ? strings.feature_payment_status_in_progress_note_scheduled : strings.feature_payment_status_in_progress_note}}"  # i18n: skip — chooses between two string keys
+
+      - id: timeline
+        type: timeline
+        testTag: "paymentStatus:timeline"
+        visible: "{{timeline.isNotEmpty()}}"
+        heading: "{strings.feature_payment_status_timeline}"
+        item:
+          testTag: "paymentStatus:timelineStep:{step}"
+          marker_testTag: "paymentStatus:timelineState:{step}:{state}"
+          label: "{strings.feature_payment_status_step_request_created | step_approved | step_submitted | step_completed | step_rejected | step_settling | step_waiting}"
+          supporting: "{{entry.timestamp}}"  # i18n: skip — formatted timestamp
+
+      - id: details_list
+        type: list
+        testTag: "paymentStatus:detailsList"
+        heading: "{strings.feature_payment_status_details}"
+        rows:
+          - { id: detail_reference, testTag: "paymentStatus:detailReference", label: "{strings.feature_payment_status_reference}", value: "{{reference | ifBlank: strings.feature_payment_status_reference_empty}}" }  # i18n: skip — binding
+          - { id: detail_from, testTag: "paymentStatus:detailFrom", label: "{strings.feature_payment_status_from}", value: "{{debtorName}} {{debtorScheme}} {{debtorIdentification}}" }  # i18n: skip — binding
+          - { id: detail_to, testTag: "paymentStatus:detailTo", label: "{strings.feature_payment_status_to_label}", value: "{{creditorName}} {{creditorScheme}} {{creditorIdentification}}" }  # i18n: skip — binding
+          - { id: detail_payment_type, testTag: "paymentStatus:detailPaymentType", visible: "{{consentType != null}}", label: "{strings.feature_payment_status_payment_type}", value: "{strings.feature_payment_status_type_*}" }
+          - { id: detail_submitted, testTag: "paymentStatus:detailSubmitted", label: "{strings.feature_payment_status_submitted}", value: "{{submittedAt}}" }  # i18n: skip — binding
+          - { id: detail_scheduled_for, testTag: "paymentStatus:detailScheduledFor", visible: "{{scheduledForAt.isNotBlank()}}", label: "{strings.feature_payment_status_scheduled_for | feature_payment_status_first_payment}", value: "{{scheduledForAt}}" }  # i18n: skip — binding
+          - { id: detail_repeats, testTag: "paymentStatus:detailRepeats", visible: "{{frequency != null}}", label: "{strings.feature_payment_status_repeats}", value: "{strings.feature_payment_status_repeats_weekly|fortnightly|monthly|quarterly|yearly}" }
+          - { id: detail_recurring_amount, testTag: "paymentStatus:detailRecurringAmount", visible: "{{recurringAmountLabel.isNotBlank()}}", label: "{strings.feature_payment_status_recurring_amount}", value: "{{recurringAmountLabel}}" }  # i18n: skip — binding
+          - { id: detail_final_payment, testTag: "paymentStatus:detailFinalPayment", visible: "{{finalPaymentAt.isNotBlank()}}", label: "{strings.feature_payment_status_final_payment}", value: "{{finalPaymentAt}}" }  # i18n: skip — binding
+          - { id: detail_settled, testTag: "paymentStatus:detailSettled", visible: "{{settledAt.isNotBlank()}}", label: "{strings.feature_payment_status_settled}", value: "{{settledAt}}" }  # i18n: skip — binding
+          - { id: detail_status_changed, testTag: "paymentStatus:detailStatusChanged", visible: "{{statusChangedAt.isNotBlank()}}", label: "{strings.feature_payment_status_status_changed}", value: "{{statusChangedAt}}" }  # i18n: skip — binding
+          - { id: detail_fee, testTag: "paymentStatus:detailFee:{index}", repeat_for: charges, label: "{strings.feature_payment_status_fee}", value: "{{charge.amountLabel}}" }  # i18n: skip — binding
+          - { id: detail_payment_id, testTag: "paymentStatus:detailPaymentId", label: "{strings.feature_payment_status_payment_id}", value: "{{paymentId}}" }  # i18n: skip — binding
+
+      - id: refresh_button
+        type: button
+        variant: tonal-pill
+        component: MifosTonalPillButton
+        testTag: "paymentStatus:refreshButton"
+        icon: Refresh
+        label: "{strings.feature_payment_status_refresh}"
+        visible: "{{!settled}}"
+        enabled: "{{!refreshing}}"
+        on_click:
+          action: RefreshStatus
+          action_contract:
+            effect: call_api
+            external_library_refs: ["PaymentStatusRepository.paymentStatus (core/data)", "Pisp.readReceipt GET v4.0/pisp/* (Ktor)"]
+            description: "Sets refreshing=true and clears refreshFailure, then re-reads the receipt via repository.paymentStatus(paymentId). Success rebuilds Content with a new lastCheckedAt; failure keeps the old Content and sets refreshFailure to the classified kind."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: last_checked
+        type: text
+        testTag: "paymentStatus:lastChecked"
+        visible: "{{lastCheckedAt.isNotBlank()}}"
+        style: { text_style: bodySmall, color: onSurfaceVariant, align: center }
+        value: "{strings.feature_payment_status_last_checked}"
+
+      - id: error_state
+        type: error-state
+        component: MifosErrorComponent
+        visible: "{{uiState is Error}}"
+        body: "{strings.feature_payment_status_error_not_found | error_token_expired | error_consent_revoked | error_network}"
+        on_click:
+          action: RefreshStatus
+          action_contract:
+            effect: call_api
+            external_library_refs: ["PaymentStatusRepository.paymentStatus (core/data)"]
+            description: "Retry from the first-load error page dispatches RefreshStatus; with no Content to preserve, load runs again and either produces Content or replaces the page with a new Error(kind)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+visual_assets:
+  # Inherited detail_screen floor (SCREEN_ARCHETYPES.yaml → detail_hero) with a content-specific intent.
+  - id: payment_status_hero
+    kind: hero
+    role: hero
+    intent: "Calm flat-vector receipt header for a bank payment: a paper receipt with a soft status ring, tinted by disposition (blue in-progress, green settled, red rejected); no text, no numbers, no bank logos; trustworthy, clear, secure tone; 16:9, sits above the summary card"
+    produced_by: /idea-feature-stitch-art
+    states: [content, refreshing, refresh_failed, rejected]
+    consistency: none
+
+i18n:
+  en:
+    feature_payment_status_loading_a11y: "Getting payment status"
+    feature_payment_status_back_a11y: "Back"
+    feature_payment_status_to: "to %1$s"
+    feature_payment_status_in_progress: "In progress"
+    feature_payment_status_completed: "Completed"
+    feature_payment_status_failed: "Failed"
+    feature_payment_status_in_progress_note: "Your bank has accepted this payment. The money has not left your account yet."
+    feature_payment_status_in_progress_note_scheduled: "Payment approved. Make sure to keep your account funded on the scheduled date."
+    feature_payment_status_detail_received: "Redirecting to bank portal"
+    feature_payment_status_detail_pending: "Pending at your bank"
+    feature_payment_status_detail_acsp: "Payment accepted for execution."
+    feature_payment_status_detail_actc: "Payement request is valid and authenticated"
+    feature_payment_status_detail_inco: "Set up — waiting for its payment date"
+    feature_payment_status_detail_acsc: "Payment is settled"
+    feature_payment_status_detail_accc: "Payment is settled"
+    feature_payment_status_detail_acwp: "Payment is accepted but not credited into payee's account yet."
+    feature_payment_status_detail_patc: "Partly accepted — the bank is waiting for the rest of the authorisation"
+    feature_payment_status_detail_rjct: "Payment is rejected."
+    feature_payment_status_detail_canc: "Cancelled by the bank"
+    feature_payment_status_detail_infa: "The bank could not set this up"
+    feature_payment_status_detail_unknown: "Unknown status."
+    feature_payment_status_timeline: "Progress"
+    feature_payment_status_step_request_created: "Request created"
+    feature_payment_status_step_approved: "Approved at your bank"
+    feature_payment_status_step_submitted: "Submitted to your bank"
+    feature_payment_status_step_completed: "Completed"
+    feature_payment_status_step_rejected: "Rejected"
+    feature_payment_status_step_waiting: "Waiting on your bank"
+    feature_payment_status_step_settling: "Settling now"
+    feature_payment_status_refresh_failed: "Could not refresh just now. This is last status."
+    feature_payment_status_rejected_note: "Your bank rejected this payment. No money has left your account. This is final, so the status will not change."
+    feature_payment_status_bank_code: "Bank status code"
+    feature_payment_status_support_reference: "Support reference"
+    feature_payment_status_details: "Details"
+    feature_payment_status_reference: "Reference"
+    feature_payment_status_reference_empty: "None"
+    feature_payment_status_from: "From"
+    feature_payment_status_to_label: "To"
+    feature_payment_status_payment_type: "Payment type"
+    feature_payment_status_type_domestic_single: "Domestic Single Payment"
+    feature_payment_status_type_international_single: "International Single Payment"
+    feature_payment_status_type_domestic_scheduled: "Domestic Scheduled Payment"
+    feature_payment_status_type_international_scheduled: "International Scheduled Payment"
+    feature_payment_status_type_domestic_standing_order: "Domestic Standing Order"
+    feature_payment_status_type_international_standing_order: "International Standing Order"
+    feature_payment_status_submitted: "Submitted"
+    feature_payment_status_settled: "Settles"
+    feature_payment_status_scheduled_for: "Scheduled for"
+    feature_payment_status_status_changed: "Status updated"
+    feature_payment_status_fee: "Fee (%1$s)"
+    feature_payment_status_payment_id: "Payment ID"
+    feature_payment_status_refresh: "Refresh"
+    feature_payment_status_last_checked: "Last checked · %1$s"
+    feature_payment_status_repeats: "Repeats"
+    feature_payment_status_repeats_weekly: "Every week"
+    feature_payment_status_repeats_fortnightly: "Every two weeks"
+    feature_payment_status_repeats_monthly: "Every month"
+    feature_payment_status_repeats_quarterly: "Every three months"
+    feature_payment_status_repeats_yearly: "Every year"
+    feature_payment_status_first_payment: "First payment"
+    feature_payment_status_final_payment: "Last payment"
+    feature_payment_status_recurring_amount: "Each payment after the first"
+    feature_payment_status_error_title: "Could not load this payment"
+    feature_payment_status_error_not_found: "This payment could not be found. It may have been made from another device."
+    feature_payment_status_error_token_expired: "Your session has expired. Sign in again to see this payment."
+    feature_payment_status_error_consent_revoked: "Access to this account was withdrawn, so this payment cannot be read."
+    feature_payment_status_error_network: "Could not reach your bank. Check your connection and try again."
+    feature_payment_status_retry: "Try again"
+
+known_gaps:
+  - id: PST-GAP-1
+    severity: should
+    description: "PaymentStatusRoute is registered twice — at the root NavHost (RootNavScreen, reached after payment-consent submission; back → authenticated graph/Home) and inside the authenticated host NavHost (reached from history rows; back → popBackStack). Same route, two back behaviours."
+    resolution: "Spec resolved in flow.yaml#route_registration — single registration in the authenticated host; consent submission enters the authenticated graph and pushes with popUpTo(Home). Pending /kmp-implement to remove the root registration."
+  - id: PST-GAP-2
+    severity: could
+    description: "TokenExpired / ConsentRevoked / PaymentNotFound all render a Retry button even though a retry cannot succeed; there is no 'sign in again' route out of the error page."
+  - id: PST-GAP-3
+    severity: could
+    description: "Copy typo in shipped string feature_payment_status_detail_actc ('Payement')."
+  - id: PST-GAP-4
+    severity: could
+    description: "feature_payment_status_error_title and feature_payment_status_retry are declared but unused — the error page uses MifosErrorComponent's own title and retry label."

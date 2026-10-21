@@ -1,0 +1,62 @@
+sibling: api
+schema_version: "4.0"
+feature_id: consent-list
+_source: source_analysis
+
+auth:
+  scheme: "client_credentials (temporary, never persisted)"
+  description: >
+    Every consent read first mints a temporary client_credentials token with scope=accounts
+    (private_key_jwt PS256 client assertion) and passes it as its own Bearer header. HSBCSandboxHttpClient
+    excludes 'account-access-consents' paths from PSU-bearer auto-injection. mTLS on every call.
+
+api:
+  - id: get_client_credentials_token_accounts
+    function: "OAuth.clientCredentialsToken(ConsentCreationScope.ACCOUNTS)"
+    method: POST
+    path: "/v1.1/oauth2/token"
+    description: "client_credentials grant, scope=accounts, client_assertion = PS256 JWT (kid, aud=tokenUrl, exp +60s)."
+    params:
+      grant_type: { type: String, value: client_credentials }
+      scope: { type: String, value: accounts }
+      client_assertion_type: { type: String, value: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" }
+      client_assertion: { type: String, required: true }
+    response: AccessTokenResponse
+    errors:
+      401: "Unauthorized → classified to ErrorAuth"
+      500: "Server → ServerError"
+    cache: none
+
+  - id: get_account_access_consent
+    function: "Aisp.getConsent(consentCreationAccessToken, consentId)"
+    method: GET
+    path: "/v4.0/aisp/account-access-consents/{ConsentId}"
+    description: "Reads the current AIS consent (status, permissions, creation/expiry, transaction window) for the single connection card."
+    headers:
+      Authorization: "Bearer {client_credentials token, scope=accounts}"
+    params:
+      ConsentId: { type: String, required: true, source: "ConsentSession.consentId()" }
+    response: HSBCCreateConsentResponse
+    maps_to: ConsentSummary
+    errors:
+      401: "Unauthorized → ErrorAuth"
+      403: "Forbidden → NetworkError (consent-list has no revoked kind)"
+      404: "NotFound → NetworkError"
+      500: "Server → ServerError"
+      network: "NoNetwork / transport → NetworkError"
+    cache:
+      strategy: "Store5 memory store (StoreFactory.createMemoryStore) keyed by ConsentId; shared with consent-detail"
+      cache_key: "consent:detail:{ConsentId}"
+      offline: "NoNetwork → Error(NetworkError)"
+
+dtos:
+  ConsentSummary:
+    consentId: String
+    status: ConsentStatus
+    permissions: "List<String>"
+    creationDateTime: String
+    expirationDateTime: String
+    transactionFromDateTime: String
+    transactionToDateTime: String
+  ConsentStatus:
+    enum: [Authorised, Expired, Revoked, Cancelled, Rejected, AwaitingAuthorisation, Consumed]

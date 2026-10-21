@@ -1,0 +1,82 @@
+sibling: api
+schema_version: "4.0"
+feature_id: login
+_source: source_analysis
+base_url: "https://{HSBC_BANK_HOST} (mTLS transport.p12 QWAC; certs git-ignored, referenced by path only)"
+
+auth:
+  token_endpoint: >-
+    private_key_jwt — client_assertion_type urn:ietf:params:oauth:client-assertion-type:jwt-bearer; PS256 JWT
+    {iss=sub=clientId, aud=tokenUrl, jti=UUIDv4, iat, exp=iat+60} signed with signing_key.pem (OBSEAL) and kid.
+  consent_management: "temporary client_credentials token (scope accounts), passed as an explicit Bearer header, never persisted."
+  authorize: "front-channel PS256 request object; response_type 'code id_token'; fragment returned through the HTTPS relay page."
+
+api:
+  - id: create_client_credentials_token
+    method: POST
+    path: /v1.1/oauth2/token
+    source_ref: "core/network/.../api/OAuth.kt#clientCredentialsToken"
+    description: "Obtains the short-lived consent-creation access token (client_credentials, scope=accounts) authenticated with a private_key_jwt client assertion."
+    auth: private_key_jwt
+    content_type: application/x-www-form-urlencoded
+    params:
+      grant_type: { type: String, value: client_credentials }
+      scope: { type: String, value: accounts }
+      client_assertion_type: { type: String, value: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" }
+      client_assertion: { type: String, source: "buildClientAssertion(clientId, kid, tokenUrl, now, jti, signingKeyPem)" }
+    response:
+      type: CreateConsentTokenSuccess
+      fields: { accessToken: String, expiresIn: Int, scope: String, tokenType: String }
+    response_dto: CreateConsentTokenSuccess
+    errors:
+      400: "BadRequest → 'HSBC rejected the consent request. Please try again.'"
+      401: "Unauthorized → 'Authorisation failed. The app may need to re-register with HSBC.'"
+      5xx: "Server → 'HSBC is temporarily unavailable. Try again in a moment.'"
+      network: "'Unable to reach HSBC. Check your connection and try again.'"
+    cache: none
+
+  - id: create_account_access_consent
+    method: POST
+    path: /v4.0/aisp/account-access-consents
+    source_ref: "core/network/.../api/Aisp.kt#createConsent"
+    description: "Creates the AIS consent with all 20 OBPermission scopes, ExpirationDateTime now+90d and a 90-day transaction window; returns ConsentId used in the request object and stored in PendingAuth."
+    auth: client_credentials
+    headers:
+      Authorization: "Bearer {client_credentials access_token}"
+      Content-Type: application/json
+    request:
+      type: HSBCCreateConsentRequest
+      fields:
+        data.permissions: "List<String> (OBPermission.ALL obieScope: ReadAccountsBasic … ReadTransactionsDetail)"
+        data.expirationDateTime: "ISO-8601 now+90d"
+        data.transactionFromDateTime: "ISO-8601 now-90d"
+        data.transactionToDateTime: "ISO-8601 now"
+        risk: "{}"
+    response:
+      type: HSBCCreateConsentResponse
+      fields: { data.consentId: String, data.status: String, data.expirationDateTime: String }
+    request_dto: HSBCCreateConsentRequest
+    response_dto: HSBCCreateConsentResponse
+    error_dto: ObErrorResponse
+    errors:
+      400: BadRequest
+      401: Unauthorized
+      5xx: Server
+    cache: none
+
+  - id: authorize_consent
+    method: GET
+    path: "https://{HSBC_AUTHORIZE_HOST}/obie/open-banking/v1.1/oauth2/authorize"
+    source_ref: "core/network/.../authorize/ConsentAuthorization.kt#generateConsentAuthorizationUrl"
+    description: >-
+      Browser (system) navigation, not an HTTP client call. Query: response_type='code id_token',
+      client_id, scope='openid accounts', redirect_uri, state (UUIDv4), nonce (UUIDv4), request
+      (PS256 request object: openbanking_intent_id=consentId essential, non-essential acr sca|ca, exp +1200s, nbf -1s,
+      aud=https://{bankHost}). HSBC returns the PSU to the HTTPS relay page (docs/consent-callback-page),
+      which forwards the fragment to org.mifosx.openbanking://callback (mobile) or 127.0.0.1:8765 (desktop).
+    auth: authorization_code (front channel)
+    transport: BrowserLauncher.launch(url)
+    response:
+      type: redirect
+      fields: { code: String, id_token: String, state: String, error: "String?", error_description: "String?" }
+    handled_by: consent-callback

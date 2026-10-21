@@ -1,0 +1,91 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: statement-detail
+_source: source_analysis
+
+entry_points:
+  - type: push
+    source: statements
+    route: "StatementDetailRoute(accountId, statementId)"
+    description: "Statement row tap in the statements list."
+inbound_routes:
+  - { from: statements, type: push, params: { accountId: String, statementId: String } }
+  - { from: transaction-detail, type: pop }
+outbound_routes:
+  - { to: transaction-detail, type: push, params: { transactionId: String, accountId: String }, trigger: "transaction row tap" }
+  - { to: statements, type: pop, trigger: "top-bar back arrow" }
+  - { to: os-file-save-dialog, type: modal, external: true, trigger: "Download PDF (FileKit.openFileSaver; no-op on web)" }
+
+navigates_to:
+  - transaction-detail
+  - statements
+
+transitions:
+  - { from: loading, to: content, on: "both streams Content and transactions non-empty" }
+  - { from: loading, to: empty, on: "both streams Content and transactions empty" }
+  - { from: loading, to: error, on: "either stream Error | NoNetwork | Unauthenticated" }
+  - { from: error, to: loading, on: "RetryLoad" }
+  - { from: content, to: downloading, on: "DownloadPdf" }
+  - { from: empty, to: downloading, on: "DownloadPdf" }
+  - { from: downloading, to: content, on: "download completes (DownloadSucceeded | DownloadFailed) → downloadState=Idle" }
+
+flow_logic:
+  on_load:
+    - action: observe_streams
+      trigger: "StatementDetailViewModel init — combineScreenStates(statementStream.state, transactionsStream.state)"
+      calls:
+        - api: get_statement_detail
+        - api: get_statement_transactions
+      map:
+        Content: "transactions.isEmpty() ? Empty(statement) : Content(statement, rows)"
+        Error: "Error(classifyStatementDetailError(error))"
+        NoNetwork: "Error(NetworkError)"
+        Unauthenticated: "Error(SessionExpired)"
+        Empty_or_Loading: Loading
+  on_row_click:
+    - navigate: transaction-detail
+      params: { transactionId: "{row.transactionId}", accountId: "{row.accountId}" }
+  on_download:
+    - action: DownloadPdf
+      steps:
+        - transform_state: { downloadState: Downloading }
+        - api: get_statement_file
+          on_success:
+            - platform_call: "StatementFileHandler.deliver('statement-{statementId}.pdf', 'application/pdf', bytes)"
+            - emit_event: DownloadSucceeded
+          on_error:
+            - emit_event: "DownloadFailed(reason = 404 ? StatementFileNotFound : NetworkError)"
+        - transform_state: { downloadState: Idle }
+  on_retry:
+    - action: RetryLoad
+      steps: [{ call: "statementStream.refresh()" }, { call: "transactionsStream.refresh()" }]
+  on_back:
+    - navigate: statements
+      type: pop
+
+error_handling:
+  classifier: classifyStatementDetailError
+  mapping:
+    - { error: "401 / Unauthenticated", code: SessionExpired, message_key: feature_statement_detail_error_session_expired }
+    - { error: "403", code: ConsentMissingReadStatements, message_key: feature_statement_detail_error_consent_missing }
+    - { error: "404", code: StatementNotFound, message_key: feature_statement_detail_error_statement_not_found }
+    - { error: "NetworkError.Network / NoNetwork / other", code: NetworkError, message_key: feature_statement_detail_error_network }
+  download_errors:
+    - { error: "404", event: "DownloadFailed(StatementFileNotFound)", ui: "generic download_error snackbar" }
+    - { error: "other", event: "DownloadFailed(NetworkError)", ui: "generic download_error snackbar" }
+
+journey_ids: [statements-download]
+
+dependencies:
+  repositories:
+    - name: StatementDetailRepository
+      methods:
+        - "statementStream(accountId, statementId, scope): ScreenDataStream<StatementDetail>"
+        - "statementTransactionsStream(accountId, statementId, scope): ScreenDataStream<List<TransactionItem>>"
+    - name: StatementFileRepository
+      methods: ["suspend downloadStatementFile(accountId, statementId): NetworkResult<ByteArray, NetworkError>"]
+  platform:
+    - name: StatementFileHandler
+      bindings:
+        nonJs: "FileKitStatementFileHandler"
+        js: "NoOpStatementFileHandler (intentional-noop)"

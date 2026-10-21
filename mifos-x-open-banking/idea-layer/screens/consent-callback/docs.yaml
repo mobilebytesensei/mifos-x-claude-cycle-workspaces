@@ -1,0 +1,94 @@
+# screens/consent-callback/docs.yaml — implementation-ready context schema v2
+# emitted by /idea-feature-enrich STEP 5.6 (sub-plan 05 T-Impl-Ready)
+feature_id: consent-callback
+status: enriched
+metadata:
+  category: composite
+  implementation_ready: true
+  impl_ready_at: "2026-10-21T00:00:00Z"
+  impl_ready_schema: "v2"
+contracts:
+  - capability: network
+    platform_spec: "Ktor over mTLS (QWAC transport.p12); private_key_jwt PS256 client assertion; OIDC hybrid redirect fragment"
+    permission: none
+    error_cases:
+      - NETWORK_UNREACHABLE
+      - TOKEN_EXCHANGE_FAILED
+      - AUTHORISATION_FAILED
+      - ConsentRejected
+  - capability: secure-storage
+    platform_spec: "multiplatform-settings secure Settings (hsbc_tokens + consent meta) via ConsentSession"
+    permission: none
+    error_cases:
+      - SecurityError
+      - ConsentRejected
+libraries:
+  - capability: network
+    library: ktor
+    version: "latest"
+    targets: [android, ios, desktop]
+  - capability: secure-storage
+    library: multiplatform-settings
+    version: "latest"
+    targets: [android, ios, desktop]
+vm_actions:
+  - name: ProcessCallback
+    signature: "suspend fun (redirectUrl: String) -> Unit"
+    state_mutations:
+      - "state=Loading"
+      - "pendingConsentId=v.consentId"
+      - "state=Content | Rejected | Error(kind) | AccessDenied | SecurityError"
+    side_effects:
+      - "ConsentCallbackRepository.validateCallback(redirectUrl)"
+      - "ConsentCallbackRepository.exchangeCode(code, redirectUri)"
+      - "ConsentCallbackRepository.pollConsentStatus(consentId) — before token persistence"
+      - "ConsentSession.save(tokens) only when status != Rejected"
+      - "ConsentSession.clear() when status == Rejected"
+      - "emit NavigateToHome after 1500 ms on Content"
+    error_handling:
+      ConsentRejected: "render rejected step; no tokens persisted; Start again → Login"
+      AccessDenied: "render neutral access_denied step (user decline, not an error)"
+      SecurityError: "render security_error step; Start again clears ConsentSession"
+      PROVIDER_ERROR: "render error step with provider copy"
+      MISSING_CODE: "render error step with missing-code copy"
+      AUTHORISATION_FAILED: "render error step with authorisation-failed copy"
+      TOKEN_EXCHANGE_FAILED: "render error step with exchange-failed copy"
+      NETWORK_UNREACHABLE: "render error step with unable-to-reach-HSBC copy"
+  - name: PollConsentStatus
+    signature: "suspend fun () -> Unit"
+    state_mutations:
+      - "state=Content | Rejected"
+    side_effects:
+      - "ConsentCallbackRepository.pollConsentStatus(pendingConsentId)"
+      - "ConsentSession.saveConsentMeta(consentId, expiry) when status != Rejected"
+      - "ConsentSession.clear() when status == Rejected"
+    error_handling:
+      ConsentRejected: "render rejected step; no NavigateToHome"
+  - name: NavigateRetry
+    signature: "fun () -> Unit"
+    state_mutations: []
+    side_effects:
+      - "emit NavigateToLogin"
+    error_handling:
+      NavigationFailure: "pure event emission — RootNavScreen owns navigateToAuthGraph; no user-facing failure path"
+  - name: NavigateLogin
+    signature: "fun () -> Unit"
+    state_mutations: []
+    side_effects:
+      - "ConsentSession.clear()"
+      - "emit NavigateToLogin"
+    error_handling:
+      SettingsClearFailure: "log and still emit NavigateToLogin — the next sign-in overwrites stored tokens"
+error_cases:
+  - NETWORK_UNREACHABLE
+  - TOKEN_EXCHANGE_FAILED
+  - AUTHORISATION_FAILED
+  - ConsentRejected
+  - SecurityError
+test_fixtures:
+  source: "screens/consent-callback/tests.yaml"
+  scenario_count: 13
+  priority_distribution:
+    high: 3
+    medium: 9
+    low: 1

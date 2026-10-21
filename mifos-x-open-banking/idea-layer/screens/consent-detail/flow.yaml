@@ -1,0 +1,147 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: consent-detail
+_source: source_analysis
+flow_ref: manage-consent
+
+navigates_to:
+  - consent-list       # back / Back to connections (popBackStack)
+  - login              # Reconfirm → LoginRenewRoute; LoggedOut → auth graph (Intro/Login)
+
+inbound_routes:
+  - from: consent-list
+    type: push
+    via: "navController.navigate(ConsentDetailRoute(consentId))"
+    params: { consentId: String }
+
+transitions:
+  - id: load
+    from: loading
+    trigger: "screen opened"
+    to: [content, empty, error]
+    decided_by: "ScreenState from ConsentDetailRepository.consentStream(state.consentId)"
+  - id: open_revoke_gate
+    from: content
+    trigger: "ConfirmRevoke (Revoke access)"
+    to: revoke_confirm
+  - id: close_revoke_gate
+    from: revoke_confirm
+    trigger: "DismissRevokeConfirm (Keep access / dismiss)"
+    to: content
+  - id: execute_revoke
+    from: revoke_confirm
+    trigger: "ExecuteRevoke (Yes, revoke)"
+    to: revoking
+    side_effects: ["ConsentRevokeRepository.revokeConsent(consentId)"]
+  - id: revoke_confirmed
+    from: revoking
+    trigger: "DELETE answered 2xx, or 404 (already gone at the bank)"
+    to: login
+    type: replace
+    side_effects: ["AppLogout.logOut()", "sendEvent(LoggedOut)"]
+    note: "onLoggedOut → RootNavScreen navigateToAuthGraph(rootNavOptions()). Only path to logout (NFR-006, DEF-003)."
+  - id: revoke_unconfirmed
+    from: revoking
+    trigger: "DELETE answered non-2xx (≠404), token mint failed, or network/timeout"
+    to: revoke_failed
+    flow: revoke-fails-at-bank
+    note: "No local wipe; session, tokens and caches untouched — the user is still connected."
+  - id: retry_revoke
+    from: revoke_failed
+    trigger: "RetryRevoke (Retry on banner)"
+    to: revoking
+    flow: revoke-fails-at-bank
+    side_effects: ["ConsentRevokeRepository.revokeConsent(consentId)"]
+  - id: reopen_revoke_gate
+    from: revoke_failed
+    trigger: "ConfirmRevoke (Revoke access)"
+    to: revoke_confirm
+  - id: leave_after_failure
+    from: revoke_failed
+    trigger: "onBack"
+    to: consent-list
+    type: pop
+  - id: retry
+    from: error
+    trigger: "RetryLoad"
+    to: loading
+    side_effects: ["stream.refresh()"]
+
+flow_logic:
+  on_load:
+    - read_nav_arg: { consentId: "savedStateHandle[\"consentId\"].orEmpty()" }
+    - action: subscribe_stream
+      api: get_account_access_consent
+      via: "repository.consentStream(state.consentId, viewModelScope).state"
+      map:
+        "ScreenState.Loading": "Loading"
+        "ScreenState.Content": "Content(data.toUi(now))"
+        "ScreenState.Empty": "Empty"
+        "ScreenState.Error": "Error(classifyConsentDetailError(error))"
+        "ScreenState.NoNetwork": "Error(NetworkError)"
+        "ScreenState.Unauthenticated": "Error(TokenExpired)"
+  compute_derived_state:
+    - dates: "formatDetailDate(iso) → 'd Mon yyyy' UTC; raw string on parse failure"
+    - expiryWarningDays: "daysUntilExpiry(expirationDateTime) if <= 7 else null"
+  on_reconfirm:
+    - navigate: login
+      route: LoginRenewRoute
+  on_revoke_click:
+    - guard: "uiState is Content || uiState is RevokeFailed"
+    - transform_state: { uiState: "RevokeConfirm(consent)" }
+  on_dismiss_revoke:
+    - guard: "uiState is RevokeConfirm"
+    - transform_state: { uiState: "Content(consent)" }
+  on_execute_revoke:
+    - guard: "uiState is RevokeConfirm"
+    - transform_state: { uiState: "Revoking(consent)" }
+    - action: revoke_consent
+      api: revoke_account_access_consent
+      via: "consentRevokeRepository.revokeConsent(state.consentId)"
+      # NFR-006 / DEF-003: logout is gated on the bank's confirmation — never best-effort.
+      on_result:
+        confirmed:   # 2xx, or 404 (consent already gone at the bank)
+          - action: app_logout
+            steps:
+              - "consentSession.forgetAll()"
+              - "paymentAuthSession.clear()"
+              - "userDataRepository.clearUserData()   # root navigator observes → auth graph"
+              - "storeCacheManager.clearAll()"
+              - "paymentHistoryDao.clear()"
+              - "for each active VRP consent: runCatching { vrpConsentRepository.revoke(id) }; clear vrp DAOs + VrpAuthSession"
+            note: "AppLogout.logOut() no longer issues the AIS DELETE on this path — the VM already has the confirmation."
+          - emit_event: LoggedOut
+          - navigate: login
+            via: "onLoggedOut → navController.navigateToAuthGraph(rootNavOptions())"
+        unconfirmed:   # non-2xx other than 404, 401 token mint, network error, timeout
+          - transform_state: { uiState: "RevokeFailed(consent, reason)" }
+          - note: "No session, token, cache or VRP mutation. User stays signed in (flow revoke-fails-at-bank)."
+  on_retry_revoke:
+    - guard: "uiState is RevokeFailed"
+    - goto: on_execute_revoke   # same DELETE + confirm gate, starting from Revoking(consent)
+  on_retry:
+    - action: RetryLoad
+      effect: "stream.refresh()"
+  on_back:
+    - navigate: back
+
+error_handling:
+  ConsentNotFound: { http: 404, ui: error_state, recovery: RetryLoad }
+  ConsentRevoked: { http: 403, ui: error_state, recovery: RetryLoad }
+  TokenExpired: { http: 401, ui: error_state, recovery: RetryLoad }
+  RevokeServerError: { http: 5xx, ui: error_state, recovery: RetryLoad }
+  NetworkError: { ui: error_state, recovery: RetryLoad }
+  revoke_failure: { ui: revoke_failed_banner, recovery: RetryRevoke, behaviour: "Unconfirmed DELETE keeps the session and shows the revoke-failed banner; 404 mapped to Success (already gone); logout only on confirmation (NFR-006, DEF-003)" }
+
+journey_ids: [manage-consent]
+flow_refs: [manage-consent, revoke-fails-at-bank]
+
+dependencies:
+  repositories:
+    - name: ConsentDetailRepository
+      methods: ["consentStream(consentId: String, scope: CoroutineScope): ScreenDataStream<ConsentSummary>"]
+    - name: AppLogout
+      methods: ["suspend logOut()"]
+    - name: ConsentRevokeRepository
+      methods: ["suspend revokeConsent(consentId: String): NetworkResult<Unit, NetworkError>"]
+      note: "injected into ConsentDetailViewModel so logout can be gated on the result (DEF-003); 404 → Success"

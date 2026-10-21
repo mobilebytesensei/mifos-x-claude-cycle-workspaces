@@ -1,0 +1,57 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: account-holder
+feature: account-holder
+_source: source_analysis
+
+entry_points:
+  - type: push
+    source: account-detail
+    description: "Tap the 'Account Holder' Explore row → AccountHolderRoute(accountId)."
+
+navigates_to: []   # leaf screen; only back
+
+transitions: []
+
+journey_ids: [view-accounts]
+
+lifecycle:
+  on_load:
+    - action: open_stream
+      calls:
+        - api: get_party             # repository.profileStream(accountId, viewModelScope)
+      transform: "state.emptyIfContent { profile -> profile.isEmpty }"
+      on_state:
+        Content: "profile.isEmpty ? Empty : Content(profile)"
+        Error: "Error(classifyAccountHolderError(throwable))"
+        NoNetwork: "Error(LoadFailed)"
+        Unauthenticated: "Error(TokenExpired)"
+        Empty: Empty
+        Loading: Loading
+
+flow_logic:
+  - { id: back, component: top_bar, action: back, effect: "event:onBack" }   # popBackStack
+  - { id: retry, component: error_state, action: click, effect: "action:RetryLoad" }
+
+action_logic:
+  RetryLoad:
+    - call: "stream.refresh()"
+
+error_handling:
+  enum: AccountHolderErrorKind
+  classifier: "classifyAccountHolderError(throwable) on RemoteException.networkError"
+  TokenExpired: { from: "401 Unauthorized | ScreenState.Unauthenticated", retry: true }
+  ConsentMissingParty: { from: "403 Forbidden", retry: false }
+  ProfileNotFound: { from: "404 NotFound", retry: false }
+  LoadFailed: { from: "network | NoNetwork | other", retry: true }
+
+dependencies:
+  repositories:
+    - name: ProfileRepository
+      methods:
+        - "profileStream(accountId: String, scope: CoroutineScope): ScreenDataStream<PartyProfile>"
+  stores:
+    - "BankingStores.partyStore(aisp): Store<String, PartyProfile>"
+  services:
+    - NetworkMonitor
+    - FetchedAtRepository

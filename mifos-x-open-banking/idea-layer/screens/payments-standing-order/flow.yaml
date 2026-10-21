@@ -1,0 +1,103 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: payments-standing-order
+_source: source_analysis
+
+entry_points:
+  - { type: push, source: home, route: StandingOrderRoute, description: "Home quick action → navController.navigate(StandingOrderRoute)" }
+  - { type: push, source: payments-hub, route: StandingOrderRoute, description: "Hub card (hub graph itself unreachable from the shell)" }
+
+navigates_to:
+  - payment-status     # recent/history row → PaymentStatusRoute(paymentId)
+  - consent-list       # declared intent of 'View consents' (currently wired to {} — see known_gaps)
+  - home               # back
+
+transitions:
+  - { from: standing-order-screen, to: standing-order-history-screen, trigger: recent_payments.show_all, type: push, route: StandingOrderHistoryRoute }
+  - { from: standing-order-screen, to: payment-status, trigger: recent_payments.row, type: push, route: "PaymentStatusRoute(paymentId)" }
+  - { from: standing-order-history-screen, to: payment-status, trigger: history_page.row, type: push, route: "PaymentStatusRoute(paymentId)" }
+  - { from: standing-order-screen, to: consent-list, trigger: view_consents_button, type: push, wired: false }
+  - { from: standing-order-screen, to: os-browser, trigger: "event LaunchAuthorisation", type: push, external: true, external_kind: os-dialer-or-browser, note: "BrowserLauncher opens the signed HSBC authorize URL; return leg lands on payment-consent via RootNavScreen" }
+  - { from: standing-order-screen, to: home, trigger: top_bar.back, type: pop }
+  - { from: standing-order-history-screen, to: standing-order-screen, trigger: history_top_bar.back, type: pop }
+
+flow_logic:
+  on_load:
+    - stream: "accountsOverviewRepository.overviewState(viewModelScope).combineContent(capabilityRegistry.unsupportedStream())"
+      filter: "account.canFundAPayment() (HsbcProductCapability PaymentDebtor) && PaymentDebtor not refused for that account"
+      api: [get_accounts, get_balances]
+      into: accountsScreen
+    - stream: "selectedAccountId.flatMapLatest { blank → Content(emptyList) else beneficiariesRepository.beneficiariesStream(id).state }"
+      api: get_beneficiaries
+      into: beneficiariesScreen
+    - stream: "PaymentHistoryFeed.rows({DomesticStandingOrder, InternationalStandingOrder}, limit = 6)"
+      into: history
+    - combine: "accountsScreen, beneficiariesScreen, form, phase, history → render()"
+      render:
+        Phase.Submitting: "Submitting(stage, amountLabel, creditorName, consentId)"
+        Phase.Error: "Error(kind, supportReference)"
+        Phase.Form:
+          accounts.Content: "Content(...)  # payees filtered by rail scheme; recentPayments = first 5; hasMorePayments = size > 5"
+          accounts.Error: "Error(classifyStandingOrderError(e))"
+          accounts.NoNetwork: "Error(NetworkError)"
+          accounts.Unauthenticated: "Error(TokenExpired)"
+          accounts.Empty_or_Loading: "Loading"
+  on_select_rail: ["clear creditor + manual entry + fieldErrors", "Domestic → instructedCurrency = GBP, keep recurring/final/reference; International → clear them", "revalidate amount"]
+  on_select_debtor_account: ["selectedAccountId = id", "debtorAccountId = id, collapse picker, letBankChoosePayer = false, creditor = null", "revalidate amount"]
+  on_let_bank_choose_payer: ["selectedAccountId = ''", "debtorAccountId = null, letBankChoosePayer = true, creditor = null"]
+  on_select_creditor: ["creditor = CreditorSelection(payee…, isOwnAccount)", "reference = payee.reference", "manualEntryVisible = false"]
+  on_confirm_manual_creditor:
+    - if: "rail == International"
+      then: "IBAN normalised + plausible (15..34, alnum, 2-letter prefix) → creditor(Iban) else fieldErrors.ibanInvalid"
+      else: "sortCode 6 digits && account 8 digits → creditor(SortCode, sortCode+account) else fieldErrors"
+  on_enter_amount: "amountInput = v; amountProblem = amountProblemOf(v, balance if payer currency == instructed)"
+  on_open_date_picker: "today = todayUtc; drop out-of-window dates; datePickerRole = role"
+  on_select_date: "isSelectableDate(date, today, role, first) → set (First also re-checks Final) ; else just close"
+  on_review_standing_order: "step = Review"
+  on_confirm_and_stage_consent:
+    - "draft = buildDraft() ?: return  # needs creditor, amount, first date still in window"
+    - "draft = state.draft if isSameMandateAs(rebuilt) else rebuilt  # keeps idempotency keys for an unchanged mandate"
+    - "phase = Submitting(StagingConsent); state.draft = draft"
+    - call: "paymentInitiationRepository.stageStandingOrder(draft)"
+      api: [post_token_client_credentials, post_standing_order_consent]
+      on_success: ["state.consentId = staged.consentId", "phase = Submitting(AwaitingAuthorisation, consentId)", "sendEvent(LaunchAuthorisation(staged.authorizationUrl)) → BrowserLauncher"]
+      on_error: "phase = Error(classifyStandingOrderError(e), supportReferenceOf(e))"
+  on_retry_staging: { goto: on_confirm_and_stage_consent }
+  on_abandon_authorisation: ["step = Review", "phase = Form", "consentId = null"]
+  on_change_payer: ["step = Form, debtorAccountId = null, letBankChoosePayer = false", "phase = Form", "draft = null, consentId = null"]
+  on_back_step: ["step = Form", "phase = Form", "draft = null, consentId = null"]
+  on_retry_load: "accountsOverviewRepository.refresh()  # never dispatched by UI"
+  post_authorisation:
+    - "Bank redirect → RootNavScreen (AuthorisationLeg.Payment) → payment-consent submits POST {domestic|international}-standing-orders and records history"
+
+error_handling:
+  classification_order: [FirstDateRefused, FinalDateRefused, PayerNotSupported, FrequencyRefused, "OBIE code map (U019 U009 U008 U014 U002 U021 U003 U004 U005 U027)", "transport (401 TokenExpired, 403 ConsentRevoked, 429 RateLimited, else NetworkError)"]
+  recovery:
+    NetworkError: [retry]
+    RateLimited: [retry]
+    TokenExpired: [retry, reauthorise]
+    ConsentNotAuthorised: [reauthorise]
+    ConsentRevoked: [view_consents]
+    OutsideControlParameters: [edit_amount]
+    FirstDateRefused: [change_date]
+    FinalDateRefused: [change_date]
+    PayerNotSupported: [change_payer]
+    SignatureMissing: [none]
+    ConsentMismatch: [none]
+    InvalidField: [none]
+    FrequencyRefused: [none]
+    RequestMalformed: [none]
+    SchemeNotSupported: [none]
+
+journey_ids: [standing-order]
+
+dependencies:
+  repositories:
+    - { name: AccountsOverviewRepository, methods: ["overviewState(scope): Flow<ScreenState<List<AccountWithBalance>>>", "refresh()"] }
+    - { name: BeneficiariesRepository, methods: ["beneficiariesStream(accountId, scope).state"] }
+    - { name: StandingOrderInitiationRepository, methods: ["suspend stageStandingOrder(draft): NetworkResult<StagedConsent>", "suspend submitStandingOrder(draft, consentId)", "stagedDraft()"] }
+    - { name: AccountCapabilityRegistry, methods: ["unsupportedStream()"] }
+    - { name: PaymentHistoryRepository, via: PaymentHistoryFeed }
+    - { name: PaymentStatusRepository, via: PaymentHistoryFeed }
+  secure_settings: [PendingAuth (PaymentAuthSession.savePending + saveStandingOrderDraft)]
+  local_db: [payment_history, accounts]

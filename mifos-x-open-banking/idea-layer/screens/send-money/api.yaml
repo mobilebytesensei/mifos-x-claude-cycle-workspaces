@@ -1,0 +1,141 @@
+sibling: api
+schema_version: "4.0"
+feature_id: send-money
+_source: source_analysis
+
+auth:
+  ais_reads: "PSU bearer auto-attached by HSBCSandboxHttpClient Auth plugin (refresh-on-401)"
+  pis_writes: >
+    Per-call client_credentials token with scope=payments passed explicitly (pisp/ paths are excluded from
+    PSU-bearer injection) + x-fapi-interaction-id (uuid4) + x-fapi-financial-id + x-idempotency-key
+    (1..40 chars, enforced by FapiHeaders.writeHeaders require()) + x-jws-signature (detached JWS,
+    alg PS256, kid, crit [http://openbanking.org.uk/iat, /iss, /tan], iss = HSBC_SIGNING_ISSUER; no b64
+    header per v4.0.1). mTLS on every call.
+  authorize: "front-channel PS256 request object, response_type 'code id_token', scope payments; opened in the system browser"
+
+api:
+  - id: get_accounts
+    function: "Aisp.getAccounts() via accounts Store (network + Room SoT)"
+    method: GET
+    path: "/v4.0/aisp/accounts"
+    description: "Payer candidates; filtered client-side by HsbcProductCapability.supports(PaymentDebtor) and session refusals."
+    response: AccountsResponse
+    errors:
+      401: "TokenExpired"
+      403: "ConsentRevoked"
+      429: "RateLimited"
+      other: "NetworkError"
+    cache: { strategy: "Store5 createStore + Room SourceOfTruth (accounts table)", offline: show_cached }
+
+  - id: get_account_balances
+    function: "Aisp.getBalances(accountId) via memory balances store (fan-out per account)"
+    method: GET
+    path: "/v4.0/aisp/accounts/{AccountId}/balances"
+    description: "Available balance shown under the amount and used for ExceedsAvailableBalance."
+    params:
+      AccountId: { type: String, required: true }
+    response: BalancesResponse
+    cache: { strategy: "Store5 memory store; refresh flag forces next read to network" }
+
+  - id: get_beneficiaries
+    function: "Aisp.getBeneficiaries(accountId) via BeneficiariesRepository.beneficiariesStream"
+    method: GET
+    path: "/v4.0/aisp/accounts/{AccountId}/beneficiaries"
+    description: "Saved payees for the selected payer only; filtered by rail (SortCode / Iban). Not requested when the bank chooses the payer."
+    params:
+      AccountId: { type: String, required: true, source: "selected debtorAccountId" }
+    response: BeneficiariesResponse
+    errors:
+      any: "payeesFailed = true (form stays usable via manual entry)"
+    cache: { strategy: "Store5 memory store keyed by account id" }
+
+  - id: get_client_credentials_token_payments
+    function: "OAuth.clientCredentialsToken(ConsentCreationScope.PAYMENTS)"
+    method: POST
+    path: "/v1.1/oauth2/token"
+    description: "client_credentials grant with scope=payments (an accounts-scope token fails on scope and reads as auth error)."
+    response: AccessTokenResponse
+    cache: none
+
+  - id: create_domestic_payment_consent
+    function: "Pisp.createDomesticPaymentConsent(paymentsScopeToken, request, idempotencyKey) — signedPost"
+    method: POST
+    path: "/v4.0/pisp/domestic-payment-consents"
+    description: "Stages a domestic single payment consent (rail Domestic ⇔ draft.currencyOfTransfer == null)."
+    headers:
+      Authorization: "Bearer {client_credentials scope=payments}"
+      x-idempotency-key: "{draft.consentIdempotencyKey} (uuid4)"
+      x-jws-signature: "detached JWS over the serialised body"
+      x-fapi-interaction-id: "uuid4"
+      x-fapi-financial-id: "{financialId} when configured"
+    request: DomesticPaymentConsentRequest
+    response: DomesticPaymentConsentResponse
+    mapper: "PaymentDraft.toConsentRequest()"
+    errors:
+      400: "OBIE ErrorCode → U019 SignatureMissing | U008 ConsentMismatch | U014 OutsideControlParameters | U002/U021 InvalidField; Path *DebtorAccount* → PayerNotSupported"
+      401: "TokenExpired"
+      403: "ConsentRevoked"
+      429: "RateLimited"
+      no_consent_id: "BadRequest('no ConsentId') → NetworkError"
+      other: "NetworkError"
+    cache: none
+
+  - id: create_international_payment_consent
+    function: "Pisp.createInternationalPaymentConsent(paymentsScopeToken, request, idempotencyKey) — signedPost"
+    method: POST
+    path: "/v4.0/pisp/international-payment-consents"
+    description: "Stages an international single payment consent (currencyOfTransfer + chargeBearer set; no RemittanceInformation — U005)."
+    headers:
+      Authorization: "Bearer {client_credentials scope=payments}"
+      x-idempotency-key: "{draft.consentIdempotencyKey}"
+      x-jws-signature: "detached JWS"
+    request: InternationalPaymentConsentRequest
+    response: InternationalPaymentConsentResponse
+    mapper: "PaymentDraft.toIntlConsentRequest()"
+    errors:
+      400: "same OBIE code map as domestic"
+      401: "TokenExpired"
+      403: "ConsentRevoked"
+      429: "RateLimited"
+    cache: none
+
+  - id: bank_authorize_redirect
+    function: "generateConsentAuthorizationUrl(...) → BrowserLauncher.launch(url)"
+    method: GET
+    path: "https://{HSBC_AUTHORIZE_HOST}/obie/open-banking/v1.1/oauth2/authorize"
+    description: "Front-channel PSU authorisation (not an HTTP call from the app); request object binds the ConsentId, state and nonce persisted in PaymentAuthSession."
+    params:
+      response_type: { type: String, value: "code id_token" }
+      client_id: { type: String, required: true }
+      scope: { type: String, value: "openid payments" }
+      request: { type: String, note: "PS256 signed request object" }
+    cache: none
+
+downstream:
+  note: "Code exchange, GET consent, funds confirmation and POST /v4.0/pisp/{domestic|international}-payments happen in payment-consent; GET payment status in payment-status."
+
+dtos:
+  PaymentDraft:
+    debtorAccount: "BankAccount?"
+    creditor: CreditorSelection
+    amountMinorUnits: Long
+    currency: String
+    reference: "String?"
+    instructionIdentification: String
+    endToEndIdentification: String
+    consentIdempotencyKey: String
+    paymentIdempotencyKey: String
+    currencyOfTransfer: "String?"
+    chargeBearer: "ChargeBearer?"
+  StagedConsent:
+    consentId: String
+    status: String
+    authorizationUrl: String
+    state: String
+    nonce: String
+  CreditorSelection:
+    name: String
+    scheme: BeneficiaryScheme
+    identification: String
+    beneficiaryId: String        # default ""
+    isOwnAccount: Boolean        # default false

@@ -1,0 +1,149 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: login
+_source: source_analysis
+
+entry_points:
+  - type: start
+    source: app-launch
+    route: SplashRoute
+    description: "RootNavScreen NavHost startDestination = SplashRoute; RootNavViewModel starts in RootNavState.Splash (checking_session)."
+  - type: replace
+    source: splash
+    route: AuthGraphRoute
+    description: "RootNavScreen: RootNavState.Auth (ConsentSession inactive) → navigateToAuthGraph(rootNavOptions) → startDestination IntroRoute."
+  - type: replace
+    source: consent-callback
+    route: AuthGraphRoute
+    description: "Callback failure steps → onNavigateToLogin → navigateToAuthGraph (restarts at Intro)."
+  - type: replace
+    source: consent-detail
+    route: AuthGraphRoute
+    description: "Revoke → LoggedOut → onLoggedOut → navigateToAuthGraph."
+  - type: push
+    source: consent-list
+    route: LoginRenewRoute
+    description: "Connect bank / Re-authenticate → LoginRenewRoute (Login screen without Intro, with onBack)."
+  - type: push
+    source: consent-detail
+    route: LoginRenewRoute
+    description: "Re-confirm → LoginRenewRoute."
+inbound_routes:
+  - { from: app-launch, type: start, route: SplashRoute }
+  - { from: splash, type: replace }
+  - { from: consent-callback, type: replace }
+  - { from: consent-detail, type: replace }
+  - { from: consent-list, type: push, route: LoginRenewRoute }
+  - { from: consent-detail, type: push, route: LoginRenewRoute }
+outbound_routes:
+  - { to: login, type: replace, route: AuthGraphRoute, from_screen: splash-screen, trigger: "RootNavState.Auth (ConsentSession.isActive() == false) → navigateToAuthGraph(rootNavOptions) → IntroRoute" }
+  - { to: home, type: replace, route: AuthenticatedGraphRoute, from_screen: splash-screen, trigger: "RootNavState.UserUnlocked (ConsentSession.isActive() == true) → navigateToAuthenticatedGraph(rootNavOptions)" }
+  - { to: os-browser-hsbc-authorize, type: modal, external: true, external_kind: os-dialer-or-browser, trigger: "StartOAuth → BrowserLauncher.launch(authorizationUrl)" }
+  - { to: consent-callback, type: replace, trigger: "HSBC redirect → HTTPS relay → org.mifosx.openbanking://callback (mobile) | 127.0.0.1:8765 (desktop) → ConsentRedirectBus → RootNavScreen authorisationLegOf == SignIn → ConsentCallbackRoute(redirectUrl)", nav_role: external-entry }
+  - { to: os-browser-reference, type: modal, external: true, external_kind: os-dialer-or-browser, trigger: "Intro FAPI / FCA chips → LocalIntentManager.launchUri" }
+  - { to: consent-list, type: pop, trigger: "Cancel on LoginRenewRoute (onBack → popBackStack)" }
+  - { to: consent-detail, type: pop, trigger: "Cancel on LoginRenewRoute when opened from consent-detail" }
+  - { to: login, type: pop, route: IntroRoute, from_screen: login-screen, trigger: "Cancel / Go back / system back on AuthGraph LoginRoute → onBack → popBackStack to Intro (DEF-007 — never exitApplication())" }
+
+navigates_to:
+  - home
+  - consent-callback
+  - consent-list
+  - consent-detail
+
+transitions:
+  - { from: checking_session, to: idle, on: "ConsentSession.isActive() == false → RootNavState.Auth → AuthGraphRoute (Intro)" }
+  - { from: checking_session, to: home, on: "ConsentSession.isActive() == true → RootNavState.UserUnlocked → AuthenticatedGraphRoute" }
+  - { from: content, to: idle, on: "Cancel / system back on AuthGraph LoginRoute → pop to Intro (DEF-007)" }
+  - { from: authorising, to: content, on: "CancelAuthorisation → pendingAuthStore.clear() (DEF-007)" }
+  - { from: authorising, to: error, on: "Internal.AuthorisationTimedOut after PendingAuth TTL 1200s with no SignIn redirect → pendingAuthStore.clear() (DEF-007)" }
+  - { from: idle, to: loading, on: "Intro Continue → navigate(LoginRoute); VM init LoadPermissionsConfig" }
+  - { from: loading, to: content, on: "getPermissions() non-empty" }
+  - { from: loading, to: empty, on: "getPermissions() empty" }
+  - { from: content, to: error, on: "StartOAuth while BrowserLauncher.isSupported == false" }
+  - { from: content, to: loading, on: "StartOAuth (PendingAuth cleared, network calls start)" }
+  - { from: loading, to: authorising, on: "consent created, PendingAuth saved, browser launched" }
+  - { from: loading, to: error, on: "token/consent NetworkResult.Error OR BrowserLaunchException" }
+  - { from: error, to: loading, on: "Retry → LoadPermissionsConfig" }
+  - { from: authorising, to: consent-callback, on: "redirect arrives on ConsentRedirectBus (SignIn leg)" }
+
+flow_logic:
+  on_app_launch:
+    - transform_state: checking_session   # RootNavState.Splash
+    - call: "userDataRepository.userData (first emission) → consentSession.isActive()"
+    - if: "!consentSession.isActive()"
+      then: { navigate: AuthGraphRoute, type: replace, nav_options: rootNavOptions }
+      else: { navigate: AuthenticatedGraphRoute, type: replace, nav_options: rootNavOptions }
+  on_intro_continue:
+    - navigate: LoginRoute
+      type: push
+  on_intro_chip:
+    - external: "LocalIntentManager.launchUri(FAPI_STANDARD_URL | FCA_OPEN_BANKING_URL)"
+  on_load:
+    - action: LoadPermissionsConfig
+      steps:
+        - transform_state: Loading
+        - call: "loginRepository.getPermissions()  # OBPermission.ALL, local constant"
+        - if: "permissions.isEmpty()"
+          then: { transform_state: Empty }
+          else: { transform_state: "Content(permissions, expiryLabel = 'Expires ' + (today + 90d))" }
+  on_start_oauth:
+    - guard: "state is Content"
+    - if: "!browserLauncher.isSupported"
+      then: { transform_state: "Error(UNSUPPORTED_PLATFORM_MESSAGE)", stop: true }
+    - call: "pendingAuthStore.clear()"
+    - transform_state: Loading
+    - api: create_client_credentials_token
+      params: { scope: accounts }
+    - api: create_account_access_consent
+      params: { permissions: "OBPermission.ALL.obieScope", expirationDateTime: "now+90d", transactionFromDateTime: "now-90d", transactionToDateTime: now }
+    - build: "generateConsentAuthorizationUrl(aud=https://{bankHost}, authorizeUrl=https://{authorizeHost}/obie/open-banking/v1.1/oauth2/authorize, scope=accounts, response_type='code id_token', redirectUri, consentId, PS256 request object, fresh state+nonce)"
+    - call: "pendingAuthStore.save(state, nonce, consentId)   # persisted BEFORE browser launch"
+    - try: "browserLauncher.launch(authorizationUrl)"
+      on_success: [{ transform_state: Authorising }, { start_timer: "authorisationTimeout = PendingAuth TTL (1200s) → Internal.AuthorisationTimedOut" }]
+      on_exception_BrowserLaunchException: [{ call: "pendingAuthStore.clear()" }, { transform_state: "Error(Res.string.feature_login_error_browser_launch_failed)" }]
+    - on_api_error: { transform_state: "Error(mapErrorToMessage(error): StringResource)" }
+  on_cancel:
+    - emit_event: NavigateBack
+    - handler: "onBack() — AuthGraph LoginRoute → popBackStack to IntroRoute; LoginRenewRoute → popBackStack to caller. NEVER intentManager.exitApplication() (DEF-007)"
+  on_cancel_authorisation:
+    - cancel_timer: authorisationTimeout
+    - call: "pendingAuthStore.clear()   # a late HSBC redirect now fails state lookup instead of completing"
+    - transform_state: "Content(permissions, expiryDate)"
+  on_authorisation_timeout:
+    - call: "pendingAuthStore.clear()"
+    - transform_state: "Error(Res.string.feature_login_error_authorisation_timeout)"
+  on_retry:
+    - action: LoadPermissionsConfig
+
+error_handling:
+  mapper: "LoginViewModel.mapErrorToMessage(error): StringResource   # strings.xml keys only (DEF-013)"
+  mapping:
+    - { error: "NetworkError.Client.Unauthorized (401)", message: "{strings.feature_login_error_unauthorized}" }
+    - { error: "NetworkError.Client.BadRequest (400)", message: "{strings.feature_login_error_bad_request}" }
+    - { error: "NetworkError.Server (5xx)", message: "{strings.feature_login_error_server}" }
+    - { error: "NetworkError.Network", message: "{strings.feature_login_error_network}" }
+    - { error: "other", message: "{strings.feature_login_error_other}" }
+    - { error: "BrowserLauncher.isSupported == false", message: "{strings.feature_login_error_unsupported_platform}" }
+    - { error: "BrowserLaunchException", message: "{strings.feature_login_error_browser_launch_failed}", side_effect: "pendingAuthStore.clear()" }
+    - { error: "Authorising timeout (PendingAuth TTL 1200s)", message: "{strings.feature_login_error_authorisation_timeout}", side_effect: "pendingAuthStore.clear()" }
+  security:
+    - "PendingAuth {state, nonce, consentId, created_at} stored in secure Settings, single-use (consume() clears), TTL 1200s."
+    - "Client assertion: PS256 JWT {iss=sub=clientId, aud=tokenUrl, jti=UUIDv4, iat, exp=iat+60} with kid; signing key referenced by config only (signing_key.pem, git-ignored)."
+    - "Request object: PS256 JWT with openbanking_intent_id claim (userinfo + id_token, essential) = consentId, non-essential acr values [urn:openbanking:psd2:sca, urn:openbanking:psd2:ca], exp +1200s, nbf -1s."
+
+journey_ids: [connect-bank]
+
+dependencies:
+  repositories:
+    - name: LoginRepository
+      methods:
+        - "getPermissions(): List<OBPermission>"
+        - "suspend createConsentAndBuildAuthorizationUrl(): NetworkResult<ConsentResult{authorizationUrl, state, nonce, consentId}, NetworkError>"
+  services:
+    - "PendingAuthStore (SettingsPendingAuthStore)"
+    - "BrowserLauncher (android/desktop/ios/js actuals; js isSupported=false)"
+  network:
+    - "OAuth.clientCredentialsToken(ConsentCreationScope.ACCOUNTS)"
+    - "Aisp.createConsent(tempToken, HSBCCreateConsentRequest)"
+    - "generateConsentAuthorizationUrl(...) (core/network authorize/ConsentAuthorization.kt)"

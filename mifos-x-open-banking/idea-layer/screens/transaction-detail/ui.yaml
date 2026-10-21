@@ -1,0 +1,347 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: transaction-detail
+screen_id: transaction-detail
+name: "Transaction Detail"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/transaction-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/transactiondetail/TransactionDetailDestination.kt
+  - feature/transaction-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/transactiondetail/TransactionDetailScreen.kt
+  - feature/transaction-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/transactiondetail/TransactionDetailContent.kt
+  - feature/transaction-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/transactiondetail/TransactionDetailEmpty.kt
+  - feature/transaction-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/transactiondetail/ui/TransactionDetailState.kt
+  - feature/transaction-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/transactiondetail/ui/TransactionDetailViewModel.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/TransactionDetailRepository.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/store/BankingStores.kt
+requirement_refs: [FR-010, FR-040, FR-049]
+screen_ref: TransactionDetail
+flow_ref: browse-transactions
+archetype: detail_screen
+archetype_overrides: { empty: empty_state, error: error_state, loading: skeleton_screen }   # in-screen initial load (detail_initial_load), NOT the full-screen splash `loading` archetype whose logo floor does not apply here
+
+feature_profile:
+  combo_id: read_detail
+  facets: [content]
+  archetype: screen-content
+  store_archetype: MEMORY_ONLY
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default
+
+route: "TransactionDetailRoute(transactionId, accountId)"
+entry_points:
+  - source: transactions
+    trigger: "TransactionsScreen onNavigateToTransactionDetail(transactionId, accountId)"
+    params: { transactionId: String, accountId: String }
+  - source: statement-detail
+    trigger: "StatementDetailScreen onNavigateToTransactionDetail(transactionId, accountId)"
+    params: { transactionId: String, accountId: String }
+nav_params:
+  transactionId: { type: String, required: true, savedstate_key: transactionId }
+  accountId: { type: String, required: true, savedstate_key: accountId }
+
+business_logic:
+  kind: transformer
+  description: >-
+    Reads the account's OBIE transaction list through TransactionDetailRepository.transactionDetailStream(accountId)
+    (in-memory Store5, no Room persistence because consent can be withdrawn) and resolves the requested transactionId
+    client-side ACROSS ALL PAGES: it scans page 1 and, while the id is not found and Links.Next is present, follows the
+    Links.Next cursor and scans the next page (DEF-004 — a transaction opened from page 2+ must resolve). Only when the
+    id is absent from every page (Links.Next exhausted) does it render Empty; a fetch error on any page renders Error.
+    Errors classify per FR-040 (401 TokenExpired, 403 ConsentWithdrawn, 429 RateLimited, network) and route per FR-049:
+    TokenExpired offers "Log in again" (LoginRenewRoute), ConsentWithdrawn offers "Manage consents" (ConsentListRoute),
+    and only retriable kinds (RateLimited, Network, Unexpected) offer Retry. Maps the domain TransactionDetail to a UI model:
+    signed amount (+ credit / - debit) via formatMoney, ISO timestamps to "d Mon yyyy, HH:mm" UTC (raw string fallback
+    when unparseable), status Booked vs Pending chip, unsigned balance-after, and bank code "code · issuer".
+  library_refs: []
+  external_library_refs: ["Store5", "kotlinx-datetime"]
+
+screens:
+  - id: transaction-detail-screen
+    title: "{strings.feature_transaction_detail_screen_title}"
+    type: detail
+    description: >-
+      KptScaffold with back arrow and title "Transaction". Content is a vertically scrolling column: an amount hero
+      (displaySmall monospace, primary for credit / error for debit) with the currency label beneath, the merchant
+      name (headlineMedium) with a Booked/Pending status chip, a divider, then an outlined "Details" card listing
+      booking date, value date, category, optional merchant category code, balance after (monospace trailing),
+      a tappable Reference row with a copy icon, and bank code. Tapping the reference copies it and shows a
+      "Reference copied" snackbar.
+
+state_model:
+  TransactionDetailViewModel:
+    base: BaseViewModel<TransactionDetailState, TransactionDetailEvent, TransactionDetailAction>
+    state:
+      name: TransactionDetailState
+      fields:
+        transactionId: { type: String, default: "savedStateHandle[transactionId].orEmpty()" }
+        accountId: { type: String, default: "savedStateHandle[accountId].orEmpty()" }
+        uiState: { type: TransactionDetailUiState, default: "TransactionDetailUiState.Loading" }
+    screen_state:
+      name: TransactionDetailUiState
+      members: [Loading, "Content(transaction: TransactionDetailUiModel)", "Error(kind: TransactionDetailErrorKind)", Empty]
+    ui_model:
+      name: TransactionDetailUiModel
+      fields:
+        amountLabel: { type: String, note: "signed: '+' credit, '-' debit, formatMoney(amount, currency)" }
+        isCredit: { type: Boolean }
+        currencyLabel: { type: String }
+        merchantLabel: { type: String, note: "merchantName ?: transactionInformation" }
+        status: { type: String }
+        isBooked: { type: Boolean, note: "status equalsIgnoreCase 'Booked'" }
+        bookingDateLabel: { type: String }
+        valueDateLabel: { type: String }
+        category: { type: TransactionCategory, values: [GROCERIES, DINING, SUBSCRIPTIONS, SHOPPING, TRANSPORT, TRANSFER, OTHER] }
+        merchantCategoryCode: { type: "String?" }
+        balanceAfterLabel: { type: String, note: "unsigned formatMoney(balanceAmount, balanceCurrency)" }
+        referenceLabel: { type: String, note: "transactionInformation" }
+        bankCodeLabel: { type: String, note: "proprietaryCode, or 'code · issuer' when issuer non-blank" }
+    errors:
+      name: TransactionDetailErrorKind
+      types:
+        # FR-040 classification + FR-049 routing: retriable kinds offer Retry; 401/403 route instead of a dead-end Retry.
+        - { type: TokenExpired, recoverable: false, http: 401, route_action: RenewSession, message_key: feature_transaction_detail_error_token_expired }
+        - { type: ConsentWithdrawn, recoverable: false, http: 403, route_action: OpenConsents, message_key: feature_transaction_detail_error_consent_withdrawn }
+        - { type: RateLimited, recoverable: true, http: 429, message_key: feature_transaction_detail_error_rate_limited }
+        - { type: Network, recoverable: true, cause: "NetworkError.Network / ScreenState.NoNetwork", message_key: feature_transaction_detail_error_network }
+        - { type: Unexpected, recoverable: true, cause: "any other error incl. 5xx and parse", message_key: feature_transaction_detail_error_unexpected }
+    events:
+      name: TransactionDetailEvent
+      members:
+        - { name: CopyToClipboard, params: { text: String }, handled_by: "TransactionDetailScreen LaunchedEffect → LocalClipboardManager.setText + snackbar feature_transaction_detail_copy_success" }
+        - { name: NavigateToLoginRenew, handled_by: "TransactionDetailScreen LaunchedEffect → onNavigateToLoginRenew() → navController.navigate(LoginRenewRoute)" }
+        - { name: NavigateToConsents, handled_by: "TransactionDetailScreen LaunchedEffect → onNavigateToConsents() → navController.navigate(ConsentListRoute)" }
+    actions:
+      name: TransactionDetailAction
+      members:
+        - { name: RetryLoad, trigger: "Tap Retry on the error component (retriable kinds only)", handler: "stream.refresh() — restarts the page-walk from page 1" }
+        - { name: CopyReference, params: { reference: String }, trigger: "Tap the Reference row", handler: "sendEvent(CopyToClipboard(reference))" }
+        - { name: RenewSession, trigger: "Tap 'Log in again' on a TokenExpired error", handler: "sendEvent(NavigateToLoginRenew)" }
+        - { name: OpenConsents, trigger: "Tap 'Manage consents' on a ConsentWithdrawn error", handler: "sendEvent(NavigateToConsents)" }
+    di:
+      - TransactionDetailRepository
+      - SavedStateHandle
+
+components:
+  - id: top_bar
+    type: top-bar
+    source: KptScaffold
+    title: "{strings.feature_transaction_detail_screen_title}"
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      target: transactions
+      action_contract:
+        effect: navigate
+        description: "Pops TransactionDetailRoute off the back stack (navController.popBackStack) returning to the transactions or statement-detail caller; no network call."
+        action_contract_author: "claude-via-source-analysis"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+  - id: snackbar_host
+    type: snackbar-host
+    message: "{strings.feature_transaction_detail_copy_success}"
+  - id: loading_indicator
+    type: progress-indicator
+    source: MifosProgressIndicator
+  - id: content_root
+    type: scroll-column
+    test_tag: "TransactionDetailTestTags.CONTENT_ROOT"
+    children:
+      - id: amount_hero
+        type: column
+        role: hero
+        background_asset: transaction_detail_hero   # category-keyed motif band behind the amount (visual_assets[])
+        children:
+          - { id: amount_text, type: text, test_tag: "TransactionDetailTestTags.AMOUNT", value: "{{transaction.amountLabel}}", style: { text_style: displaySmall, font_family: monospace, color: "isCredit ? primary : error" } }  # i18n: skip — formatted money binding
+          - { id: currency_text, type: text, test_tag: "TransactionDetailTestTags.CURRENCY", value: "{{transaction.currencyLabel}}", style: { text_style: labelMedium, color: onSurfaceVariant } }  # i18n: skip — ISO currency binding
+      - id: merchant_section
+        type: column
+        children:
+          - { id: merchant_text, type: text, test_tag: "TransactionDetailTestTags.MERCHANT", value: "{{transaction.merchantLabel}}", style: { text_style: headlineMedium, color: onSurface } }  # i18n: skip — bank payload
+          - id: status_chip
+            type: chip
+            test_tag: "TransactionDetailTestTags.STATUS_CHIP"
+            label: "{{transaction.status}}"  # i18n: skip — OBIE status verbatim (Booked/Pending)
+            style:
+              booked: { background: primaryContainer, text_color: onPrimaryContainer }
+              pending: { background: secondaryContainer, text_color: onSecondaryContainer }
+      - { id: hero_divider, type: divider, style: { color: outlineVariant } }
+      - id: detail_card
+        type: card
+        test_tag: "TransactionDetailTestTags.DETAIL_CARD"
+        style: { background: surfaceContainer, corner_radius: medium, border: "hairline outlineVariant" }
+        content:
+          - { id: detail_card_title, type: text, value: "{strings.feature_transaction_detail_card_title}", style: { text_style: titleSmall, color: onSurfaceVariant } }
+          - { id: booking_date_row, type: list-item, test_tag: "TransactionDetailTestTags.BOOKING_DATE_ROW", headline: "{strings.feature_transaction_detail_booking_date}", supporting: "{{transaction.bookingDateLabel}}" }
+          - { id: value_date_row, type: list-item, test_tag: "TransactionDetailTestTags.VALUE_DATE_ROW", headline: "{strings.feature_transaction_detail_value_date}", supporting: "{{transaction.valueDateLabel}}" }
+          - { id: category_row, type: list-item, test_tag: "TransactionDetailTestTags.CATEGORY_ROW", headline: "{strings.feature_transaction_detail_category}", supporting: "{strings.feature_transaction_detail_category_*}" }
+          - { id: mcc_row, type: list-item, test_tag: "TransactionDetailTestTags.MCC_ROW", visible: "{{transaction.merchantCategoryCode != null}}", headline: "{strings.feature_transaction_detail_mcc}", supporting: "{{transaction.merchantCategoryCode}}" }
+          - { id: balance_after_row, type: list-item, test_tag: "TransactionDetailTestTags.BALANCE_AFTER_ROW", headline: "{strings.feature_transaction_detail_balance_after}", trailing: "{{transaction.balanceAfterLabel}}", style: { trailing_font_family: monospace } }
+          - id: reference_row
+            type: list-item
+            test_tag: "TransactionDetailTestTags.REFERENCE_ROW"
+            headline: "{strings.feature_transaction_detail_reference}"
+            supporting: "{{transaction.referenceLabel}}"
+            trailing_icon: { icon: content_copy, test_tag: "TransactionDetailTestTags.REFERENCE_COPY_ICON" }
+            content_description: "{strings.feature_transaction_detail_reference}: {{reference}}. {strings.feature_transaction_detail_copy_reference_a11y}"
+            on_click:
+              action: CopyReference
+              params: { reference: "{{transaction.referenceLabel}}" }
+              action_contract:
+                effect: copy_clipboard
+                external_library_refs: ["Compose-LocalClipboardManager"]
+                description: "Sends CopyReference; the ViewModel emits CopyToClipboard(reference) and the screen writes it via LocalClipboardManager.setText then shows the 'Reference copied' snackbar."
+                action_contract_author: "claude-via-source-analysis"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - { id: bank_code_row, type: list-item, test_tag: "TransactionDetailTestTags.BANK_CODE_ROW", headline: "{strings.feature_transaction_detail_bank_code}", supporting: "{{transaction.bankCodeLabel}}" }
+  - id: empty_state
+    type: empty-state
+    source: TransactionDetailEmpty
+    test_tag: "TransactionDetailTestTags.EMPTY_STATE"
+    content_description: "{strings.feature_transaction_detail_empty_accessibility}"
+    illustration: { asset: transaction_detail_empty_illustration, role: illustration, fallback_icon: receipt_long_outlined }
+    title: { value: "{strings.feature_transaction_detail_empty_title}", test_tag: "TransactionDetailTestTags.EMPTY_TITLE" }
+    body: { value: "{strings.feature_transaction_detail_empty_body}", test_tag: "TransactionDetailTestTags.EMPTY_BODY" }
+    cta:
+      id: empty_back_button
+      type: button
+      variant: outlined
+      shape: pill
+      test_tag: "TransactionDetailTestTags.EMPTY_BACK_BUTTON"
+      label: "{strings.feature_transaction_detail_go_back}"
+      on_click:
+        action: onBack
+        target: transactions
+        action_contract:
+          effect: navigate
+          description: "Calls the screen's onBack lambda (popBackStack) from the not-found state so the user returns to the list they came from."
+          action_contract_author: "claude-via-source-analysis"
+          action_contract_authored_at: "2026-10-21T00:00:00Z"
+  - id: error_state
+    type: error-state
+    source: MifosErrorComponent
+    test_tag: "TransactionDetailTestTags.ERROR_STATE"
+    icon: { asset: transaction_detail_error_icon, role: icon }
+    message: "{strings.feature_transaction_detail_error_*}"   # selected by TransactionDetailErrorKind.bodyResource()
+    retry_visible: "{{kind.recoverable}}"
+    on_click:
+      action: RetryLoad
+      action_contract:
+        effect: call_api
+        external_library_refs: ["Store5", "core/data/TransactionDetailRepository"]
+        description: "Sends RetryLoad which calls stream.refresh() on the Store5-backed TransactionDetailRepository stream, re-running the GET /accounts/{AccountId}/transactions page-walk from page 1; shown only for RateLimited / Network / Unexpected."
+        action_contract_author: "claude-via-source-analysis"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+    secondary_actions:
+      - id: renew_session_button
+        type: button
+        variant: filled
+        test_tag: "TransactionDetailTestTags.RENEW_SESSION_BUTTON"
+        label: "{strings.feature_transaction_detail_renew_session}"
+        visible: "{{kind == TokenExpired}}"
+        on_click:
+          action: RenewSession
+          target: login
+          action_contract:
+            effect: navigate
+            description: "FR-049: sends RenewSession → NavigateToLoginRenew; the screen navigates to LoginRenewRoute so the PSU re-authenticates instead of hitting a dead-end Retry."
+            action_contract_author: "claude-via-idea-feature-enrich"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: manage_consents_button
+        type: button
+        variant: filled
+        test_tag: "TransactionDetailTestTags.MANAGE_CONSENTS_BUTTON"
+        label: "{strings.feature_transaction_detail_manage_consents}"
+        visible: "{{kind == ConsentWithdrawn}}"
+        on_click:
+          action: OpenConsents
+          target: consent-list
+          action_contract:
+            effect: navigate
+            description: "FR-049: sends OpenConsents → NavigateToConsents; the screen navigates to ConsentListRoute so the user can re-grant AIS access. No Retry is offered for this non-retriable kind."
+            action_contract_author: "claude-via-idea-feature-enrich"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+states: [loading, content, empty, error]
+initial_state: loading
+state_renders:
+  loading: { components: [top_bar, loading_indicator], description: "Store fetch in flight (ScreenState.Loading)" }
+  content: { components: [top_bar, content_root, snackbar_host], description: "transactionId matched a record in the fetched list" }
+  empty: { components: [top_bar, empty_state], description: "Every page fetched (Links.Next exhausted) and no record matched transactionId, or ScreenState.Empty" }
+  error: { components: [top_bar, error_state], description: "TokenExpired → Log in again · ConsentWithdrawn → Manage consents (no retry) · RateLimited / Network / Unexpected → Retry" }
+
+# RULE-SCREEN-VISUAL-ASSETS-001 SVA-1 — archetype floor inherited (detail_screen hero + empty_state
+# illustration + error_state icon; loading → skeleton_screen declares none) with content-specific intents.
+visual_assets:
+  - id: transaction_detail_hero
+    kind: hero
+    role: hero
+    intent: "Calm, low-contrast 16:9 abstract line-art band behind the transaction amount, one variant per TransactionCategory (groceries basket, dining cutlery, subscriptions repeat-loop, shopping bag, transport route line, transfer double-arrow, other neutral receipt) in the muted trustworthy banking palette; no text, no numbers, no merchant or bank logos, must keep the amount legible on top"
+    produced_by: /idea-feature-stitch-art
+    states: [content]
+    consistency: none
+  - id: transaction_detail_empty_illustration
+    kind: illustration
+    role: illustration
+    intent: "Line-art receipt with a soft magnifying glass finding nothing, calm and reassuring for 'Transaction not found' after searching every page; no text, no alarm colors"
+    produced_by: /idea-feature-stitch-art
+    states: [empty]
+    consistency: none
+  - id: transaction_detail_error_icon
+    kind: icon
+    role: icon
+    intent: "Simple outlined glyph of a receipt with a small padlock-clock badge, signalling transactions are temporarily unavailable (session / consent / rate-limit / network) without alarm; single-color, scales to 48dp"
+    produced_by: /idea-feature-stitch-art
+    states: [error]
+    consistency: none
+
+known_gaps:
+  - id: TD-GAP-1
+    severity: high
+    description: "Detail lookup fetches only the first page of GET /accounts/{AccountId}/transactions (Aisp.getTransactions, no Links.Next follow). A transaction opened from page 2+ of the paginated transactions list resolves to Empty ('Transaction not found')."
+    source: "core/data/.../store/BankingStores.kt transactionDetailsStore"
+    spec_status: specified   # idea-layer now declares the Links.Next page-walk (business_logic, flow.on_load, api.pagination); source pending /kmp-implement (DEF-004)
+  - id: TD-GAP-2
+    severity: medium
+    description: "FR-040 requires 429 RateLimited classification; classifyTransactionDetailError has no RateLimited kind, so 429 and 5xx both fall to Unexpected."
+    source: "ui/TransactionDetailState.kt classifyTransactionDetailError"
+    spec_status: specified   # RateLimited kind + error_handling mapping declared; source pending /kmp-implement
+  - id: TD-GAP-3
+    severity: low
+    description: "ConsentWithdrawn error offers no re-authorise route (no nav lambda to consents/login-renew); the user can only go back."
+    spec_status: specified   # FR-049 RenewSession → LoginRenewRoute, OpenConsents → ConsentListRoute declared; source pending /kmp-implement
+  - id: TD-GAP-4
+    severity: low
+    description: "Several declared strings are unused: feature_transaction_detail_back_a11y, _loading, _amount/_currency/_merchant/_status_a11y_prefix, _bank_code_issued_by, _error_title, _error_accessibility, _retry."
+
+i18n:
+  en:
+    feature_transaction_detail_screen_title: "Transaction"
+    feature_transaction_detail_card_title: "Details"
+    feature_transaction_detail_booking_date: "Booking date"
+    feature_transaction_detail_value_date: "Value date"
+    feature_transaction_detail_category: "Category"
+    feature_transaction_detail_mcc: "Merchant category code"
+    feature_transaction_detail_balance_after: "Balance after"
+    feature_transaction_detail_reference: "Reference"
+    feature_transaction_detail_copy_reference_a11y: "Tap to copy reference"
+    feature_transaction_detail_bank_code: "Bank code"
+    feature_transaction_detail_copy_success: "Reference copied"
+    feature_transaction_detail_error_token_expired: "Session expired. Please log in again."
+    feature_transaction_detail_error_consent_withdrawn: "Access to transactions has been withdrawn."
+    feature_transaction_detail_error_network: "No network connection. Please check your connection and retry."
+    feature_transaction_detail_error_unexpected: "Something went wrong. Please try again."
+    feature_transaction_detail_error_rate_limited: "Too many requests. Please wait a moment and retry."
+    feature_transaction_detail_renew_session: "Log in again"
+    feature_transaction_detail_manage_consents: "Manage consents"
+    feature_transaction_detail_go_back: "Go back"
+    feature_transaction_detail_empty_title: "Transaction not found"
+    feature_transaction_detail_empty_body: "It may have been removed or your consent has expired."
+    feature_transaction_detail_empty_accessibility: "Transaction not found"
+    feature_transaction_detail_category_groceries: "Groceries"
+    feature_transaction_detail_category_dining: "Dining"
+    feature_transaction_detail_category_subscriptions: "Subscriptions"
+    feature_transaction_detail_category_shopping: "Shopping"
+    feature_transaction_detail_category_transport: "Transport"
+    feature_transaction_detail_category_transfer: "Transfer"
+    feature_transaction_detail_category_other: "Other"

@@ -1,0 +1,55 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: scheduled-payments
+_source: source_analysis
+
+navigates_to:
+  - account-detail      # onBack (popBackStack)
+
+inbound_routes:
+  - { from: account-detail, type: push, trigger: "AccountDetailChip.ScheduledPayments", params: { accountId: String } }
+
+transitions:
+  - { from: scheduled-payments, to: account-detail, type: pop, trigger: "top_bar back" }
+
+on_load:
+  - step: read_nav_args
+    from: SavedStateHandle
+    keys: [accountId]
+  - step: open_stream
+    call: "ScheduledPaymentsRepository.scheduledPaymentsStream(accountId, viewModelScope)"
+    api: get_scheduled_payments
+  - step: coerce_empty
+    call: "stream.state.emptyIfContent { payments -> payments.isEmpty() }"
+  - step: map_screen_state
+    mapping:
+      "ScreenState.Loading": Loading
+      "ScreenState.Content(data)": "Content(data.map { toUiModel() })"
+      "ScreenState.Empty": Empty
+      "ScreenState.Error(e)": "Error(classifyScheduledPaymentsError(e))"
+      "ScreenState.NoNetwork": "Error(NetworkError)"
+      "ScreenState.Unauthenticated": "Error(TokenExpired)"
+
+flow_logic:
+  - { component: top_bar, action: back, effect: "navigate:account-detail" }
+  - { component: error_state, action: click, effect: "action:RetryLoad", then: "stream.refresh() re-fetches get_scheduled_payments" }
+
+error_handling:
+  classifier: classifyScheduledPaymentsError
+  mapping:
+    - { network_error: "NetworkError.Client.Unauthorized (401)", kind: TokenExpired, retry: true }
+    - { network_error: "NetworkError.Client.Forbidden (403)", kind: ConsentRevoked, retry: true, note: "FR-040 says not retriable — gap SP-GAP-3" }
+    - { network_error: "NetworkError.Client.RateLimited (429)", kind: RateLimited, retry: true }
+    - { network_error: "NetworkError.Network", kind: NetworkError, retry: true }
+    - { network_error: "anything else (5xx, U000 BadRequest)", kind: NetworkError, retry: true }
+  side_effects:
+    - "Fetcher: NetworkError.isUnsupportedForProduct() (U000) → AccountCapabilityRegistry.markUnsupported(accountId, AccountEndpoint.ScheduledPayments) before rethrow"
+
+dependencies:
+  repositories:
+    - name: ScheduledPaymentsRepository
+      methods: ["scheduledPaymentsStream(accountId: String, scope: CoroutineScope): ScreenDataStream<List<ScheduledPaymentItem>>"]
+      store: "BankingStores.scheduledPaymentsStore(aisp, capabilityRegistry) — memory store, key AccountId, cacheKey scheduledPayments:list:{accountId}"
+  services: [NetworkMonitor, FetchedAtRepository, AccountCapabilityRegistry]
+
+journey_ids: []

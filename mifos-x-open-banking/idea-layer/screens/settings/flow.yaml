@@ -1,0 +1,111 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: settings
+_source: source_analysis
+
+entry_points:
+  - type: push
+    source: home
+    route: SettingsRoute
+    description: "Home avatar/settings affordance → navController.navigate(SettingsRoute) in AuthenticatedNavHostScreen"
+
+navigates_to:
+  - consent-list      # Manage Consents row → ConsentListRoute
+  - home              # back from Settings (popBackStack)
+  - login             # Sign out → SettingsEvent.LoggedOut → navigateToAuthGraph (FR-046)
+
+transitions:
+  - { from: settings-screen, to: consent-list, trigger: consents_row, type: push, route: ConsentListRoute }
+  - { from: settings-screen, to: licences-screen, trigger: licences_row, type: push, route: LicencesRoute }
+  - { from: settings-screen, to: home, trigger: top_bar.back, type: pop }
+  - { from: licences-screen, to: settings-screen, trigger: licences_top_bar.back, type: pop }
+  - { from: settings-screen, to: os-browser, trigger: privacy_row, type: push, external: true, external_kind: os-dialer-or-browser }
+  - { from: settings-screen, to: settings-screen, trigger: sign_out_row, type: state, state_from: idle, state_to: sign_out_confirm }
+  - { from: settings-screen, to: settings-screen, trigger: sign_out_cancel_button, type: state, state_from: sign_out_confirm, state_to: idle }
+  - { from: settings-screen, to: settings-screen, trigger: sign_out_confirm_button, type: state, state_from: sign_out_confirm, state_to: signing_out, side_effects: ["AppLogout.logOut()", "sendEvent(LoggedOut)"] }
+  - { from: settings-screen, to: login, trigger: "SettingsEvent.LoggedOut", type: replace, route: AuthGraph, note: "onLoggedOut → navController.navigateToAuthGraph(rootNavOptions())" }
+  - { from: licences-screen, to: os-browser, trigger: library_row, type: push, external: true, external_kind: os-dialer-or-browser }
+
+flow_logic:
+  settings_screen:
+    on_load:
+      - collect: "userDataRepository.observeDarkThemeConfig"
+        on_emit: "updateState { copy(themeConfig = theme) }"
+    on_select_theme:
+      - launch: "userDataRepository.setDarkThemeConfig(config)"
+      - note: "No optimistic update — themeConfig changes only when the observed flow re-emits."
+    on_navigate_to_consents:
+      - navigate: consent-list
+        route: ConsentListRoute
+    on_navigate_to_licences:
+      - navigate_internal: licences-screen
+        route: LicencesRoute
+    on_open_privacy:
+      - external: "uriHandler.openUri('https://mifos.org/privacy-policy/')"
+    on_back:
+      - pop: true
+    on_request_sign_out:
+      - guard: "!isSigningOut"
+      - transform_state: { showSignOutDialog: true }
+    on_dismiss_sign_out:
+      - guard: "!isSigningOut"
+      - transform_state: { showSignOutDialog: false }
+    on_confirm_sign_out:
+      - guard: "showSignOutDialog && !isSigningOut"
+      - transform_state: { isSigningOut: true }
+      - action: app_logout
+        via: "appLogout.logOut()   # same AppLogoutImpl as consent-detail: forget PSU + payment tokens, clear user data, Store caches, payment history, VRP sessions"
+      - emit_event: LoggedOut
+      - navigate: login
+        via: "onLoggedOut → navController.navigateToAuthGraph(rootNavOptions())"
+      - note: "Not a consent revoke — the user-initiated revoke stays on consent-detail (DEF-003). Signing in again re-runs the consent journey."
+
+  licences_screen:
+    on_load:
+      - load: "thirdPartyLibrariesRepo.getLibraries()   # local: Res.readBytes('files/aboutlibraries.json') → Libs.Builder().withJson(json).build() → sorted by name → LibraryUi"
+        on_result: "updateState { copy(libraries = it.toImmutableList()) }"
+        on_failure: "libraries stays empty → libraries_empty text (build defect surfaced, not hidden)"
+      - init_state: "dialogState = Loading"
+      - stream: "repository.getLicence(viewModelScope)  # Store5 ScreenDataStream, key OpenSourceLicenceStore, cacheKey oss_licence, TTL 24h"
+        operator: "emptyIfContent { licence -> licence.isBlank() }"
+        on_emit: "updateState { screenState.toState() }"
+        api: get_license
+    on_retry_load:
+      - call: "stream.retry()"
+        api: get_license
+    on_toggle_licence_expanded:
+      - transform_state: { licenceExpanded: "!licenceExpanded" }
+    on_open_library:
+      - guard: "library.website != null"
+      - external: "uriHandler.openUri(library.website)"
+    on_back:
+      - pop: true
+
+error_handling:
+  # Licences maps ScreenState (no ErrorKind enum in this module)
+  ScreenState.NoNetwork: { ui: error, isNetworkError: true, retry: true, message: "MifosErrorComponent offline copy" }
+  ScreenState.Error: { ui: error, isNetworkError: false, retry: true, message: "error.message ?: feature_settings_licences_error" }
+  ScreenState.Unauthenticated: { ui: error, isNetworkError: false, retry: true, message: feature_settings_licences_error, note: "Unreachable in practice — the GitHub raw fetch is unauthenticated" }
+  ScreenState.Empty: { ui: error, isNetworkError: false, retry: true, message: feature_settings_licences_error, note: "blank licence text (FR-038 'Blank licence is an error')" }
+
+journey_ids: [settings-licences]
+
+dependencies:
+  repositories:
+    - name: UserDataRepository
+      methods:
+        - "observeDarkThemeConfig: Flow<DarkThemeConfig>"
+        - "suspend setDarkThemeConfig(config: DarkThemeConfig)"
+    - name: OpenSourceLicenceRepo
+      methods:
+        - "getLicence(scope: CoroutineScope): ScreenDataStream<String>"
+    - name: ThirdPartyLibrariesRepo
+      methods:
+        - "suspend getLibraries(): List<LibraryUi>"
+      note: "new — aboutlibraries-core over the build-generated aboutlibraries.json in commonMain composeResources/files"
+    - name: AppLogout
+      methods:
+        - "suspend logOut()"
+  stores:
+    - { name: OpenSourceLicenceStore.licenceStore, key: OpenSourceLicenceStore, ttl: 24h, source_of_truth: "UserPreferencesRepository.openSourceLicenceText" }
+  services: [NetworkMonitor, FetchedAtRepository]

@@ -1,0 +1,98 @@
+sibling: api
+schema_version: "4.0"
+feature_id: payments-standing-order
+_source: source_analysis
+
+auth_common:
+  transport: "mTLS to HSBC UK sandbox; FAPI headers (x-fapi-financial-id)"
+  bearer_injection: "pisp/ paths excluded from the PSU-bearer interceptor; AIS reads use the PSU accounts token with refresh-on-401"
+  write_headers: "x-jws-signature = detached PS256 JWS over the exact JSON payload (iss = HSBC_SIGNING_ISSUER, kid); x-idempotency-key ≤ 40 chars"
+
+api:
+  - id: get_accounts
+    method: GET
+    path: "/v4.0/aisp/accounts"
+    description: "Payer candidates via AccountsOverviewRepository.overviewState (Store5 over Room 'accounts'). Filtered to HSBC products that can be a PaymentDebtor and not refused by AccountCapabilityRegistry."
+    auth: PSU accounts token
+    response: "AccountWithBalance[] (domain)"
+    cache: { strategy: stale-while-revalidate, offline: show_cached, store: "Store5 / Room accounts" }
+
+  - id: get_balances
+    method: GET
+    path: "/v4.0/aisp/accounts/{AccountId}/balances"
+    description: "Joined into AccountWithBalance by the accounts overview; drives availableBalanceLabel and the ExceedsAvailableBalance check."
+    auth: PSU accounts token
+    response: "Balance (domain)"
+
+  - id: get_beneficiaries
+    method: GET
+    path: "/v4.0/aisp/accounts/{AccountId}/beneficiaries"
+    description: "Saved payees for the selected payer only (none until a payer is chosen; bank-chosen payer → empty list). Filtered by scheme: SortCode on Domestic, Iban on International."
+    auth: PSU accounts token
+    params:
+      AccountId: { type: String, required: true, source: "form.debtorAccountId" }
+    response: "BeneficiaryItem[] (domain)"
+
+  - id: post_token_client_credentials
+    method: POST
+    path: "/v1.1/oauth2/token"
+    description: "grant_type=client_credentials, scope=payments (private_key_jwt) — minted inside stageStandingOrder before the consent POST."
+    response: TokenResponse
+
+  - id: post_standing_order_consent
+    description: >
+      StandingOrderInitiationRepository.stageStandingOrder(draft): clears PaymentAuthSession, mints the
+      payments token, POSTs the consent for the draft's rail, then builds the PS256 request-object
+      authorize URL and persists PendingAuth (state/nonce/consentId/type) + the draft BEFORE returning,
+      so the return leg (payment-consent) can submit it. Data.Permission = "Create".
+    method: POST
+    path: "/v4.0/pisp/domestic-standing-order-consents"
+    auth: client_credentials (payments)
+    headers:
+      x-jws-signature: required
+      x-idempotency-key: "draft.consentIdempotencyKey (UUIDv4, distinct from paymentIdempotencyKey)"
+    variants:
+      - { method: POST, path: "/v4.0/pisp/domestic-standing-order-consents", when: "rail == Domestic", request: DomesticStandingOrderConsentRequest, response: DomesticStandingOrderConsentResponse }
+      - { method: POST, path: "/v4.0/pisp/international-standing-order-consents", when: "rail == International", request: InternationalStandingOrderConsentRequest, response: InternationalStandingOrderConsentResponse }
+    request_fields:
+      Frequency: "WEEK | FRTN | MNTH | QURT | YEAR"
+      FirstPaymentDateTime: "draft.firstPaymentDate (ISO date)"
+      FinalPaymentDateTime: "draft.finalPaymentDate (optional)"
+      FirstPaymentAmount: "amountInput in instructedCurrency"
+      RecurringPaymentAmount: "domestic only, only when entered"
+      FinalPaymentAmount: "domestic only, only when entered"
+      Reference: "domestic only, ≤35 chars"
+      DebtorAccount: "omitted when letBankChoosePayer"
+      CreditorAccount: "SortCodeAccountNumber (domestic) or IBAN (international) + name"
+      CurrencyOfTransfer: "international only"
+      ChargeBearer: "international only (required — omitting earns U004)"
+    response: "StagedConsent(consentId, authorizationUrl)"
+    errors:
+      U019: SignatureMissing
+      U009: ConsentNotAuthorised
+      U008: ConsentMismatch
+      U014: OutsideControlParameters
+      U002: "InvalidField | FrequencyRefused | FirstDateRefused | PayerNotSupported (field-specific)"
+      U021: InvalidField
+      U003: FinalDateRefused
+      U004: RequestMalformed
+      U005: RequestMalformed
+      U027: SchemeNotSupported
+      401: TokenExpired
+      403: ConsentRevoked
+      429: RateLimited
+      network: NetworkError
+
+  - id: get_authorize
+    method: GET
+    path: "https://{HSBC_AUTHORIZE_HOST}/obie/open-banking/v1.1/oauth2/authorize"
+    description: "Not called by the app's HTTP client — the signed URL (request object with intent id, state, nonce) is opened in the system browser via BrowserLauncher on LaunchAuthorisation."
+    auth: "PSU at HSBC"
+    external: true
+
+downstream:
+  submit: "POST /v4.0/pisp/{domestic|international}-standing-orders — performed by payment-consent (see screens/payment-consent/api.yaml#post_standing_order)"
+  receipt: "GET /v4.0/pisp/{domestic|international}-standing-orders/{Id} — performed by payment-status"
+
+local_reads:
+  - { id: standing_order_history, source: "PaymentHistoryFeed.rows({DomesticStandingOrder, InternationalStandingOrder}, 6 on form / 200 on history)", table: payment_history }

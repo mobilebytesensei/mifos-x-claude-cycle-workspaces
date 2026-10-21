@@ -1,0 +1,224 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: beneficiaries
+screen_id: beneficiaries
+name: "Beneficiaries"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/beneficiaries/src/commonMain/kotlin/org/mifosx/openbanking/feature/beneficiaries/BeneficiariesDestination.kt
+  - feature/beneficiaries/src/commonMain/kotlin/org/mifosx/openbanking/feature/beneficiaries/BeneficiariesScreen.kt
+  - feature/beneficiaries/src/commonMain/kotlin/org/mifosx/openbanking/feature/beneficiaries/BeneficiariesContent.kt
+  - feature/beneficiaries/src/commonMain/kotlin/org/mifosx/openbanking/feature/beneficiaries/BeneficiariesTestTags.kt
+  - feature/beneficiaries/src/commonMain/kotlin/org/mifosx/openbanking/feature/beneficiaries/ui/BeneficiariesState.kt
+  - feature/beneficiaries/src/commonMain/kotlin/org/mifosx/openbanking/feature/beneficiaries/ui/BeneficiariesViewModel.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/BeneficiariesRepository.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/store/BankingStores.kt
+requirement_refs: [FR-014, FR-040]
+screen_ref: Beneficiaries
+archetype: index_list
+archetype_overrides: { empty: empty_state, error: error_state, loading: loading }
+
+feature_profile:
+  combo_id: read_detail
+  facets: [content, input]
+  archetype: screen-content
+  store_archetype: MEMORY_ONLY
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default
+
+route: "BeneficiariesRoute(accountId)"
+entry_points:
+  - source: account-detail
+    trigger: "Explore chip AccountDetailChip.Beneficiaries → navigateFromChip"
+    params: { accountId: String }
+nav_params:
+  accountId: { type: String, required: true, savedstate_key: accountId }
+
+business_logic:
+  kind: transformer
+  description: >-
+    Streams every saved payee for one account via BeneficiariesRepository.beneficiariesStream (in-memory Store5 keyed by
+    AccountId; full unpaginated list in bank order). Search is local: the ViewModel keeps the unfiltered list in
+    Content.all and re-filters it on every keystroke by case-insensitive creditorName or reference match (no re-fetch);
+    a stream re-emission re-applies the live query. IBANs are shown in 4-character blocks, every other scheme
+    (sort code, Paym, card, account) verbatim (FR-014). A 403 is ConsentRevoked and is not retriable.
+  library_refs: []
+  external_library_refs: ["Store5"]
+
+screens:
+  - id: beneficiaries-screen
+    title: "{strings.feature_beneficiaries_screen_title}"
+    type: list
+    description: >-
+      KptScaffold with back arrow and title "Beneficiaries". Content is a search TextField (leading search icon,
+      surfaceContainerHigh, no indicator) above a divider, then a LazyColumn of payee rows separated by dividers.
+      Each row: creditor name (bodyLarge), a supporting line "<scheme label> · <identification>" (IBAN grouped in 4s,
+      monospace), and the payment reference right-aligned (labelSmall). When a live query matches nothing an in-content
+      "No results" empty component replaces the list. Rows are read-only.
+
+state_model:
+  BeneficiariesViewModel:
+    base: BaseViewModel<BeneficiariesState, Nothing, BeneficiariesAction>
+    state:
+      name: BeneficiariesState
+      fields:
+        accountId: { type: String, default: "savedStateHandle[accountId].orEmpty()" }
+        uiState: { type: BeneficiariesUiState, default: "BeneficiariesUiState.Loading" }
+    screen_state:
+      name: BeneficiariesUiState
+      members:
+        - Loading
+        - "Content(all: List<BeneficiaryItem>, filtered: List<BeneficiaryItem>, query: String = \"\")  — derived isSearchWithoutMatches = filtered.isEmpty() && query.isNotBlank()"
+        - Empty
+        - "Error(kind: BeneficiariesErrorKind)"
+    item_model:
+      name: BeneficiaryItem
+      fields:
+        beneficiaryId: { type: String }
+        accountId: { type: String }
+        creditorName: { type: String }
+        scheme: { type: BeneficiaryScheme, values: [SortCode, Iban, Paym, Card, Account] }
+        identification: { type: String, note: "formatIdentification: IBAN chunked by 4, others verbatim" }
+        reference: { type: String }
+    errors:
+      name: BeneficiariesErrorKind
+      types:
+        - { type: TokenExpired, retry: true, http: 401, message_key: feature_beneficiaries_error_token_expired }
+        - { type: ConsentRevoked, retry: false, http: 403, message_key: feature_beneficiaries_error_consent_revoked }
+        - { type: RateLimited, retry: true, http: 429, message_key: feature_beneficiaries_error_rate_limited }
+        - { type: ServerError, retry: true, cause: "NetworkError.Server (5xx)", message_key: feature_beneficiaries_error_server }
+        - { type: NetworkError, retry: true, cause: "NetworkError.Network / NoNetwork / unclassified", message_key: feature_beneficiaries_error_network }
+    events:
+      name: Nothing
+      members: []
+    actions:
+      name: BeneficiariesAction
+      members:
+        - { name: RetryLoad, trigger: "Tap Retry on the error component (retriable kinds only)", handler: "stream.refresh()" }
+        - { name: Search, params: { query: String }, trigger: "Type in the search field", handler: "applySearch(query) — filters Content.all locally" }
+    di:
+      - BeneficiariesRepository
+      - SavedStateHandle
+
+components:
+  - id: top_bar
+    type: top-bar
+    source: KptScaffold
+    title: "{strings.feature_beneficiaries_screen_title}"
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      target: account-detail
+      action_contract:
+        effect: navigate
+        description: "Pops BeneficiariesRoute off the back stack (navController.popBackStack) returning to account-detail; no network call."
+        action_contract_author: "claude-via-source-analysis"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+  - id: loading_indicator
+    type: progress-indicator
+    source: MifosProgressIndicator
+  - id: search_field
+    type: text_field
+    test_tag: "BeneficiariesTestTags.SEARCH_FIELD"
+    content_description: "{strings.feature_beneficiaries_search_a11y}"
+    placeholder: "{strings.feature_beneficiaries_search_placeholder}"
+    leading_icon: search
+    single_line: true
+    value: "{{content.query}}"
+    style: { background: surfaceContainerHigh, indicator: transparent, text_style: bodyLarge }
+    on_change:
+      action: Search
+      params: { query: "{{input}}" }
+      action_contract:
+        effect: transform_state
+        description: "Sends Search(query); the ViewModel re-filters Content.all by case-insensitive creditorName or reference match into Content.filtered without any network call."
+        action_contract_author: "claude-via-source-analysis"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+  - id: search_divider
+    type: divider
+    style: { color: outlineVariant }
+  - id: beneficiary_list
+    type: list
+    source: LazyColumn
+    test_tag: "BeneficiariesTestTags.CONTENT_LIST"
+    content_description: "{strings.feature_beneficiaries_list_a11y}"
+    item_key: beneficiaryId
+    separator: divider
+    item:
+      id: beneficiary_row
+      type: list-item
+      test_tag: "BeneficiariesTestTags.row(beneficiaryId)"
+      content_description: "{strings.feature_beneficiaries_row_a11y}, {strings.feature_beneficiaries_reference_a11y}"
+      merge_descendants: true
+      headline: "{{row.creditorName}}"  # i18n: skip — bank payload
+      supporting:
+        - { id: scheme_label, type: text, value: "{strings.feature_beneficiaries_scheme_*} ·", style: { text_style: bodyMedium } }
+        - { id: identification, type: text, value: "{{formatIdentification(row.identification, row.scheme)}}", style: { text_style: labelSmall, font_family: monospace } }  # i18n: skip — account identifier
+      trailing: { id: reference, type: text, value: "{{row.reference}}", style: { text_style: labelSmall, max_width: badge } }  # i18n: skip — bank payload
+  - id: search_no_results
+    type: empty-state
+    source: EmptyDataComponent
+    visible: "{{content.isSearchWithoutMatches}}"
+    message: "{strings.feature_beneficiaries_search_empty_title}"
+  - id: empty_state
+    type: empty-state
+    source: EmptyDataComponent
+    message: "{strings.feature_beneficiaries_empty_title}"
+  - id: error_state
+    type: error-state
+    source: MifosErrorComponent
+    message: "{strings.feature_beneficiaries_error_*}"   # selected by BeneficiariesErrorKind.bodyResource()
+    retry_visible: "{{kind.isRetriable}}"
+    on_click:
+      action: RetryLoad
+      action_contract:
+        effect: call_api
+        external_library_refs: ["Store5", "core/data/BeneficiariesRepository"]
+        description: "Sends RetryLoad which calls stream.refresh() on the Store5-backed BeneficiariesRepository stream, re-fetching GET /accounts/{AccountId}/beneficiaries; hidden for ConsentRevoked."
+        action_contract_author: "claude-via-source-analysis"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+states: [loading, content, search-no-results, empty, error]
+initial_state: loading
+state_renders:
+  loading: { components: [top_bar, loading_indicator], description: "Store fetch in flight" }
+  content: { components: [top_bar, search_field, search_divider, beneficiary_list], description: "Full or query-filtered payee list" }
+  search-no-results: { components: [top_bar, search_field, search_divider, search_no_results], description: "Content with a non-blank query that matched nothing" }
+  empty: { components: [top_bar, empty_state], description: "Bank returned zero payees (emptyIfContent) — no search field shown" }
+  error: { components: [top_bar, error_state], description: "TokenExpired / RateLimited / ServerError / NetworkError retry; ConsentRevoked no retry" }
+
+visual_assets: []   # text-only list; search icon + empty/error components are design-system vector icons
+
+known_gaps:
+  - id: BN-GAP-1
+    severity: medium
+    description: "Payee rows are not tappable — there is no hand-off to send-money / payments-schedule-payment / payments-standing-order with the selected beneficiary, although the plan lists beneficiaries as their payee picker."
+  - id: BN-GAP-2
+    severity: low
+    description: "ConsentRevoked copy says 'Re-authorise to restore access' but the screen exposes no route to consent-list/login-renew."
+  - id: BN-GAP-3
+    severity: low
+    description: "The SortCode scheme label string feature_beneficiaries_scheme_sort_code reads 'Identification' rather than 'Sort code'; feature_beneficiaries_back_a11y is unused."
+
+i18n:
+  en:
+    feature_beneficiaries_screen_title: "Beneficiaries"
+    feature_beneficiaries_search_placeholder: "Search by name or reference"
+    feature_beneficiaries_search_a11y: "Search beneficiaries by creditor name or payment reference"
+    feature_beneficiaries_list_a11y: "Beneficiaries list"
+    feature_beneficiaries_row_a11y: "%1$s, %2$s account, %3$s"
+    feature_beneficiaries_reference_a11y: "reference %1$s"
+    feature_beneficiaries_scheme_sort_code: "Identification"
+    feature_beneficiaries_scheme_iban: "IBAN"
+    feature_beneficiaries_scheme_paym: "Paym"
+    feature_beneficiaries_scheme_card: "Card"
+    feature_beneficiaries_scheme_account: "Account"
+    feature_beneficiaries_search_empty_title: "No results"
+    feature_beneficiaries_empty_title: "No beneficiaries"
+    feature_beneficiaries_error_token_expired: "Your session has expired. Sign in again to view beneficiaries."
+    feature_beneficiaries_error_consent_revoked: "Access to beneficiaries has been revoked. Re-authorise to restore access."
+    feature_beneficiaries_error_rate_limited: "Too many requests. Please wait a moment and retry."
+    feature_beneficiaries_error_network: "No network connection. Check your connection and try again."
+    feature_beneficiaries_error_server: "Something went wrong on the HSBC side. Please try again."

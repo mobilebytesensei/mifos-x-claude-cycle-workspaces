@@ -1,0 +1,118 @@
+sibling: api
+schema_version: "4.0"
+feature_id: payments-schedule-payment
+_source: source_analysis
+
+auth:
+  ais_reads: "PSU bearer auto-attached (refresh-on-401)"
+  pis_writes: >
+    Explicit client_credentials token (scope=payments) + x-fapi-interaction-id + x-fapi-financial-id +
+    x-idempotency-key (1..40) + x-jws-signature (detached PS256 JWS, crit iat/iss/tan, iss=HSBC_SIGNING_ISSUER). mTLS.
+  authorize: "PS256 request object, response_type 'code id_token', scope 'openid payments', system browser"
+
+api:
+  - id: get_accounts
+    function: "Aisp.getAccounts() via accounts Store (network + Room SoT)"
+    method: GET
+    path: "/v4.0/aisp/accounts"
+    description: "Payer candidates, filtered by HsbcProductCapability (PaymentDebtor) and session refusals."
+    response: AccountsResponse
+    errors: { 401: TokenExpired, 403: ConsentRevoked, 429: RateLimited, other: NetworkError }
+    cache: { strategy: "Store5 createStore + Room SourceOfTruth", offline: show_cached }
+
+  - id: get_account_balances
+    function: "Aisp.getBalances(accountId) via memory balances store"
+    method: GET
+    path: "/v4.0/aisp/accounts/{AccountId}/balances"
+    params:
+      AccountId: { type: String, required: true }
+    response: BalancesResponse
+    cache: { strategy: "Store5 memory store" }
+
+  - id: get_beneficiaries
+    function: "Aisp.getBeneficiaries(accountId)"
+    method: GET
+    path: "/v4.0/aisp/accounts/{AccountId}/beneficiaries"
+    params:
+      AccountId: { type: String, required: true, source: "selected debtorAccountId" }
+    response: BeneficiariesResponse
+    errors: { any: "payeesFailed = true" }
+    cache: { strategy: "Store5 memory store" }
+
+  - id: get_client_credentials_token_payments
+    function: "OAuth.clientCredentialsToken(ConsentCreationScope.PAYMENTS)"
+    method: POST
+    path: "/v1.1/oauth2/token"
+    response: AccessTokenResponse
+    cache: none
+
+  - id: create_domestic_scheduled_payment_consent
+    function: "Pisp.createDomesticScheduledPaymentConsent(paymentsScopeToken, request, idempotencyKey) — signedPost"
+    method: POST
+    path: "/v4.0/pisp/domestic-scheduled-payment-consents"
+    description: "Stages a domestic scheduled payment consent; Data.Permission='Create' (omitting it is refused 400 U004); RequestedExecutionDateTime = date + 'T00:00:00+00:00'."
+    headers:
+      Authorization: "Bearer {client_credentials scope=payments}"
+      x-idempotency-key: "{draft.consentIdempotencyKey}"
+      x-jws-signature: "detached JWS"
+      x-fapi-interaction-id: "uuid4"
+    request: DomesticScheduledPaymentConsentRequest
+    response: DomesticScheduledPaymentConsentResponse
+    mapper: "ScheduledPaymentDraft.toScheduledConsentRequest()"
+    errors:
+      400: "U019 SignatureMissing | U009 ConsentNotAuthorised | U008 ConsentMismatch | U014 OutsideControlParameters | U002/U021 InvalidField | U003 or Path RequestedExecutionDateTime DateRefused | U004/U005 RequestMalformed | U027 SchemeNotSupported | Path DebtorAccount PayerNotSupported"
+      401: TokenExpired
+      403: ConsentRevoked
+      429: RateLimited
+      no_consent_id: "BadRequest('no ConsentId') → NetworkError"
+    cache: none
+
+  - id: create_international_scheduled_payment_consent
+    function: "Pisp.createInternationalScheduledPaymentConsent(paymentsScopeToken, request, idempotencyKey) — signedPost"
+    method: POST
+    path: "/v4.0/pisp/international-scheduled-payment-consents"
+    description: "Stages an international scheduled payment consent (currencyOfTransfer + chargeBearer set; weekday execution date only)."
+    headers:
+      Authorization: "Bearer {client_credentials scope=payments}"
+      x-idempotency-key: "{draft.consentIdempotencyKey}"
+      x-jws-signature: "detached JWS"
+    request: InternationalScheduledPaymentConsentRequest
+    response: InternationalScheduledPaymentConsentResponse
+    mapper: "ScheduledPaymentDraft.toIntlScheduledConsentRequest()"
+    errors:
+      400: "same OBIE code map as domestic"
+      401: TokenExpired
+      403: ConsentRevoked
+      429: RateLimited
+    cache: none
+
+  - id: bank_authorize_redirect
+    function: "generateConsentAuthorizationUrl(...) → BrowserLauncher.launch(url)"
+    method: GET
+    path: "https://{HSBC_AUTHORIZE_HOST}/obie/open-banking/v1.1/oauth2/authorize"
+    description: "Front-channel PSU authorisation of the staged scheduled consent (not an app HTTP call)."
+    cache: none
+
+downstream:
+  note: "payment-consent exchanges the code, reads the consent and POSTs /v4.0/pisp/{domestic|international}-scheduled-payments (never funds-confirmation for scheduled); payment-status reads GET .../{Id}."
+
+dtos:
+  ScheduledPaymentDraft:
+    debtorAccount: "BankAccount?"
+    creditor: CreditorSelection
+    amountMinorUnits: Long
+    currency: String
+    reference: "String?"
+    instructionIdentification: String
+    endToEndIdentification: String
+    consentIdempotencyKey: String
+    paymentIdempotencyKey: String
+    requestedExecutionDate: String      # yyyy-MM-dd
+    currencyOfTransfer: "String?"
+    chargeBearer: "ChargeBearer?"
+  StagedConsent:
+    consentId: String
+    status: String
+    authorizationUrl: String
+    state: String
+    nonce: String

@@ -1,0 +1,159 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: payments-schedule-payment
+_source: source_analysis
+flow_ref: schedule-payment
+
+navigates_to:
+  - payment-status     # recent/history row → PaymentStatusRoute(paymentId)
+  - consent-list       # INTENDED target of 'View consents' — wired to {} (no-op)
+  - payment-consent    # indirect: browser authorisation → relay → RootNav Payment leg → PaymentConsentRoute
+
+inbound_routes:
+  - from: home
+    type: push
+    via: "onNavigateToSchedulePayment → navController.navigate(SchedulePaymentRoute)"
+  - from: payments-hub
+    type: push
+    via: "onNavigateToSchedulePayment (hub graph unreachable)"
+
+external_handoffs:
+  - id: bank_authorisation
+    external: true
+    external_kind: os-dialer-or-browser
+    trigger: "SchedulePaymentEvent.LaunchAuthorisation(url)"
+    via: "runCatching { browserLauncher.launch(url) }"
+    returns_to: payment-consent
+
+transitions:
+  - id: load
+    from: loading
+    trigger: "screen opened"
+    to: [content, error]
+    decided_by: "accountsOverview ScreenState"
+  - { id: open_picker, from: content, trigger: "OpenDatePicker (date field)", to: date_picker, side_effects: ["today = todayUtc(clock)", "drop executionDate if no longer selectable"] }
+  - { id: pick_date, from: date_picker, trigger: "SelectExecutionDate (Confirm)", to: content, side_effects: ["executionDate = date if isSelectableExecutionDate"] }
+  - { id: dismiss_picker, from: date_picker, trigger: "DismissDatePicker (Cancel / outside)", to: content }
+  - { id: review, from: content, trigger: "ReviewPayment (enabled when canReview)", to: review }
+  - { id: edit, from: review, trigger: "BackStep (Edit)", to: content }
+  - { id: stage, from: review, trigger: "ConfirmAndStageConsent", to: submitting, side_effects: ["Submitting(StagingConsent)", "stagePayment(draft)"] }
+  - { id: staged, from: submitting, trigger: "stagePayment Success", to: submitting, side_effects: ["Submitting(AwaitingAuthorisation)", "emit LaunchAuthorisation(url)"] }
+  - { id: abandon, from: submitting, trigger: "AbandonAuthorisation (Cancel, AwaitingAuthorisation only)", to: review, side_effects: ["phase=Form", "draft=null", "consentId=null"] }
+  - { id: stage_failed, from: submitting, trigger: "stagePayment Error", to: error }
+  - { id: retry, from: error, trigger: "RetryStaging / ConfirmAndStageConsent", to: submitting }
+  - { id: change_date_or_amount, from: error, trigger: "BackStep (Change date / Change amount)", to: content }
+  - { id: change_payer, from: error, trigger: "ChangePayer", to: content }
+  - { id: open_history, from: content, trigger: "See all (hasMorePayments)", to: history_content, type: push }
+  - { id: open_payment, from: content, trigger: "tap recent row", to: payment-status, type: push }
+  - { id: history_open_payment, from: history_content, trigger: "tap history row", to: payment-status, type: push }
+
+flow_logic:
+  on_load:
+    - action: subscribe
+      streams:
+        - api: [get_accounts, get_account_balances]
+          via: "accountsOverviewRepository.overviewState(...).combineContent(capabilityRegistry.unsupportedStream())"
+          transform: "keep canFundAPayment() && not refused PaymentDebtor"
+        - api: get_beneficiaries
+          via: "selectedAccountId.flatMapLatest { beneficiariesRepository.beneficiariesStream(it) }"
+        - local: payment_history
+          via: "PaymentHistoryFeed.rows({DomesticScheduledPayment, InternationalScheduledPayment}, 6)"
+    - init_form: { today: "todayUtc(clock)" }
+    - combine: [accountsScreen, beneficiariesScreen, form, phase, history]
+  on_select_rail:
+    - transform_state: { rail: "{rail}", creditor: null, manual_fields: cleared, fieldErrors: reset, instructedCurrency: "Domestic ? GBP : keep", executionDate: "keep if isSelectableExecutionDate(date, today, rail) else null" }
+    - revalidate: amount
+  on_select_debtor:
+    - transform_state: { debtorAccountId: "{accountId}", selectedAccountId: "{accountId}", creditor: null, letBankChoosePayer: false, payerPickerExpanded: false }
+    - revalidate: amount
+  on_let_bank_choose_payer:
+    - transform_state: { debtorAccountId: null, selectedAccountId: "", letBankChoosePayer: true, creditor: null }
+  on_confirm_manual_creditor:
+    - condition: "rail == International"
+      true: "IBAN plausibility → creditor(Iban) | ibanInvalid"
+      false: "6-digit sort code + 8-digit account → creditor(SortCode) | field errors"
+  on_open_date_picker:
+    - transform_state: { today: "todayUtc(clock)", datePickerVisible: true, executionDate: "drop if no longer selectable" }
+  on_select_execution_date:
+    - condition: "isSelectableExecutionDate(date, today, rail)"
+      true: { transform_state: { executionDate: "{date}", datePickerVisible: false } }
+      false: { transform_state: { datePickerVisible: false } }
+  on_dismiss_date_picker:
+    - transform_state: { datePickerVisible: false }
+  on_review:
+    - transform_state: { step: Review }
+  on_confirm_and_stage:
+    - build_draft: "ScheduledPaymentDraft(... same fields as PaymentDraft ..., requestedExecutionDate = executionDate.toIsoDate()) — null when no creditor, unparseable amount, or date no longer selectable vs todayUtc(clock)"
+      on_null: "return (silent)"
+    - transform_state: { phase: "Submitting(StagingConsent)", draft: "{draft}" }
+    - call_api: [get_client_credentials_token_payments, "create_domestic_scheduled_payment_consent | create_international_scheduled_payment_consent"]
+      via: "ScheduledPaymentInitiationRepository.stagePayment(draft)"
+      repo_steps:
+        - "paymentAuthSession.clear()"
+        - "client_credentials scope=payments"
+        - "POST scheduled consent (x-jws-signature, x-idempotency-key = consentIdempotencyKey, Permission=Create set by mapper)"
+        - "build PS256 authorize URL; savePending(consentId, state, nonce, type) + saveScheduledDraft(draft)"
+      on_success:
+        - transform_state: { consentId: "{consentId}", phase: "Submitting(AwaitingAuthorisation)" }
+        - emit_event: "LaunchAuthorisation(url)"
+        - external_handoff: bank_authorisation
+      on_error:
+        - transform_state: { phase: "Error(classifySchedulePaymentError(t), supportReferenceOf(t))" }
+  on_abandon_authorisation:
+    - transform_state: { step: Review, phase: Form, draft: null, consentId: null }
+    - note: "staged consent is not deleted (bank returns 405); it expires unauthorised"
+  on_retry_staging:
+    - same_as: on_confirm_and_stage
+  on_change_payer:
+    - transform_state: { step: Form, debtorAccountId: null, letBankChoosePayer: false, phase: Form, draft: null, consentId: null }
+  on_back_step:
+    - transform_state: { step: Form, phase: Form, draft: null, consentId: null }
+  on_view_consents:
+    - navigate: consent-list
+      wired: false
+      note: "onNavigateToConsents = {} — no-op"
+  on_open_payment:
+    - navigate: payment-status
+      params: { paymentId: "{paymentId}" }
+  on_show_all_payments:
+    - navigate: SchedulePaymentHistoryRoute
+  on_back:
+    - navigate: back
+
+error_handling:
+  classify_order: ["Path RequestedExecutionDateTime → DateRefused", "Path DebtorAccount → PayerNotSupported", "OBIE ErrorCode suffix", "HTTP transport"]
+  SignatureMissing: { obie: U019, actions: [] }
+  ConsentNotAuthorised: { obie: U009, actions: [reauthorise] }
+  ConsentMismatch: { obie: U008, actions: [] }
+  OutsideControlParameters: { obie: U014, actions: [edit_amount] }
+  InvalidField: { obie: "U002 | U021", actions: [] }
+  DateRefused: { obie: "U003 | Path RequestedExecutionDateTime", actions: [change_date] }
+  RequestMalformed: { obie: "U004 | U005", actions: [], note: "not retriable" }
+  SchemeNotSupported: { obie: U027, actions: [] }
+  PayerNotSupported: { obie_path: DebtorAccount, actions: [change_payer] }
+  ConsentRevoked: { http: 403, actions: [view_consents (no-op)] }
+  TokenExpired: { http: 401, actions: [retry, reauthorise] }
+  RateLimited: { http: 429, actions: [retry] }
+  NetworkError: { default: true, actions: [retry] }
+  accounts_load_failure: { ui: error_state, note: "Retry dispatches RetryStaging, not RetryLoad (known gap)" }
+
+journey_ids: [schedule-payment]
+
+dependencies:
+  repositories:
+    - name: AccountsOverviewRepository
+      methods: ["overviewState(scope)", "refresh()"]
+    - name: BeneficiariesRepository
+      methods: ["beneficiariesStream(accountId, scope)"]
+    - name: ScheduledPaymentInitiationRepository
+      methods: ["suspend stagePayment(draft: ScheduledPaymentDraft): NetworkResult<StagedConsent, NetworkError>"]
+    - name: AccountCapabilityRegistry
+    - name: PaymentHistoryRepository
+    - name: PaymentStatusRepository
+  services:
+    - BrowserLauncher
+    - PaymentAuthSession
+    - Clock
+  local_db:
+    - table: accounts
+    - table: payment_history

@@ -1,0 +1,886 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: send-money
+screen_id: send-money
+name: "Send Money"
+status: enriched
+_source: source_analysis
+_source_paths:
+  - feature/send-money/src/commonMain/kotlin/org/mifosx/openbanking/feature/sendmoney/SendMoneyScreen.kt
+  - feature/send-money/src/commonMain/kotlin/org/mifosx/openbanking/feature/sendmoney/SendMoneyContent.kt
+  - feature/send-money/src/commonMain/kotlin/org/mifosx/openbanking/feature/sendmoney/SendMoneyReviewPage.kt
+  - feature/send-money/src/commonMain/kotlin/org/mifosx/openbanking/feature/sendmoney/SendMoneySubmitting.kt
+  - feature/send-money/src/commonMain/kotlin/org/mifosx/openbanking/feature/sendmoney/SendMoneyError.kt
+  - feature/send-money/src/commonMain/kotlin/org/mifosx/openbanking/feature/sendmoney/SendMoneyHistoryScreen.kt
+  - feature/send-money/src/commonMain/kotlin/org/mifosx/openbanking/feature/sendmoney/ui/SendMoneyViewModel.kt
+  - feature/send-money/src/commonMain/kotlin/org/mifosx/openbanking/feature/sendmoney/ui/SendMoneyState.kt
+  - feature/send-money/src/commonMain/kotlin/org/mifosx/openbanking/feature/sendmoney/ui/SendMoneyAmountRules.kt
+  - feature/send-money/src/commonMain/kotlin/org/mifosx/openbanking/feature/sendmoney/ui/SendMoneyHistoryViewModel.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/impl/SinglePaymentInitiationRepositoryImpl.kt
+requirement_refs: [FR-027, FR-028, FR-029, FR-030, FR-031, FR-047]
+archetype: form
+states: [loading, content, review, submitting, error, history_content, history_empty]
+initial_state: loading
+feature_profile:
+  combo_id: content_input_submit
+  facets: [input, network, external-handoff]
+  archetype: screen-content
+  store_archetype: NETWORK_WITH_CACHE   # accounts + beneficiaries Store5 streams; the consent write is direct
+  recipe_ref: CORE_STORE.md
+  heal: auto
+  profile_hash: scaffold-default
+
+route: SendMoneyRoute
+graph: "navigation<SendMoneyDestination>(startDestination = SendMoneyRoute) { SendMoneyRoute; SendMoneyHistoryRoute }"
+entry_points:
+  - source: home
+    trigger: "Home quick action Send money → navController.navigate(SendMoneyRoute)"
+    params: {}
+  - source: payments-hub
+    trigger: "Send money card (hub graph itself unreachable)"
+    params: {}
+nav_params: {}
+
+business_logic:
+  kind: composite
+  description: >
+    Single immediate PIS payment on two rails. One scrollable form page (rail toggle, payer, payee,
+    amount/currency, reference or charges, recent payments) with a pinned Review & pay bar, then a
+    Review page, then staging. Payer accounts come from AccountsOverviewRepository.overviewState filtered
+    by HsbcProductCapability (canFundAPayment) and by AccountCapabilityRegistry refusals; the user may
+    instead let the bank choose the payer (debtor omitted). Saved payees stream from
+    BeneficiariesRepository for the chosen payer only, filtered by rail (SortCode for Domestic, Iban for
+    International). Confirm builds a PaymentDraft (minor units, MFX/E2E ids, two distinct UUID
+    idempotency keys; currencyOfTransfer + chargeBearer non-null only on International — the rail
+    discriminator), then SinglePaymentInitiationRepository.stagePayment: clears PaymentAuthSession,
+    mints a client_credentials token (scope=payments), POSTs the domestic or international payment
+    consent with x-jws-signature + x-idempotency-key, builds a PS256 request-object authorize URL
+    (response_type 'code id_token'), persists pending state/nonce/type + draft, and emits
+    LaunchAuthorisation(url) which opens the system browser. Completion happens in payment-consent
+    after the bank redirect. Recent payments come from the local payment_history table (top 5, probe 6).
+  library_refs: [store5, kotlinx-datetime, kotlin-uuid]
+
+screens:
+  - id: send-money-form
+    route: SendMoneyRoute
+    title: "{strings.feature_send_money_screen_title}"
+    type: form
+    archetype: form
+    states: [loading, content, review, submitting, error]
+    description: >
+      KptScaffold with back arrow. Body switches on SendMoneyUiState: Loading → MifosProgressIndicator;
+      Content(step=Form) → SendMoneyFormPage; Content(step=Review) → SendMoneyReviewPage;
+      Submitting → staging / awaiting-authorisation spinner; Error → kind-specific message + actions.
+  - id: send-money-history
+    route: SendMoneyHistoryRoute
+    title: "{strings.feature_send_money_history_screen_title}"
+    type: list
+    archetype: index_list
+    states: [history_content, history_empty]
+    description: >
+      KptScaffold "Payments sent" rendering MifosPaymentHistoryPage over SendMoneyHistoryViewModel.payments
+      (DomesticSinglePayment + InternationalSinglePayment rows, capped at 200). Empty list shows
+      feature_send_money_history_empty. Row tap → payment-status.
+
+state_model:
+  SendMoneyViewModel:
+    base: "BaseViewModel<SendMoneyState, SendMoneyEvent, SendMoneyAction>"
+    state:
+      name: SendMoneyState
+      fields:
+        uiState: { type: SendMoneyUiState, default: "SendMoneyUiState.Loading" }
+        draft: { type: "PaymentDraft?", default: "null" }
+        consentId: { type: "String?", default: "null" }
+    screen_state:
+      name: SendMoneyUiState
+      members:
+        - { name: Loading }
+        - name: Content
+          fields:
+            step: { type: SendMoneyStep, values: [Form, Review] }
+            rail: { type: PaymentRail, default: Domestic, values: [Domestic, International] }
+            debtorAccounts: { type: "List<BankAccount>" }
+            beneficiaries: { type: "List<BeneficiaryItem>", note: "filtered by rail scheme" }
+            debtorRows: { type: "List<AccountWithBalance>" }
+            debtorAccountId: { type: "String?", default: "null" }
+            payerPickerExpanded: { type: Boolean, default: "false" }
+            letBankChoosePayer: { type: Boolean, default: "false" }
+            creditor: { type: "CreditorSelection?", default: "null" }
+            creditorLabel: { type: String, default: '""' }
+            creditorSupporting: { type: String, default: '""', note: "'Identification · …' | 'IBAN · …' (hardcoded prefixes)" }
+            debtorAccountRow: { type: "AccountWithBalance?", default: "null" }
+            manualEntryVisible: { type: Boolean, default: "false" }
+            manualSortCode: { type: String, default: '""' }
+            manualAccountNumber: { type: String, default: '""' }
+            manualIban: { type: String, default: '""' }
+            manualName: { type: String, default: '""' }
+            amountInput: { type: String, default: '""' }
+            amountLabel: { type: String, default: '""', note: "formatMinorUnits(minor, instructedCurrency)" }
+            instructedCurrency: { type: String, default: '"GBP"' }
+            chargeBearer: { type: ChargeBearer, default: BorneByCreditor }
+            reference: { type: String, default: '""' }
+            amountProblem: { type: "SendMoneyAmountProblem?", default: "null" }
+            fieldErrors: { type: SendMoneyFieldErrors, default: "SendMoneyFieldErrors()" }
+            availableBalanceMinorUnits: { type: "Long?", default: "null" }
+            availableBalanceLabel: { type: String, default: '""', note: "blank when no payer chosen; in the ACCOUNT's currency" }
+            debtorCurrency: { type: String, default: '""' }
+            offeredCurrencies: { type: "List<String>", default: "emptyList()", note: "OFFERED_CURRENCIES on International only" }
+            recentPayments: { type: "List<PaymentHistoryEntry>", default: "emptyList()", note: "first 5" }
+            hasMorePayments: { type: Boolean, default: "false", note: "history probe returned 6" }
+            payeesFailed: { type: Boolean, default: "false" }
+            payeesLoading: { type: Boolean, default: "false", note: "debtorAccountId != null && payees is Loading" }
+          derived:
+            canReview: "amountProblem == null && amountInput.isNotBlank() && creditor != null && !payerUndecided"
+            payerUndecided: "debtorAccountId == null && !letBankChoosePayer"
+            payeesUnavailable: "debtorAccountId == null"
+            showsConversionAdvisory: "debtorCurrency.isNotBlank() && debtorCurrency != instructedCurrency (ignoreCase)"
+            hasBeneficiaries: "beneficiaries.isNotEmpty()"
+        - name: Submitting
+          fields:
+            stage: { type: SendMoneyStage, values: [StagingConsent, AwaitingAuthorisation] }
+            amountLabel: { type: String }
+            creditorName: { type: String }
+            consentId: { type: "String?", default: "null" }
+        - name: Error
+          fields:
+            kind: { type: SendMoneyErrorKind }
+            supportReference: { type: "String?", default: "null", note: "OBIE error body 'Id'" }
+    errors:
+      name: SendMoneyErrorKind
+      types:
+        - { type: SignatureMissing, obie_code: U019, retry: false, message_key: feature_send_money_error_signature_missing }
+        - { type: ConsentNotAuthorised, obie_code: U009, retry: false, reauthorise: true, message_key: feature_send_money_error_consent_not_authorised }
+        - { type: ConsentMismatch, obie_code: U008, retry: false, message_key: feature_send_money_error_consent_mismatch }
+        - { type: OutsideControlParameters, obie_code: U014, retry: false, edit_amount: true, message_key: feature_send_money_error_outside_limits }
+        - { type: InvalidField, obie_code: "U002|U021", retry: false, message_key: feature_send_money_error_invalid_field }
+        - { type: ConsentRevoked, http: 403, retry: false, view_consents: true, message_key: feature_send_money_error_consent_revoked }
+        - { type: TokenExpired, http: 401, retry: true, reauthorise: true, message_key: feature_send_money_error_token_expired }
+        - { type: RateLimited, http: 429, retry: true, message_key: feature_send_money_error_rate_limited }
+        - { type: InsufficientFunds, retry: false, edit_amount: true, message_key: feature_send_money_error_insufficient_funds, note: "never produced by classifySendMoneyError" }
+        - { type: PayerNotSupported, obie_path: "*DebtorAccount*", retry: false, change_payer: true, message_key: feature_send_money_error_payer_not_supported }
+        - { type: NetworkError, retry: true, message_key: feature_send_money_error_network }
+      classification: "payerRefusalKind (error Path contains DebtorAccount) → obieErrorCode suffix map → transport (401/403/429/else)"
+    amount_problems:
+      name: SendMoneyAmountProblem
+      members: [NotANumber, TooManyDecimals, NotPositive, ExceedsAvailableBalance]
+    events:
+      name: SendMoneyEvent
+      members:
+        - { name: LaunchAuthorisation, params: { url: String }, handled_by: "onLaunchAuthorisation → runCatching { browserLauncher.launch(url) }" }
+    actions:
+      name: SendMoneyAction
+      members:
+        - { name: SelectRail, params: { rail: PaymentRail } }
+        - { name: SelectDebtorAccount, params: { accountId: String } }
+        - { name: TogglePayerPicker }
+        - { name: LetBankChoosePayer }
+        - { name: SelectCreditor, params: { beneficiaryId: String }, note: "matched against BeneficiaryItem.identification, not beneficiaryId" }
+        - { name: ShowManualCreditorEntry }
+        - { name: EnterManualSortCode, params: { sortCode: String } }
+        - { name: EnterManualAccountNumber, params: { accountNumber: String } }
+        - { name: EnterManualIban, params: { iban: String } }
+        - { name: EnterManualName, params: { name: String } }
+        - { name: ConfirmManualCreditor }
+        - { name: EnterAmount, params: { amount: String } }
+        - { name: SelectInstructedCurrency, params: { currency: String } }
+        - { name: SelectChargeBearer, params: { bearer: ChargeBearer } }
+        - { name: EnterReference, params: { reference: String } }
+        - { name: ReviewPayment }
+        - { name: ConfirmAndStageConsent }
+        - { name: RetryStaging }
+        - { name: ChangePayer }
+        - { name: BackStep }
+        - { name: RetryLoad, note: "declared + handled but never dispatched by any UI" }
+    di:
+      - AccountsOverviewRepository
+      - BeneficiariesRepository
+      - SinglePaymentInitiationRepository
+      - AccountCapabilityRegistry
+      - PaymentHistoryRepository
+      - PaymentStatusRepository
+  SendMoneyHistoryViewModel:
+    base: "androidx ViewModel (plain StateFlow, not BaseViewModel)"
+    state:
+      name: payments
+      fields:
+        payments: { type: "StateFlow<List<PaymentHistoryEntry>>", default: "emptyList()" }
+    di: [PaymentHistoryRepository, PaymentStatusRepository]
+
+validation:
+  sort_code:
+    field: manualSortCode
+    rule: "digits-only count == 6 (non-digits like '-' and spaces are stripped)"
+    live: "flag sortCodeInvalid while typing only when raw is non-empty and digit count != 6"
+    on_confirm: "required; digit count != 6 → sortCodeInvalid"
+    message_key: feature_send_money_manual_sort_code_error
+    keyboard: Number
+  account_number:
+    field: manualAccountNumber
+    rule: "digits-only count == 8"
+    live: "flag when raw non-empty and digit count != 8"
+    on_confirm: "required; digit count != 8 → accountNumberInvalid"
+    message_key: feature_send_money_manual_account_number_error
+    keyboard: Number
+  iban:
+    field: manualIban
+    rule: "normalise (strip whitespace, uppercase); length 15..34; all letters/digits; first 2 chars letters (no mod-97 checksum)"
+    live: "flag when raw non-blank and implausible"
+    on_confirm: "implausible → ibanInvalid; else creditor = CreditorSelection(scheme=Iban, identification=normalised)"
+    message_key: feature_send_money_manual_iban_error
+    rail: International
+  manual_name:
+    field: manualName
+    rule: "none — may be blank"
+  amount:
+    field: amountInput
+    rules:
+      - "blank → no problem (but canReview false)"
+      - "parseMinorUnits null → NotANumber"
+      - "more than 2 decimal places → TooManyDecimals"
+      - "minor units <= 0 → NotPositive"
+      - "minor units > payer availableAmount, ONLY when a payer is chosen and its currency == instructedCurrency → ExceedsAvailableBalance"
+    revalidated_on: [EnterAmount, SelectDebtorAccount, LetBankChoosePayer, SelectRail, SelectInstructedCurrency]
+  reference:
+    field: reference
+    rule: "Domestic only; UI truncates to 35 chars (REFERENCE_MAX_LENGTH); omitted from the draft when blank or on International (U005 refusal)"
+  currency:
+    rule: "Domestic forced to GBP; International picks from OFFERED_CURRENCIES (GBP, EUR, USD, AUD, CAD, CHF, CNY, HKD, SGD, NZD, AED, CZK, DKK, NOK, PLN, SAR, SEK, ZAR, THB)"
+  charge_bearer:
+    rule: "International only; BorneByCreditor (default) | BorneByDebtor | Shared"
+
+components:
+  - id: top_bar
+    type: top-bar
+    impl: KptScaffold
+    title: "{strings.feature_send_money_screen_title}"
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      target: back
+      action_contract:
+        effect: navigate
+        handler: "onBack → navController.popBackStack()"
+        description: "Pops the send-money form off the authenticated stack (to Home); form state is discarded with the ViewModel."
+        action_contract_author: "claude-via-idea-plan-source"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: loading_indicator
+    type: progress
+    impl: MifosProgressIndicator
+
+  - id: form_page
+    type: form
+    test_tag: "sendMoney:formPage"
+    layout: "scrollable column (max width FormMaxWidth) + pinned FormActions bar"
+    children:
+      - id: rail_toggle
+        type: segmented-toggle
+        impl: MifosRailToggle
+        test_tag: "sendMoney:railToggle"
+        option_test_tag: "sendMoney:rail:{rail}"
+        options: ["{strings.feature_send_money_rail_domestic}", "{strings.feature_send_money_rail_international}"]
+        on_change:
+          action: SelectRail
+          action_contract:
+            effect: transform_state
+            handler: "SendMoneyViewModel.selectRail(rail)"
+            writes_to: "Form.rail, creditor=null, manual fields cleared, fieldErrors reset, instructedCurrency (GBP on Domestic), amountProblem"
+            description: "Switches Domestic/International: clears the chosen payee and every manual-entry field, resets field errors, forces GBP on Domestic (keeps the chosen currency on International) and revalidates the amount."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: payer_section
+        type: section
+        heading: "{strings.feature_send_money_debtor_heading}"
+        children:
+          - id: payer_picker
+            type: account-picker
+            impl: MifosAccountPicker
+            test_tag: "sendMoney:payerPicker"
+            row_test_tag: "sendMoney:debtorRow:{accountId}"
+            items: "debtorRows"
+            unselected_label: { bank_choice: "{strings.core_ui_account_picker_bank_choice}", default: "{strings.feature_send_money_payer_unchosen}" }
+            on_toggle:
+              action: TogglePayerPicker
+              action_contract:
+                effect: transform_state
+                handler: "form.payerPickerExpanded = !payerPickerExpanded"
+                description: "Expands or collapses the payer account list; local UI state only."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+            on_select:
+              action: SelectDebtorAccount
+              params: { accountId: String }
+              action_contract:
+                effect: transform_state
+                handler: "SendMoneyViewModel.selectDebtor(accountId)"
+                writes_to: "selectedAccountId (re-keys beneficiaries stream), Form.debtorAccountId, creditor=null, letBankChoosePayer=false, amountProblem"
+                description: "Selects the paying account, collapses the picker, clears any chosen payee, starts the beneficiaries stream for that account and revalidates the amount against its available balance."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: payer_bank_choice
+            type: list-item
+            impl: MifosBankChoiceRow
+            test_tag: "sendMoney:payerBankChoice"
+            label: "{strings.core_ui_account_picker_bank_choice}"
+            on_click:
+              action: LetBankChoosePayer
+              action_contract:
+                effect: transform_state
+                handler: "SendMoneyViewModel.letBankChoosePayer()"
+                writes_to: "selectedAccountId='', Form.debtorAccountId=null, letBankChoosePayer=true, creditor=null"
+                description: "Leaves payer selection to the bank: the draft will omit DebtorAccount; saved payees become unavailable so only manual entry remains."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: non_gbp_notice
+            type: banner
+            visible: "{{showsConversionAdvisory}}"
+            test_tag: "sendMoney:nonGbpNotice"
+            message: "{strings.feature_send_money_non_gbp_notice}"
+
+      - id: payee_section
+        type: section
+        heading: "{strings.feature_send_money_creditor_heading}"
+        children:
+          - id: creditor_list
+            type: avatar-row
+            impl: MifosPayeeAvatarRow
+            test_tag: "sendMoney:creditorList"
+            item_test_tag: "sendMoney:creditorRow:{identification}"
+            loading_test_tag: "sendMoney:payeesLoading"
+            items: "payeesUnavailable ? [] : beneficiaries"
+            on_select:
+              action: SelectCreditor
+              action_contract:
+                effect: transform_state
+                handler: "SendMoneyViewModel.selectCreditor(identification)"
+                writes_to: "Form.creditor, Form.reference (prefilled from payee), manualEntryVisible=false"
+                description: "Picks a saved payee by identification, builds a CreditorSelection (flags isOwnAccount when digits match a payer account) and pre-fills the reference from the beneficiary."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: manual_entry_button
+            type: button
+            test_tag: "sendMoney:manualEntryButton"
+            label: "{strings.feature_send_money_payee_pay_new}"
+            on_click:
+              action: ShowManualCreditorEntry
+              action_contract:
+                effect: transform_state
+                handler: "form.manualEntryVisible = true"
+                description: "Reveals the manual payee fields (name + sort code/account number on Domestic, name + IBAN on International)."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: manual_creditor_fields
+            type: field-group
+            visible: "{{manualEntryVisible}}"
+            children:
+              - id: manual_name
+                type: text_field
+                test_tag: "sendMoney:manualName"
+                label: "{strings.feature_send_money_manual_name}"
+                on_change:
+                  action: EnterManualName
+                  action_contract:
+                    effect: transform_state
+                    handler: "form.manualName = name"
+                    description: "Stores the payee name typed by the user; unvalidated and may be blank."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+              - id: manual_sort_code
+                type: text_field
+                visible: "{{rail == Domestic}}"
+                keyboard: number
+                test_tag: "sendMoney:manualSortCode"
+                label: "{strings.feature_send_money_manual_sort_code}"
+                error: { when: "fieldErrors.sortCodeInvalid", message: "{strings.feature_send_money_manual_sort_code_error}" }
+                validation: { ref: validation.sort_code }
+                on_change:
+                  action: EnterManualSortCode
+                  action_contract:
+                    effect: transform_state
+                    handler: "SendMoneyViewModel.enterSortCode(raw)"
+                    writes_to: "Form.manualSortCode, fieldErrors.sortCodeInvalid"
+                    description: "Stores the raw sort code and flags it invalid while non-empty with a digit count other than 6."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+              - id: manual_account_number
+                type: text_field
+                visible: "{{rail == Domestic}}"
+                keyboard: number
+                test_tag: "sendMoney:manualAccountNumber"
+                label: "{strings.feature_send_money_manual_account_number}"
+                error: { when: "fieldErrors.accountNumberInvalid", message: "{strings.feature_send_money_manual_account_number_error}" }
+                validation: { ref: validation.account_number }
+                on_change:
+                  action: EnterManualAccountNumber
+                  action_contract:
+                    effect: transform_state
+                    handler: "SendMoneyViewModel.enterAccountNumber(raw)"
+                    writes_to: "Form.manualAccountNumber, fieldErrors.accountNumberInvalid"
+                    description: "Stores the raw account number and flags it invalid while non-empty with a digit count other than 8."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+              - id: manual_iban
+                type: text_field
+                visible: "{{rail == International}}"
+                test_tag: "sendMoney:manualIban"
+                label: "{strings.feature_send_money_manual_iban}"
+                error: { when: "fieldErrors.ibanInvalid", message: "{strings.feature_send_money_manual_iban_error}", test_tag: "sendMoney:manualIbanError" }
+                validation: { ref: validation.iban }
+                on_change:
+                  action: EnterManualIban
+                  action_contract:
+                    effect: transform_state
+                    handler: "SendMoneyViewModel.enterIban(raw)"
+                    writes_to: "Form.manualIban, fieldErrors.ibanInvalid"
+                    description: "Stores the raw IBAN and flags it invalid while non-blank and not plausible (15-34 alphanumerics after whitespace strip, two-letter country prefix)."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+              - id: manual_confirm
+                type: button
+                variant: filled-pill
+                test_tag: "sendMoney:manualConfirm"
+                label: "{strings.feature_send_money_manual_confirm}"
+                on_click:
+                  action: ConfirmManualCreditor
+                  action_contract:
+                    effect: transform_state
+                    handler: "SendMoneyViewModel.confirmManualCreditor()"
+                    writes_to: "Form.creditor | Form.fieldErrors"
+                    description: "Validates the manual payee (Domestic: 6-digit sort code + 8-digit account; International: plausible IBAN). On failure sets fieldErrors; on success sets creditor with scheme SortCode (identification = sortCode+account) or Iban."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: amount_section
+        type: section
+        children:
+          - id: amount_card
+            type: amount-input
+            impl: MifosAmountCard
+            test_tag: "sendMoney:amountCard"
+            field_test_tag: "sendMoney:amountField"
+            error_test_tag: "sendMoney:amountError"
+            balance_test_tag: "sendMoney:amountBalance"
+            label: "{strings.feature_send_money_amount_label}"
+            placeholder: "{strings.feature_send_money_amount_placeholder}"
+            balance_label: "{{availableBalanceLabel}}"
+            error: { when: "amountProblem != null", messages: { NotANumber: "{strings.feature_send_money_amount_error_not_a_number}", TooManyDecimals: "{strings.feature_send_money_amount_error_too_many_decimals}", NotPositive: "{strings.feature_send_money_amount_error_not_positive}", ExceedsAvailableBalance: "{strings.feature_send_money_amount_error_exceeds_balance}" } }
+            validation: { ref: validation.amount }
+            on_change:
+              action: EnterAmount
+              action_contract:
+                effect: transform_state
+                handler: "SendMoneyViewModel.enterAmount(amount) → Form.revalidated()"
+                writes_to: "Form.amountInput, Form.amountProblem"
+                description: "Stores the typed major-unit amount and recomputes amountProblem via amountProblemOf against the payer's balance when the currencies match."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+            currency_slot:
+              domestic: { id: static_currency_box, type: text, test_tag: "sendMoney:staticCurrencyBox", value: "GBP" }
+              international:
+                id: instructed_currency_picker
+                type: dropdown
+                impl: MifosDropdownBox
+                test_tag: "sendMoney:instructedCurrencyPicker"
+                option_test_tag: "sendMoney:instructedCurrency:{code}"
+                options: "OFFERED_CURRENCIES"
+                on_select:
+                  action: SelectInstructedCurrency
+                  action_contract:
+                    effect: transform_state
+                    handler: "form = form.copy(instructedCurrency = currency).revalidated()"
+                    description: "Sets the instructed currency on the International rail and revalidates the amount (the balance check is dropped when it no longer matches the payer's currency)."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: reference_field
+            type: text_field
+            visible: "{{rail == Domestic}}"
+            test_tag: "sendMoney:referenceField"
+            label: "{strings.feature_send_money_reference_label}"
+            supporting_text: "{strings.feature_send_money_reference_helper}"
+            max_length: 35
+            validation: { ref: validation.reference }
+            on_change:
+              action: EnterReference
+              action_contract:
+                effect: transform_state
+                handler: "onAction(EnterReference(it.take(35)))"
+                description: "Stores the payment reference, truncated to 35 characters in the UI; sent as RemittanceInformation on Domestic only."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: charges_section
+            type: section
+            visible: "{{rail == International}}"
+            heading: "{strings.feature_send_money_charges_heading}"
+            children:
+              - id: charge_bearer_picker
+                type: dropdown
+                impl: MifosDropdownField
+                test_tag: "sendMoney:chargeBearerPicker"
+                option_test_tag: "sendMoney:chargeBearer:{bearer}"
+                options: ["{strings.feature_send_money_charge_bearer_creditor}", "{strings.feature_send_money_charge_bearer_debtor}", "{strings.feature_send_money_charge_bearer_shared}"]
+                on_select:
+                  action: SelectChargeBearer
+                  action_contract:
+                    effect: transform_state
+                    handler: "form.chargeBearer = bearer"
+                    description: "Chooses who bears international charges (BorneByCreditor default, BorneByDebtor, Shared); copied into the draft only on the International rail."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: recent_payments
+        type: list
+        impl: MifosPaymentHistoryList
+        visible: "{{recentPayments.isNotEmpty()}}"
+        test_tag: "sendMoney:history"
+        row_test_tag: "sendMoney:historyRow:{paymentId}"
+        title: "{strings.feature_send_money_history_title}"
+        on_item_click:
+          action: onOpenPayment
+          target: payment-status
+          params: { paymentId: String }
+          action_contract:
+            effect: navigate
+            handler: "onNavigateToPayment(paymentId) → navController.navigate(PaymentStatusRoute(paymentId))"
+            description: "Opens the payment-status receipt for a recently submitted single payment from the local history."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+        see_all:
+          visible: "{{hasMorePayments}}"
+          action: onShowAllPayments
+          target: send-money#send-money-history
+          action_contract:
+            effect: navigate
+            handler: "onNavigateToHistory → navController.navigate(SendMoneyHistoryRoute)"
+            description: "Opens the full 'Payments sent' history screen inside the send-money graph; shown only when more than five payments exist."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: form_actions
+        type: bottom-bar
+        pinned: true
+        test_tag: "sendMoney:formActions"
+        children:
+          - id: review_button
+            type: button
+            variant: filled-pill
+            test_tag: "sendMoney:reviewButton"
+            label: "{strings.feature_send_money_review_button}"
+            enabled: "{{canReview}}"
+            on_click:
+              action: ReviewPayment
+              action_contract:
+                effect: transform_state
+                handler: "form.step = SendMoneyStep.Review"
+                writes_to: "Form.step"
+                description: "Moves the form to the Review step; the button is enabled only when canReview (valid amount, payee chosen, payer decided). The ViewModel itself does not re-check."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - { id: form_trust_note, type: text, test_tag: "sendMoney:formTrustNote", value: "{strings.feature_send_money_form_trust_note}" }
+
+  - id: review_page
+    type: review
+    impl: SendMoneyReviewPage
+    test_tag: "sendMoney:reviewPage"
+    children:
+      - { id: review_lead, type: text, test_tag: "sendMoney:reviewLead", value: "{strings.feature_send_money_review_heading}" }
+      - id: review_hero
+        type: hero
+        test_tag: "sendMoney:reviewHero"
+        children:
+          - { id: review_amount, type: text, test_tag: "sendMoney:reviewAmount", value: "{{amountLabel}}" }
+          - { id: review_hero_caption, type: text, value: "{strings.feature_send_money_review_hero_caption}" }
+          - { id: review_payee_chip, type: chip, visible: "{{creditorLabel.isNotBlank()}}", test_tag: "sendMoney:reviewPayeeChip", label: "{{creditorLabel}}" }
+      - id: review_summary
+        type: card
+        test_tag: "sendMoney:reviewSummary"
+        heading: "{strings.feature_send_money_review_details_heading}"
+        rows:
+          - { id: review_to, test_tag: "sendMoney:reviewTo", label: "{strings.feature_send_money_review_to}", value: "{{creditorLabel}} · {{creditor.identification}}" }
+          - { id: review_from, test_tag: "sendMoney:reviewFrom", label: "{strings.feature_send_money_review_from}", value: "{{debtorAccountRow.account}}", absent: "{strings.feature_send_money_review_from_bank_choice}" }
+          - { id: review_reference, visible: "{{rail == Domestic}}", test_tag: "sendMoney:reviewReference", label: "{strings.feature_send_money_review_reference}", value: "{{reference}}", empty: "{strings.feature_send_money_review_reference_empty}" }
+          - { id: review_charge_bearer, visible: "{{rail == International}}", test_tag: "sendMoney:reviewChargeBearer", label: "{strings.feature_send_money_review_charge_bearer}" }
+          - { id: review_sent_via, test_tag: "sendMoney:reviewSentVia", label: "{strings.feature_send_money_review_sent_via}", value: { Domestic: "{strings.feature_send_money_review_sent_via_domestic}", International: "{strings.feature_send_money_review_sent_via_international}" } }
+          - { id: review_total, test_tag: "sendMoney:reviewTotal", label: "{strings.feature_send_money_review_total}", value: "{{amountLabel}}", emphasis: true }
+      - { id: review_auth_notice, type: banner, test_tag: "sendMoney:reviewAuthNotice", message: "{strings.feature_send_money_review_auth_notice}" }
+      - { id: review_conversion_notice, type: banner, visible: "{{showsConversionAdvisory}}", message: "{strings.feature_send_money_non_gbp_notice}" }
+      - id: confirm_button
+        type: button
+        variant: filled-pill
+        test_tag: "sendMoney:confirmButton"
+        label: "{strings.feature_send_money_confirm}"
+        on_click:
+          action: ConfirmAndStageConsent
+          action_contract:
+            effect: call_api
+            handler: "SendMoneyViewModel.confirmAndStageConsent() → SinglePaymentInitiationRepository.stagePayment(draft)"
+            writes_to: "SendMoneyState.draft, SendMoneyState.consentId, phase=Submitting, PaymentAuthSession (pending state/nonce/type + draft)"
+            calls: [get_client_credentials_token_payments, create_domestic_payment_consent, create_international_payment_consent]
+            description: "Builds the PaymentDraft, enters Submitting(StagingConsent), stages the domestic or international payment consent (JWS + idempotency), then enters AwaitingAuthorisation and emits LaunchAuthorisation(url) to open the bank in the system browser; failure → Error(kind)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: edit_payment_button
+        type: button
+        variant: tonal-pill
+        test_tag: "sendMoney:editPaymentButton"
+        label: "{strings.feature_send_money_edit_payment}"
+        on_click:
+          action: BackStep
+          action_contract:
+            effect: transform_state
+            handler: "SendMoneyViewModel.backStep()"
+            writes_to: "Form.step=Form, phase=Form, draft=null, consentId=null"
+            description: "Returns from Review to the editable form, keeping every entered value; clears any staged draft and consent id."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: submitting_state
+    type: progress
+    impl: SendMoneySubmitting
+    test_tag: "sendMoney:submittingIndicator"
+    caption: { StagingConsent: "{strings.feature_send_money_submitting_staging}", AwaitingAuthorisation: "{strings.feature_send_money_submitting_awaiting}" }
+    children:
+      - { id: submitting_amount, type: text, test_tag: "sendMoney:submittingAmount", value: "{strings.feature_send_money_submitting_amount}" }
+      - { id: submitting_lock_note, type: text, test_tag: "sendMoney:submittingLockNote", value: "{strings.feature_send_money_submitting_lock}" }
+
+  - id: error_state
+    type: error-state
+    impl: SendMoneyError
+    test_tag: "sendMoney:errorState"
+    title: "{strings.feature_send_money_error_title}"
+    body: "{{kind | bodyResource}}"   # i18n: skip — resolves to feature_send_money_error_* keys
+    support_reference: { visible: "{{supportReference != null}}", test_tag: "sendMoney:errorSupportReference", value: "{strings.feature_send_money_error_reference}" }
+    actions:
+      - id: retry_button
+        type: button
+        visible: "{{kind in [NetworkError, RateLimited, TokenExpired]}}"
+        test_tag: "sendMoney:retryButton"
+        label: "{strings.feature_send_money_retry}"
+        on_click:
+          action: RetryStaging
+          action_contract:
+            effect: call_api
+            handler: "SendMoneyViewModel.handleAction(RetryStaging) → confirmAndStageConsent()"
+            calls: [create_domestic_payment_consent, create_international_payment_consent]
+            description: "Re-runs consent staging with a freshly built draft (new UUID idempotency keys). For a load-time error with no payee chosen buildDraft() returns null and nothing happens (see known_gaps)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: reauthorise_button
+        type: button
+        visible: "{{kind in [ConsentNotAuthorised, TokenExpired]}}"
+        test_tag: "sendMoney:reauthoriseButton"
+        label: "{strings.feature_send_money_reauthorise}"
+        on_click:
+          action: ConfirmAndStageConsent
+          action_contract:
+            effect: call_api
+            handler: "SendMoneyViewModel.confirmAndStageConsent()"
+            description: "Stages a brand-new payment consent from the retained form and relaunches bank authorisation in the browser."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: view_consents_button
+        type: button
+        visible: "{{kind == ConsentRevoked}}"
+        test_tag: "sendMoney:viewConsentsButton"
+        label: "{strings.feature_send_money_view_consents}"
+        on_click:
+          action: onNavigateToConsents
+          target: consent-list
+          action_contract:
+            effect: navigate
+            handler: "onViewConsents = onNavigateToConsents (wired to {} in AuthenticatedNavHostScreen)"
+            description: "Intended to open consent-list so the user can renew access after a 403; currently a no-op because the nav host passes an empty lambda (FR-047)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: edit_amount_button
+        type: button
+        visible: "{{kind in [OutsideControlParameters, InsufficientFunds]}}"
+        test_tag: "sendMoney:editAmountButton"
+        label: "{strings.feature_send_money_edit_amount}"
+        on_click:
+          action: BackStep
+          action_contract:
+            effect: transform_state
+            handler: "SendMoneyViewModel.backStep()"
+            writes_to: "Form.step=Form, phase=Form, draft=null, consentId=null"
+            description: "Returns to the editable form so the amount can be lowered after a bank limit refusal; all other fields are kept."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: change_payer_button
+        type: button
+        visible: "{{kind == PayerNotSupported}}"
+        test_tag: "sendMoney:changePayerButton"
+        label: "{strings.feature_send_money_change_payer}"
+        on_click:
+          action: ChangePayer
+          action_contract:
+            effect: transform_state
+            handler: "SendMoneyViewModel.changePayer()"
+            writes_to: "Form.step=Form, debtorAccountId=null, letBankChoosePayer=false, phase=Form, draft=null, consentId=null"
+            description: "Clears the refused payer and returns to the form so another account (or bank choice) can be picked."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: history_top_bar
+    type: top-bar
+    screen: send-money-history
+    title: "{strings.feature_send_money_history_screen_title}"
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      target: back
+      action_contract:
+        effect: navigate
+        handler: "onBack → navController.popBackStack()"
+        description: "Pops the history screen back to the send-money form."
+        action_contract_author: "claude-via-idea-plan-source"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+  - id: history_page
+    type: list
+    screen: send-money-history
+    impl: MifosPaymentHistoryPage
+    test_tag: "sendMoney:historyScreen"
+    row_test_tag: "sendMoney:historyRow:{paymentId}"
+    empty_label: "{strings.feature_send_money_history_empty}"
+    on_item_click:
+      action: onNavigateToPayment
+      target: payment-status
+      action_contract:
+        effect: navigate
+        handler: "onNavigateToPayment(paymentId) → navController.navigate(PaymentStatusRoute(paymentId))"
+        description: "Opens the payment-status receipt for the tapped single payment row (domestic or international)."
+        action_contract_author: "claude-via-idea-plan-source"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+state_components:
+  loading:
+    components: [top_bar, loading_indicator]
+    description: "Accounts overview not yet Content (Loading or Empty both render the spinner)."
+  content:
+    components: [top_bar, form_page]
+    description: "Content(step=Form)."
+    demo_data:
+      rail: Domestic
+      debtorAccountId: "acc-001"
+      creditorLabel: "Priya Shah"
+      creditorSupporting: "Identification · 40051512345678"
+      amountInput: "125.50"
+      amountLabel: "£125.50"
+      availableBalanceLabel: "£2,340.12"
+      reference: "Rent October"
+  review:
+    components: [top_bar, review_page]
+    description: "Content(step=Review)."
+  submitting:
+    components: [top_bar, submitting_state]
+    description: "StagingConsent then AwaitingAuthorisation (browser open)."
+  error:
+    components: [top_bar, error_state]
+    description: "Staging failure kind or accounts load failure."
+  history_content:
+    components: [history_top_bar, history_page]
+  history_empty:
+    components: [history_top_bar, history_page]
+    description: "MifosPaymentHistoryPage renders emptyLabel."
+
+visual_assets: []   # Material icons + payee initials avatars only — no generative imagery in source
+
+strings_ref: feature/send-money/src/commonMain/composeResources/values/strings.xml
+i18n:
+  en:
+    feature_send_money_screen_title: "Send Money"
+    feature_send_money_rail_domestic: "Domestic"
+    feature_send_money_rail_international: "International"
+    feature_send_money_form_trust_note: "Protected by UK Open Banking"
+    feature_send_money_payer_unchosen: "Choose an account"
+    feature_send_money_non_gbp_notice: "This payment is instructed in %1$s. Your bank will convert from this account and may charge for it."
+    feature_send_money_debtor_heading: "Pay from"
+    feature_send_money_creditor_heading: "Pay to"
+    feature_send_money_payees_loading_a11y: "Loading your saved payees"
+    feature_send_money_payee_pay_new: "Pay new"
+    feature_send_money_manual_name: "Name on the account"
+    feature_send_money_manual_sort_code: "Sort code"
+    feature_send_money_manual_sort_code_error: "Enter a 6-digit sort code"
+    feature_send_money_manual_account_number: "Account number"
+    feature_send_money_manual_account_number_error: "Enter an 8-digit account number"
+    feature_send_money_manual_confirm: "Use these details"
+    feature_send_money_manual_iban: "IBAN"
+    feature_send_money_manual_iban_error: "Enter a valid IBAN"
+    feature_send_money_amount_label: "Amount to send"
+    feature_send_money_amount_placeholder: "0.00"
+    feature_send_money_amount_error_not_a_number: "Enter an amount like 250 or 250.00"
+    feature_send_money_amount_error_too_many_decimals: "Amounts go to two decimal places, like 250.99"
+    feature_send_money_amount_error_not_positive: "Enter an amount greater than zero"
+    feature_send_money_amount_error_exceeds_balance: "That is more than the balance available on this account"
+    feature_send_money_charges_heading: "Charges"
+    feature_send_money_charge_bearer_creditor: "Borne by creditor"
+    feature_send_money_charge_bearer_debtor: "Borne by debtor"
+    feature_send_money_charge_bearer_shared: "Shared"
+    feature_send_money_reference_label: "Reference (optional)"
+    feature_send_money_reference_helper: "Max 35 characters"
+    feature_send_money_review_button: "Review & pay"
+    feature_send_money_history_title: "Recent payments"
+    feature_send_money_history_screen_title: "Payments sent"
+    feature_send_money_history_empty: "You have not sent any payments yet."
+    feature_send_money_review_heading: "Check this before you send it"
+    feature_send_money_review_from_bank_choice: "You’ll choose at your bank"
+    feature_send_money_review_charge_bearer: "Charges"
+    feature_send_money_review_from: "From"
+    feature_send_money_review_to: "To"
+    feature_send_money_review_reference: "Reference"
+    feature_send_money_review_reference_empty: "None"
+    feature_send_money_review_hero_caption: "to be sent"
+    feature_send_money_review_details_heading: "Payment details"
+    feature_send_money_review_sent_via: "Sent via"
+    feature_send_money_review_sent_via_domestic: "Faster Payments"
+    feature_send_money_review_sent_via_international: "International payment"
+    feature_send_money_review_total: "Amount to send"
+    feature_send_money_review_auth_notice: "You’ll approve this with your bank before any money moves."
+    feature_send_money_confirm: "Confirm and send · %1$s"
+    feature_send_money_edit_payment: "Edit payment"
+    feature_send_money_submitting_staging: "Setting up your payment"
+    feature_send_money_submitting_awaiting: "Waiting for you to authorise at your bank"
+    feature_send_money_submitting_amount: "%1$s to %2$s"
+    feature_send_money_submitting_lock: "Do not close the app until this finishes."
+    feature_send_money_error_title: "Payment could not be completed"
+    feature_send_money_error_signature_missing: "This app could not sign the payment instruction. Nothing has been sent. Please report the reference below."
+    feature_send_money_error_consent_not_authorised: "The payment was not authorised at your bank. Authorise it to continue."
+    feature_send_money_error_consent_mismatch: "The payment changed after you approved it, so your bank refused it. Start again to send it."
+    feature_send_money_error_outside_limits: "This amount is outside your bank’s payment limits. Try a smaller amount."
+    feature_send_money_error_payer_not_supported: "This account can’t be used to send payments. Choose a different account to pay from."
+    feature_send_money_change_payer: "Choose another account"
+    feature_send_money_error_invalid_field: "Your bank would not accept one of these details. Check them and try again."
+    feature_send_money_error_consent_revoked: "Access to this account was withdrawn, so the payment was refused."
+    feature_send_money_error_token_expired: "Your authorisation expired before the payment was sent. Authorise it again to continue."
+    feature_send_money_error_rate_limited: "Your bank is busy right now. Wait a moment and try again."
+    feature_send_money_error_insufficient_funds: "There is not enough money in this account to cover the payment. Nothing has been sent."
+    feature_send_money_error_network: "The payment could not be sent. Check your connection and try again."
+    feature_send_money_error_reference: "Reference %1$s"
+    feature_send_money_retry: "Try again"
+    feature_send_money_reauthorise: "Authorise again"
+    feature_send_money_view_consents: "View consents"
+    feature_send_money_edit_amount: "Change amount"
+    # plus feature_send_money_currency_{gbp..thb} display names for the 19 OFFERED_CURRENCIES
+
+known_gaps:
+  - id: view-consents-noop
+    severity: error
+    description: "AuthenticatedNavHostScreen wires sendMoneyGraph(onNavigateToConsents = {}), so the 'View consents' error action does nothing (FR-047). Same defect in payments-schedule-payment and payments-standing-order."
+  - id: load-error-retry-dispatches-staging
+    severity: error
+    description: "An accounts-load failure renders SendMoneyUiState.Error whose Retry button dispatches RetryStaging (confirmAndStageConsent), not RetryLoad. With no payee chosen buildDraft() returns null and Retry is dead; with a filled form it would stage a payment that skipped Review. SendMoneyAction.RetryLoad is handled but never dispatched by any UI."
+  - id: duplicated-form-code
+    severity: warn
+    description: "SendMoneyViewModel (802 lines) and SchedulePaymentViewModel (899) are near-identical copies (Form, validation, render, error classification, history feed), as are the Content/Review/Error composables, TestTags and strings; payments-standing-order repeats the pattern. Validation rules can drift between products."
+  - id: insufficient-funds-unreachable
+    severity: info
+    description: "SendMoneyErrorKind.InsufficientFunds has a message and an Edit amount action but classifySendMoneyError never produces it."
+  - id: no-abandon-while-awaiting
+    severity: warn
+    description: "Submitting(AwaitingAuthorisation) has no cancel/abandon action (payments-schedule-payment has AbandonAuthorisation); if the PSU never completes at the bank the form is stuck behind the spinner until system back."
+  - id: hardcoded-scheme-labels
+    severity: info
+    description: "creditorSupporting uses hardcoded 'Identification · ', 'IBAN · ', 'Paym · ', 'Card · ' prefixes built in the ViewModel."
+  - id: review-not-guarded-in-vm
+    severity: info
+    description: "ReviewPayment unconditionally sets step=Review; canReview is enforced only by the button's enabled flag."

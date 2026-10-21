@@ -1,0 +1,84 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: home
+feature: home
+_source: source_analysis
+
+entry_points:
+  - type: start_destination
+    source: consent-callback
+    description: "Authenticated NavHost startDestination = HomeDestination; reached after AIS consent completes."
+  - type: tab
+    source: shell-bottom-nav
+    description: "HomeTab — the only consumerNavBarTabs entry."
+
+navigates_to:
+  - send-money
+  - payments-schedule-payment
+  - payments-standing-order
+  - vrp
+  - account-detail
+  - settings
+
+transitions:
+  - { from: home, to: send-money, type: navigate, trigger: quick_action_send_money }
+  - { from: home, to: payments-schedule-payment, type: navigate, trigger: quick_action_schedule }
+  - { from: home, to: payments-standing-order, type: navigate, trigger: quick_action_standing_order }
+  - { from: home, to: vrp, type: navigate, trigger: quick_action_vrp }
+  - { from: home, to: account-detail, type: navigate, trigger: card_face, params: { accountId: String } }
+  - { from: home, to: account-detail, type: navigate, trigger: account_row, params: { accountId: String } }
+  - { from: home, to: settings, type: navigate, trigger: avatar_button }
+
+journey_ids: [view-accounts]
+
+lifecycle:
+  on_load:
+    - action: collect_stream
+      source: "AccountsOverviewRepository.overviewState(viewModelScope)"
+      calls:
+        - api: list_accounts           # Store5 accountsStore (key "self"), Room-cached
+        - api: get_account_balances    # balancesStore.getOnce(accountId) per account, in parallel (async/awaitAll)
+      transform: "mapContent { accounts -> partition(isCreditCard) → HomeData(accounts = rest, cards, greeting = currentGreeting()) }"
+      on_empty_accounts: "emit ScreenState.Empty"
+      on_balance_failure: "balance = null for that account (account still shown); CancellationException rethrown"
+      on_state: "updateState { copy(uiState = screenState) }"
+
+flow_logic:
+  - { id: avatar_settings, component: avatar_button, action: click, effect: "navigate:settings" }
+  - { id: quick_send_money, component: quick_action_send_money, action: click, effect: "navigate:send-money" }
+  - { id: quick_schedule, component: quick_action_schedule, action: click, effect: "navigate:payments-schedule-payment" }
+  - { id: quick_standing_order, component: quick_action_standing_order, action: click, effect: "navigate:payments-standing-order" }
+  - { id: quick_vrp, component: quick_action_vrp, action: click, effect: "navigate:vrp" }
+  - { id: open_card, component: card_face, action: click, effect: "navigate:account-detail", journey_id: view-accounts }
+  - { id: open_account, component: account_row, action: click, effect: "navigate:account-detail", journey_id: view-accounts }
+  - { id: retry_error, component: error_state, action: click, effect: "action:RetryLoad" }
+  - { id: retry_offline, component: no_network_state, action: click, effect: "action:RetryLoad" }
+
+action_logic:
+  RetryLoad:
+    - call: "accountsRepository.refresh()"
+      effect: "refreshBalances = true; accountsStream.refresh() → re-fetch accounts, then force-network balances"
+
+error_handling:
+  source: "ScreenState via template ScreenContent (no feature ErrorKind enum)"
+  NoNetwork: "DefaultNoNetworkContent with retry; cached Content shown instead when Room has data (freshness STALE_OFFLINE)"
+  Error: "MifosErrorComponent(feature_home_error_title, retry → RetryLoad)"
+  Unauthenticated: "rendered as error() by ScreenContent — no re-auth redirect"
+  balance_errors: "swallowed per account → balance null"
+  shell_offline: "AuthenticatedNavHostScreen shows Indefinite 'not connected' snackbar while NetworkMonitor reports offline (FR-039)"
+
+dependencies:
+  repositories:
+    - name: AccountsOverviewRepository
+      methods:
+        - "overviewState(scope: CoroutineScope): Flow<ScreenState<List<AccountWithBalance>>>"
+        - "refresh()"
+  stores:
+    - "BankingStores.accountsStore(aisp, accountDao): Store<String, List<BankAccount>>"
+    - "BankingStores.balancesStore(aisp): Store<String, AccountBalance>"
+  services:
+    - NetworkMonitor
+    - FetchedAtRepository
+  local_db:
+    - table: accounts
+    - table: framework_fetched_at

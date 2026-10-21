@@ -1,0 +1,88 @@
+sibling: api
+schema_version: "4.0"
+feature_id: consent-callback
+_source: source_analysis
+base_url: "https://{HSBC_BANK_HOST} (mTLS transport.p12 QWAC; certs git-ignored, referenced by path only)"
+
+auth:
+  token_endpoint: >-
+    private_key_jwt — PS256 client assertion {iss=sub=clientId, aud=tokenUrl, jti=UUIDv4, iat, exp=iat+60}
+    signed with signing_key.pem (OBSEAL) + kid.
+  consent_status: "temporary client_credentials token (scope accounts), explicit Bearer header, never persisted."
+  result: "PSU tokens (access/refresh/id) persisted to secure Settings hsbc_tokens via ConsentSession.save."
+
+api:
+  - id: exchange_authorization_code
+    method: POST
+    path: /v1.1/oauth2/token
+    source_ref: "core/network/.../api/OAuth.kt#exchangeAuthorizationCode"
+    repository_ref: "core/data/.../callback/ConsentCallbackRepository.kt#exchangeCode"
+    description: "Exchanges the authorization code from the validated redirect for PSU tokens (grant_type authorization_code)."
+    auth: private_key_jwt
+    content_type: application/x-www-form-urlencoded
+    params:
+      grant_type: { type: String, value: authorization_code }
+      code: { type: String, source: "validated redirect fragment" }
+      redirect_uri: { type: String, source: "HsbcConfig.REDIRECT_URI (injected redirectUri)" }
+      client_assertion_type: { type: String, value: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" }
+      client_assertion: { type: String, source: buildClientAssertion }
+    response:
+      type: PsuTokenResponse
+      fields: { accesstoken: "String?", tokentype: "String?", refreshtoken: "String?", expiresin: "Int?", scope: "String?", idtoken: "String?" }
+    response_dto: PsuTokenResponse
+    errors:
+      401: "ScreenState.Unauthenticated → Error(AUTHORISATION_FAILED)"
+      4xx_5xx: "ScreenState.Error → Error(TOKEN_EXCHANGE_FAILED)"
+      network: "ScreenState.NoNetwork → Error(NETWORK_UNREACHABLE)"
+    cache: none
+
+  - id: create_client_credentials_token
+    method: POST
+    path: /v1.1/oauth2/token
+    source_ref: "core/network/.../api/OAuth.kt#clientCredentialsToken"
+    description: "Temporary client_credentials token (scope accounts) used only to read the consent status."
+    auth: private_key_jwt
+    content_type: application/x-www-form-urlencoded
+    params:
+      grant_type: { type: String, value: client_credentials }
+      scope: { type: String, value: accounts }
+    response:
+      type: CreateConsentTokenSuccess
+      fields: { accessToken: String, expiresIn: Int, scope: String, tokenType: String }
+    response_dto: CreateConsentTokenSuccess
+    errors:
+      default: "propagated as ScreenState error → consent expiry recorded as empty (sign-in still completes)"
+    cache: none
+
+  - id: get_account_access_consent
+    method: GET
+    path: "/v4.0/aisp/account-access-consents/{ConsentId}"
+    source_ref: "core/network/.../api/Aisp.kt#getConsent"
+    repository_ref: "core/data/.../callback/ConsentCallbackRepository.kt#pollConsentStatus"
+    description: "Reads the consent back after the code exchange and BEFORE tokens are persisted to capture Status and ExpirationDateTime. Status is acted on (DEF-001): Rejected → tokens discarded, ConsentSession cleared, UI Rejected; otherwise the VM stores consentId + expiry in ConsentSession and completes sign-in."
+    auth: client_credentials
+    params:
+      ConsentId: { type: String, required: true, in: path, source: "PendingAuth.consentId (from login)" }
+    headers:
+      Authorization: "Bearer {client_credentials access_token}"
+    response:
+      type: HSBCCreateConsentResponse
+      domain: "ConsentStatusResult{status: ConsentStatus, expirationDateTime: String?}"
+      fields: { data.consentId: String, data.status: String, data.expirationDateTime: "String?" }
+    response_dto: HSBCCreateConsentResponse
+    error_dto: ObErrorResponse
+    errors:
+      default: "ignored — expiry saved as empty string"
+    cache: none
+
+  - id: authorization_redirect
+    method: GET
+    path: "org.mifosx.openbanking://callback#code=…&id_token=…&state=… (mobile) | http://127.0.0.1:8765/… (desktop)"
+    description: >-
+      Inbound redirect (not an HTTP call). HSBC returns to the HTTPS relay page (docs/consent-callback-page
+      index.html + bridge.js), which forwards the URL fragment to the app scheme / desktop loopback. Parsed by
+      parseCallbackUrl → {code, id_token, state, error, error_description}.
+    auth: authorization_code (front channel)
+    response:
+      type: redirect
+      fields: { code: "String?", id_token: "String?", state: "String?", error: "String?", error_description: "String?" }

@@ -1,0 +1,221 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: direct-debits
+screen_id: direct-debits
+name: "Direct Debits"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/direct-debits/src/commonMain/kotlin/org/mifosx/openbanking/feature/directdebits/DirectDebitsDestination.kt
+  - feature/direct-debits/src/commonMain/kotlin/org/mifosx/openbanking/feature/directdebits/DirectDebitsScreen.kt
+  - feature/direct-debits/src/commonMain/kotlin/org/mifosx/openbanking/feature/directdebits/DirectDebitsContent.kt
+  - feature/direct-debits/src/commonMain/kotlin/org/mifosx/openbanking/feature/directdebits/DirectDebitsTestTags.kt
+  - feature/direct-debits/src/commonMain/kotlin/org/mifosx/openbanking/feature/directdebits/ui/DirectDebitsState.kt
+  - feature/direct-debits/src/commonMain/kotlin/org/mifosx/openbanking/feature/directdebits/ui/DirectDebitsViewModel.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/DirectDebitsRepository.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/mapper/DirectDebitMapper.kt
+  - cmp-navigation/src/commonMain/kotlin/cmp/navigation/placeholder/BankingDestinations.kt
+requirement_refs: [FR-012, FR-013, FR-040]
+screen_ref: DirectDebits
+archetype: index_list
+archetype_overrides: { empty: empty_state, unsupported: empty_state, error: error_state, loading: loading }
+
+feature_profile:
+  combo_id: read_detail
+  facets: [content]
+  archetype: screen-content
+  store_archetype: MEMORY_ONLY
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default
+
+route: "DirectDebitsRoute(accountId)"
+entry_points:
+  - source: account-detail
+    trigger: "Explore chip AccountDetailChip.DirectDebits → navigateFromChip"
+    params: { accountId: String }
+nav_params:
+  accountId: { type: String, required: true, savedstate_key: accountId }
+
+business_logic:
+  kind: transformer
+  description: >-
+    Streams the account's direct-debit mandates via DirectDebitsRepository.directDebitsStream (in-memory Store5 keyed by
+    AccountId; OBIE list unpaginated). The mapper sorts active-first and computes active/inactive counts
+    (DirectDebitsSummary). U000 is checked before classification and becomes Unsupported with the bank's message verbatim
+    (FR-013); the fetcher also records it in AccountCapabilityRegistry. Each mandate maps to a row: formatMoney previous
+    payment amount ('' when blank) and the previous-payment ISO timestamp rendered as "yyyy-MM-dd HH:mm:ss" (offset/Z
+    stripped; raw fallback).
+  library_refs: []
+  external_library_refs: ["Store5"]
+
+screens:
+  - id: direct-debits-screen
+    title: "{strings.feature_direct_debits_screen_title}"
+    type: list
+    description: >-
+      KptScaffold with back arrow and title "Direct Debits". LazyColumn of outlined surfaceContainer mandate cards,
+      active first; inactive cards render at 82% alpha. Each card: mandate (originator) name (titleMedium) with a pill
+      status badge (primaryContainer when active, transparent with an outline border when inactive), then two rows:
+      "Last collected :" with the previous payment amount and "Collection Time :" with the previous payment timestamp.
+      Cards are read-only — no detail entry point.
+
+state_model:
+  DirectDebitsViewModel:
+    base: BaseViewModel<DirectDebitsState, Nothing, DirectDebitsAction>
+    state:
+      name: DirectDebitsState
+      fields:
+        accountId: { type: String, default: "savedStateHandle[accountId].orEmpty()" }
+        uiState: { type: DirectDebitsUiState, default: "DirectDebitsUiState.Loading" }
+    screen_state:
+      name: DirectDebitsUiState
+      members: [Loading, "Content(mandates: List<DirectDebitRowUi>)", Empty, "Unsupported(message: String)", "Error(kind: DirectDebitsErrorKind)"]
+    ui_model:
+      name: DirectDebitRowUi
+      fields:
+        mandateId: { type: String, note: "OBIE MandateIdentification" }
+        name: { type: String }
+        statusLabel: { type: String, note: "OBIE DirectDebitStatusCode verbatim" }
+        isActive: { type: Boolean }
+        previousPaymentAmount: { type: String, note: "formatMoney or '' when blank" }
+        previousPaymentDateTime: { type: String, note: "formatMandateDate → 'yyyy-MM-dd HH:mm:ss' or raw" }
+    errors:
+      name: DirectDebitsErrorKind
+      types:
+        - { type: TokenExpired, retry: true, http: 401, message_key: feature_direct_debits_error_token_expired }
+        - { type: ConsentRevoked, retry: false, http: 403, message_key: feature_direct_debits_error_consent_revoked }
+        - { type: RateLimited, retry: true, http: 429, message_key: feature_direct_debits_error_rate_limited }
+        - { type: ServerError, retry: true, cause: "5xx and any other unclassified error", message_key: feature_direct_debits_error_server }
+        - { type: NetworkError, retry: true, cause: "NetworkError.Network / NoNetwork", message_key: feature_direct_debits_error_network }
+    events:
+      name: Nothing
+      members: []
+    actions:
+      name: DirectDebitsAction
+      members:
+        - { name: RetryLoad, trigger: "Tap Retry on the error component (retriable kinds only)", handler: "stream.refresh()" }
+    di:
+      - DirectDebitsRepository
+      - SavedStateHandle
+
+components:
+  - id: top_bar
+    type: top-bar
+    source: KptScaffold
+    title: "{strings.feature_direct_debits_screen_title}"
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      target: account-detail
+      action_contract:
+        effect: navigate
+        description: "Pops DirectDebitsRoute off the back stack (navController.popBackStack) returning to account-detail; no network call."
+        action_contract_author: "claude-via-source-analysis"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+  - id: loading_indicator
+    type: progress-indicator
+    source: MifosProgressIndicator
+  - id: mandates_list
+    type: list
+    source: LazyColumn
+    test_tag: "DirectDebitsTestTags.CONTENT"
+    content_description: "{strings.feature_direct_debits_list_accessibility}"
+    item_key: "mandateId.ifBlank { name }"
+    item:
+      id: mandate_card
+      type: card
+      test_tag: "DirectDebitsTestTags.card(mandateId)"
+      content_description: "{strings.feature_direct_debits_card_accessibility}"
+      style: { background: surfaceContainer, corner_radius: medium, border: "hairline outlineVariant", alpha: "isActive ? 1.0 : 0.82" }
+      content:
+        - id: card_header
+          type: row
+          children:
+            - { id: mandate_name, type: text, value: "{{mandate.name}}", style: { text_style: titleMedium, color: onSurface } }  # i18n: skip — bank payload
+            - id: status_badge
+              type: chip
+              test_tag: "DirectDebitsTestTags.statusBadge(mandateId)"
+              content_description: "{strings.feature_direct_debits_status_accessibility}"
+              label: "{{mandate.statusLabel}}"  # i18n: skip — OBIE status verbatim
+              style:
+                shape: pill
+                text_style: labelSmall
+                active: { background: primaryContainer, text_color: onPrimaryContainer }
+                inactive: { background: transparent, border: "hairline outline", text_color: onSurfaceVariant }
+        - id: last_collected_row
+          type: row
+          children:
+            - { id: last_collected_label, type: text, value: "{strings.feature_direct_debits_last_collected}", style: { text_style: titleSmall, font_weight: semibold } }
+            - { id: last_collected_amount, type: text, test_tag: "DirectDebitsTestTags.amount(mandateId)", value: "{{mandate.previousPaymentAmount}}" }  # i18n: skip — formatted money
+        - id: collection_time_row
+          type: row
+          children:
+            - { id: collection_time_label, type: text, value: "{strings.feature_direct_debits_collection_time}", style: { text_style: titleSmall, font_weight: semibold } }
+            - { id: collection_time_value, type: text, test_tag: "DirectDebitsTestTags.collectionTime(mandateId)", value: "{{mandate.previousPaymentDateTime}}" }  # i18n: skip — formatted timestamp
+  - id: empty_state
+    type: empty-state
+    source: EmptyDataComponent
+    message: "{strings.feature_direct_debits_empty_title}"
+  - id: unsupported_state
+    type: error-state
+    source: MifosErrorComponent
+    message: "{{message.ifBlank(strings.feature_direct_debits_unsupported_title)}}"  # i18n: skip — ASPSP message verbatim, falls back to string key
+    retry_visible: false
+  - id: error_state
+    type: error-state
+    source: MifosErrorComponent
+    message: "{strings.feature_direct_debits_error_*}"   # selected by DirectDebitsErrorKind.bodyResource()
+    retry_visible: "{{kind.isRetriable}}"
+    on_click:
+      action: RetryLoad
+      action_contract:
+        effect: call_api
+        external_library_refs: ["Store5", "core/data/DirectDebitsRepository"]
+        description: "Sends RetryLoad which calls stream.refresh() on the Store5-backed DirectDebitsRepository stream, re-fetching GET /accounts/{AccountId}/direct-debits; hidden for ConsentRevoked."
+        action_contract_author: "claude-via-source-analysis"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+states: [loading, content, empty, unsupported, error]
+initial_state: loading
+state_renders:
+  loading: { components: [top_bar, loading_indicator], description: "Store fetch in flight" }
+  content: { components: [top_bar, mandates_list], description: "Active-first mandate cards; inactive dimmed with outlined badge" }
+  empty: { components: [top_bar, empty_state], description: "Bank returned zero mandates (summary.isEmpty)" }
+  unsupported: { components: [top_bar, unsupported_state], description: "U000 BadRequest — product does not offer direct debits; no retry" }
+  error: { components: [top_bar, error_state], description: "TokenExpired / RateLimited / ServerError / NetworkError retry; ConsentRevoked no retry" }
+
+visual_assets: []   # text-only list; empty/error components use design-system vector icons
+
+known_gaps:
+  - id: DD-GAP-1
+    severity: medium
+    description: "DirectDebitDetailRoute is registered in cmp-navigation bankingPlaceholderDestinations as PlaceholderScreen('Direct debit detail') and has no caller — mandate cards are not clickable, so there is no detail view."
+    source: "cmp-navigation/.../placeholder/BankingDestinations.kt"
+  - id: DD-GAP-2
+    severity: low
+    description: "ConsentRevoked copy says 'Re-authorise in Consents' but the screen exposes no route to consent-list/login-renew — the user must navigate there manually."
+  - id: DD-GAP-3
+    severity: low
+    description: "Collection time is shown as a raw 'yyyy-MM-dd HH:mm:ss' string (no localized date formatting, unlike standing-orders/scheduled-payments); label strings carry a stray space before the colon ('Last collected :')."
+  - id: DD-GAP-4
+    severity: low
+    description: "DirectDebitsSummary.activeCount/inactiveCount computed but not rendered; navigateToDirectDebits() helper is unused; empty_body / unsupported / retry a11y strings declared but unused."
+
+i18n:
+  en:
+    feature_direct_debits_screen_title: "Direct Debits"
+    feature_direct_debits_list_accessibility: "Direct debit mandates list"
+    feature_direct_debits_card_accessibility: "%1$s, %2$s"
+    feature_direct_debits_status_accessibility: "Status: %s"
+    feature_direct_debits_last_collected: "Last collected :"
+    feature_direct_debits_collection_time: "Collection Time :"
+    feature_direct_debits_empty_title: "No direct debits"
+    feature_direct_debits_empty_body: "There are no direct debit mandates set up on this account."
+    feature_direct_debits_unsupported_title: "Not available for this account"
+    feature_direct_debits_error_token_expired: "Session expired. Please log in again."
+    feature_direct_debits_error_consent_revoked: "Account access consent has been revoked. Re-authorise in Consents."
+    feature_direct_debits_error_rate_limited: "Too many requests. Please wait a moment and try again."
+    feature_direct_debits_error_server: "HSBC server error. Please try again."
+    feature_direct_debits_error_network: "No network connection. Check your connection and retry."
+    feature_direct_debits_retry: "Retry"

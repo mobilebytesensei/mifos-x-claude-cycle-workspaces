@@ -1,0 +1,796 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: payments-standing-order
+status: enriched
+_source: source_analysis
+_source_modules: [":feature:payments-standing-order"]
+_source_paths:
+  - feature/payments-standing-order/src/commonMain/kotlin/org/mifosx/openbanking/feature/paymentsstandingorder/
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/StandingOrderInitiationRepository.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/impl/StandingOrderInitiationRepositoryImpl.kt
+requirement_refs: [FR-027, FR-028, FR-029, FR-031, FR-033, FR-047]
+
+screen_id: standing-order-screen
+name: StandingOrder
+archetype: form
+states: [loading, content, date_picker, review, submitting, awaiting_authorisation, error]
+initial_state: loading
+feature_profile:
+  combo_id: content_input_submit
+  facets: [form, review-step, multi-rail, oauth-redirect, payment-history]
+  archetype: input
+  store_archetype: NETWORK_WITH_CACHE
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default
+components:
+  - { id: standing_order_root, type: screen, screen_ref: standing-order-screen, testTag: "standingOrder:formPage" }
+  - { id: standing_order_history_root, type: screen, screen_ref: standing-order-history-screen, testTag: "standingOrder:historyScreen" }
+
+route: StandingOrderDestination   # navigation<StandingOrderDestination>(startDestination = StandingOrderRoute)
+entry_points:
+  - source: home
+    trigger: "Quick action 'Standing order' → onNavigateToStandingOrder"
+    via: "AuthenticatedNavHostScreen: navController.navigate(StandingOrderRoute)"
+    params: {}
+  - source: payments-hub
+    trigger: "Standing order card → onNavigateToStandingOrder (hub graph is itself unreachable)"
+    via: "AuthenticatedNavHostScreen.paymentsHubGraph"
+    params: {}
+nav_params: {}
+
+business_logic:
+  kind: composite
+  description: >
+    Single-scroll standing-order form (rail, payer, payee, schedule, amounts) with a pinned Review CTA,
+    a Review step, then consent staging: client-credentials token → POST {domestic|international}-
+    standing-order-consents (JWS + consent idempotency key) → signed authorize URL launched in the
+    browser; the return leg is handled by payment-consent. Payers are accounts whose HSBC product can
+    fund a payment and are not on the AccountCapabilityRegistry refusal list; payees come from the
+    chosen payer's beneficiaries filtered by rail scheme. Recent standing orders (5 + 'show all') come
+    from the local payment-history feed.
+  library_refs: [core-data, core-network, store5]
+
+screens:
+  # ─────────────────────────────────────────────────────────────────────
+  - id: standing-order-screen
+    name: StandingOrder
+    route: StandingOrderRoute
+    archetype: form
+    title: "{strings.feature_payments_standing_order_screen_title}"
+    description: >
+      KptScaffold with back arrow. Form step: MifosRailToggle (Domestic / International), Pay from
+      (MifosAccountPicker + 'Choose at my bank' row + non-GBP conversion notice), Pay to
+      (MifosPayeeAvatarRow + 'Pay new' manual entry: name + sort code/account number, or IBAN on the
+      international rail), Schedule (FrequencyField, First payment and Last payment date fields opening
+      a DatePickerDialog), Amount (MifosAmountCard with available balance, currency box/picker,
+      optional different ongoing / last amounts and reference on domestic only, Charges dropdown on
+      international only), Recent standing orders list; pinned Review standing order button + trust
+      note. Review step: hero (Repeats …, amount, payee chip), 'No payment has been made yet' notice,
+      details card, irreversible notice, authorisation notice, Confirm and continue / Edit.
+    states: [loading, content, date_picker, review, submitting, awaiting_authorisation, error]
+    initial_state: loading
+    state_descriptions:
+      loading: "uiState = Loading — accounts overview Loading OR Empty. MifosProgressIndicator."
+      content: "uiState = Content(step = Form). Full form; Review button enabled only when canReview."
+      date_picker: "Content.datePickerRole != null — StandingOrderDatePickerDialog over the form for First or Final role; unselectable dates disabled."
+      review: "Content(step = Review) — StandingOrderReviewPage (standingOrder:reviewPage)."
+      submitting: "uiState = Submitting(stage = StagingConsent) — spinner, 'Setting up your standing order', amount to creditor, lock note; no cancel."
+      awaiting_authorisation: "Submitting(stage = AwaitingAuthorisation) — 'Waiting for you to authorise at your bank' + Cancel (AbandonAuthorisation)."
+      error: "uiState = Error(kind, supportReference) — StandingOrderError with kind-specific body, 'Reference …' line and kind-specific recovery buttons."
+
+    state_model:
+      StandingOrderViewModel:
+        base: "BaseViewModel<StandingOrderState, StandingOrderEvent, StandingOrderAction>"
+        state:
+          name: StandingOrderState
+          fields:
+            uiState: { type: StandingOrderUiState, default: "StandingOrderUiState.Loading" }
+            draft: { type: "StandingOrderDraft?", default: "null" }
+            consentId: { type: "String?", default: "null" }
+        ui_state:
+          name: StandingOrderUiState
+          members:
+            - { name: Loading }
+            - name: Content
+              fields:
+                step: { type: StandingOrderStep, values: [Form, Review] }
+                rail: { type: PaymentRail, default: Domestic, values: [Domestic, International] }
+                debtorAccounts: { type: "List<BankAccount>" }
+                beneficiaries: { type: "List<BeneficiaryItem>", note: "filtered: Domestic → SortCode scheme, International → Iban" }
+                debtorRows: { type: "List<AccountWithBalance>" }
+                debtorAccountId: { type: "String?", default: "null" }
+                payerPickerExpanded: { type: Boolean, default: "false" }
+                letBankChoosePayer: { type: Boolean, default: "false" }
+                creditor: { type: "CreditorSelection?", default: "null" }
+                creditorLabel: { type: String, default: '""' }
+                creditorSupporting: { type: String, default: '""' }
+                debtorAccountRow: { type: "AccountWithBalance?", default: "null" }
+                manualEntryVisible: { type: Boolean, default: "false" }
+                manualSortCode: { type: String, default: '""' }
+                manualAccountNumber: { type: String, default: '""' }
+                manualIban: { type: String, default: '""' }
+                manualName: { type: String, default: '""' }
+                frequency: { type: StandingOrderFrequency, default: Monthly, values: [Weekly, Fortnightly, Monthly, Quarterly, Yearly] }
+                firstPaymentDate: { type: "LocalDate?", default: "null" }
+                firstPaymentDateLabel: { type: String, default: '""' }
+                finalPaymentDate: { type: "LocalDate?", default: "null" }
+                finalPaymentDateLabel: { type: String, default: '""' }
+                datePickerRole: { type: "StandingOrderDateRole?", default: "null", values: [First, Final] }
+                amountInput: { type: String, default: '""' }
+                amountLabel: { type: String, default: '""' }
+                recurringAmountInput: { type: String, default: '""' }
+                finalAmountInput: { type: String, default: '""' }
+                instructedCurrency: { type: String, default: '"GBP"' }
+                chargeBearer: { type: ChargeBearer, default: BorneByCreditor, values: [BorneByCreditor, BorneByDebtor, Shared] }
+                reference: { type: String, default: '""', max_length: 35 }
+                today: { type: LocalDate, note: "todayUtc(clock)" }
+                amountProblem: { type: "StandingOrderAmountProblem?", default: "null", values: [NotANumber, TooManyDecimals, NotPositive, ExceedsAvailableBalance] }
+                fieldErrors: { type: StandingOrderFieldErrors, fields: [sortCodeInvalid, accountNumberInvalid, ibanInvalid] }
+                availableBalanceMinorUnits: { type: "Long?", default: "null" }
+                availableBalanceLabel: { type: String, default: '""' }
+                debtorCurrency: { type: String, default: '""' }
+                offeredCurrencies: { type: "List<String>", default: "emptyList()", note: "19 ISO codes on International: GBP EUR USD AUD CAD CHF CNY HKD SGD NZD AED CZK DKK NOK PLN SAR SEK ZAR THB" }
+                recentPayments: { type: "List<PaymentHistoryEntry>", default: "emptyList()", note: "first 5 of the standing-order history feed" }
+                hasMorePayments: { type: Boolean, default: "false" }
+                payeesFailed: { type: Boolean, default: "false" }
+                payeesLoading: { type: Boolean, default: "false" }
+              derived:
+                recurringAmountEnabled: "rail == Domestic"
+                finalAmountEnabled: "rail == Domestic"
+                referenceEnabled: "rail == Domestic"
+                canReview: "amountProblem == null && amountInput.isNotBlank() && creditor != null && firstPaymentDate != null && !payerUndecided"
+                payerUndecided: "debtorAccountId == null && !letBankChoosePayer"
+                payeesUnavailable: "debtorAccountId == null"
+                showsConversionAdvisory: "debtorCurrency.isNotBlank() && debtorCurrency != instructedCurrency"
+                isOpenEnded: "finalPaymentDate == null"
+            - { name: Submitting, fields: { stage: "StandingOrderStage (StagingConsent | AwaitingAuthorisation)", amountLabel: String, creditorName: String, consentId: "String?" } }
+            - { name: Error, fields: { kind: StandingOrderErrorKind, supportReference: "String?" } }
+        validation:
+          sort_code: "digits-only length == 6 (live error while typing when non-empty)"
+          account_number: "digits-only length == 8"
+          iban: "whitespace stripped, uppercased; length 15..34, alphanumeric, first 2 chars letters"
+          amount: "blank → no problem; unparseable → NotANumber; >2 decimals → TooManyDecimals; <= 0 → NotPositive; > available balance (only when payer currency == instructed currency) → ExceedsAvailableBalance"
+          recurring_and_final_amounts: "not validated — parsed with parseMinorUnits at draft time; unparseable becomes null"
+          reference: "truncated to 35 chars at input; domestic rail only"
+          first_payment_date: "UTC today + 2 days ≤ date ≤ UTC today + 365 days"
+          final_payment_date: "optional; date > firstPaymentDate AND date > today + 1 day AND date ≤ today + 12 months; requires a first date"
+          date_revalidation: "OpenDatePicker recomputes today (UTC) and drops a first/final date that has fallen out of its window; SelectDate re-checks and closes without selecting when invalid; buildDraft re-checks against todayUtc"
+          domestic_currency: "Domestic rail forces instructedCurrency = GBP and clears recurring/final/reference on switch"
+        errors:
+          name: StandingOrderErrorKind
+          types:
+            - { type: SignatureMissing, from: "U019", retry: false }
+            - { type: ConsentNotAuthorised, from: "U009", retry: false, recovery: reauthorise }
+            - { type: ConsentMismatch, from: "U008", retry: false }
+            - { type: OutsideControlParameters, from: "U014", retry: false, recovery: edit_amount }
+            - { type: InvalidField, from: "U002/U021 (non-date, non-payer field)", retry: false }
+            - { type: FirstDateRefused, from: "date refusal on FirstPaymentDateTime", retry: false, recovery: change_date }
+            - { type: FinalDateRefused, from: "date refusal on FinalPaymentDateTime or U003", retry: false, recovery: change_date }
+            - { type: FrequencyRefused, from: "U002 on Frequency", retry: false }
+            - { type: RequestMalformed, from: "U004/U005", retry: false }
+            - { type: SchemeNotSupported, from: "U027", retry: false }
+            - { type: ConsentRevoked, from: "403", retry: false, recovery: view_consents }
+            - { type: TokenExpired, from: "401 / Unauthenticated accounts", retry: true, recovery: reauthorise }
+            - { type: RateLimited, from: "429", retry: true }
+            - { type: PayerNotSupported, from: "debtor-account refusal", retry: false, recovery: change_payer }
+            - { type: NetworkError, from: "transport / NoNetwork", retry: true }
+        events:
+          name: StandingOrderEvent
+          members:
+            - { name: LaunchAuthorisation, params: { url: String }, handled_by: "onLaunchAuthorisation → BrowserLauncher.launch(url)" }
+        actions:
+          name: StandingOrderAction
+          members:
+            - { name: SelectRail, params: { rail: PaymentRail } }
+            - { name: SelectDebtorAccount, params: { accountId: String } }
+            - { name: TogglePayerPicker }
+            - { name: LetBankChoosePayer }
+            - { name: SelectCreditor, params: { beneficiaryId: String } }
+            - { name: ShowManualCreditorEntry }
+            - { name: EnterManualSortCode, params: { sortCode: String } }
+            - { name: EnterManualAccountNumber, params: { accountNumber: String } }
+            - { name: EnterManualIban, params: { iban: String } }
+            - { name: EnterManualName, params: { name: String } }
+            - { name: ConfirmManualCreditor }
+            - { name: SelectFrequency, params: { frequency: StandingOrderFrequency } }
+            - { name: OpenDatePicker, params: { role: StandingOrderDateRole } }
+            - { name: DismissDatePicker }
+            - { name: SelectDate, params: { role: StandingOrderDateRole, date: LocalDate } }
+            - { name: ClearFinalDate }
+            - { name: EnterAmount, params: { amount: String } }
+            - { name: EnterRecurringAmount, params: { amount: String } }
+            - { name: EnterFinalAmount, params: { amount: String } }
+            - { name: SelectInstructedCurrency, params: { currency: String } }
+            - { name: SelectChargeBearer, params: { bearer: ChargeBearer } }
+            - { name: EnterReference, params: { reference: String } }
+            - { name: ReviewStandingOrder }
+            - { name: ConfirmAndStageConsent }
+            - { name: RetryStaging }
+            - { name: ChangePayer }
+            - { name: AbandonAuthorisation }
+            - { name: BackStep }
+            - { name: RetryLoad, note: "declared and handled (accountsOverviewRepository.refresh) but never dispatched by the UI" }
+        di: [AccountsOverviewRepository, BeneficiariesRepository, StandingOrderInitiationRepository, AccountCapabilityRegistry, PaymentHistoryRepository, PaymentStatusRepository, Clock]
+
+    components:
+      - id: top_bar
+        type: top-bar
+        title: "{strings.feature_payments_standing_order_screen_title}"
+        navigation_icon: arrow_back
+        on_navigation_click:
+          action: onBack
+          target: back
+          action_contract:
+            effect: navigate
+            description: "Invokes onBack → navController.popBackStack(), leaving the standing-order graph for the caller (Home); the in-progress form is discarded with the ViewModel."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: rail_toggle
+        type: segmented-control
+        component: MifosRailToggle
+        testTag: "standingOrder:railToggle"
+        options: ["{strings.feature_payments_standing_order_rail_domestic}", "{strings.feature_payments_standing_order_rail_international}"]
+        on_click:
+          action: SelectRail
+          action_contract:
+            effect: transform_state
+            description: "Switches rail; clears creditor, manual entry and field errors; Domestic forces GBP and keeps recurring/final/reference, International clears them; re-validates the amount."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: payer_section
+        type: section
+        heading: "{strings.feature_payments_standing_order_debtor_heading}"
+        children:
+          - id: payer_picker
+            type: account-picker
+            component: MifosAccountPicker
+            testTag: "standingOrder:payerPicker"
+            header_testTag: "standingOrder:payerHeader"
+            list_testTag: "standingOrder:debtorList"
+            on_toggle:
+              action: TogglePayerPicker
+              action_contract:
+                effect: transform_state
+                description: "Toggles payerPickerExpanded to show or hide the list of accounts that can fund a payment."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+            on_click:
+              action: SelectDebtorAccount
+              action_contract:
+                effect: transform_state
+                description: "Sets debtorAccountId, collapses the picker, clears bank-choice and creditor, switches the beneficiaries stream to that account and re-validates the amount against its balance."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: payer_bank_choice
+            type: list_item
+            component: MifosBankChoiceRow
+            testTag: "standingOrder:payerBankChoice"
+            label: "{strings.core_ui_account_picker_bank_choice}"
+            on_click:
+              action: LetBankChoosePayer
+              action_contract:
+                effect: transform_state
+                description: "Sets letBankChoosePayer = true and clears debtorAccountId and creditor; the consent is staged without a DebtorAccount and the PSU chooses the account at HSBC."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: non_gbp_notice
+            type: banner
+            testTag: "standingOrder:nonGbpNotice"
+            visible: "{{showsConversionAdvisory}}"
+            message: "{strings.feature_payments_standing_order_non_gbp_notice}"
+
+      - id: payee_section
+        type: section
+        heading: "{strings.feature_payments_standing_order_creditor_heading}"
+        children:
+          - id: creditor_list
+            type: avatar-row
+            component: MifosPayeeAvatarRow
+            testTag: "standingOrder:creditorList"
+            loading_testTag: "standingOrder:payeesLoading"
+            disabled_when: "{{payeesUnavailable}}"
+            on_click:
+              action: SelectCreditor
+              action_contract:
+                effect: transform_state
+                description: "Selects a saved payee as the creditor (name, scheme, identification, beneficiaryId, own-account flag), copies its reference into the form and hides manual entry."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: pay_new_button
+            type: chip
+            testTag: "standingOrder:manualEntryButton"
+            label: "{strings.feature_payments_standing_order_payee_pay_new}"
+            on_click:
+              action: ShowManualCreditorEntry
+              action_contract:
+                effect: transform_state
+                description: "Sets manualEntryVisible = true to reveal the manual payee fields (sort code + account number on Domestic, IBAN on International)."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: manual_creditor_fields
+            type: form-group
+            visible: "{{manualEntryVisible}}"
+            children:
+              - { id: manual_name, type: text_field, testTag: "standingOrder:manualName", label: "{strings.feature_payments_standing_order_manual_name}", on_change: EnterManualName }
+              - { id: manual_sort_code, type: text_field, testTag: "standingOrder:manualSortCode", visible: "{{rail == Domestic}}", keyboard: number, label: "{strings.feature_payments_standing_order_manual_sort_code}", error: "{strings.feature_payments_standing_order_manual_sort_code_error}", on_change: EnterManualSortCode }
+              - { id: manual_account_number, type: text_field, testTag: "standingOrder:manualAccountNumber", visible: "{{rail == Domestic}}", keyboard: number, label: "{strings.feature_payments_standing_order_manual_account_number}", error: "{strings.feature_payments_standing_order_manual_account_number_error}", on_change: EnterManualAccountNumber }
+              - { id: manual_iban, type: text_field, testTag: "standingOrder:manualIban", error_testTag: "standingOrder:manualIbanError", visible: "{{rail == International}}", label: "{strings.feature_payments_standing_order_manual_iban}", error: "{strings.feature_payments_standing_order_manual_iban_error}", on_change: EnterManualIban }
+              - id: manual_confirm
+                type: button
+                variant: filled-pill
+                testTag: "standingOrder:manualConfirm"
+                label: "{strings.feature_payments_standing_order_manual_confirm}"
+                on_click:
+                  action: ConfirmManualCreditor
+                  action_contract:
+                    effect: transform_state
+                    description: "Validates the manual payee (6-digit sort code + 8-digit account, or plausible IBAN) and either sets creditor with the digits-only identification or writes fieldErrors and keeps the form open."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: date_section
+        type: section
+        heading: "{strings.feature_payments_standing_order_date_heading}"
+        children:
+          - id: frequency_field
+            type: dropdown
+            component: FrequencyField
+            label: "{strings.feature_payments_standing_order_frequency_label}"
+            options: [Weekly, Fortnightly, Monthly, Quarterly, Yearly]
+            on_click:
+              action: SelectFrequency
+              action_contract:
+                effect: transform_state
+                description: "Sets frequency (wire codes WEEK, FRTN, MNTH, QURT, YEAR); default Monthly."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: first_date_field
+            type: date-field
+            testTag: "standingOrder:firstDateField"
+            label: "{strings.feature_payments_standing_order_first_payment_label}"
+            empty_value: "{strings.feature_payments_standing_order_first_payment_empty}"
+            helper: "{strings.feature_payments_standing_order_first_payment_helper}"
+            on_click:
+              action: OpenDatePicker
+              params: { role: First }
+              action_contract:
+                effect: transform_state
+                description: "Recomputes today in UTC, drops any first/final date now out of window, and opens the date picker dialog in First role (selectable: today+2 to today+365)."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: final_date_field
+            type: date-field
+            testTag: "standingOrder:finalDateField"
+            label: "{strings.feature_payments_standing_order_final_payment_label}"
+            empty_value: "{strings.feature_payments_standing_order_final_payment_empty}"
+            helper: "{{firstPaymentDate == null ? strings.feature_payments_standing_order_final_payment_needs_first : strings.feature_payments_standing_order_final_payment_helper}}"  # i18n: skip — chooses between keys
+            on_clear:
+              action: ClearFinalDate
+              visible: "{{!isOpenEnded}}"
+              action_contract:
+                effect: transform_state
+                description: "Clears finalPaymentDate, making the mandate open-ended (runs until the customer stops it at the bank)."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+            on_click:
+              action: OpenDatePicker
+              params: { role: Final }
+              action_contract:
+                effect: transform_state
+                description: "Opens the date picker in Final role; selectable dates are after the first payment, after tomorrow and within 12 months of today (UTC)."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: date_picker_dialog
+            type: dialog
+            component: StandingOrderDatePickerDialog
+            visible: "{{datePickerVisible}}"
+            supporting: "{strings.feature_payments_standing_order_date_picker_window}"
+            confirm_label: "{strings.feature_payments_standing_order_date_picker_confirm}"
+            cancel_label: "{strings.feature_payments_standing_order_date_picker_cancel}"
+            on_confirm:
+              action: SelectDate
+              action_contract:
+                effect: transform_state
+                description: "Re-checks the chosen UTC date against the role's window; valid → stores it (a new first date also drops a now-invalid final date) and closes; invalid → just closes the dialog."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+            on_dismiss:
+              action: DismissDatePicker
+              action_contract:
+                effect: transform_state
+                description: "Closes the date picker dialog by clearing datePickerRole without changing any chosen date."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: amount_section
+        type: section
+        children:
+          - { id: amount_card, type: amount-card, component: MifosAmountCard, testTag: "standingOrder:amountCard", field_testTag: "standingOrder:amountField", error_testTag: "standingOrder:amountError", balance_testTag: "standingOrder:amountBalance", balance: "{{availableBalanceLabel}}", on_change: EnterAmount }  # i18n: skip — formatted balance binding
+          - { id: static_currency_box, type: text, testTag: "standingOrder:staticCurrencyBox", visible: "{{rail == Domestic}}", value: "GBP" }  # i18n: skip — ISO code
+          - id: instructed_currency_picker
+            type: dropdown
+            testTag: "standingOrder:instructedCurrencyPicker"
+            visible: "{{rail == International}}"
+            options: "{{offeredCurrencies}}"
+            on_click:
+              action: SelectInstructedCurrency
+              action_contract:
+                effect: transform_state
+                description: "Sets instructedCurrency from the 19 offered ISO codes and re-validates the amount; the balance check is skipped when the payer account currency differs."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - { id: recurring_amount_field, type: text_field, testTag: "standingOrder:recurringAmountField", visible: "{{recurringAmountEnabled}}", label: "{strings.feature_payments_standing_order_recurring_amount_label}", on_change: EnterRecurringAmount }
+          - { id: final_amount_field, type: text_field, testTag: "standingOrder:finalAmountField", visible: "{{finalAmountEnabled}}", label: "{strings.feature_payments_standing_order_final_amount_label}", on_change: EnterFinalAmount }
+          - { id: reference_field, type: text_field, testTag: "standingOrder:referenceField", visible: "{{referenceEnabled}}", max_length: 35, label: "{strings.feature_payments_standing_order_reference_label}", helper: "{strings.feature_payments_standing_order_reference_helper}", on_change: EnterReference }
+          - id: charge_bearer_picker
+            type: dropdown
+            testTag: "standingOrder:chargeBearerPicker"
+            visible: "{{rail == International}}"
+            heading: "{strings.feature_payments_standing_order_charges_heading}"
+            options: ["{strings.feature_payments_standing_order_charge_bearer_creditor}", "{strings.feature_payments_standing_order_charge_bearer_debtor}", "{strings.feature_payments_standing_order_charge_bearer_shared}"]
+            caveat: "{strings.feature_payments_standing_order_charges_caveat}"
+            on_click:
+              action: SelectChargeBearer
+              action_contract:
+                effect: transform_state
+                description: "Sets chargeBearer (BorneByCreditor, BorneByDebtor, Shared); required on the international rail and never sent on the domestic one."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: recent_payments
+        type: list
+        component: MifosPaymentHistoryList
+        testTag: "standingOrder:history"
+        title: "{strings.feature_payments_standing_order_history_title}"
+        rows: "{{recentPayments}}"
+        on_click:
+          action: onOpenPayment
+          target: payment-status
+          action_contract:
+            effect: navigate
+            description: "Opens the tapped standing order's receipt: onNavigateToPayment(paymentId) → navController.navigate(PaymentStatusRoute(paymentId)) in the authenticated host."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+        show_all:
+          visible: "{{hasMorePayments}}"
+          action: onShowAllPayments
+          target: payments-standing-order
+          target_screen: standing-order-history-screen
+          action_contract:
+            effect: navigate
+            description: "Navigates to StandingOrderHistoryRoute, the full local list of standing orders set up from this app (cap 200)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: review_button
+        type: button
+        variant: filled-pill
+        testTag: "standingOrder:reviewButton"
+        label: "{strings.feature_payments_standing_order_review_button}"
+        enabled: "{{canReview}}"
+        pinned: bottom
+        trust_note: { testTag: "standingOrder:formTrustNote", icon: Lock, text: "{strings.feature_payments_standing_order_form_trust_note}" }
+        on_click:
+          action: ReviewStandingOrder
+          action_contract:
+            effect: transform_state
+            description: "Moves the form to step = Review (button is only enabled when canReview); no network call."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      # ── Review step ──
+      - id: review_page
+        type: section
+        testTag: "standingOrder:reviewPage"
+        visible: "{{step == Review}}"
+        children:
+          - { id: review_lead, type: text, testTag: "standingOrder:reviewLead", value: "{strings.feature_payments_standing_order_review_heading}" }
+          - { id: review_hero, type: card, testTag: "standingOrder:reviewHero", content: ["{strings.feature_payments_standing_order_review_scheduled_for}", "schedule row (standingOrder:reviewScheduleRow) {strings.feature_payments_standing_order_schedule_open_ended | schedule_until}", "amount (standingOrder:reviewAmount)", "payee chip (standingOrder:reviewPayeeChip)"] }
+          - { id: review_not_yet_made, type: banner, testTag: "standingOrder:reviewNotYetMade", title: "{strings.feature_payments_standing_order_review_not_yet_made_title}", body: "{strings.feature_payments_standing_order_review_not_yet_made_body}" }
+          - id: review_summary
+            type: card
+            testTag: "standingOrder:reviewSummary"
+            heading: "{strings.feature_payments_standing_order_review_details_heading}"
+            rows:
+              - { testTag: "standingOrder:reviewFrom", label: "{strings.feature_payments_standing_order_review_from}", value: "{{debtorAccountRow ?: strings.feature_payments_standing_order_review_from_bank_choice}}" }  # i18n: skip — binding
+              - { testTag: "standingOrder:reviewTo", label: "{strings.feature_payments_standing_order_review_to}", value: "{{creditorLabel}} {{creditorSupporting}}" }  # i18n: skip — binding
+              - { testTag: "standingOrder:reviewReference", visible: "{{rail == Domestic}}", label: "{strings.feature_payments_standing_order_review_reference}", value: "{{reference ?: strings.feature_payments_standing_order_review_reference_empty}}" }  # i18n: skip — binding
+              - { testTag: "standingOrder:reviewChargeRow", label: "{strings.feature_payments_standing_order_review_bank_charge | review_charge_bearer}", value: "{strings.feature_payments_standing_order_review_charge_at_setup}" }
+              - { testTag: "standingOrder:reviewSentAs", visible: "{{rail == International}}", label: "{strings.feature_payments_standing_order_review_sent_as}", value: "{{instructedCurrency}}" }  # i18n: skip — ISO code
+            caveat: { testTag: "standingOrder:reviewChargeCaveat", text: "{strings.feature_payments_standing_order_review_charge_caveat}" }
+          - { id: irreversible_notice, type: banner, testTag: "standingOrder:irreversibleNotice", title: "{strings.feature_payments_standing_order_irreversible_title}", body: "{strings.feature_payments_standing_order_irreversible_body}" }
+          - { id: review_auth_notice, type: banner, testTag: "standingOrder:reviewAuthNotice", body: "{strings.feature_payments_standing_order_review_auth_notice}" }
+          - id: confirm_button
+            type: button
+            variant: filled-pill
+            testTag: "standingOrder:confirmButton"
+            label: "{strings.feature_payments_standing_order_review_confirm}"
+            on_click:
+              action: ConfirmAndStageConsent
+              action_contract:
+                effect: call_api
+                external_library_refs: ["StandingOrderInitiationRepository.stageStandingOrder (core/data)", "Pisp POST v4.0/pisp/*-standing-order-consents (Ktor, detached JWS)", "BrowserLauncher"]
+                description: "Builds the StandingOrderDraft (reusing the prior draft and its idempotency keys if the mandate is unchanged), shows Submitting(StagingConsent), stages the consent and on success emits LaunchAuthorisation(url) and moves to AwaitingAuthorisation."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: edit_button
+            type: button
+            variant: tonal-pill
+            testTag: "standingOrder:editPaymentButton"
+            label: "{strings.feature_payments_standing_order_review_edit}"
+            on_click:
+              action: BackStep
+              action_contract:
+                effect: transform_state
+                description: "Returns to step = Form with phase Form and clears the held draft and consentId; every entered value is kept."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      # ── Submitting ──
+      - id: submitting_panel
+        type: progress-panel
+        visible: "{{uiState is Submitting}}"
+        children:
+          - { id: submitting_indicator, type: progress-indicator, testTag: "standingOrder:submittingIndicator", label: "{strings.feature_payments_standing_order_submitting_staging | submitting_awaiting}" }
+          - { id: submitting_amount, type: text, testTag: "standingOrder:submittingAmount", value: "{strings.feature_payments_standing_order_submitting_amount}" }
+          - { id: submitting_lock_note, type: text, testTag: "standingOrder:submittingLockNote", value: "{strings.feature_payments_standing_order_submitting_lock}" }
+          - id: abandon_authorisation_button
+            type: button
+            variant: tonal-pill
+            testTag: "standingOrder:abandonAuthorisationButton"
+            visible: "{{stage == AwaitingAuthorisation}}"
+            label: "{strings.feature_payments_standing_order_abandon_authorisation}"
+            on_click:
+              action: AbandonAuthorisation
+              action_contract:
+                effect: transform_state
+                description: "Leaves the waiting state back to the Review step and clears consentId; the staged consent is left to expire unauthorised (the bank answers 405 to a delete)."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      # ── Error ──
+      - id: error_state
+        type: error-state
+        testTag: "standingOrder:errorState"
+        visible: "{{uiState is Error}}"
+        title: "{strings.feature_payments_standing_order_error_title}"
+        body: "{strings.feature_payments_standing_order_error_<kind>}"
+        support_reference: { testTag: "standingOrder:errorSupportReference", text: "{strings.feature_payments_standing_order_error_reference}", visible: "{{supportReference != null}}" }
+        actions:
+          - id: retry_button
+            type: button
+            testTag: "standingOrder:retryButton"
+            visible: "{{kind in [NetworkError, RateLimited, TokenExpired]}}"
+            label: "{strings.feature_payments_standing_order_retry}"
+            on_click:
+              action: RetryStaging
+              action_contract:
+                effect: call_api
+                external_library_refs: ["StandingOrderInitiationRepository.stageStandingOrder (core/data)"]
+                description: "Re-runs confirmAndStageConsent; reuses the held draft when the mandate is unchanged so the consent idempotency key repeats. When no creditor or first date is set, buildDraft returns null and nothing happens."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: reauthorise_button
+            type: button
+            testTag: "standingOrder:reauthoriseButton"
+            visible: "{{kind in [ConsentNotAuthorised, TokenExpired]}}"
+            label: "{strings.feature_payments_standing_order_reauthorise}"
+            on_click:
+              action: ConfirmAndStageConsent
+              action_contract:
+                effect: call_api
+                external_library_refs: ["StandingOrderInitiationRepository.stageStandingOrder (core/data)", "BrowserLauncher"]
+                description: "Stages the consent again from the current form and, on success, relaunches bank authorisation in the browser."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: view_consents_button
+            type: button
+            testTag: "standingOrder:viewConsentsButton"
+            visible: "{{kind == ConsentRevoked}}"
+            label: "{strings.feature_payments_standing_order_view_consents}"
+            on_click:
+              action: onNavigateToConsents
+              target: consent-list
+              action_contract:
+                effect: navigate
+                description: "Intended to open ConsentListRoute; the authenticated host currently wires onNavigateToConsents = {} so the tap does nothing (see known_gaps SO-GAP-1, FR-047)."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: edit_amount_button
+            type: button
+            testTag: "standingOrder:editAmountButton"
+            visible: "{{kind == OutsideControlParameters}}"
+            label: "{strings.feature_payments_standing_order_edit_amount}"
+            on_click:
+              action: BackStep
+              action_contract:
+                effect: transform_state
+                description: "Returns to the form with all values kept so the amount can be lowered below the bank's limits."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: change_date_button
+            type: button
+            testTag: "standingOrder:changeDateButton"
+            visible: "{{kind in [FirstDateRefused, FinalDateRefused]}}"
+            label: "{strings.feature_payments_standing_order_change_date}"
+            on_click:
+              action: BackStep
+              action_contract:
+                effect: transform_state
+                description: "Returns to the form (not straight into the picker) so the refused date can be re-chosen against the moved UTC window explained by the field helper."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: change_payer_button
+            type: button
+            testTag: "standingOrder:changePayerButton"
+            visible: "{{kind == PayerNotSupported}}"
+            label: "{strings.feature_payments_standing_order_change_payer}"
+            on_click:
+              action: ChangePayer
+              action_contract:
+                effect: transform_state
+                description: "Returns to the form with the payer cleared (the refused account is already removed from the picker by AccountCapabilityRegistry) and drops the held draft and consentId."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  # ─────────────────────────────────────────────────────────────────────
+  - id: standing-order-history-screen
+    name: StandingOrderHistory
+    route: StandingOrderHistoryRoute
+    archetype: index_list
+    title: "{strings.feature_payments_standing_order_history_screen_title}"
+    description: "KptScaffold with back arrow over MifosPaymentHistoryPage: every locally recorded standing order (domestic + international, cap 200), newest first, with status; empty label when none."
+    states: [content, empty]
+    initial_state: content
+    state_descriptions:
+      content: "payments non-empty — MifosPaymentHistoryPage rows (testTag standingOrder:historyRow:{id})."
+      empty: "payments empty — feature_payments_standing_order_history_empty label."
+    state_model:
+      StandingOrderHistoryViewModel:
+        base: "androidx ViewModel (not BaseViewModel)"
+        state:
+          name: payments
+          fields:
+            payments: { type: "StateFlow<List<PaymentHistoryEntry>>", default: "emptyList()" }
+        events: { name: none, members: [] }
+        actions: { name: none, members: [] }
+        di: [PaymentHistoryRepository, PaymentStatusRepository]
+    components:
+      - id: history_top_bar
+        type: top-bar
+        title: "{strings.feature_payments_standing_order_history_screen_title}"
+        navigation_icon: arrow_back
+        on_navigation_click:
+          action: onBack
+          target: back
+          action_contract:
+            effect: navigate
+            description: "Invokes onBack → navController.popBackStack(), returning to the standing-order form."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: history_page
+        type: list
+        component: MifosPaymentHistoryPage
+        testTag: "standingOrder:historyScreen"
+        row_testTag: "standingOrder:historyRow:{id}"
+        empty_label: "{strings.feature_payments_standing_order_history_empty}"
+        on_click:
+          action: onNavigateToPayment
+          target: payment-status
+          action_contract:
+            effect: navigate
+            description: "Opens PaymentStatusRoute(paymentId) in the authenticated host for the tapped standing order."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+visual_assets: []
+
+i18n:
+  en:
+    feature_payments_standing_order_screen_title: "Set Up Standing Order"
+    feature_payments_standing_order_loading_a11y: "Loading your accounts and payees"
+    feature_payments_standing_order_rail_domestic: "Domestic"
+    feature_payments_standing_order_rail_international: "International"
+    feature_payments_standing_order_form_trust_note: "Protected by UK Open Banking"
+    feature_payments_standing_order_non_gbp_notice: "This standing order is instructed in %1$s. Your bank will convert from this account and may charge for it."
+    feature_payments_standing_order_debtor_heading: "Pay from"
+    feature_payments_standing_order_creditor_heading: "Pay to"
+    feature_payments_standing_order_payees_loading_a11y: "Loading your saved payees"
+    feature_payments_standing_order_payee_pay_new: "Pay new"
+    feature_payments_standing_order_manual_name: "Name on the account"
+    feature_payments_standing_order_manual_sort_code: "Sort code"
+    feature_payments_standing_order_manual_sort_code_error: "Enter a 6-digit sort code"
+    feature_payments_standing_order_manual_account_number: "Account number"
+    feature_payments_standing_order_manual_account_number_error: "Enter an 8-digit account number"
+    feature_payments_standing_order_manual_iban: "IBAN"
+    feature_payments_standing_order_manual_iban_error: "Enter a valid IBAN"
+    feature_payments_standing_order_manual_confirm: "Use these details"
+    feature_payments_standing_order_amount_error_not_a_number: "Enter an amount like 250 or 250.00"
+    feature_payments_standing_order_amount_error_too_many_decimals: "Amounts go to two decimal places, like 250.99"
+    feature_payments_standing_order_amount_error_not_positive: "Enter an amount greater than zero"
+    feature_payments_standing_order_amount_error_exceeds_balance: "That is more than the balance available on this account"
+    feature_payments_standing_order_charges_heading: "Charges"
+    feature_payments_standing_order_charge_bearer_creditor: "Paid by recipient"
+    feature_payments_standing_order_charge_bearer_debtor: "Paid by you"
+    feature_payments_standing_order_charge_bearer_shared: "Shared"
+    feature_payments_standing_order_charges_caveat: "Your bank confirms its own charge when the standing order is created"
+    feature_payments_standing_order_reference_label: "Reference (optional)"
+    feature_payments_standing_order_reference_helper: "Max 35 characters"
+    feature_payments_standing_order_review_button: "Review standing order"
+    feature_payments_standing_order_history_title: "Recent standing orders"
+    feature_payments_standing_order_history_screen_title: "Standing orders set up"
+    feature_payments_standing_order_history_empty: "You have not set up any standing orders yet."
+    feature_payments_standing_order_date_heading: "Schedule"
+    feature_payments_standing_order_frequency_label: "How often"
+    feature_payments_standing_order_frequency_weekly: "Weekly"
+    feature_payments_standing_order_frequency_fortnightly: "Fortnightly"
+    feature_payments_standing_order_frequency_monthly: "Monthly"
+    feature_payments_standing_order_frequency_quarterly: "Quarterly"
+    feature_payments_standing_order_frequency_yearly: "Yearly"
+    feature_payments_standing_order_first_payment_label: "First payment"
+    feature_payments_standing_order_first_payment_empty: "Choose a date"
+    feature_payments_standing_order_first_payment_helper: "At least two days ahead, and within a year"
+    feature_payments_standing_order_final_payment_label: "Last payment"
+    feature_payments_standing_order_final_payment_empty: "Not set — continues until you stop it"
+    feature_payments_standing_order_final_payment_helper: "After the first payment, and within a year"
+    feature_payments_standing_order_final_payment_needs_first: "Choose a first payment date first"
+    feature_payments_standing_order_date_picker_window: "Select between %1$s and %2$s"
+    feature_payments_standing_order_date_picker_confirm: "Confirm"
+    feature_payments_standing_order_date_picker_cancel: "Cancel"
+    feature_payments_standing_order_recurring_amount_label: "Different ongoing amount (optional)"
+    feature_payments_standing_order_final_amount_label: "Different last payment (optional)"
+    feature_payments_standing_order_review_heading: "Check this before you continue"
+    feature_payments_standing_order_review_details_heading: "Standing order details"
+    feature_payments_standing_order_review_from: "From"
+    feature_payments_standing_order_review_from_bank_choice: "You’ll choose at your bank"
+    feature_payments_standing_order_review_to: "To"
+    feature_payments_standing_order_review_reference: "Reference"
+    feature_payments_standing_order_review_reference_empty: "None"
+    feature_payments_standing_order_review_scheduled_for: "Repeats"
+    feature_payments_standing_order_schedule_open_ended: "%1$s, starting %2$s, until you stop it."
+    feature_payments_standing_order_schedule_until: "%1$s, starting %2$s, until %3$s."
+    feature_payments_standing_order_review_not_yet_made_title: "No payment has been made yet"
+    feature_payments_standing_order_review_not_yet_made_body: "You are setting up a standing order. The first payment is due on %1$s."
+    feature_payments_standing_order_irreversible_title: "You can’t change this here"
+    feature_payments_standing_order_irreversible_body: "A standing order can’t be changed or cancelled in this app. To change it later, use your bank’s app or online banking."
+    feature_payments_standing_order_review_auth_notice: "You’ll approve this with your bank before any money moves."
+    feature_payments_standing_order_review_confirm: "Confirm and continue"
+    feature_payments_standing_order_review_edit: "Edit"
+    feature_payments_standing_order_submitting_staging: "Setting up your standing order"
+    feature_payments_standing_order_submitting_awaiting: "Waiting for you to authorise at your bank"
+    feature_payments_standing_order_submitting_amount: "%1$s to %2$s"
+    feature_payments_standing_order_submitting_lock: "Do not close the app until this finishes."
+    feature_payments_standing_order_abandon_authorisation: "Cancel"
+    feature_payments_standing_order_error_title: "Standing order could not be set up"
+    feature_payments_standing_order_error_reference: "Reference %1$s"
+    feature_payments_standing_order_retry: "Try again"
+    feature_payments_standing_order_reauthorise: "Authorise again"
+    feature_payments_standing_order_view_consents: "View consents"
+    feature_payments_standing_order_edit_amount: "Change amount"
+    feature_payments_standing_order_change_date: "Change date"
+    feature_payments_standing_order_change_payer: "Choose another account"
+    _note: "Per-kind error bodies (feature_payments_standing_order_error_*) and 19 currency names live in composeResources/values/strings.xml (136 strings)."
+
+known_gaps:
+  - id: SO-GAP-1
+    severity: should
+    requirement_ref: FR-047
+    description: "onNavigateToConsents is wired as {} in AuthenticatedNavHostScreen.standingOrderGraph — the 'View consents' recovery on ConsentRevoked does nothing."
+  - id: SO-GAP-2
+    severity: should
+    description: "StandingOrderAction.RetryLoad is handled (accountsOverviewRepository.refresh) but never dispatched. The error page's Retry dispatches RetryStaging, so after an accounts-load failure (NoNetwork / Error) with an unfilled form, buildDraft() returns null and Retry does nothing."
+  - id: SO-GAP-3
+    severity: should
+    description: "Accounts ScreenState.Empty renders Loading (renderForm maps Empty and Loading together) — a PSU with no payment-capable accounts sees a spinner indefinitely instead of an empty state."
+  - id: SO-GAP-4
+    severity: could
+    description: "Optional 'different ongoing amount' and 'different last payment' inputs are not validated; an unparseable value is silently dropped (null) from the draft."
+  - id: SO-GAP-5
+    severity: could
+    description: "No way to amend or cancel a standing order in-app (stated by the irreversible notice); there is also no consent revoke for the staged mandate consent (bank answers 405)."
+  - id: SO-GAP-6
+    severity: could
+    description: "StandingOrderTestTags declares SUCCESS_STATE / SUCCESS_AMOUNT / SUCCESS_STATUS_CHIP / SUCCESS_PAYMENT_ID / VIEW_PAYMENT_STATUS_BUTTON / CANCEL_BUTTON with no composable using them — the success outcome lives in payment-consent → payment-status, so these tags are dead."

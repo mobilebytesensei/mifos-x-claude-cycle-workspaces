@@ -1,0 +1,208 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: scheduled-payments
+screen_id: scheduled-payments
+name: "Scheduled Payments"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/scheduled-payments/src/commonMain/kotlin/org/mifosx/openbanking/feature/scheduledpayments/ScheduledPaymentsDestination.kt
+  - feature/scheduled-payments/src/commonMain/kotlin/org/mifosx/openbanking/feature/scheduledpayments/ScheduledPaymentsScreen.kt
+  - feature/scheduled-payments/src/commonMain/kotlin/org/mifosx/openbanking/feature/scheduledpayments/ScheduledPaymentsContent.kt
+  - feature/scheduled-payments/src/commonMain/kotlin/org/mifosx/openbanking/feature/scheduledpayments/ui/ScheduledPaymentsState.kt
+  - feature/scheduled-payments/src/commonMain/kotlin/org/mifosx/openbanking/feature/scheduledpayments/ui/ScheduledPaymentsViewModel.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/ScheduledPaymentsRepository.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/store/BankingStores.kt
+requirement_refs: [FR-011, FR-040]
+screen_ref: ScheduledPayments
+archetype: index_list
+archetype_overrides: { empty: empty_state, error: error_state, loading: loading }
+
+feature_profile:
+  combo_id: read_detail
+  facets: [content]
+  archetype: screen-content
+  store_archetype: MEMORY_ONLY
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default
+
+route: "ScheduledPaymentsRoute(accountId)"
+entry_points:
+  - source: account-detail
+    trigger: "Explore chip AccountDetailChip.ScheduledPayments → navigateFromChip"
+    params: { accountId: String }
+nav_params:
+  accountId: { type: String, required: true, savedstate_key: accountId }
+
+business_logic:
+  kind: transformer
+  description: >-
+    Streams every future-dated scheduled payment for one account via ScheduledPaymentsRepository.scheduledPaymentsStream
+    (in-memory Store5 keyed by AccountId; full unpaginated OBIE list in bank order). An empty list is coerced to Empty via
+    emptyIfContent. Each ScheduledPaymentItem maps to a card model: formatMoney amount, ISO date to "Ddd d Mon yyyy" UTC
+    with a raw-string fallback when unparseable (FR-011), creditor identification and reference. A U000 refusal is
+    recorded against AccountEndpoint.ScheduledPayments in the fetcher so account-detail hides the chip.
+  library_refs: []
+  external_library_refs: ["Store5", "kotlinx-datetime"]
+
+screens:
+  - id: scheduled-payments-screen
+    title: "{strings.feature_scheduled_payments_screen_title}"
+    type: list
+    description: >-
+      KptScaffold with back arrow and title "Scheduled Payments". Content is a LazyColumn of outlined surfaceContainer
+      cards (16dp gaps). Each card: payee name (titleMedium) with the amount right-aligned (headlineSmall semibold, error
+      colour — outgoing), a "Due: <date>" line, a divider, then a "To: <creditor identification>" monospace line and a
+      second line showing the payment reference. Cards are read-only (no tap target).
+
+state_model:
+  ScheduledPaymentsViewModel:
+    base: BaseViewModel<ScheduledPaymentsState, Nothing, ScheduledPaymentsAction>
+    state:
+      name: ScheduledPaymentsState
+      fields:
+        accountId: { type: String, default: "savedStateHandle[accountId].orEmpty()" }
+        uiState: { type: ScheduledPaymentsUiState, default: "ScheduledPaymentsUiState.Loading" }
+    screen_state:
+      name: ScheduledPaymentsUiState
+      members: [Loading, "Content(payments: List<ScheduledPaymentUiModel>)", Empty, "Error(kind: ScheduledPaymentsError)"]
+    ui_model:
+      name: ScheduledPaymentUiModel
+      fields:
+        scheduledPaymentId: { type: String }
+        payeeName: { type: String }
+        amountLabel: { type: String, note: "formatMoney(amount, currency)" }
+        scheduledDateLabel: { type: String, note: "formatScheduledDate → 'Ddd d Mon yyyy' or raw ISO on parse failure" }
+        scheduledType: { type: ScheduledPaymentType, values: [Execution, Arrival, Unknown] }
+        creditorIdentification: { type: String }
+        reference: { type: String }
+    errors:
+      name: ScheduledPaymentsError
+      types:
+        - { type: TokenExpired, retry: true, http: 401, message_key: feature_scheduled_payments_error_token_expired }
+        - { type: ConsentRevoked, retry: true, http: 403, message_key: feature_scheduled_payments_error_consent_revoked }
+        - { type: RateLimited, retry: true, http: 429, message_key: feature_scheduled_payments_error_rate_limited }
+        - { type: NetworkError, retry: true, cause: "NetworkError.Network, NoNetwork, and every unclassified error (5xx, U000)", message_key: feature_scheduled_payments_error_network }
+    events:
+      name: Nothing
+      members: []
+    actions:
+      name: ScheduledPaymentsAction
+      members:
+        - { name: RetryLoad, trigger: "Tap Retry on the error component", handler: "stream.refresh()" }
+    di:
+      - ScheduledPaymentsRepository
+      - SavedStateHandle
+
+components:
+  - id: top_bar
+    type: top-bar
+    source: KptScaffold
+    title: "{strings.feature_scheduled_payments_screen_title}"
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      target: account-detail
+      action_contract:
+        effect: navigate
+        description: "Pops ScheduledPaymentsRoute off the back stack (navController.popBackStack) returning to account-detail; no network call."
+        action_contract_author: "claude-via-source-analysis"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+  - id: loading_indicator
+    type: progress-indicator
+    source: MifosProgressIndicator
+  - id: payments_list
+    type: list
+    source: LazyColumn
+    test_tag: "ScheduledPaymentsTestTags.CONTENT_LIST"
+    content_description: "{strings.feature_scheduled_payments_list_a11y}"
+    item_key: "scheduledPaymentId.ifBlank { payeeName }"
+    item:
+      id: payment_card
+      type: card
+      test_tag: "ScheduledPaymentsTestTags.card(scheduledPaymentId)"
+      content_description: "{strings.feature_scheduled_payments_card_a11y}"
+      style: { background: surfaceContainer, elevation: level0, corner_radius: medium, border: "hairline outlineVariant" }
+      content:
+        - id: card_header
+          type: row
+          children:
+            - { id: payee_name, type: text, value: "{{payment.payeeName}}", style: { text_style: titleMedium, color: onSurface } }  # i18n: skip — bank payload
+            - { id: amount, type: text, value: "{{payment.amountLabel}}", style: { text_style: headlineSmall, font_weight: semibold, color: error, align: end } }  # i18n: skip — formatted money
+        - { id: due_line, type: text, value: "{strings.feature_scheduled_payments_due_prefix} {{payment.scheduledDateLabel}}", style: { text_style: titleSmall, color: onSurfaceVariant } }
+        - { id: meta_divider, type: divider, style: { color: outlineVariant } }
+        - id: creditor_line
+          type: row
+          children:
+            - { id: creditor_prefix, type: text, value: "{strings.feature_scheduled_payments_account_prefix}" }
+            - { id: creditor_identification, type: text, value: "{{payment.creditorIdentification}}", style: { font_family: monospace } }  # i18n: skip — account identifier
+        - id: reference_line
+          type: row
+          children:
+            - { id: reference_prefix, type: text, value: "{strings.feature_scheduled_payments_account_prefix}", defect: "should be feature_scheduled_payments_ref_prefix — see SP-GAP-1" }
+            - { id: reference_value, type: text, value: "{{payment.reference}}" }  # i18n: skip — bank payload
+  - id: empty_state
+    type: empty-state
+    source: EmptyDataComponent
+    message: "{strings.feature_scheduled_payments_empty_title}"
+  - id: error_state
+    type: error-state
+    source: MifosErrorComponent
+    message: "{strings.feature_scheduled_payments_error_*}"   # selected by ScheduledPaymentsError.bodyResource()
+    retry_visible: true
+    on_click:
+      action: RetryLoad
+      action_contract:
+        effect: call_api
+        external_library_refs: ["Store5", "core/data/ScheduledPaymentsRepository"]
+        description: "Sends RetryLoad which calls stream.refresh() on the Store5-backed ScheduledPaymentsRepository stream, re-fetching GET /accounts/{AccountId}/scheduled-payments; retry is shown for every error kind."
+        action_contract_author: "claude-via-source-analysis"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+states: [loading, content, empty, error]
+initial_state: loading
+state_renders:
+  loading: { components: [top_bar, loading_indicator], description: "Store fetch in flight" }
+  content: { components: [top_bar, payments_list], description: "One read-only card per scheduled payment, bank order" }
+  empty: { components: [top_bar, empty_state], description: "Bank returned zero scheduled payments (emptyIfContent) or ScreenState.Empty" }
+  error: { components: [top_bar, error_state], description: "TokenExpired / ConsentRevoked / RateLimited / NetworkError — all retryable" }
+
+visual_assets: []   # text-only list; EmptyDataComponent/MifosErrorComponent use design-system vector icons
+
+known_gaps:
+  - id: SP-GAP-1
+    severity: medium
+    description: "The reference line in each card is prefixed with feature_scheduled_payments_account_prefix ('To:') instead of feature_scheduled_payments_ref_prefix ('Ref:'), so the card shows two 'To:' lines."
+    source: "ScheduledPaymentsContent.kt CardMeta"
+  - id: SP-GAP-2
+    severity: medium
+    description: "ScheduledPaymentUiModel.scheduledType (Execution/Arrival/Unknown) is mapped but never rendered; the type labels and a11y strings (feature_scheduled_payments_type_*) are unused."
+  - id: SP-GAP-3
+    severity: medium
+    description: "FR-040: 403 ConsentRevoked must not be retriable, but the error component always has isRetryEnabled = true. Unclassified errors (5xx) are reported with the 'No network connection' copy."
+  - id: SP-GAP-4
+    severity: medium
+    description: "No Unsupported state: the store records a U000 refusal in AccountCapabilityRegistry, but a direct entry (deep link / stale chip) shows it as a NetworkError instead of 'Not available for this account' like standing-orders and direct-debits."
+  - id: SP-GAP-5
+    severity: low
+    description: "Empty body copy (feature_scheduled_payments_empty_body) and loading/error/retry a11y strings are declared but unused — EmptyDataComponent only receives the title."
+
+i18n:
+  en:
+    feature_scheduled_payments_screen_title: "Scheduled Payments"
+    feature_scheduled_payments_list_a11y: "Scheduled payments list"
+    feature_scheduled_payments_card_a11y: "Scheduled payment of %1$s to %2$s"
+    feature_scheduled_payments_due_prefix: "Due:"
+    feature_scheduled_payments_account_prefix: "To:"
+    feature_scheduled_payments_ref_prefix: "Ref:"
+    feature_scheduled_payments_type_execution: "Execution date"
+    feature_scheduled_payments_type_arrival: "Arrival date"
+    feature_scheduled_payments_type_unknown: "Scheduled"
+    feature_scheduled_payments_empty_title: "No scheduled payments"
+    feature_scheduled_payments_empty_body: "No future-dated payments are pending for this account."
+    feature_scheduled_payments_error_token_expired: "Session expired. Please log in again."
+    feature_scheduled_payments_error_consent_revoked: "Access to scheduled payments has been withdrawn."
+    feature_scheduled_payments_error_rate_limited: "Too many requests. Please wait a moment and try again."
+    feature_scheduled_payments_error_network: "No network connection. Please check your connection and retry."
+    feature_scheduled_payments_retry: "Retry"

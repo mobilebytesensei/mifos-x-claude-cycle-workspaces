@@ -1,0 +1,502 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: consent-detail
+screen_id: consent-detail
+name: "HSBC Connection"
+status: enriched
+_source: source_analysis
+_source_paths:
+  - feature/consent-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentdetail/ConsentDetailScreen.kt
+  - feature/consent-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentdetail/ConsentDetailContent.kt
+  - feature/consent-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentdetail/ConsentDetailRevokeDialog.kt
+  - feature/consent-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentdetail/ui/ConsentDetailViewModel.kt
+  - feature/consent-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentdetail/ui/ConsentDetailState.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/user/impl/AppLogoutImpl.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/impl/ConsentDetailRepositoryImpl.kt
+requirement_refs: [FR-024, FR-025]
+archetype: detail_screen
+states: [loading, content, revoke_confirm, revoking, revoke_failed, empty, error]
+initial_state: loading
+feature_profile:
+  combo_id: read_detail
+  facets: [content, network, destructive]
+  archetype: screen-content
+  store_archetype: MEMORY_ONLY      # shared ConsentStores.consentDetailStore (createMemoryStore)
+  recipe_ref: CORE_STORE.md
+  heal: auto
+  profile_hash: scaffold-default
+
+route: "ConsentDetailRoute(consentId: String)"
+entry_points:
+  - source: consent-list
+    trigger: "tap consent card"
+    params: { consentId: String }
+nav_params:
+  consentId: { type: String, required: true, read_via: "SavedStateHandle.get<String>(\"consentId\").orEmpty()" }
+
+business_logic:
+  kind: composite
+  description: >
+    Reads the AIS consent via the same Store5 memory stream as consent-list
+    (GET /v4.0/aisp/account-access-consents/{ConsentId} with a temporary client_credentials token)
+    and renders status, consent id, access-period dates (connected / expires / transaction from / to)
+    and the humanised permission list. expiryWarningDays is set only when daysUntilExpiry <= 7.
+    Revoke is a two-step gate: ConfirmRevoke opens a dialog over inert content; ExecuteRevoke
+    switches to Revoking and calls ConsentRevokeRepository.revokeConsent(consentId), which DELETEs
+    the AIS consent at HSBC. Local logout is CONDITIONAL on the bank's answer (NFR-006 FAPI
+    "revocation confirmed at the ASPSP before local logout", heals DEF-003): only a confirmed
+    DELETE (2xx, or 404 = already gone at the bank) runs AppLogout.logOut() — forget PSU + payment
+    tokens, clear user data, Store caches, payment history and VRP consents — and emits LoggedOut so
+    the root navigator returns to the auth graph. Any other outcome (non-2xx, 401 token, network,
+    timeout) moves to RevokeFailed(consent): the user stays signed in and connected, sees a banner
+    "Your bank didn't confirm the withdrawal. You're still connected." and can RetryRevoke, which
+    re-runs the DELETE. Reconfirm navigates to LoginRenewRoute.
+  library_refs: [store5]
+
+screens:
+  - id: consent-detail-screen
+    title: "{strings.feature_consent_detail_screen_title}"
+    type: detail
+    archetype: detail_screen
+    states: [loading, content, revoke_confirm, revoking, revoke_failed, empty, error]
+    description: >
+      KptScaffold titled "HSBC Connection"; the back arrow is hidden while Revoking. LazyColumn:
+      16:9 connection hero (app linked to the bank by a secured consent), status card (status chip + monospace consent id), optional tertiary expiry banner,
+      "Access period" header + 4 date rows, tonal "Reconfirm before expiry" button,
+      "Data you have shared" header + one row per permission, and an error-outlined "Revoke access"
+      button. RevokeConfirm overlays an AlertDialog on the same content with actions disabled.
+      RevokeFailed re-renders the same content with an error-container banner pinned above the
+      list ("Your bank didn't confirm the withdrawal. You're still connected." + Retry).
+
+state_model:
+  ConsentDetailViewModel:
+    base: "BaseViewModel<ConsentDetailState, ConsentDetailEvent, ConsentDetailAction>"
+    state:
+      name: ConsentDetailState
+      fields:
+        consentId: { type: String, default: "savedStateHandle[\"consentId\"].orEmpty()" }
+        uiState: { type: ConsentDetailUiState, default: "ConsentDetailUiState.Loading" }
+    screen_state:
+      name: ConsentDetailUiState
+      members:
+        - { name: Loading }
+        - { name: Content, fields: { consent: ConsentDetailUi } }
+        - { name: RevokeConfirm, fields: { consent: ConsentDetailUi } }
+        - { name: Revoking, fields: { consent: ConsentDetailUi } }
+        - { name: RevokeFailed, fields: { consent: ConsentDetailUi, reason: RevokeFailureReason } }
+        - { name: Empty }
+        - { name: Error, fields: { kind: ConsentDetailErrorKind } }
+    models:
+      ConsentDetailUi:
+        consentId: String
+        status: ConsentStatus
+        permissions: "List<String>"     # raw OBIE codes, humanised in UI (ReadAccountsDetail → "Read accounts detail")
+        connectedDate: String           # formatDetailDate(creationDateTime) "d Mon yyyy" UTC
+        expiresDate: String
+        transactionFromDate: String
+        transactionToDate: String
+        expiryWarningDays: "Int?"       # daysUntilExpiry when <= 7 (EXPIRY_WARNING_DAYS), else null
+    errors:
+      name: ConsentDetailErrorKind
+      types:
+        - { type: ConsentNotFound, retry: true, http: 404, message_key: feature_consent_detail_error_not_found }
+        - { type: ConsentRevoked, retry: true, http: 403, message_key: feature_consent_detail_error_revoked }
+        - { type: TokenExpired, retry: true, http: 401, message_key: feature_consent_detail_error_token_expired }
+        - { type: NetworkError, retry: true, message_key: feature_consent_detail_error_network }
+        - { type: RevokeServerError, retry: true, http: 5xx, message_key: feature_consent_detail_error_server, note: "named for revoke but only produced by a load-time Server error" }
+    revoke_failures:
+      name: RevokeFailureReason
+      note: "Outcomes of the revoke DELETE that the bank did NOT confirm; each keeps the session and lands in RevokeFailed (NFR-006). 2xx and 404 are confirmations, never failures."
+      types:
+        - { type: BankRejected, http: "4xx except 404 / 5xx", retry: true, message_key: feature_consent_detail_revoke_failed_body }
+        - { type: TokenUnavailable, http: 401, retry: true, message_key: feature_consent_detail_revoke_failed_body, note: "client_credentials token could not be minted for the DELETE" }
+        - { type: Network, retry: true, message_key: feature_consent_detail_revoke_failed_body, note: "no response / timeout — outcome unknown, so treated as unconfirmed" }
+    events:
+      name: ConsentDetailEvent
+      members:
+        - { name: LoggedOut }
+    actions:
+      name: ConsentDetailAction
+      members:
+        - { name: RetryLoad, trigger: "Tap Retry on error → stream.refresh()" }
+        - { name: ConfirmRevoke, trigger: "Tap Revoke access (only from Content)" }
+        - { name: DismissRevokeConfirm, trigger: "Keep access / dialog dismiss (only from RevokeConfirm)" }
+        - { name: ExecuteRevoke, trigger: "Yes, revoke (only from RevokeConfirm)" }
+        - { name: RetryRevoke, trigger: "Tap Retry on the revoke-failed banner (only from RevokeFailed)" }
+    di:
+      - SavedStateHandle
+      - ConsentDetailRepository
+      - ConsentRevokeRepository   # the VM owns the DELETE so it can gate logout on the result (DEF-003)
+      - AppLogout
+
+components:
+  - id: top_bar
+    type: top-bar
+    impl: KptScaffold
+    title: "{strings.feature_consent_detail_screen_title}"
+    navigation_icon: arrow_back
+    visible_navigation_icon: "{{uiState !is Revoking}}"
+    on_navigation_click:
+      action: onBack
+      target: back
+      action_contract:
+        effect: navigate
+        handler: "onBack → navController.popBackStack()"
+        description: "Pops back to consent-list; the arrow is hidden during Revoking so the user cannot leave mid-logout."
+        action_contract_author: "claude-via-idea-plan-source"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: consent_detail_skeleton
+    type: skeleton
+    impl: ConsentDetailSkeleton
+    test_tag: "consentDetail:loading"
+    content_description: "{strings.feature_consent_detail_loading_a11y}"
+
+  - id: content_list
+    type: lazy-column
+    test_tag: "consentDetail:contentList"
+    style: { padding: 16dp }
+    children:
+      - id: connection_hero
+        type: hero
+        role: hero
+        test_tag: "consentDetail:hero"
+        content_description: "{strings.feature_consent_detail_hero_a11y}"
+        asset_ref: consent_detail_hero
+        style: { aspect_ratio: "16:9", corner_radius: 16dp, background: surfaceContainerLow }
+      - id: status_card
+        type: card
+        test_tag: "consentDetail:statusCard"
+        style: { background: surfaceContainerLow, corner_radius: 12dp, padding: 16dp }
+        content:
+          - id: status_chip
+            type: chip
+            test_tag: "consentDetail:statusChip"
+            label: "{{status | consentStatusLabel}}"  # i18n: skip — resolves to feature_consent_detail_status_* keys
+            content_description: "{strings.feature_consent_detail_status_a11y}"
+            icon: { Authorised: check_circle, other: schedule }
+            style:
+              Authorised: { background: primaryContainer, text_color: onPrimaryContainer }
+              other: { background: surfaceContainerHighest, text_color: onSurfaceVariant }
+          - id: consent_id_text
+            type: text
+            test_tag: "consentDetail:consentId"
+            style: { text_style: labelSmall, font_family: monospace, color: onSurfaceVariant }
+            value: "{strings.feature_consent_detail_consent_id}"
+      - id: expiry_banner
+        type: banner
+        visible: "{{expiryWarningDays != null}}"
+        test_tag: "consentDetail:expiryBanner"
+        icon: access_time
+        style: { background: tertiaryContainer, text_color: onTertiaryContainer, corner_radius: 12dp }
+        message: "{strings.feature_consent_detail_expiry_warning}"
+      - id: dates_header
+        type: text
+        test_tag: "consentDetail:datesHeader"
+        style: { text_style: labelLarge, color: onSurfaceVariant }
+        value: "{strings.feature_consent_detail_section_access_period}"
+      - id: dates_list
+        type: list
+        test_tag: "consentDetail:datesList"
+        divider: outlineVariant
+        items:
+          - { slot: connected, test_tag: "consentDetail:date:connected", icon: event, label: "{strings.feature_consent_detail_label_connected_on}", value: "{{connectedDate}}" }
+          - { slot: expires, test_tag: "consentDetail:date:expires", icon: event_busy, label: "{strings.feature_consent_detail_label_expires_on}", value: "{{expiresDate}}" }
+          - { slot: txnFrom, test_tag: "consentDetail:date:txnFrom", icon: history, label: "{strings.feature_consent_detail_label_transaction_from}", value: "{{transactionFromDate}}" }
+          - { slot: txnTo, test_tag: "consentDetail:date:txnTo", icon: event_available, label: "{strings.feature_consent_detail_label_transaction_to}", value: "{{transactionToDate}}" }
+      - id: reconfirm_button
+        type: button
+        variant: tonal-pill
+        impl: MifosTonalPillButton
+        icon: refresh
+        test_tag: "consentDetail:reconfirmButton"
+        label: "{strings.feature_consent_detail_reconfirm_button}"
+        on_click:
+          action: onReconfirm
+          target: login
+          action_contract:
+            effect: navigate
+            handler: "onReconfirm → navController.navigate(LoginRenewRoute)"
+            description: "Navigates to LoginRenewRoute so the user re-authorises a fresh 90-day AIS consent with HSBC before the current one expires; shown regardless of expiry window."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: permissions_header
+        type: text
+        test_tag: "consentDetail:permissionsHeader"
+        style: { text_style: labelLarge, color: onSurfaceVariant }
+        value: "{strings.feature_consent_detail_section_data_shared}"
+      - id: permission_row
+        type: list-item
+        repeat: "permissions"
+        test_tag: "consentDetail:permission:{code}"
+        content_description: "{strings.feature_consent_detail_permissions_a11y}"
+        leading_icon: { icon: check_circle_outline, tint: primary }
+        headline: "{{code | humanisePermissionCode}}"  # i18n: skip — OBIE permission code humanised in code
+      - id: revoke_button
+        type: button
+        variant: outlined-pill
+        test_tag: "consentDetail:revokeButton"
+        content_description: "{strings.feature_consent_detail_revoke_a11y}"
+        label: "{strings.feature_consent_detail_revoke_button}"
+        enabled: "{{actionsEnabled}}"       # false while RevokeConfirm dialog is up
+        style: { border_color: error, border_width: 1.5dp, text_color: error }
+        on_click:
+          action: ConfirmRevoke
+          action_contract:
+            effect: transform_state
+            handler: "ConsentDetailViewModel.openRevokeGate()"
+            writes_to: "ConsentDetailState.uiState = RevokeConfirm(consent)"
+            description: "Opens the revoke confirmation gate: Content becomes RevokeConfirm with the same consent so the dialog renders over inert content; no network call. Ignored unless current state is Content."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: revoke_dialog
+    type: dialog
+    impl: ConsentDetailRevokeDialog (AlertDialog)
+    test_tag: "consentDetail:revokeDialog"
+    content_description: "{strings.feature_consent_detail_revoke_dialog_a11y}"
+    title: { value: "{strings.feature_consent_detail_revoke_dialog_title}", test_tag: "consentDetail:revokeDialogTitle" }
+    body: { value: "{strings.feature_consent_detail_revoke_dialog_body}", test_tag: "consentDetail:revokeDialogBody" }
+    on_dismiss_request:
+      action: DismissRevokeConfirm
+      action_contract:
+        effect: transform_state
+        handler: "ConsentDetailViewModel.closeRevokeGate()"
+        writes_to: "ConsentDetailState.uiState = Content(consent)"
+        description: "Closes the gate when the dialog is dismissed outside its buttons, restoring Content with the same consent; no network call."
+        action_contract_author: "claude-via-idea-plan-source"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+    buttons:
+      - id: revoke_dialog_cancel
+        type: button
+        variant: text
+        test_tag: "consentDetail:revokeDialogCancel"
+        label: "{strings.feature_consent_detail_revoke_dialog_cancel}"
+        on_click:
+          action: DismissRevokeConfirm
+          action_contract:
+            effect: transform_state
+            handler: "ConsentDetailViewModel.closeRevokeGate()"
+            writes_to: "ConsentDetailState.uiState = Content(consent)"
+            description: "Keep access: returns RevokeConfirm to Content with the same consent, leaving the bank consent and local session untouched."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: revoke_dialog_confirm
+        type: button
+        variant: text
+        test_tag: "consentDetail:revokeDialogConfirm"
+        label: "{strings.feature_consent_detail_revoke_dialog_confirm}"
+        style: { text_color: error }
+        on_click:
+          action: ExecuteRevoke
+          action_contract:
+            effect: delete
+            handler: "ConsentDetailViewModel.executeRevoke() → ConsentRevokeRepository.revokeConsent(consentId) → on confirmed: AppLogout.logOut() + sendEvent(LoggedOut) · on unconfirmed: uiState = RevokeFailed(consent, reason)"
+            writes_to: "DELETE /v4.0/aisp/account-access-consents/{ConsentId}; then ONLY on 2xx/404: ConsentSession; PaymentAuthSession; UserData; Store caches; payment_history; vrp_consent; vrp_payment; else ConsentDetailState.uiState = RevokeFailed"
+            description: "Moves to Revoking and DELETEs the AIS consent at HSBC. Local logout runs ONLY after the bank confirms (2xx, or 404 = already gone): forget PSU and payment tokens, clear user data, caches, payment history and VRP consents, then emit LoggedOut so the root nav routes to the auth graph. Any other result keeps the user signed in and moves to RevokeFailed with a Retry (NFR-006, DEF-003)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: revoking_state
+    type: progress
+    impl: ConsentDetailRevoking
+    test_tag: "consentDetail:revokingProgress"
+    content_description: "{strings.feature_consent_detail_revoking_a11y}"
+    label: { value: "{strings.feature_consent_detail_revoking_label}", test_tag: "consentDetail:revokingLabel" }
+    hint: "{strings.feature_consent_detail_revoking_hint}"
+
+  - id: revoke_failed_banner
+    type: banner
+    impl: ConsentDetailRevokeFailedBanner
+    visible: "{{uiState is RevokeFailed}}"
+    test_tag: "consentDetail:revokeFailedBanner"
+    content_description: "{strings.feature_consent_detail_revoke_failed_a11y}"
+    live_region: polite             # announced to screen readers when it appears (NFR-009)
+    icon: sync_problem
+    style: { background: errorContainer, text_color: onErrorContainer, corner_radius: 12dp, padding: 16dp }
+    title: { value: "{strings.feature_consent_detail_revoke_failed_title}", test_tag: "consentDetail:revokeFailedTitle" }
+    message: { value: "{strings.feature_consent_detail_revoke_failed_body}", test_tag: "consentDetail:revokeFailedBody" }
+    cta:
+      id: revoke_retry_button
+      type: button
+      variant: text
+      test_tag: "consentDetail:revokeRetryButton"
+      label: "{strings.feature_consent_detail_revoke_failed_retry}"
+      style: { text_color: onErrorContainer }
+      on_click:
+        action: RetryRevoke
+        action_contract:
+          effect: delete
+          handler: "ConsentDetailViewModel.retryRevoke() → executeRevoke()"
+          writes_to: "DELETE /v4.0/aisp/account-access-consents/{ConsentId}; ConsentDetailState.uiState = Revoking(consent) → LoggedOut on 2xx/404 | RevokeFailed(consent, reason) otherwise"
+          description: "Re-runs the revoke DELETE from RevokeFailed. Same gate as Yes, revoke: logout and LoggedOut only after the bank confirms; another unconfirmed result returns to RevokeFailed with the session intact. Ignored unless current state is RevokeFailed."
+          action_contract_author: "claude-via-idea-feature-enrich"
+          action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: empty_state
+    type: empty-state
+    impl: ConsentDetailEmpty
+    test_tag: "consentDetail:emptyState"
+    content_description: "{strings.feature_consent_detail_empty_a11y}"
+    icon: link_off
+    title: { value: "{strings.feature_consent_detail_empty_title}", test_tag: "consentDetail:emptyTitle" }
+    body: { value: "{strings.feature_consent_detail_empty_body}", test_tag: "consentDetail:emptyBody" }
+    cta:
+      id: go_back_button
+      type: button
+      variant: filled-pill
+      test_tag: "consentDetail:goBackButton"
+      label: "{strings.feature_consent_detail_go_back}"
+      on_click:
+        action: onGoBack
+        target: back
+        action_contract:
+          effect: navigate
+          handler: "onGoBack = onBack → navController.popBackStack()"
+          description: "Back to connections: pops to consent-list when the consent stream reports Empty."
+          action_contract_author: "claude-via-idea-plan-source"
+          action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: error_state
+    type: error-state
+    impl: ConsentDetailError
+    test_tag: "consentDetail:errorState"
+    content_description: "{strings.feature_consent_detail_error_a11y}"
+    icon: error_outline
+    icon_well: { size: 80dp, background: errorContainer }
+    title: { value: "{strings.feature_consent_detail_error_title}", test_tag: "consentDetail:errorTitle" }
+    body:
+      test_tag: "consentDetail:errorBody"
+      value:
+        ConsentNotFound: "{strings.feature_consent_detail_error_not_found}"
+        ConsentRevoked: "{strings.feature_consent_detail_error_revoked}"
+        TokenExpired: "{strings.feature_consent_detail_error_token_expired}"
+        NetworkError: "{strings.feature_consent_detail_error_network}"
+        RevokeServerError: "{strings.feature_consent_detail_error_server}"
+    cta:
+      id: retry_button
+      type: button
+      variant: filled-pill
+      test_tag: "consentDetail:retryButton"
+      label: "{strings.feature_consent_detail_retry}"
+      on_click:
+        action: RetryLoad
+        action_contract:
+          effect: call_api
+          handler: "ConsentDetailViewModel.handleAction(RetryLoad) → stream.refresh()"
+          writes_to: "ConsentDetailState.uiState"
+          description: "Refreshes the consent stream, re-reading GET /v4.0/aisp/account-access-consents/{ConsentId} with a new client_credentials token; shown for every error kind including non-recoverable 404/403."
+          action_contract_author: "claude-via-idea-plan-source"
+          action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+state_components:
+  loading:
+    components: [top_bar, consent_detail_skeleton]
+  content:
+    components: [top_bar, content_list]
+    demo_data:
+      consent:
+        consentId: "aac-6f1e2b9c-41d7"
+        status: Authorised
+        permissions: [ReadAccountsDetail, ReadBalances, ReadBeneficiariesDetail, ReadTransactionsDetail, ReadStatementsDetail]
+        connectedDate: "14 Jul 2026"
+        expiresDate: "12 Oct 2026"
+        transactionFromDate: "14 Jul 2024"
+        transactionToDate: "12 Oct 2026"
+        expiryWarningDays: 5
+  revoke_confirm:
+    components: [top_bar, content_list, revoke_dialog]
+    description: "Content rendered with actionsEnabled=false behind the AlertDialog."
+  revoking:
+    components: [revoking_state]
+    description: "Navigation icon hidden; revoke DELETE in flight. Confirmed (2xx/404) → AppLogout.logOut() → LoggedOut; unconfirmed → revoke_failed."
+  revoke_failed:
+    components: [top_bar, revoke_failed_banner, content_list]
+    description: "Bank did not confirm the DELETE: user stays signed in and connected; content stays interactive (back arrow visible, Revoke access re-enabled) with the error banner + Retry above it."
+    demo_data:
+      reason: Network
+  empty:
+    components: [top_bar, empty_state]
+  error:
+    components: [top_bar, error_state]
+
+visual_assets:
+  # Inherited floor of archetype detail_screen (SCREEN_ARCHETYPES.yaml detail_hero) — RULE-SCREEN-VISUAL-ASSETS-001 SVA-1.
+  - id: consent_detail_hero
+    kind: hero
+    role: hero
+    intent: "16:9 calm flat illustration of a phone app linked to an abstract bank building by a single line passing through a shield-and-key padlock, conveying a secure, revocable data-sharing consent; trustworthy, calm, precise; primary/secondary theme palette on a soft surface; no logos, no wordmarks, no text."
+    produced_by: /idea-feature-stitch-art
+    states: [content, revoke_confirm, revoke_failed]
+    consistency: none
+
+strings_ref: feature/consent-detail/src/commonMain/composeResources/values/strings.xml
+i18n:
+  en:
+    feature_consent_detail_screen_title: "HSBC Connection"
+    feature_consent_detail_loading_a11y: "Loading consent detail"
+    feature_consent_detail_status_a11y: "Consent status: %1$s"
+    feature_consent_detail_consent_id: "Consent ID: %1$s"
+    feature_consent_detail_expiry_warning: "Expires in %1$d days — please reconfirm your consent"
+    feature_consent_detail_section_access_period: "Access period"
+    feature_consent_detail_label_connected_on: "Connected on"
+    feature_consent_detail_label_expires_on: "Expires on"
+    feature_consent_detail_label_transaction_from: "Transaction data from"
+    feature_consent_detail_label_transaction_to: "Transaction data to"
+    feature_consent_detail_section_data_shared: "Data you have shared"
+    feature_consent_detail_permissions_a11y: "Permissions granted to this consent"
+    feature_consent_detail_reconfirm_button: "Reconfirm before expiry"
+    feature_consent_detail_revoke_button: "Revoke access"
+    feature_consent_detail_revoke_a11y: "Revoke HSBC account access — this is a destructive action"
+    feature_consent_detail_revoke_dialog_title: "Revoke HSBC access?"
+    feature_consent_detail_revoke_dialog_body: "Mifos will immediately lose access to all HSBC account data. This cannot be undone — you will need to reconnect to restore access."
+    feature_consent_detail_revoke_dialog_a11y: "Confirm revoking HSBC access"
+    feature_consent_detail_revoke_dialog_cancel: "Keep access"
+    feature_consent_detail_revoke_dialog_confirm: "Yes, revoke"
+    feature_consent_detail_revoking_label: "Revoking access…"
+    feature_consent_detail_revoking_hint: "Removing your HSBC connection. Please do not close the app."
+    feature_consent_detail_revoking_a11y: "Revoking HSBC access, please wait"
+    feature_consent_detail_revoke_failed_title: "Access not withdrawn"
+    feature_consent_detail_revoke_failed_body: "Your bank didn't confirm the withdrawal. You're still connected."
+    feature_consent_detail_revoke_failed_retry: "Retry"
+    feature_consent_detail_revoke_failed_a11y: "Revoke failed. Your bank didn't confirm the withdrawal and you're still connected. Retry is available."
+    feature_consent_detail_hero_a11y: "Illustration of this app securely connected to your bank"
+    feature_consent_detail_empty_title: "Consent not found"
+    feature_consent_detail_empty_body: "This consent is no longer available. It may have been revoked or expired. Return to view your active connections."
+    feature_consent_detail_empty_a11y: "Consent not found or no longer available"
+    feature_consent_detail_go_back: "Back to connections"
+    feature_consent_detail_error_title: "Could not load consent"
+    feature_consent_detail_error_a11y: "Error loading consent detail"
+    feature_consent_detail_error_not_found: "This consent no longer exists at HSBC. It may already have been revoked."
+    feature_consent_detail_error_revoked: "Access to this consent has been withdrawn."
+    feature_consent_detail_error_token_expired: "Your session has expired. Sign in again to view this consent."
+    feature_consent_detail_error_network: "Unable to reach HSBC servers. Please check your internet connection and try again."
+    feature_consent_detail_error_server: "Something went wrong on the HSBC side. Please try again."
+    feature_consent_detail_retry: "Retry"
+    feature_consent_detail_status_authorised: "Authorised"
+    feature_consent_detail_status_expired: "Expired"
+    feature_consent_detail_status_revoked: "Revoked"
+    feature_consent_detail_status_cancelled: "Cancelled"
+    feature_consent_detail_status_rejected: "Rejected"
+    feature_consent_detail_status_awaiting: "Awaiting authorisation"
+    feature_consent_detail_status_consumed: "Consumed"
+
+known_gaps:
+  - id: revoke-is-full-logout
+    severity: info
+    description: "Revoke is not a scoped consent delete: a confirmed revoke calls AppLogout.logOut(), which also wipes payment auth, history and every VRP consent. (The 'failed revoke still logs out' half — DEF-003 — is closed in this spec by the revoke_failed state; source still pending /implement.)"
+  - id: def-003-source-pending
+    severity: warn
+    description: "Spec healed 2026-10-21 (revoke_failed + confirm-before-logout); source still runs the DELETE inside AppLogoutImpl with runCatching. /kmp-implement must move the DELETE into ConsentDetailViewModel and make AppLogout.logOut() DELETE-free for this path."
+  - id: retry-on-terminal-errors
+    severity: warn
+    description: "Retry is offered for ConsentNotFound (404), ConsentRevoked (403) and TokenExpired (401), which a refresh cannot fix; TokenExpired has no Sign-in-again path unlike consent-list's ErrorAuth."
+  - id: revoke-server-error-misnamed
+    severity: info
+    description: "ConsentDetailErrorKind.RevokeServerError is only produced by a load-time 5xx; the revoke path never surfaces an error."
+  - id: blank-consent-id
+    severity: info
+    description: "consentId falls back to '' when the nav arg is missing; the store is then queried with an empty id rather than failing fast to Empty."
+  - id: reconfirm-not-gated
+    severity: info
+    description: "The Reconfirm button is always shown, not only inside the 7-day warning window."

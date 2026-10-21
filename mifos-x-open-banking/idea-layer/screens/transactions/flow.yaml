@@ -1,0 +1,80 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: transactions
+feature: transactions
+_source: source_analysis
+
+entry_points:
+  - type: push
+    source: account-detail
+    description: "Tap the 'Transactions' Explore row → TransactionsRoute(accountId)."
+
+navigates_to:
+  - transaction-detail
+
+transitions:
+  - { from: transactions, to: transaction-detail, type: navigate, trigger: transaction_row, params: { transactionId: String, accountId: String } }
+
+journey_ids: [browse-transactions]
+
+lifecycle:
+  on_load:
+    - action: load
+      steps:
+        - "updateState { uiState = Loading, isPaginating = false }"
+        - call: get_transactions_first_page      # repository.firstPage(accountId)
+          on_success: "accumulated = items; nextLink = data.nextLink; hasNextPage = data.hasNextPage; recompute()"
+          on_error: "uiState = Error(networkError.toErrorKind())"
+
+flow_logic:
+  - { id: back, component: top_bar, action: back, effect: "event:onBack" }   # popBackStack
+  - { id: filter_all, component: filter_chip_all, action: click, effect: "action:FilterTransactions" }
+  - { id: filter_in, component: filter_chip_money_in, action: click, effect: "action:FilterTransactions" }
+  - { id: filter_out, component: filter_chip_money_out, action: click, effect: "action:FilterTransactions" }
+  - { id: open_date_range, component: filter_chip_date_range, action: click, effect: "state:date_range_picker" }
+  - { id: search, component: search_field, action: change, effect: "action:SearchTransactions" }
+  - { id: search_clear, component: search_clear, action: click, effect: "action:SearchTransactions" }
+  - { id: open_detail, component: transaction_row, action: click, effect: "navigate:transaction-detail", journey_id: browse-transactions }
+  - { id: load_more, component: load_more_button, action: click, effect: "action:LoadMore", journey_id: browse-transactions }
+  - { id: clear_filters, component: clear_filters_button, action: click, effect: "action:ClearFilters" }
+  - { id: date_apply, component: date_apply, action: submit, effect: "action:SetDateRange" }
+  - { id: date_cancel, component: date_cancel, action: dismiss, effect: "action:DismissDateRangePicker" }
+  - { id: retry, component: error_state, action: click, effect: "action:RetryLoad" }
+
+action_logic:
+  LoadTransactions: [ "load()" ]
+  RetryLoad: [ "load()" ]
+  LoadMore:
+    - guard: "nextLink != null && !isPaginating"
+    - "isPaginating = true"
+    - call: get_transactions_next_page       # repository.nextPage(nextLink)
+      on_success: "accumulated += items; nextLink = data.nextLink; isPaginating = false; hasNextPage = data.hasNextPage; recompute()"
+      on_error: "isPaginating = false (rows kept, button reappears)"
+  FilterTransactions: [ "activeFilter = filter", "recompute()" ]
+  SearchTransactions: [ "query = query", "recompute()" ]
+  OpenDateRangePicker: [ "showDateRangePicker = true" ]
+  DismissDateRangePicker: [ "showDateRangePicker = false" ]
+  SetDateRange: [ "dateFrom = from; dateTo = to; showDateRangePicker = false", "recompute()" ]
+  ClearFilters: [ "activeFilter = ALL; query = \"\"; dateFrom = null; dateTo = null", "recompute()" ]
+  recompute:
+    - "filtered = accumulated.filter(direction).filter(description contains query.trim(), ignoreCase).filter(bookingDateTime[0..10] in [dateFrom, dateTo])"
+    - "filtered.isEmpty() ? Empty : Content(buildData(filtered))"
+    - "buildData: groupBy date prefix desc → TransactionGroup(dateLabel 'DOW d MON yyyy'); moneyIn/moneyOut = sumMinorUnits by isCredit"
+
+error_handling:
+  enum: TransactionsErrorKind
+  mapper: "NetworkError.toErrorKind()"
+  SESSION_EXPIRED: { from: "401 Unauthorized", retry: true }
+  CONSENT_WITHDRAWN: { from: "403 Forbidden", retry: false }
+  RATE_LIMITED: { from: "429", retry: true }
+  NETWORK: { from: "everything else incl. offline / 5xx", retry: true }
+  pagination: "load-more error → isPaginating = false only; no error state, no message"
+
+dependencies:
+  repositories:
+    - name: TransactionsRepository
+      methods:
+        - "firstPage(accountId: String): NetworkResult<TransactionsPage, NetworkError>"
+        - "nextPage(nextLink: String): NetworkResult<TransactionsPage, NetworkError>"
+  services: []
+  local_db: []     # transactionsStream (Store5/Room) exists but is not used by this screen

@@ -1,0 +1,223 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: account-holder
+screen_id: account-holder
+name: "Account Holder"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/account-holder/src/commonMain/kotlin/org/mifosx/openbanking/feature/accountholder/AccountHolderScreen.kt
+  - feature/account-holder/src/commonMain/kotlin/org/mifosx/openbanking/feature/accountholder/AccountHolderContent.kt
+  - feature/account-holder/src/commonMain/kotlin/org/mifosx/openbanking/feature/accountholder/ui/AccountHolderViewModel.kt
+  - feature/account-holder/src/commonMain/kotlin/org/mifosx/openbanking/feature/accountholder/ui/AccountHolderState.kt
+  - feature/account-holder/src/commonMain/kotlin/org/mifosx/openbanking/feature/accountholder/AccountHolderDestination.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/ProfileRepository.kt
+archetype: profile
+requirement_refs: [FR-006, FR-040]
+
+states: [loading, content, empty, error]
+initial_state: loading
+
+feature_profile:
+  combo_id: read_detail
+  facets: [content, network, cache]
+  archetype: screen-content
+  store_archetype: NETWORK_WITH_CACHE
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default   # enrich STEP 5.PROFILE re-derives
+
+route: "AccountHolderRoute(accountId)"
+entry_points:
+  - source: account-detail
+    trigger: chip_party
+    params: { accountId: String }
+nav_params:
+  accountId: { type: String, required: true, source: "SavedStateHandle[ACCOUNT_ID_ARG]", default_if_missing: '""' }
+
+business_logic:
+  kind: read_detail
+  description: >-
+    Opens ProfileRepository.profileStream(accountId, viewModelScope) — a Store5 ScreenDataStream over
+    BankingStores.partyStore (GET accounts/{id}/party → PartyProfile). emptyIfContent maps a profile with
+    no name (PartyProfile.isEmpty) to Empty. Errors classify to AccountHolderErrorKind: 401 TokenExpired
+    (retriable), 403 ConsentMissingParty (ReadParty not granted, not retriable), 404 ProfileNotFound
+    (not retriable), anything else / NoNetwork → LoadFailed (retriable). RetryLoad calls stream.refresh().
+
+screens:
+  - id: account-holder-screen
+    title: "{strings.feature_account_holder_screen_title}"
+    type: profile
+    description: >-
+      KptScaffold with back arrow and title "Account holder". Content scrolls: an identity card
+      (surfaceContainerHigh) with a circular initials avatar (primaryContainer), the display name
+      (headlineMedium) and role label (labelMedium, secondary); then an "Identity" section card with
+      Email, Mobile and Address rows (outlined icon + label + value) — each row is omitted when its
+      value is blank. Loading / Empty / Error replace the body.
+
+state_model:
+  AccountHolderViewModel:
+    base: "BaseViewModel<AccountHolderState, Nothing, AccountHolderAction>"
+    state:
+      name: AccountHolderState
+      fields:
+        accountId: { type: String, default: "savedStateHandle[accountId].orEmpty()" }
+        uiState: { type: AccountHolderUiState, default: "AccountHolderUiState.Loading" }
+    screen_state:
+      name: AccountHolderUiState
+      members:
+        - { name: Loading }
+        - { name: Content, fields: { profile: PartyProfile } }
+        - { name: Empty }
+        - { name: Error, fields: { kind: AccountHolderErrorKind } }
+    content_model:
+      name: PartyProfile
+      fields:
+        partyId: { type: String, default: '""' }
+        displayName: { type: String, default: '""' }
+        roleLabel: { type: String, default: '""' }
+        initials: { type: String, default: '""' }
+        email: { type: String, default: '""' }
+        mobile: { type: String, default: '""' }
+        addressLine: { type: String, default: '""' }
+    errors:
+      name: AccountHolderErrorKind
+      types:
+        - { type: TokenExpired, retry: true, message_key: feature_account_holder_error_token_expired, source: "401 / ScreenState.Unauthenticated" }
+        - { type: ConsentMissingParty, retry: false, message_key: feature_account_holder_error_consent_missing_party, source: "403 Forbidden (ReadParty not granted)" }
+        - { type: ProfileNotFound, retry: false, message_key: feature_account_holder_error_profile_not_found, source: "404 NotFound" }
+        - { type: LoadFailed, retry: true, message_key: feature_account_holder_error_load_failed, source: "network / NoNetwork / other" }
+    events:
+      name: "Nothing"
+      members: []
+    actions:
+      name: AccountHolderAction
+      members:
+        - { name: RetryLoad, trigger: "Tap Retry on a retriable error" }
+    callbacks:
+      - { name: onBack, trigger: "Tap top-bar back arrow" }
+    di:
+      - ProfileRepository
+      - SavedStateHandle
+
+components:
+  - id: top_bar
+    type: top-bar
+    title: "{strings.feature_account_holder_screen_title}"
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      action_contract:
+        effect: navigate_back
+        handler: "AccountHolderScreen.onBack → navController.popBackStack()"
+        library_refs: []
+        description: "Pops the account-holder screen and returns to AccountDetail for the same account; no network call."
+
+  - id: identity_card
+    type: card
+    testTag: "accountHolder:identityCard"
+    content_description: "{strings.feature_account_holder_identity_card_accessibility}"
+    style: { background: surfaceContainerHigh, border: outlineVariant, shape: medium, align: center }
+    content:
+      - id: avatar
+        type: avatar
+        testTag: "accountHolder:avatar"
+        value: "{{profile.initials}}"   # i18n: skip — derived initials
+        content_description: "{strings.feature_account_holder_avatar_accessibility}"
+        style: { size: DesignToken.sizes.avatarXLarge, shape: circle, background: primaryContainer, text_color: onPrimaryContainer }
+      - { id: display_name, type: text, testTag: "accountHolder:displayName", value: "{{profile.displayName}}", style: { text_style: headlineMedium } }  # i18n: skip — bank payload
+      - { id: role_label, type: text, testTag: "accountHolder:roleLabel", value: "{{profile.roleLabel}}", style: { text_style: labelMedium, color: secondary } }  # i18n: skip — bank PartyType/role
+
+  - id: identity_section
+    type: section
+    testTag: "accountHolder:identitySection"
+    content:
+      - { id: identity_heading, type: section-heading, value: "{strings.feature_account_holder_section_identity}" }
+      - { id: email_row, type: row, testTag: "accountHolder:emailRow", icon: email, label: "{strings.feature_account_holder_label_email}", value: "{{profile.email}}", visible: "{{email.isNotBlank()}}" }  # i18n: skip — value is bank payload
+      - { id: mobile_row, type: row, testTag: "accountHolder:mobileRow", icon: phone, label: "{strings.feature_account_holder_label_mobile}", value: "{{profile.mobile}}", visible: "{{mobile.isNotBlank()}}" }  # i18n: skip — value is bank payload
+      - { id: address_row, type: row, testTag: "accountHolder:addressRow", icon: home, label: "{strings.feature_account_holder_label_address}", value: "{{profile.addressLine}}", visible: "{{addressLine.isNotBlank()}}" }  # i18n: skip — value is bank payload
+
+  - id: loading_indicator
+    type: progress
+    component_ref: MifosProgressIndicator
+
+  - id: empty_state
+    type: empty-state
+    component_ref: EmptyDataComponent
+    message: "{strings.feature_account_holder_empty_title}"
+
+  - id: error_state
+    type: error-state
+    component_ref: MifosErrorComponent
+    message: "{{kind.bodyResource()}}"  # i18n: skip — resolves to feature_account_holder_error_* per kind
+    retry_visible: "{{kind.isRetriable}}"
+    on_click:
+      action: RetryLoad
+      action_contract:
+        effect: call_api
+        handler: "AccountHolderViewModel.handleAction(RetryLoad) → stream.refresh()"
+        library_refs: []
+        description: "Refreshes the party Store5 stream (GET accounts/{id}/party); offered only for TokenExpired and LoadFailed."
+
+state_details:
+  loading:
+    components: [top_bar, loading_indicator]
+    description: "AccountHolderUiState.Loading — spinner."
+  content:
+    components: [top_bar, identity_card, identity_section]
+    description: "Identity card + Identity rows (blank values omitted)."
+    demo_data:
+      profile: { partyId: "PARTY-001", displayName: "Mr Nico Bantu", roleLabel: "Account owner", initials: "NB", email: "nico.bantu@example.com", mobile: "+44 7700 900123", addressLine: "1 Centenary Square, Birmingham B1 1HQ" }
+  empty:
+    components: [top_bar, empty_state]
+    description: "AccountHolderUiState.Empty — party has no name (or ScreenState.Empty); 'No account holder details'."
+  error:
+    components: [top_bar, error_state]
+    description: "AccountHolderUiState.Error(kind) — kind-specific message; Retry only when kind.isRetriable."
+
+visual_assets: []   # profile shows text initials in a token-coloured circle; no generated imagery
+
+strings:
+  - feature_account_holder_screen_title
+  - feature_account_holder_identity_card_accessibility
+  - feature_account_holder_avatar_accessibility
+  - feature_account_holder_section_identity
+  - feature_account_holder_label_email
+  - feature_account_holder_label_mobile
+  - feature_account_holder_label_address
+  - feature_account_holder_detail_accessibility
+  - feature_account_holder_empty_title
+  - feature_account_holder_error_token_expired
+  - feature_account_holder_error_consent_missing_party
+  - feature_account_holder_error_profile_not_found
+  - feature_account_holder_error_load_failed
+
+i18n:
+  en:
+    feature_account_holder_screen_title: "Account holder"
+    feature_account_holder_identity_card_accessibility: "%1$s, %2$s"
+    feature_account_holder_avatar_accessibility: "Account holder initials %1$s"
+    feature_account_holder_section_identity: "Identity"
+    feature_account_holder_label_email: "Email"
+    feature_account_holder_label_mobile: "Mobile"
+    feature_account_holder_label_address: "Address"
+    feature_account_holder_detail_accessibility: "%1$s: %2$s"
+    feature_account_holder_empty_title: "No account holder details"
+    feature_account_holder_error_token_expired: "Session expired. Please log in again."
+    feature_account_holder_error_consent_missing_party: "Consent does not include account holder access. The ReadParty permission was not granted when you authorised this app."
+    feature_account_holder_error_profile_not_found: "HSBC has no identity record for this account."
+    feature_account_holder_error_load_failed: "Could not reach HSBC. Check your connection and retry."
+
+known_gaps:
+  - id: AH-G1
+    severity: medium
+    description: "TokenExpired says 'Please log in again' but Retry only refreshes the store — no navigation to re-auth (LoginRenewRoute)."
+  - id: AH-G2
+    severity: low
+    description: "ConsentMissingParty (403) is a dead end — no CTA to re-consent with ReadParty, even though the copy explains the missing permission. The Party chip on account-detail is also never capability-gated, so users can reach this state repeatedly."
+  - id: AH-G3
+    severity: low
+    description: "NoNetwork is folded into LoadFailed — no dedicated offline state and cached profile freshness is not surfaced."
+  - id: AH-G4
+    severity: low
+    description: "Unused strings: loading_accessibility, loading_caption, empty_body, empty_accessibility, error_title, error_accessibility, button_retry. /parties (all parties) endpoint exists in Aisp but is never used — joint holders are not shown."

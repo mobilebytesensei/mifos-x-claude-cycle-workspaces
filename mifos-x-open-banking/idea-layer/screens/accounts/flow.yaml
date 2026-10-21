@@ -1,0 +1,61 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: accounts
+feature: accounts
+_source: source_analysis
+
+entry_points: []   # accountsGraph registered, but no caller of navigateToAccounts() / no bottom-nav tab — unreachable (ui.yaml known_gaps ACC-G1)
+
+navigates_to:
+  - account-detail
+
+transitions:
+  - { from: accounts, to: account-detail, type: navigate, trigger: account_card, params: { accountId: String } }
+
+journey_ids: []
+
+lifecycle:
+  on_load:
+    - action: collect_stream
+      source: "AccountsOverviewRepository.overviewState(viewModelScope).combineContent(filter)"
+      calls:
+        - api: list_accounts
+        - api: get_account_balances
+      transform: "buildData(accounts, active) = AccountsData(rows = accounts.filter { active.matches(accountTypeCode) }, activeFilter = active)"
+      on_empty_accounts: "ScreenState.Empty"
+      on_state: "updateState { copy(uiState = screenState) }"
+
+flow_logic:
+  - { id: filter_all, component: filter_chip_all, action: click, effect: "action:FilterAccounts" }
+  - { id: filter_current, component: filter_chip_current, action: click, effect: "action:FilterAccounts" }
+  - { id: filter_savings, component: filter_chip_savings, action: click, effect: "action:FilterAccounts" }
+  - { id: filter_credit, component: filter_chip_credit, action: click, effect: "action:FilterAccounts" }
+  - { id: open_account, component: account_card, action: click, effect: "navigate:account-detail" }
+  - { id: retry_error, component: error_state, action: click, effect: "action:RetryLoad" }
+  - { id: retry_offline, component: no_network_state, action: click, effect: "action:RetryLoad" }
+
+action_logic:
+  FilterAccounts:
+    - transform_state: "filter.value = action.filter"
+    - effect: "combineContent re-runs buildData; no network"
+  RetryLoad:
+    - call: "accountsRepository.refresh()"
+      effect: "re-fetch accounts + force-refresh balances"
+
+error_handling:
+  source: "ScreenState via template ScreenContent"
+  Error: "MifosErrorComponent(feature_accounts_error_title, supportReference = throwable.obieSupportReference(), retry → RetryLoad)"
+  NoNetwork: "DefaultNoNetworkContent + retry; cached Room rows shown when available"
+  Unauthenticated: "rendered as error() — no re-auth redirect"
+
+dependencies:
+  repositories:
+    - name: AccountsOverviewRepository
+      methods:
+        - "overviewState(scope: CoroutineScope): Flow<ScreenState<List<AccountWithBalance>>>"
+        - "refresh()"
+  services:
+    - NetworkMonitor
+    - FetchedAtRepository
+  local_db:
+    - table: accounts

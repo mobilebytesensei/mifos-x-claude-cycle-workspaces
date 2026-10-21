@@ -1,0 +1,79 @@
+sibling: api
+schema_version: "4.0"
+feature_id: transactions
+_source: source_analysis
+
+base_url: "https://{HSBC_BANK_HOST}/obie/open-banking/"
+auth:
+  type: psu_bearer
+  description: "PSU access token from secure Settings (hsbc_tokens), auto-attached by the Ktor Auth plugin; refresh_token grant on 401; mTLS on every call. Requires ReadTransactionsBasic/Detail + Credits/Debits in the AIS consent."
+  refresh: { method: POST, endpoint: /v1.1/oauth2/token, grant_type: refresh_token }
+
+api:
+  - id: get_transactions_first_page
+    function: "Aisp.getTransactions(accountId)"
+    method: get
+    endpoint: "/v4.0/aisp/accounts/{AccountId}/transactions"
+    description: "First page of transactions, called directly by TransactionsRepository.firstPage (bypasses Store5). No date-range query parameters are sent."
+    params:
+      AccountId: { type: String, required: true, source: nav_params.accountId }
+    response:
+      dto: TransactionsResponse
+      maps_to: TransactionsPage
+      fields:
+        items: "List<TransactionListItem>"
+        nextLink: "String?"        # Links.Next (absolute URL)
+        totalPages: "Int?"         # Meta.TotalPages
+    errors:
+      401: SESSION_EXPIRED
+      403: CONSENT_WITHDRAWN
+      429: RATE_LIMITED
+      500: NETWORK
+    cache:
+      strategy: none
+      offline: error
+
+  - id: get_transactions_next_page
+    function: "Aisp.getTransactionsPage(nextUrl)"
+    method: get
+    endpoint: "{Links.Next}"     # server-generated absolute URL, e.g. .../v4.0/aisp/accounts/{AccountId}/transactions?page=1
+    description: "Follows the OBIE Links.Next cursor; the absolute URL overrides the client base, Auth + mTLS still attached. Never built by hand."
+    params:
+      nextUrl: { type: String, required: true, source: "previous page nextLink" }
+    response:
+      dto: TransactionsResponse
+      maps_to: TransactionsPage
+      fields:
+        items: "List<TransactionListItem>"   # mapped with accountId = "" (see ui.yaml TX-G4)
+        nextLink: "String?"
+        totalPages: "Int?"
+    errors:
+      any: "swallowed → isPaginating = false"
+    cache:
+      strategy: none
+
+error_mapping:
+  mapper: "NetworkError.toErrorKind()"
+  rules:
+    - { network_error: "NetworkError.Client.Unauthorized", kind: SESSION_EXPIRED, recoverable: true }
+    - { network_error: "NetworkError.Client.Forbidden", kind: CONSENT_WITHDRAWN, recoverable: false }
+    - { network_error: "NetworkError.Client.RateLimited", kind: RATE_LIMITED, recoverable: true }
+    - { network_error: "other", kind: NETWORK, recoverable: true }
+
+dtos:
+  TransactionsPage:
+    items: "List<TransactionListItem>"
+    nextLink: "String?"
+    totalPages: "Int?"
+    hasNextPage: Boolean        # derived: !nextLink.isNullOrBlank()
+  TransactionListItem:
+    transactionId: String
+    accountId: String
+    description: String         # TransactionInformation / merchant
+    bookingDateTime: String     # ISO-8601; first 10 chars used for grouping + date filter
+    amount: String
+    currency: String
+    isCredit: Boolean           # CreditDebitIndicator == Credit
+    category: TransactionCategory
+    isPending: Boolean          # Status == Pending
+  TransactionCategory: [GROCERIES, DINING, SUBSCRIPTIONS, SHOPPING, TRANSPORT, TRANSFER, OTHER]
