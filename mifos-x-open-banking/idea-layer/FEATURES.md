@@ -1,6 +1,6 @@
 # Feature Registry — Mifos X Open Banking
 
-> **Total**: 25 (+9 deferred placeholder routes) | **Designed**: 0 | **Implemented**: 25 (in source; 2 unreachable from navigation)
+> **Total**: 26 (+9 deferred placeholder routes) | **Designed**: 0 | **Implemented**: 25 in source (2 unreachable from navigation) + 1 planned (consent-relay)
 > **Last Updated**: 2026-10-21
 > Managed by `/idea`. Read by `/design`, `/implement`, `/gap-planning-project`.
 > Source-derived from openMF/mifos-x-open-banking @ d5c6782 — implementation exists ahead of the idea-layer.
@@ -36,6 +36,7 @@
 | 23 | payment-status | Payment receipt and live status timeline | send-money | must | — | FR-036 | — | — | 1 | 7 | all | 1.0.0 | — | ✅ | implemented |
 | 24 | settings | Theme, consents, privacy policy, open-source licences | settings-licences | should | — | FR-037, FR-038, FR-046 | — | — | 2 | 1 | all | 1.0.0 | — | ✅ | implemented |
 | 25 | vrp | Variable Recurring Payments: setup, callback, consent list/detail/revoke, pay | vrp | should | — | FR-041–FR-045 | — | — | 5 | 10 | all | 1.0.0 | — | ✅ | implemented |
+| 26 | consent-relay | Open-source OAuth consent relay on Cloudflare Pages — reads the bank's fragment, hands off to desktop loopback or the mobile app | connect-bank | must | consent-callback, payment-consent, vrp | FR-050–FR-052, NFR-011 | — | — | 1 | 0 | web-hosted (relay/) | 2026.11.0 | — | — | scaffold |
 
 ### Deferred (placeholder routes — registered, render PlaceholderScreen only)
 
@@ -56,7 +57,8 @@
 ## Feature Dependencies
 
 ```
-login ──► consent-callback ──► home
+login ──► [bank] ──► consent-relay (Cloudflare Pages) ──► consent-callback ──► home
+payment forms / vrp ──► [bank] ──► consent-relay ──► payment-consent / vrp-callback
 home ──► account-detail ──► { transactions ──► transaction-detail,
                               statements ──► statement-detail ──► transaction-detail,
                               standing-orders, direct-debits, scheduled-payments,
@@ -145,6 +147,13 @@ accounts, payments-hub: registered graphs with no caller (unreachable)
 ### settings
 - [ ] AC-001: Exactly one write per theme selection (FR-037)
 - [ ] AC-002: Sign-out row clears tokens + history (FR-046 — gap)
+
+### consent-relay
+- [ ] AC-001: Fragment read first, query fallback; empty → "Nothing to return" (FR-050)
+- [ ] AC-002: Desktop loopback probed first; mobile hand-off only when no listener answers (FR-050)
+- [ ] AC-003: Fragment scrubbed from history; no-store, no-referrer, frame-ancestors 'none', strict CSP, no inline script (FR-051, NFR-011)
+- [ ] AC-004: App Links + Universal Links served from /.well-known on the relay domain (FR-052)
+Test: Playwright + node --test (tests.yaml); Maestro not applicable (web page)
 
 ### vrp
 - [ ] AC-001: Card and bank-refused accounts not offered as payers (FR-041)

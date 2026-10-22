@@ -1,0 +1,42 @@
+sibling: flow
+schema_version: "4.0"
+feature: consent-relay
+entry_points:
+  - type: external_redirect
+    source: "HSBC authorize endpoint (/obie/open-banking/v1.1/oauth2/authorize)"
+    description: "Bank redirects the browser to the registered redirect URI with #code=…&id_token=…&state=… (or #error=access_denied&state=…)"
+    legs: [SignIn, Payment, Vrp]   # the app's RootNavScreen tells the legs apart; the relay does not
+inbound_routes: [external_redirect]
+navigates_to: [consent-callback, payment-consent, vrp]   # app-side receivers of the relayed redirect
+transitions:
+  - from: relaying
+    to: delivered_desktop
+    on: loopback_probe_resolved
+  - from: relaying
+    to: open_app_prompt
+    on: mobile_handoff_not_backgrounded_1500ms
+  - from: relaying
+    to: nothing_to_return
+    on: no_params
+  - from: open_app_prompt
+    to: open_app_prompt
+    on: reopen_app
+flow_logic:
+  on_load:
+    - "raw = readParams(location.hash, location.search) — fragment first, query fallback"
+    - "if raw is empty → state nothing_to_return; stop"
+    - "history.replaceState(null, '', location.pathname) — scrub the code from history (FR-051)"
+    - "probe = fetch('http://127.0.0.1:8765/callback?' + raw, {mode: 'no-cors', cache: 'no-store', targetAddressSpace: 'loopback'}) — declares the request to Chrome Local Network Access"
+    - "probe resolves → state delivered_desktop (desktop listener took it; NEVER also hand off to mobile)"
+    - "probe rejects → mobile hand-off: location.href = appUrl(raw); after 1500 ms still here → state open_app_prompt"
+  on_reopen_app:
+    - "location.href = appUrl(raw) — user gesture, satisfies iOS Safari"
+  app_url:
+    current: "org.mifosx.openbanking://callback?{raw} — the only hand-off relay.js builds today"
+    planned: "https://mifos-x-open-banking-relay.pages.dev/app/callback?{raw} — App Link / Universal Link (FR-052, not built)"
+error_handling:
+  - { case: "fetch unavailable or throws synchronously", behaviour: "treat as no desktop listener → mobile hand-off" }
+  - { case: "Chrome Local Network Access prompt denied (desktop)", behaviour: "probe rejects → custom-scheme hand-off → open_app_prompt" }
+  - { case: "custom scheme blocked (no gesture)", behaviour: "open_app_prompt with Reopen button" }
+  - { case: "app not installed", behaviour: "open_app_prompt stays; no store redirect (sandbox)" }
+flow_refs: [connect-bank, ais-consent-expired, redirect-after-app-killed, send-money, schedule-payment, standing-order, vrp]

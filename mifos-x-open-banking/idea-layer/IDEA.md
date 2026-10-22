@@ -98,6 +98,7 @@ A Compose Multiplatform app with one shared networking core (`Aisp`, `Pisp`, `Vr
 - AIS consent always requests every permission (`OBPermission.ALL`) — no user choice of scope.
 - `x-fapi-financial-id` is hardcoded blank and will fail on production ASPSPs.
 - **Release blocker:** Android upload-keystore passwords are committed in `fastlane-config/project_config.rb` — rotate and move to the vault before any store release.
+- **Release blocker (BLK-004):** the TPP's private keys ship inside every app build — a public release needs the Cloudflare Worker BFF first (NFR-010).
 
 ---
 
@@ -130,3 +131,9 @@ A Compose Multiplatform app with one shared networking core (`Aisp`, `Pisp`, `Vr
 | 3 | Make Accounts and Payments Hub reachable (bottom-nav tabs or Home entry points) | source analysis | should | planned | 2026-10-21 |
 | 4 | User-selectable AIS permission scope instead of OBPermission.ALL | source analysis | could | idea | 2026-10-21 |
 | 5 | Multi-ASPSP support (configurable bank hosts/paths) | source analysis | could | idea | 2026-10-21 |
+| 6 | **consent-relay** — open-source OAuth consent relay on Cloudflare Pages (`relay/` in the app repo, `*.pages.dev`), hardened headers, history scrub, App Links / Universal Links; replaces the personal GitHub Pages copy | user | must | planned (2026.11.0) | 2026-10-21 |
+| 7 | **Cloudflare Worker BFF** — TPP keys off the device (mTLS binding + Workers secrets); unblocks a public store release (BLK-004) and web | user | must for public release | planned (2027.1, release-order decision pending) | 2026-10-21 |
+
+### Hosting decision (2026-10-21)
+
+Cloudflare, permanently: Pages for the relay, a Worker for the BFF, one domain. Not Supabase, because Edge Functions rewrite HTML to plain text and can't serve the relay page. Both are open source under openMF; secrets live only in Cloudflare secrets, mTLS bindings and the vault.
