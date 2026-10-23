@@ -47,7 +47,7 @@
 
 **Status**: ❌ Proposed
 
-- **Cloudflare Worker BFF** (task `cloudflare-worker-bff`, NFR-010) — keys off device, unblocks web
+- **Cloudflare Worker BFF** (task `cloudflare-worker-bff`, TD-008, NFR-010/012/013, FR-053…055) — keys off device, unblocks web. **🚧 In progress since 2026-10-22** as goal `hsbc-identity-cloudflare-bff` (8 phases: idea-layer → deploy + spike → Worker core → AIS + auth → PIS + VRP → attestation → app cutover → docs + end-to-end). Once it lands, BLK-004 is resolved and the 2026.11.0 release-order question goes away.
 - Config-driven ASPSP + multi-ASPSP (TD-004), user-selectable AIS scope
 - Shared payment form module (TD-003)
 - Medium/low defects DEF-005…014

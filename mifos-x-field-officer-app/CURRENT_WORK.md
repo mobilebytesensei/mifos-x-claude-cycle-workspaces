@@ -1,7 +1,7 @@
 # Current Work
 
 **Project**: mifos-x/mifos-x-field-officer-app
-**Last Updated**: 2026-09-20
+**Last Updated**: 2026-10-23
 **Session**: session-mifos-x-field-officer-app-20260919135200752 (PR #2705)
 **Epic**: `plan-layer/project-plans/mifos-x/mifos-x-field-officer-app/active/template-port-fresh/`
 
@@ -25,12 +25,14 @@ from the original source.
 | `core/data` | done — 42 repositories, **168/168 API operations wired** (96 reads, 72 writes) |
 | `core/designsystem` | migrated — 89 files (template theme + ported Mifos components) |
 | `core/ui` | migrated — 75 files |
-| `core/domain` | **NOT migrated** — 82 files on the retired `com.mifos.core.data.*`; kept, marked dropped |
-| `feature/**` | **1 of 20** (auth — and it must be redone, see below) |
+| `core/domain` | retired — deleted in Phase 9; only `kpt.core.domain.validation` remains |
+| `feature/**` | **12 of 21** original modules started, 9 not started (2026-10-23, measured from disk) |
 
-Verified green: all `core/*` metadata compiles · `core:database` compiles on **desktop and Android** ·
-`feature:auth` 4 tests pass · `core:datastore` 11 tests pass · `G-STORE5`, `offline-first-reads`,
-`store-mutable-logout` pass.
+Per-feature status table: `template-port-fresh/CURRENT_WORK.md`. Per-module detail:
+`source/mifos-x-field-officer-app/feature/<f>/MIGRATION.md`.
+
+Not started: collectionSheet · offline · report · checker-inbox-task · path-tracking · passcode ·
+about · search-record (89 original `.kt`).
 
 ---
 

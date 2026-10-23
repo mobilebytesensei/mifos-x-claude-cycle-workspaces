@@ -5,6 +5,24 @@
 
 ---
 
+## 2026-10-22 — Cloudflare Worker BFF design locked (`/idea-plan-add`, goal hsbc-identity-cloudflare-bff)
+
+- **What**:
+  - Task **cloudflare-worker-bff** moved to in-progress and linked to the 8-phase plan.
+  - New decision **TD-008**: a separate `workers.dev` Worker with a closed route table holds the whole TPP identity. It covers mTLS through a certificate binding, one non-extractable PS256 key, full id_token checks and PSU tokens in Durable Objects. The app gets an opaque session, plus Play Integrity or App Attest on mobile.
+  - New requirements **FR-053** (identity server-side only), **FR-054** (id_token fully verified before the code exchange), **FR-055** (mobile attestation), **NFR-012** (under 10 ms p99 CPU on Workers Free), **NFR-013** (no key material in any build).
+  - **consent-callback** now completes sign-in through `POST /v1/auth/complete`. The app no longer exchanges the code, inspects the id_token or stores HSBC tokens. New entity **BffSession**; **PsuTokens** move to the Worker.
+  - Task **hsbc-sandbox-credentials** updated: all 7 HSBC secrets are in the vault and the local key copies are deleted.
+- **Why**:
+  - Every build shipped the full TPP identity (BLK-004), so anyone who unpacked a build could act as the TPP.
+  - HSBC tokens are bound to the certificate, so once the certificate moves server-side the tokens have to move with it.
+  - The id_token was only nonce-checked, which falls short of FAPI.
+- **Impact**:
+  - The requirements and technical_decisions sections need re-approval.
+  - Phases 02 to 08 build the Worker and cut the app over.
+
+---
+
 ## 2026-10-21 — consent-relay + Cloudflare hosting decision (`/idea-plan-add`)
 
 - **What**:

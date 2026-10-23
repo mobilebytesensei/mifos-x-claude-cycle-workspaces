@@ -2,69 +2,61 @@ sibling: api
 schema_version: "4.0"
 feature_id: consent-callback
 _source: source_analysis
-base_url: "https://{HSBC_BANK_HOST} (mTLS transport.p12 QWAC; certs git-ignored, referenced by path only)"
+_last_enriched: "2026-10-22"
+_enrichment_note: "/idea-plan-add 2026-10-22 — code exchange moved to the Cloudflare Worker BFF (TD-008, FR-053, FR-054); the app no longer holds client credentials, signs nothing and stores no HSBC token"
+base_url: "{BFF_BASE_URL} — the Cloudflare Worker BFF (bff/, TD-008). The Worker alone talks to https://{HSBC_BANK_HOST} over mTLS; the app needs no certificate."
 
 auth:
-  token_endpoint: >-
-    private_key_jwt — PS256 client assertion {iss=sub=clientId, aud=tokenUrl, jti=UUIDv4, iat, exp=iat+60}
-    signed with signing_key.pem (OBSEAL) + kid.
-  consent_status: "temporary client_credentials token (scope accounts), explicit Bearer header, never persisted."
-  result: "PSU tokens (access/refresh/id) persisted to secure Settings hsbc_tokens via ConsentSession.save."
+  bff_session: >-
+    Opaque session minted by POST /v1/auth/complete after the Worker has verified the id_token and exchanged
+    the code. Sent as `Authorization: Session <id>` on later calls. Stored in secure Settings with its expiry
+    only (BffSession entity); HSBC access/refresh/id tokens never reach the device.
+  attestation: "Android sends X-Attestation: play <token>; iOS sends X-Attestation: ios <keyId>.<assertion> (FR-055). Desktop and web send none and are rate-limited."
+  client_headers: "X-Client-Platform (android|ios|desktop|web), X-Client-Instance (install-scoped random id)."
 
 api:
-  - id: exchange_authorization_code
+  - id: complete_auth
     method: POST
-    path: /v1.1/oauth2/token
-    source_ref: "core/network/.../api/OAuth.kt#exchangeAuthorizationCode"
+    path: /v1/auth/complete
+    source_ref: "core/network/.../api/Session.kt#completeAuth (phase 07 of goal hsbc-identity-cloudflare-bff)"
     repository_ref: "core/data/.../callback/ConsentCallbackRepository.kt#exchangeCode"
-    description: "Exchanges the authorization code from the validated redirect for PSU tokens (grant_type authorization_code)."
-    auth: private_key_jwt
-    content_type: application/x-www-form-urlencoded
-    params:
-      grant_type: { type: String, value: authorization_code }
-      code: { type: String, source: "validated redirect fragment" }
-      redirect_uri: { type: String, source: "HsbcConfig.REDIRECT_URI (injected redirectUri)" }
-      client_assertion_type: { type: String, value: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" }
-      client_assertion: { type: String, source: buildClientAssertion }
+    description: >-
+      Hands the validated redirect values to the BFF. The Worker: matches flowId + state to the flow it created
+      when the consent was started; verifies the id_token (PS256 signature against the HSBC JWKS, iss, aud =
+      client id, exp, nonce, c_hash, s_hash — FR-054) BEFORE exchanging the code; exchanges the code at HSBC
+      (authorization_code grant, private_key_jwt, no scope); reads the consent status with a client_credentials
+      token; if the consent is Rejected it discards the tokens and answers 409 (DEF-001); otherwise it stores the
+      PSU tokens in its SessionDO and returns an opaque session.
+    auth: attestation (android|ios) + rate limit
+    content_type: application/json
+    request:
+      dto: AuthCompleteRequest
+      fields: { flowId: String, code: String, idToken: String, state: String }
     response:
-      type: PsuTokenResponse
-      fields: { accesstoken: "String?", tokentype: "String?", refreshtoken: "String?", expiresin: "Int?", scope: "String?", idtoken: "String?" }
-    response_dto: PsuTokenResponse
+      type: AuthCompleteResponse
+      fields: { session: String, expiresAt: Long, leg: "String (ais)", consentId: String, consentStatus: "String (Authorised | AwaitingAuthorisation)", consentExpiresAt: "String?" }
+    response_dto: AuthCompleteResponse
     errors:
-      401: "ScreenState.Unauthenticated → Error(AUTHORISATION_FAILED)"
-      4xx_5xx: "ScreenState.Error → Error(TOKEN_EXCHANGE_FAILED)"
+      400_invalid_id_token: "ScreenState.Error → SecurityError (id_token failed verification; code never exchanged)"
+      400_state_mismatch: "SecurityError"
+      401_403_attestation: "ScreenState.Error → Error(AUTHORISATION_FAILED)"
+      409_consent_rejected: "Rejected (tokens discarded server-side, ConsentSession cleared)"
+      429: "Error(TOKEN_EXCHANGE_FAILED) — rate limited, retry later"
+      502_bank: "Error(TOKEN_EXCHANGE_FAILED)"
       network: "ScreenState.NoNetwork → Error(NETWORK_UNREACHABLE)"
-    cache: none
-
-  - id: create_client_credentials_token
-    method: POST
-    path: /v1.1/oauth2/token
-    source_ref: "core/network/.../api/OAuth.kt#clientCredentialsToken"
-    description: "Temporary client_credentials token (scope accounts) used only to read the consent status."
-    auth: private_key_jwt
-    content_type: application/x-www-form-urlencoded
-    params:
-      grant_type: { type: String, value: client_credentials }
-      scope: { type: String, value: accounts }
-    response:
-      type: CreateConsentTokenSuccess
-      fields: { accessToken: String, expiresIn: Int, scope: String, tokenType: String }
-    response_dto: CreateConsentTokenSuccess
-    errors:
-      default: "propagated as ScreenState error → consent expiry recorded as empty (sign-in still completes)"
     cache: none
 
   - id: get_account_access_consent
     method: GET
-    path: "/v4.0/aisp/account-access-consents/{ConsentId}"
-    source_ref: "core/network/.../api/Aisp.kt#getConsent"
+    path: "/v1/consents/ais/{ConsentId}"
+    source_ref: "core/network/.../api/Aisp.kt#getConsent (BFF path)"
     repository_ref: "core/data/.../callback/ConsentCallbackRepository.kt#pollConsentStatus"
-    description: "Reads the consent back after the code exchange and BEFORE tokens are persisted to capture Status and ExpirationDateTime. Status is acted on (DEF-001): Rejected → tokens discarded, ConsentSession cleared, UI Rejected; otherwise the VM stores consentId + expiry in ConsentSession and completes sign-in."
-    auth: client_credentials
+    description: "Re-reads the consent for the Awaiting state (PollConsentStatus). The Worker uses its cached client_credentials token; the app sends only its session."
+    auth: bff_session
     params:
-      ConsentId: { type: String, required: true, in: path, source: "PendingAuth.consentId (from login)" }
+      ConsentId: { type: String, required: true, in: path, source: "AuthCompleteResponse.consentId" }
     headers:
-      Authorization: "Bearer {client_credentials access_token}"
+      Authorization: "Session {BffSession.session}"
     response:
       type: HSBCCreateConsentResponse
       domain: "ConsentStatusResult{status: ConsentStatus, expirationDateTime: String?}"
@@ -72,17 +64,23 @@ api:
     response_dto: HSBCCreateConsentResponse
     error_dto: ObErrorResponse
     errors:
+      401: "session expired → Error(AUTHORISATION_FAILED)"
       default: "ignored — expiry saved as empty string"
     cache: none
 
   - id: authorization_redirect
     method: GET
-    path: "org.mifosx.openbanking://callback#code=…&id_token=…&state=… (mobile) | http://127.0.0.1:8765/… (desktop)"
+    path: "org.mifosx.openbanking://callback?code=…&id_token=…&state=… (mobile) | http://127.0.0.1:8765/callback?… (desktop)"
     description: >-
-      Inbound redirect (not an HTTP call). HSBC returns to the HTTPS relay page (docs/consent-callback-page
-      index.html + bridge.js), which forwards the URL fragment to the app scheme / desktop loopback. Parsed by
-      parseCallbackUrl → {code, id_token, state, error, error_description}.
+      Inbound redirect (not an HTTP call). HSBC returns to the static HTTPS relay
+      (https://mifos-x-open-banking-relay.pages.dev/callback/, relay/ in the app repo), which reads the URL
+      fragment and forwards it to the app scheme or the desktop loopback. Parsed by parseCallbackUrl →
+      {code, id_token, state, error, error_description}; the values are then sent to complete_auth.
     auth: authorization_code (front channel)
     response:
       type: redirect
       fields: { code: "String?", id_token: "String?", state: "String?", error: "String?", error_description: "String?" }
+
+removed_operations:
+  - { id: exchange_authorization_code, moved_to: "BFF /v1/auth/complete", reason: "private_key_jwt signing and mTLS leave the app (FR-053)" }
+  - { id: create_client_credentials_token, moved_to: "BFF TokenCacheDO", reason: "client credentials are TPP identity (FR-053)" }

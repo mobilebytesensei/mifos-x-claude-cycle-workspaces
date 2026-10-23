@@ -110,6 +110,9 @@
 | FR-050 | must | Consent relay reads the bank response and delivers it to desktop loopback or the mobile app | consent-relay |
 | FR-051 | must | Consent relay leaves no authorisation code behind (history scrub, no-store, no-frame, no-referrer) | consent-relay |
 | FR-052 | should | Redirect opens only the verified app (App Links / Universal Links) | consent-relay |
+| FR-053 | must | The TPP identity (signing key, mTLS cert + key, client id, kid, software statement, signing issuer) is held only by the Cloudflare Worker BFF — no app build carries it | all (core/network, BFF) |
+| FR-054 | must | The BFF verifies the id_token (PS256 signature vs HSBC JWKS, iss, aud, exp, nonce, c_hash, s_hash) before exchanging the authorisation code | consent-callback, payment-consent, vrp |
+| FR-055 | must | Android (Play Integrity) and iOS (App Attest) attest consent creation and /v1/auth/complete; desktop and web use sessions + rate limits | login, consent-callback, payments, vrp |
 
 Acceptance criteria per FR: `idea-plan.yaml#requirements.functional_requirements[]`.
 
@@ -130,6 +133,8 @@ Acceptance criteria per FR: `idea-plan.yaml#requirements.functional_requirements
 | NFR-009 | accessibility | WCAG 2.1 AA |
 | NFR-010 | security | TPP private keys never ship inside an app build for a production / public release — they live in the Cloudflare Worker BFF |
 | NFR-011 | security | Consent relay open source under openMF, org-controlled Cloudflare account, strict security headers, zero third-party script |
+| NFR-012 | performance | Every BFF route's p99 cpuTime stays under 10 ms on Workers Free (measured on the deployed Worker; Paid is the documented fallback) |
+| NFR-013 | security | No HSBC credential or key material in any built APK, IPA, desktop package or web bundle — enforced by the no-tpp-identity CI job |
 
 ---
 

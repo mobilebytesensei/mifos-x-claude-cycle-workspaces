@@ -48,31 +48,26 @@ flow_logic:
             - "params.state != pending.state ⇒ SecurityError"
             - "params.error == 'access_denied' ⇒ AccessDenied (user decline — neutral, NOT an error; DEF-006)"
             - "other params.error ⇒ Error(PROVIDER_ERROR) — error/error_description logged, never rendered"
-            - "idTokenNonceMismatch(id_token, pending.nonce) ⇒ SecurityError"
-            - "params.code == null ⇒ Error(MISSING_CODE)"
-            - "else ⇒ Valid(code, consentId = pending.consentId)"
+            - "id_token is NOT inspected on the device — the BFF verifies signature, iss, aud, exp, nonce, c_hash and s_hash (FR-054)"
+            - "params.code == null || params.id_token == null ⇒ Error(MISSING_CODE)"
+            - "else ⇒ Valid(code, idToken, state, flowId = pending.flowId, consentId = pending.consentId)"
         - on_valid:
             - set: { pendingConsentId: "v.consentId" }
-            - api: exchange_authorization_code
-              params: { code: "{v.code}", redirect_uri: "{redirectUri}" }
+            - api: complete_auth
+              params: { flowId: "{v.flowId}", code: "{v.code}", idToken: "{v.idToken}", state: "{v.state}" }
+              note: "POST /v1/auth/complete at the BFF. The Worker verifies the id_token, exchanges the code, checks the consent status and stores the PSU tokens server-side; the app receives only an opaque session (TD-008)."
               on_content:
-                - api: get_account_access_consent
-                  note: "status poll runs BEFORE any token is persisted — via client_credentials token"
-                  branch:
-                    - when: "status == Rejected"
-                      steps:
-                        - note: "discard exchanged PSU tokens — consentSession.save(tokens) is NEVER called (DEF-001)"
-                        - call: "consentSession.clear()"
-                        - transform_state: Rejected
-                        - stop: true
-                    - when: "status in {Authorised, AwaitingAuthorisation} OR poll failed"
-                      note: "FR-022 AC: an Awaiting poll still completes sign-in; poll failure → expiry recorded as '' (KG-CALLBACK-3)"
-                      steps:
-                        - call: "consentSession.saveConsentMeta(consentId, expiry = Content.expirationDateTime ?: '')"
-                        - call: "consentSession.save(tokens)   # PSU tokens → secure Settings hsbc_tokens"
-                        - transform_state: Content
-                        - delay_ms: 1500
-                        - emit_event: NavigateToHome
+                - note: "Worker already confirmed status != Rejected before minting the session (DEF-001 enforced server-side)"
+                - call: "consentSession.saveConsentMeta(consentId, expiry = Content.consentExpiresAt ?: '')"
+                - call: "consentSession.save(session, expiresAt)   # BffSession only — no HSBC token on the device"
+                - transform_state: Content
+                - delay_ms: 1500
+                - emit_event: NavigateToHome
+              on_conflict_rejected:
+                - note: "409 consent_rejected — Worker discarded the PSU tokens (DEF-001)"
+                - call: "consentSession.clear()"
+                - transform_state: Rejected
+              on_invalid_id_token: { transform_state: SecurityError }
               on_unauthenticated: { transform_state: "Error(AUTHORISATION_FAILED)" }
               on_error: { transform_state: "Error(TOKEN_EXCHANGE_FAILED)" }
               on_no_network: { transform_state: "Error(NETWORK_UNREACHABLE)" }
@@ -105,7 +100,7 @@ error_handling:
     CallbackErrorKind so the copy names the real cause — a network or token-exchange failure is never
     worded as "declined".
   mapping:
-    - { kind: SecurityError, cause: "missing/expired PendingAuth, state mismatch, id_token nonce mismatch", state: security_error, recovery: "Start again → clears ConsentSession → AuthGraph" }
+    - { kind: SecurityError, cause: "missing/expired PendingAuth, state mismatch, or the BFF rejected the id_token (400 invalid_id_token)", state: security_error, recovery: "Start again → clears ConsentSession → AuthGraph" }
     - { kind: AccessDenied, cause: "error=access_denied (user declined)", state: access_denied, recovery: "Start over → AuthGraph" }
     - { kind: ConsentRejected, cause: "consent status poll returned Rejected", state: rejected, recovery: "Start again → clears ConsentSession → AuthGraph" }
     - { kind: PROVIDER_ERROR, cause: "other provider error on the redirect", state: error, recovery: "Try again → AuthGraph" }
@@ -125,10 +120,10 @@ dependencies:
     - name: ConsentCallbackRepository
       methods:
         - "validateCallback(redirectUrl: String): ValidationResult"
-        - "suspend exchangeCode(code: String, redirectUri: String): ScreenState<PsuTokenResponse>"
-        - "suspend pollConsentStatus(consentId: String): ScreenState<ConsentStatusResult{status, expirationDateTime}>"
+        - "suspend exchangeCode(flowId: String, code: String, idToken: String, state: String): ScreenState<AuthCompleteResponse>   # POST /v1/auth/complete"
+        - "suspend pollConsentStatus(consentId: String): ScreenState<ConsentStatusResult{status, expirationDateTime}>   # GET /v1/consents/ais/{id}"
   services:
-    - "ConsentSession (SettingsConsentSession — save(tokens), saveConsentMeta, clear, isActive)"
+    - "ConsentSession (SettingsConsentSession — save(session, expiresAt), saveConsentMeta, clear, isActive) — holds the BffSession only"
     - "PendingAuthStore (consumed inside the repository)"
   navigation:
     - "ConsentRedirectBus (core/data callback) — SharedFlow with replay"
