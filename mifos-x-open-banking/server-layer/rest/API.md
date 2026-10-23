@@ -1,15 +1,15 @@
-<!-- Server-layer mirror of source/mifos-x-open-banking/bff/docs/API.md (backend.provider: rest).
-     The source file is authoritative and is checked against bff/src/routes.ts by bff/test/docs.test.ts;
+<!-- Server-layer mirror of source/mifos-x-open-banking/bank-gateway/docs/API.md (backend.provider: rest).
+     The source file is authoritative and is checked against bank-gateway/src/routes.ts by bank-gateway/test/docs.test.ts;
      regenerate this copy whenever it changes. -->
 
 # API
 
 Every route the Worker answers. The list mirrors the closed route table in
-[`src/routes.ts`](../../source/mifos-x-open-banking/bff/src/routes.ts) row for row; [`test/docs.test.ts`](../../source/mifos-x-open-banking/bff/test/docs.test.ts) fails if a
+[`src/routes.ts`](../../source/mifos-x-open-banking/bank-gateway/src/routes.ts) row for row; [`test/docs.test.ts`](../../source/mifos-x-open-banking/bank-gateway/test/docs.test.ts) fails if a
 route is missing here, if this file documents a route the table does not have, or if a section's
 **Auth** line disagrees with the row's `session`, `attest` and `rateLimit` flags.
 
-- Reference deployment: `https://mifos-x-open-banking-bff.mifos-x-open-banking-bff.workers.dev`
+- Reference deployment: `https://mifos-x-open-banking-gateway.mifos-x-open-banking.workers.dev`
 - Bank host (sandbox): `secure.sandbox.ob.hsbc.co.uk` (`HSBC_BANK_HOST`). Every **HSBC** line below is a
   path under `https://<bank host>/obie/open-banking`.
 - Path parameters (`:consentId`, `:accountId`, …) match one non-empty path segment. Before a parameter
@@ -32,8 +32,8 @@ route is missing here, if this file documents a route the table does not have, o
 | Header | Sent on | Meaning |
 |---|---|---|
 | `Authorization: Session <id>` | every route whose Auth line says **session**; optional on `POST /v1/auth/complete` | The opaque session id from `/v1/auth/complete`: exactly 43 base64url characters (32 random bytes). The Worker hashes it (SHA-256) before looking up the `SessionDO`, so the raw id is never stored. Missing or malformed → `401 missing_session`; unknown → `401 unknown_session` (`src/gate.ts`). |
-| `X-Client-Platform` | every request from the app | `android`, `ios`, `desktop` or `web`. Selects the attestation check on attestation routes (`android` → Play Integrity, `ios` → App Attest, anything else → none) and, with `web`, the web return prefix on consent routes. Client-asserted, see [SECURITY.md](../../source/mifos-x-open-banking/bff/docs/SECURITY.md#4-attestation). |
-| `X-Client-Instance` | every request from the app | A random id the app creates on first launch (`bff_client_instance`). Not a secret. Rate-limit key, together with the IP (`src/limits.ts`). Only the first 64 characters are used; absent → `anon`. |
+| `X-Client-Platform` | every request from the app | `android`, `ios`, `desktop` or `web`. Selects the attestation check on attestation routes (`android` → Play Integrity, `ios` → App Attest, anything else → none) and, with `web`, the web return prefix on consent routes. Client-asserted, see [SECURITY.md](../../source/mifos-x-open-banking/bank-gateway/docs/SECURITY.md#4-attestation). |
+| `X-Client-Instance` | every request from the app | A random id the app creates on first launch (`gateway_client_instance`). Not a secret. Rate-limit key, together with the IP (`src/limits.ts`). Only the first 64 characters are used; absent → `anon`. |
 | `X-Attestation` | attestation routes, from android / ios | `play <challenge>.<integrity token>` (Android) or `ios <keyId>.<base64 CBOR assertion>` (iOS). Both sign over `clientData` = UTF-8 `"METHOD /path\n"` followed by the exact request body bytes. Android: Play Integrity standard request with `requestHash = base64url(SHA-256(challenge ‖ clientData))`, the challenge from `POST /v1/attest/challenge`. iOS: `generateAssertion(keyId, SHA-256(clientData))` with a key registered at `POST /v1/attest/ios/register`. See `src/attest/gate.ts`. |
 | `X-Idempotency-Key` | every signed POST (payment and VRP consents, payments, VRP funds check) | Required. 1–40 characters from `A–Z a–z 0–9 . _ ~ -`, otherwise `400 idempotency_key`. Forwarded to HSBC as `x-idempotency-key`. Reuse the same key when retrying the same payment. |
 | `Content-Type: application/json` | every request with a body | Any other type → `415 unsupported_media_type`. |
@@ -88,7 +88,7 @@ Gate errors, in the order the gates run (`gate()` in `src/index.ts`):
 `ATTESTATION_MODE` in `wrangler.toml`. The deployed Worker runs `report-only`: a missing, failed or
 unconfigured attestation is let through and marked `x-attestation: unverified`. Any other value
 enforces the errors above. It is `report-only` only until the Play Integrity service account and the
-Apple Team ID are handed off (see [RUNBOOK.md](../../source/mifos-x-open-banking/bff/docs/RUNBOOK.md#7-hand-off-the-attestation-credentials-and-enforce)).
+Apple Team ID are handed off (see [RUNBOOK.md](../../source/mifos-x-open-banking/bank-gateway/docs/RUNBOOK.md#7-hand-off-the-attestation-credentials-and-enforce)).
 Desktop, web and requests without `X-Client-Platform` are never attested.
 
 ### Signed bodies: compact JSON
@@ -163,7 +163,7 @@ content-type, x-client-platform, x-client-instance, x-attestation, x-idempotency
 - **Response:** `200 {"flowId","consentId","authorizeUrl"}`. `authorizeUrl` is the HSBC authorize
   endpoint on the authorize host (`HSBC_AUTHORIZE_HOST`) carrying the Worker-signed request object.
   The Worker parks `{state, nonce, leg: "ais", consentId}` as a single-use pending flow for 600 s.
-  For web, `state` starts with `w<index>.` (see [ARCHITECTURE.md](../../source/mifos-x-open-banking/bff/docs/ARCHITECTURE.md#27-web-return-through-the-relay)).
+  For web, `state` starts with `w<index>.` (see [ARCHITECTURE.md](../../source/mifos-x-open-banking/bank-gateway/docs/ARCHITECTURE.md#27-web-return-through-the-relay)).
 - **Errors:** `400 invalid_request` · `400 web_origin_not_allowed` · `502 bank_error` + `bankStatus` ·
   the gate errors.
 - **HSBC:** `POST /v4.0/aisp/account-access-consents` on the client-credentials token (scope `accounts`).
@@ -209,7 +209,7 @@ content-type, x-client-platform, x-client-instance, x-attestation, x-idempotency
   leg got no refresh token) · `409 consent_rejected` (HSBC reports the consent `Rejected`; the tokens are
   discarded) · the gate errors.
 - **HSBC:** `POST /v1.1/oauth2/token` (`authorization_code`, `private_key_jwt`); before it, OIDC discovery
-  and JWKS (cached, see [ARCHITECTURE.md](../../source/mifos-x-open-banking/bff/docs/ARCHITECTURE.md#22-auth-completion)); after it, a `GET` of the
+  and JWKS (cached, see [ARCHITECTURE.md](../../source/mifos-x-open-banking/bank-gateway/docs/ARCHITECTURE.md#22-auth-completion)); after it, a `GET` of the
   consent (`/v4.0/aisp/account-access-consents/{id}`, or the payment / VRP consent) on the
   client-credentials token.
 
