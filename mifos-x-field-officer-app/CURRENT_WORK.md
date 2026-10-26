@@ -1,8 +1,8 @@
 # Current Work
 
 **Project**: mifos-x/mifos-x-field-officer-app
-**Last Updated**: 2026-10-23
-**Session**: session-mifos-x-field-officer-app-20260919135200752 (PR #2705)
+**Last Updated**: 2026-10-25 (audit pass, device-verified)
+**Session**: session-mifos-x-field-officer-app-20260919135200752 (PR #2705, draft)
 **Epic**: `plan-layer/project-plans/mifos-x/mifos-x-field-officer-app/active/template-port-fresh/`
 
 ---
@@ -11,57 +11,73 @@
 
 Porting the app onto the latest `openMF/kmp-project-template`. This is a **rewrite, not a merge** —
 measured at the outset: 0 `kpt.*` imports shared with the template, dead `core-base/`, 308
-`DataState` references, 0 Store5. The substrate is rebuilt bottom-up; features are then **migrated**
+`DataState` references, 0 Store5. The substrate was rebuilt bottom-up; features are then **migrated**
 from the original source.
+
+**Server:** the field-officer gateway, `https://apis.mifos.community/1.0/field/v1/`, tenant
+`mifos-bank-1`. `app-profile/app.yaml#network.access_points[mifos]` is the ONE place it is written;
+the server-config screen's default (`AppServerConfig`, core/network) is derived from it.
 
 **Layer status**
 
 | layer | state |
 |---|---|
 | `core/network` | done — 22 APIs, all `@ApiBinding("mifos")`, 168 operations, 0 missing vs original |
-| `core/database` | done — 69 Room tables, feature-first, KSP-generated `AppDatabase` |
+| `core/database` | done — Room, feature-first, KSP-generated `AppDatabase`; encrypted |
 | `core/datastore` | done — file set matches the template exactly; fork prefs on `ProjectPreferencesRepository` |
-| `core/store` | done — 96 stores (reads, offline-write queues, shared read cache) |
-| `core/data` | done — 42 repositories, **168/168 API operations wired** (96 reads, 72 writes) |
-| `core/designsystem` | migrated — 89 files (template theme + ported Mifos components) |
-| `core/ui` | migrated — 75 files |
+| `core/store` | done — reads, offline-write queues, shared read cache |
+| `core/data` | done — every API operation wired; writes through `MutationGateway` |
+| `core/designsystem` | migrated — template theme + ported Mifos components |
+| `core/ui` | migrated |
 | `core/domain` | retired — deleted in Phase 9; only `kpt.core.domain.validation` remains |
-| `feature/**` | **12 of 21** original modules started, 9 not started (2026-10-23, measured from disk) |
+| `feature/**` | **18 of 20** original modules ported or absorbed; **offline**, **path-tracking** and **passcode** not started |
 
-Per-feature status table: `template-port-fresh/CURRENT_WORK.md`. Per-module detail:
+Per-feature status table: `template-port-fresh/CURRENT_WORK.md`. Per-module detail (the SoT):
 `source/mifos-x-field-officer-app/feature/<f>/MIGRATION.md`.
-
-Not started: collectionSheet · offline · report · checker-inbox-task · path-tracking · passcode ·
-about · search-record (89 original `.kt`).
 
 ---
 
-## Completed This Session
+## Completed (2026-10-26)
 
-- [x] `core/data` rebuilt on `core/store`; every API operation reachable (was 16/168)
-- [x] All 72 writes wired via 14 command repositories (`MutationGateway`, `OnlineRequired`)
-- [x] Shared offline read cache (`api_response_cache`) + `cachedRead` store helper
-- [x] `core/designsystem` + `core/ui` migrated from the original app
-- [x] Two product-health gates added, each proven RED then GREEN
-- [x] Unblocked every JVM target — see "Method too large" below
+- [x] Server config shows the LIVE instance (card + "Live" badge, signed-in user)
+- [x] Drafts for all 12 create flows (client, group, centre, loan, group loan, savings, address, FD, RD, share, collateral, default account): offline = kept + replayed on reconnect; refused = "Save as draft" (FAILED + reason); Resume/Discard banner; Sync & Drafts titles + Open. Generic parts in core-base (FormDraft*, localized banner) — queued upstream and mirrored into the template tree (uncommitted)
+- [x] Template fixes: OfflineSubmitSyncer retried nothing (first exception final) and swept only on reconnect; outbox not form-scoped; data-ksp qualifier collision; Koin raw-type syncer override
+- [x] Create-flow bugs: no way to activate a pending client (+ AppScaffold dropped bottom bars); loan wizard stuck on Terms (id-less repayment strategies) and empty schedule table; group create did not open the group; RD/FD/share say when no product exists; inline status dialogs drawn transparent
+
+## Completed (2026-10-25)
+
+- [x] Server config: instances come from Supabase `app_server_config` (one row per instance, filtered by `supported_apps`), cached in the DB through `ServerInstancesStore` (bundled list as fallback); demo instances and roles; restart confirmation when signed in; the same screen from sign-in and Settings
+- [x] Sign out at the bottom of Settings, "Sign out and clear data" by default
+- [x] Audit of original vs migrated (group · center · loan · savings · client · search): dead edges wired (group accounts, clients and notes; centre meeting, summary and add-savings; loan notes and more-info; savings more-info; client → group; search create FAB and centre results). Notes are owner-generic (DB v18)
+- [x] Device bugs fixed at root: group loans failed to decode · group savings had no owner name · search create/result navigation crashed (inner nav controller) · centre groups unfiltered · `CenterInfo` counts all 0 (lowercase keys) · client account money shown as "$0.0" · approved loan's status shown as "Unknown" · filter chip wrapped · FAB a11y labels
+
+## Completed (2026-10-24)
+
+- [x] Search record · About · Individual collection sheet · Run reports · Checker inbox & tasks
+- [x] Center create · center + group offline download (device-verified, incl. airplane mode)
+- [x] Create client with inline datatables · `ServerErrorParser` / `serverErrorMessage()` app-wide
+- [x] Back on the gateway; server default derived from `app.yaml`
+- [x] Device-verified on the gateway as `fieldofficer`: sign-in, lists, search, checker inbox,
+      About, both downloads
+- [x] Device bugs fixed at root: search key dead (`AppOutlinedTextField` dropped keyboard
+      actions) · rejected session silent (now signs out, keeping data) · 403 showed generic copy ·
+      a failed first load showed "no items"
+- [x] Three core-base fixes proposed upstream: openMF/kmp-project-template#310 (draft)
+- [x] G-8 four-platform build green for the first time (Android · desktop · web js+wasm · iOS simulator);
+      fixed three breaks it exposed — web broken since 2026-09-19, CSV export not multiplatform, iOS
+      fast path skipping compose resources
+- [x] G-7 dead clickables 86 → 4 (root fixes + a tracer fix for previews/comments)
 
 ---
 
 ## Next Steps
 
-1. **Redo `feature/auth` as a PORT, not a rewrite** — THE correction from this session
-   - [ ] It was authored fresh, discarding the original 258-line `LoginScreen` (logo, strings,
-         Scaffold/Snackbar, server-config entry, design-system components)
-   - [ ] Port `6b66e8a43:feature/auth/src/commonMain/kotlin/com/mifos/feature/auth/login/**`
-   - [ ] **Rule for all 19 remaining features: port the ORIGINAL file and rewrite its
-         package/imports. Never author a replacement screen.** 196 original feature files import
-         the Mifos components by name.
-
-2. **Migrate the remaining 19 features, in this order**
-   - [ ] client (163 files) · center (17) · groups (13) · loan (62) · savings (33)
-   - [ ] recurringDeposit (10) · note (8) · document (8) · data-table (20)
-   - [ ] checker-inbox-task (10) · collectionSheet (17) · report (16) · offline/sync (20)
-   - [ ] search (9) · search-record (4) · path-tracking (10) · activate (5) · settings (12) · about (4)
+1. **Offline dashboard** (the drawer's Offline Sync; 20 original files) — the download half already
+   exists as `OfflineDownloadRepository`, so this is mostly the queue/sync screen.
+2. **Path tracker** (5) — platform location + a background service.
+3. **Passcode** (`libs/mifos-passcode`) — app lock around sign-in.
+4. Owed inside landed modules: group create's tests + device verification · loan application
+   charges/collateral + transaction row actions · document preview (multiplatform image+PDF viewer).
 
 ### Per-feature recipe (proven on the UI-substrate migration)
 
@@ -81,6 +97,7 @@ about · search-record (89 original `.kt`).
 6. `@FeatureDestination` on top-level nav entries. **Login is deliberately excluded** — that
    annotation registers on the AUTHENTICATED graph, which is where the sign-in gate must not be.
 7. A ViewModel test per screen; prefer real impls over `MapSettings` to hand-written fakes.
+8. ViewModels derive state with `stateIn(WhileSubscribed)` — no `init {}` collectors.
 
 ---
 
@@ -88,15 +105,12 @@ about · search-record (89 original `.kt`).
 
 ### Implementation Details
 - Commands are `OnlineRequired` — they await the server and write nothing offline, returning
-  `Blocked(OFFLINE)`. An optimistic approval is a lie an officer would act on. Offline capture is
-  the explicit `OfflineQueueRepository`, never a silent fallback.
+  `Blocked(OFFLINE)`. Offline capture is the explicit `OfflineQueueRepository`, never a silent
+  fallback.
 - Reads take the `CACHE_FIRST_SWR` default so an empty cache offline renders the app's own Empty,
   not a blocking `NoNetwork`. TTLs feed the freshness indicator only — never cache validity.
-- Three latent bugs fixed at root, all invisible until generated code was first compiled:
-  16 types declared as Room tables **and** stored as converted columns (plus 13 foreign keys that
-  could never be satisfied) — that dead schema pushed `onValidateSchema` past the JVM 64KB method
-  cap and blocked **every** JVM target; computed properties Room tried to assign (`@Ignore`);
-  the template's own `PasswordChecker` importing a type from the wrong package.
+- A 401 on a credentialed request signs out (keeping local data) via `SignOutOnRejectedSession` +
+  core-base's opt-in `UnauthorizedHandler`; a 403 is a client error that keeps the server's reason.
 
 ### Invariants not to break
 - `offline-first-reads.sh` — no `validator` on a read store (an expired cache must still serve
@@ -108,12 +122,13 @@ about · search-record (89 original `.kt`).
 ### Gaps Identified
 | Gap | Layer | Priority |
 |-----|-------|----------|
-| `feature/auth` written fresh — must be redone as a port | feature | P1 |
-| 19 feature modules not migrated | feature | P1 |
-| `core/domain` — 82 files on retired `com.mifos.core.data.*` | domain | P2 |
-| `MifosImageCropperDialog` / `MifosSignatureDrawDialog` withheld — `com.attafitamim.krop` and `com.niyajali.compose.sign` are in neither the catalog nor the template; block client image-upload + signature | ui | P2 |
-| 4 `retrieveAll*` filtered queries + 5 raw downloads are live-only by design (reason stated on each `{Ctx}LiveReadRepository` method) | data | P3 |
-| `app-profile/platforms/**` still claims "App Toolkit / 100% offline, no login" — false for this app, must not reach a store submission | deployment | P2 |
+| Offline dashboard · path tracker · passcode not ported | feature | P1 |
+| Home tab is undesigned (`home-dashboard-undesigned`) — needs a product decision | feature | P1 |
+| Group create has no tests and no device verification | feature | P1 |
+| Gateway `fieldofficer` is 403 on reports + collection sheets; no client datatables — blocks three device checks | server | P2 |
+| G-7 dead clickables 86 → 4: the 4 are the carried-over "More" options — a design decision (`client-signature-more-option-inert`) | ui | P2 |
+| `app-profile/platforms/**` still claims "App Toolkit / collects no data" — false for this app, must not reach a store submission | deployment | P2 |
+| iOS/desktop icons · store listing · privacy URL | deployment | P2 |
 
 ---
 
@@ -123,9 +138,8 @@ about · search-record (89 original `.kt`).
 /context-start mifos-x-mifos-x-field-officer-app
 ```
 
-**First thing to read**: "Next Steps" above — item 1 is redoing `feature/auth` as a PORT of the
-original screen, not the fresh rewrite currently committed. Then the per-feature recipe, which
-applies unchanged to the remaining 19 features.
+**First thing to read**: "Next Steps" above — the offline dashboard is next. Then the per-feature
+recipe, which applies unchanged.
 
 Full epic detail (subordinate to this file, not a substitute):
 `plan-layer/project-plans/mifos-x/mifos-x-field-officer-app/active/template-port-fresh/CURRENT_WORK.md`
