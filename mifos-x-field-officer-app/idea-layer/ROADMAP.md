@@ -6,9 +6,9 @@
 Features: about,activate,auth,center,checker-inbox-task,client,collectionSheet,data-table,document,groups,loan,note,offline,path-tracking,recurringDeposit,report,savings,search,search-record,settings
 
 ## v2.0 — Enhanced
-**Status**: ❌ Planned | **Features**: 0 | **Target**: —
+**Status**: 🔄 In progress | **Features**: 3 | **Target**: —
 
-Features: _(plan with /idea roadmap plan v2)_
+Features: home (dashboard), offlineSync (Settings → Offline sync — replaces the v1 `offline` drawer screen), profile (opened from the Home avatar — replaces the removed drawer header)
 
 ## v3.0 — Scale
 **Status**: ❌ Planned | **Features**: 0 | **Target**: —

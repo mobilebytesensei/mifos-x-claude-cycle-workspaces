@@ -1,0 +1,116 @@
+# home — API contract. AUTHORED via /idea-plan-add 2026-10-26 (verified against the
+# sandbox OpenAPI spec, Fineract 1.17.0-SNAPSHOT, and probed live on the gateway).
+
+schema_version: "3.1"
+feature: home
+
+endpoints:
+  - id: getBusinessDate
+    method: GET
+    path: "businessdate/BUSINESS_DATE"
+    requires_permission: [READ_BUSINESS_DATE]
+    response: { type: "BusinessDate", fields: [date, type] }
+    note: "the date every 'today' on this screen means — never the device clock"
+
+  - id: getOwnUser
+    method: GET
+    path: "users/{userId}"
+    requires_permission: []        # a user may read their own record (verified: 200 for user 32)
+    response: { type: "AppUser", fields_used: [id, officeId, officeName, firstname, staff, selectedRoles] }
+    note: "the staff link decides the portfolio scope; cached for the session"
+
+  - id: generateCollectionSheet
+    method: POST
+    path: "collectionsheet?command=generateCollectionSheet"
+    requires_permission: [READ_COLLECTIONSHEET]
+    request:
+      body: { officeId: Long, staffId: "Long? (when linked)", transactionDate: "dd MMMM yyyy", dateFormat: "dd MMMM yyyy", locale: en }
+    response: { type: "IndividualCollectionSheet", fields: [dueDate, "clients[].loans[]", "clients[].savings[]"] }
+    note: "a READ despite POST — it generates, it does not post. Verified on the sandbox 2026-10-26."
+
+  - id: getCheckerTasks
+    method: GET
+    path: "makercheckers"
+    requires_permission_any: ["*_CHECKER", CHECKER_SUPER_USER]
+    response: { type: "List<AuditData>" }
+
+  - id: getLoansByStatus
+    method: GET
+    path: "loans"
+    request:
+      query: { status: "100 | 200 | 300", offset: 0, limit: 200, orderBy: id, sortOrder: DESC }
+    requires_permission: [READ_LOAN]
+    response: { type: "Page<LoanAccount>", items_key: pageItems, fields_used: [id, accountNo, clientName, loanOfficerId, timeline.submittedByUsername, inArrears, summary, currency] }
+    note: >
+      The list endpoint has NO loanOfficerId filter (spec: externalId, offset, limit, orderBy,
+      sortOrder, accountNo, associations, clientId, status). "Own" is filtered client-side by
+      loanOfficerId == staffId, or timeline.submittedByUsername == username when unlinked.
+      Paged: walk pages until totalFilteredRecords is covered (gateway: 1,118 at status 100).
+
+  - id: getClientsByStatus
+    method: GET
+    path: "clients"
+    request:
+      query: { status: "pending | active", staffId: "Long? (when linked)", officeId: "Long (when unlinked)", limit: 1 }
+    requires_permission: [READ_CLIENT]
+    response: { type: "Page<Client>", count_from: totalFilteredRecords }
+    note: "limit=1 — only the total is needed for counts"
+
+  - id: getPendingReschedules
+    method: GET
+    path: "rescheduleloans?command=pending"
+    requires_permission: [READ_RESCHEDULELOAN]
+    response: { type: "List<RescheduleRequest>" }
+
+  - id: getCentersWithCalendar
+    method: GET
+    path: "centers/{centerId}?associations=collectionMeetingCalendar"
+    requires_permission: [READ_CENTER, READ_CALENDAR]
+    response: { type: "CenterWithCalendar", fields_used: [id, name, collectionMeetingCalendar.nextTenRecurringDates] }
+    note: >
+      GET /centers?meetingDate= does NOT filter (returned every centre on the gateway). Meetings
+      today = centres/groups in scope whose calendar's next recurring date == business date.
+
+  - id: getGroupsWithCalendar
+    method: GET
+    path: "groups/{groupId}?associations=collectionMeetingCalendar"
+    requires_permission: [READ_GROUP, READ_CALENDAR]
+
+  - id: getCountsByScope
+    method: GET
+    path: "groups | centers"
+    request:
+      query: { paged: true, limit: 1, staffId: "Long? (when linked)", officeId: "Long (when unlinked)" }
+    requires_permission_any: [READ_GROUP, READ_CENTER]
+    response: { count_from: totalFilteredRecords }
+
+  - id: getSavingsAccounts
+    method: GET
+    path: "savingsaccounts"
+    request:
+      query: { offset: 0, limit: 200 }
+    requires_permission: [READ_SAVINGSACCOUNT]
+    response: { type: "Page<SavingsAccount>", fields_used: [summary.accountBalance, currency, fieldOfficerId] }
+
+not_used:
+  - endpoint: "runreports/* (Portfolio at Risk, Active Loans – Summary, FieldAgentStats, Aging)"
+    why: "fail with BadSqlGrammarException on the PostgreSQL sandbox; figures are computed from core APIs instead"
+  - endpoint: "centers?meetingDate="
+    why: "does not filter"
+  - endpoint: "userdetails"
+    why: "OAuth deployments only — 404 on the gateway"
+
+substrate:
+  repository: kpt.core.data.dashboard.DashboardRepository     # NEW
+  stores:
+    - "AppStoreIds.DashboardCollections (key: officeId+staffId+date)"
+    - "AppStoreIds.DashboardWorkQueue (key: scope)"
+    - "AppStoreIds.DashboardMeetings (key: scope+date)"
+    - "AppStoreIds.DashboardPortfolio (key: scope)"
+  fetch_policy: NETWORK_WITH_CACHE
+  ttl: "short (minutes) — counts move during the working day"
+  permission_predicate: "kpt.core.data.session.PermissionChecker (NEW, shared — docs.yaml#permission_model)"
+  already_exists:
+    - "FormDraftRepository (drafts count)"
+    - "SearchRecord store (recent records)"
+    - "ServerConfigRepository (live instance)"

@@ -1,0 +1,56 @@
+# offlineSync — flow contract. AUTHORED via /idea-plan-add 2026-10-27; rewritten by /idea-flows the same
+# day to the v4.0 canonical shape (navigates_to + flow_logic). Download-only: offline actions are drafts
+# (Settings → Sync & Drafts uploads them).
+
+schema_version: "4.0"
+feature: offlineSync
+
+entry_points:
+  - type: settings_row
+    from: settings
+    route: OfflineSyncRoute
+    description: "Settings → Offline sync (its own row, beside Sync & Drafts)"
+  - type: list_action
+    from: centerList
+    description: "Centre list long-press → Download adds the centre to the chosen records and enqueues the same background job"
+  - type: list_action
+    from: groupsList
+    description: "Group list long-press → Download adds the group to the chosen records and enqueues the same background job"
+
+# Target ids match the app's routes (CenterDetailRoute, GroupsDetailRoute, ClientProfileRoute, SyncAndDraftsRoute).
+navigates_to: [centerDetail, groupsDetail, clientProfile, syncAndDrafts, settings]
+
+flow_logic:
+  - { trigger: "back",                                    to: settings,      type: pop }
+  - { trigger: "open_record (centre row)",                to: centerDetail,  type: push, params: { centerId: "record.id" }, note: "renders from the device when offline" }
+  - { trigger: "open_record (group row)",                 to: groupsDetail,  type: push, params: { groupId: "record.id" } }
+  - { trigger: "open_record (client row)",                to: clientProfile, type: push, params: { clientId: "record.id" } }
+  - { trigger: "open_drafts (offline state link)",        to: syncAndDrafts, type: push, note: "where offline work is uploaded" }
+
+transitions:
+  - { id: load,        from: loading,                      trigger: "screen opened",                  to: [content, empty, syncing, partial_failure, offline], decided_by: "local job + record rows; network monitor for the offline overlay" }
+  - { id: add_records, from: [content, empty, partial_failure], trigger: "Add records",               to: record_picker }
+  - { id: download,    from: record_picker,                trigger: "Download N for offline",         to: syncing, side_effects: ["choose(selection) → rows waiting", "enqueue 'offline-sync'"] }
+  - { id: sync_now,    from: [content, partial_failure],   trigger: "Sync now",                       to: syncing }
+  - { id: finish_ok,   from: syncing,                      trigger: "job finished, 0 failed",         to: content }
+  - { id: finish_fail, from: syncing,                      trigger: "job finished, N failed",         to: partial_failure }
+  - { id: retry,       from: partial_failure,              trigger: "Retry failed",                   to: syncing, side_effects: ["new job over the failed reads only"] }
+  - { id: cancel,      from: syncing,                      trigger: "Cancel",                         to: content, note: "finished records stay synced; the rest return to waiting" }
+  - { id: go_offline,  from: [content, syncing, partial_failure], trigger: "network lost",           to: offline, note: "a running job pauses on its network constraint and resumes" }
+  - { id: go_online,   from: offline,                      trigger: "network back",                   to: [content, syncing] }
+  - { id: remove_last, from: content,                      trigger: "last chosen record removed",     to: empty }
+
+background:
+  - id: offline_sync_job
+    runs_in: "sync/ — worker-kmp unique work 'offline-sync' (one at a time, network required)"
+    triggers: [sync_now, picker_download, refresh_record, retry_failed, list_long_press_download, periodic_when_automatic]
+    steps:
+      - "discover: walk each chosen record's downstream tree into a de-duplicated list of reads"
+      - "fetch: run each read through its screen's own store (POST /batches for loan + datatable reads); write progress to the job row"
+      - "record: set offline_record status synced + refreshedAt, or failed with the server's message per read"
+  - id: offline_refresh_periodic
+    runs_in: "sync/ — worker-kmp periodic work 'offline-refresh' (interval + Wi-Fi-only + charging constraints)"
+    exists_when: "sync mode == automatic; cancelled on manual and on sign-out"
+    note: "re-downloads ONLY the chosen records — the officer decides how much data comes to the device"
+
+journey_ids: [field-officer-syncs-before-field]

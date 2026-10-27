@@ -1,0 +1,383 @@
+schema_version: '3.1'
+id: offlineSync
+name: Offline sync
+description: >
+  Settings → Offline sync. Before going into the field, the officer chooses existing server records — centres, groups or
+  clients — and syncs them to the device; a background job downloads each one's full downstream tree so every screen of
+  those records opens with no network. It is DOWNLOAD-ONLY: what the officer does offline is saved as drafts and
+  uploaded later by Settings → Sync & Drafts. The dashboard shows EVERYTHING stored locally at three levels — Centre,
+  Group, Client — each record with its sync status (waiting, syncing, synced, out of date, failed), plus the running
+  job's progress; the officer chooses whether the chosen records sync manually or automatically — syncing moves a lot of
+  data, so only the chosen records come down.
+feature: offlineSync
+flow: offline-sync
+version: '1.3'
+tags:
+  - offline
+  - sync
+  - background
+  - settings
+  - P1
+status: approved
+approve_hash: "83c80d1a5047c8579aa43c50fc5b8127cbc1a5f4cc14280cba965f6cd291eb38"
+approved_at: '2026-10-27T17:00:00Z'
+approved_by: /idea-approve
+approve_predicate_version: "1.0.0"
+approve_contract_version: "2.0.0"
+cluster: field-operations
+is_primary_flow: false
+acceptance_refs:
+  - FR-OFF-01
+  - FR-OFF-02
+  - FR-OFF-03
+  - FR-OFF-04
+  - FR-OFF-05
+  - FR-OFF-06
+  - FR-OFF-07
+  - FR-OFF-08
+  - NFR-OFF-01
+journey_refs:
+  - field-officer-syncs-before-field
+scaffolded_at: '2026-10-27T13:30:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-10-27T16:30:00Z'
+enriched_by: /idea-feature-enrich
+module_path: feature/offlinesync
+ported_from: >-
+  6b66e8a43:feature/offline — OfflineDashboard + SyncClient/Group/CenterPayloads (redesigned, not a 1:1 port; the old
+  upload screens are NOT ported)
+decisions:
+  - id: download-only
+    decision: >-
+      Offline sync ONLY brings the chosen records to the device so the officer can work without network. Actions taken
+      offline are saved as drafts and Settings → Sync & Drafts uploads them when the network returns. This screen has no
+      upload section and makes no writes to the server; in the offline state it links to Sync & Drafts.
+    why: >-
+      operator 2026-10-27 — "This offline sync only responsible for syncing records locally so field officer can sync
+      before going in field and does actions without network and save in draft and sync it later"
+  - id: separate-from-drafts
+    decision: >-
+      Offline sync is its own Settings row and screen; Settings → Sync & Drafts stays the place for drafts and their
+      upload.
+    why: operator 2026-10-27 — "this is different feature from Settings -> Sync & Draft"
+  - id: settings-sub-screen-shell
+    decision: >-
+      No bottom navigation: a back arrow and the "Offline sync" title only (ui.yaml#shell overrides the app-shell
+      default). Layout archetype list_screen — app bar, level chip row, list — never a KPI dashboard hero.
+    why: the first Stitch pass on the dashboard archetype invented "99.7% ready" heroes and upload queues (2026-10-27)
+  - id: three-level-inventory
+    decision: >-
+      "On this device" shows the full local (Room) inventory at three levels — Centres / Groups / Clients tabs with
+      their counts, and the same three totals in the header. Every record held locally appears at its level, whether
+      chosen directly or brought in through a parent (shown "via Centro Arin"); centres expand to their groups and
+      groups to their clients. Refresh and Remove sit on chosen records; a via-parent record is managed through its
+      parent. The Clients tab has a local search.
+    why: >-
+      operator 2026-10-27 — "this going to show full dashboard what's in the room locally records wise on three level
+      Center, Group, Client"
+  - id: sync-status-dashboard
+    decision: >-
+      Every record shows its sync status — Waiting to sync, Syncing…, Synced <time>, Out of date (older than the refresh
+      interval, or 24 h on manual), N failed — needs-sync first; a level tab carries a dot when any record in it failed.
+      The header counts records to sync.
+    why: operator 2026-10-27 — "user will have dashboard of what need to be synced"
+  - id: select-existing-records
+    decision: >-
+      The officer selects EXISTING server records in a picker (Centres / Groups / Clients tabs, search, multi-select,
+      already-on-device marked) and taps Download for offline.
+    why: operator 2026-10-27 — the officer decides what to carry into the field
+  - id: full-downstream-tree
+    decision: >-
+      Centre → its record, members, meeting calendar, accounts, notes, datatables → every group. Group → its record,
+      associations, accounts, notes, datatables, group loans and savings → every client. Client → its record, image,
+      addresses, identifiers, collateral, notes, charges, documents WITH file contents, datatables, all accounts → every
+      loan (loan + transactions, repayment schedule, charges, reschedules, notes, documents, datatables, repayment and
+      transaction templates) and every savings account (account + transactions, charges, notes, documents, datatables,
+      transaction templates). Global templates once per run (loan and savings products, client template, datatable
+      definitions, offices, staff). The templates are what lets offline actions be captured as drafts.
+    why: operator 2026-10-27 — "it will sync all down stream records ... all type so on"
+  - id: closed-accounts-included
+    decision: Closed loans and savings accounts are downloaded with their history.
+    why: operator 2026-10-27
+  - id: documents-with-contents
+    decision: Document file contents are downloaded, not only the document list.
+    why: operator 2026-10-27
+  - id: same-stores-as-screens
+    decision: >-
+      Every downloaded read goes through the store, with the key, that the record's own screen reads — "synced" means
+      the screen opens offline, not that a parallel table was filled. A record shared by two chosen records is fetched
+      once.
+    why: the existing OfflineDownloadRepository contract, kept
+  - id: background-job
+    decision: >-
+      Work runs in a durable background job (sync/ module, worker-kmp WorkScheduler) — it survives leaving the screen
+      and process death, runs one at a time, needs a network, and shows an Android progress notification. Loan and
+      datatable reads use Fineract POST /batches; the gateway routes no other GET through batches (501, probed
+      2026-10-27), so those go single, 5 in flight.
+    why: a centre of 10 groups × 10 clients is ~3,000 reads; loans are the bulk and they batch
+  - id: refresh-mode
+    decision: >-
+      The officer chooses Manual (default — records sync only on Sync now / per-record Refresh) or Automatic (every 1 h,
+      6 h, 12 h or 24 h; Wi-Fi only on/off; only while charging on/off). Either way only the CHOSEN records sync — the
+      officer controls how much data comes to the device. Automatic is ONE named periodic job, rescheduled on change and
+      cancelled on Manual and on sign-out. iOS runs it "at most every N h".
+    why: >-
+      operator 2026-10-27 — "they want it to manual or automatic as this sync alot of data to device and it only sync
+      the user choosen records only"
+  - id: list-download-same-path
+    decision: >-
+      The centre and group lists' long-press download adds the record to the chosen records and enqueues the same
+      background job.
+    why: a download started from a list must not die when the list is closed
+handoff_to_drafts:
+  note: >-
+    Out of this feature's scope, recorded so it is not lost: today an offline loan repayment goes to loanRepaymentQueue
+    (OfflineQueueRepository.enqueueLoanRepayment, dialog "Saved to Sync — Sync from Offline Sync") and nothing ever
+    uploads it. Per download-only, that path must become a draft that Sync & Drafts uploads, and the dialog copy must
+    point there. Tracked as a Sync & Drafts work item.
+permission_model:
+  note: >-
+    Download needs the READ_* codes of what it reads (READ_CENTER, READ_GROUP, READ_CLIENT, READ_LOAN,
+    READ_SAVINGSACCOUNT, READ_DOCUMENT, READ_*NOTE, READ_<datatable>). A read the server refuses is reported per record
+    (N failed, with the server's message), never as a whole-job failure.
+states_summary:
+  - loading
+  - content
+  - syncing
+  - partial_failure
+  - empty
+  - offline
+metadata:
+  category: composite
+  implementation_ready: true
+  impl_ready_at: '2026-10-27T16:30:00Z'
+  impl_ready_schema: v2
+contracts:
+  - capability: background-work
+    platform_spec: >-
+      worker-kmp unique one-time work 'offline-sync' (KEEP while running) + periodic work 'offline-refresh'; NetworkType
+      CONNECTED (UNMETERED when Wi-Fi only), requiresCharging when set; Android foreground progress notification
+    permission: post_notifications
+    error_cases:
+      - WorkCancelled
+      - ConstraintNotMet
+      - ProcessKilled
+  - capability: database
+    platform_spec: >-
+      Room: sync_job (id, status, done, total, currentLabel, failures, timestamps) + offline_record (kind, id, name,
+      parentKind, parentId, chosen, counts, status, refreshedAt, failedCount) — DB v20; the three-level inventory is
+      offline_record grouped by kind, parent links give 'via' + expand
+    permission: none
+    error_cases:
+      - DiskFull
+      - MigrationFailed
+  - capability: network
+    platform_spec: >-
+      Fineract REST GETs through the existing ScreenDataStream stores; POST /batches (≤100) for loan + datatable reads,
+      single calls otherwise; document attachments as bytes
+    permission: none
+    error_cases:
+      - Offline
+      - Forbidden403
+      - NotFound404
+      - ServerError5xx
+  - capability: preferences
+    platform_spec: 'multiplatform-settings (core/datastore): offline refresh mode, interval hours, wifiOnly, chargingOnly'
+    permission: none
+    error_cases: []
+libraries:
+  - capability: background-work
+    library: worker-kmp
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+      - js
+      - wasmJs
+  - capability: database
+    library: room
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+  - capability: network
+    library: ktor
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+      - js
+      - wasmJs
+  - capability: preferences
+    library: multiplatform-settings
+    version: latest
+    targets:
+      - android
+      - ios
+      - desktop
+      - js
+      - wasmJs
+vm_actions:
+  - name: SyncNow
+    signature: fun syncNow()
+    state_mutations: []
+    side_effects:
+      - OfflineSyncRepository.syncNow() — enqueues a download of every chosen record waiting / out of date / failed
+    error_handling:
+      Offline: button disabled; nothing enqueued
+  - name: CancelJob
+    signature: 'fun cancelJob(jobId: Long)'
+    state_mutations: []
+    side_effects:
+      - OfflineSyncRepository.cancel(jobId)
+    error_handling: {}
+  - name: RetryFailed
+    signature: 'fun retryFailed(jobId: Long)'
+    state_mutations: []
+    side_effects:
+      - OfflineSyncRepository.retryFailed(jobId) — new job over the failed reads only
+    error_handling: {}
+  - name: RecordsLevel
+    signature: 'fun recordsLevel(level: RecordLevel)'
+    state_mutations:
+      - records.level=level
+    side_effects: []
+    error_handling: {}
+  - name: ToggleExpand
+    signature: 'fun toggleExpand(record: OfflineRecord)'
+    state_mutations:
+      - records.expanded ^= record.key
+    side_effects: []
+    error_handling: {}
+  - name: SetRefreshMode
+    signature: 'fun setRefreshMode(mode: RefreshMode)'
+    state_mutations:
+      - refresh.mode=mode
+    side_effects:
+      - OfflineSyncRepository.setRefresh(settings) — schedule or cancel 'offline-refresh'
+    error_handling: {}
+  - name: SetRefreshInterval
+    signature: 'fun setRefreshInterval(hours: Int)'
+    state_mutations:
+      - refresh.intervalHours=hours
+    side_effects:
+      - reschedule 'offline-refresh' (same unique name)
+    error_handling: {}
+  - name: SetWifiOnly
+    signature: 'fun setWifiOnly(on: Boolean)'
+    state_mutations:
+      - refresh.wifiOnly=on
+    side_effects:
+      - reschedule 'offline-refresh'
+    error_handling: {}
+  - name: SetChargingOnly
+    signature: 'fun setChargingOnly(on: Boolean)'
+    state_mutations:
+      - refresh.chargingOnly=on
+    side_effects:
+      - reschedule 'offline-refresh'
+    error_handling: {}
+  - name: OpenRecord
+    signature: 'fun openRecord(record: OfflineRecord)'
+    state_mutations: []
+    side_effects:
+      - event OpenRecord(kind, id) → centre / group / client detail
+    error_handling: {}
+  - name: OpenDrafts
+    signature: fun openDrafts()
+    state_mutations: []
+    side_effects:
+      - event OpenDrafts → Settings → Sync & Drafts (SyncAndDraftsRoute)
+    error_handling: {}
+  - name: RefreshRecord
+    signature: 'fun refreshRecord(record: OfflineRecord)'
+    state_mutations: []
+    side_effects:
+      - OfflineSyncRepository.enqueueDownload(listOf(record.target))
+    error_handling:
+      Offline: record marked waiting; runs when online
+  - name: RemoveRecord
+    signature: 'fun removeRecord(record: OfflineRecord)'
+    state_mutations:
+      - confirmRemove=null
+    side_effects:
+      - OfflineSyncRepository.removeFromDevice(record.target) — reference-counted cache delete
+    error_handling: {}
+  - name: AddRecords
+    signature: fun openPicker()
+    state_mutations:
+      - picker.visible=true
+      - picker.tab=CENTRES
+    side_effects:
+      - start the centres list stream
+    error_handling: {}
+  - name: PickerTab
+    signature: 'fun pickerTab(tab: PickerTab)'
+    state_mutations:
+      - picker.tab=tab
+    side_effects:
+      - start that tab's list stream
+    error_handling:
+      Offline: tab shows the offline state; selection kept
+  - name: PickerSearch
+    signature: 'fun pickerSearch(query: String)'
+    state_mutations:
+      - picker.query=query
+    side_effects: []
+    error_handling: {}
+  - name: PickerSelect
+    signature: 'fun pickerSelect(target: SyncTarget)'
+    state_mutations:
+      - picker.selection ^= target
+    side_effects: []
+    error_handling: {}
+  - name: PickerDownload
+    signature: fun pickerDownload()
+    state_mutations:
+      - picker.visible=false
+      - picker.selection=empty
+    side_effects:
+      - OfflineSyncRepository.choose(selection) — rows as waiting
+      - OfflineSyncRepository.enqueueDownload(selection)
+    error_handling:
+      Offline: button disabled
+error_cases:
+  - WorkCancelled
+  - ConstraintNotMet
+  - ProcessKilled
+  - DiskFull
+  - MigrationFailed
+  - Offline
+  - Forbidden403
+  - NotFound404
+  - ServerError5xx
+test_fixtures:
+  source: screens/offlineSync/tests.yaml
+  scenario_count: 15
+  priority_distribution:
+    high: 7
+    medium: 5
+    low: 3
+status_history:
+  - from: enriched
+    to: designed
+    at: '2026-10-27T08:12:02.216Z'
+    by: /idea-feature-stitch
+  - from: designed
+    to: design_partial
+    at: '2026-10-27T08:22:17.672Z'
+    by: /idea-feature-stitch
+  - from: design_partial
+    to: designed
+    at: '2026-10-27T08:26:38.098Z'
+    by: /idea-feature-stitch
+  - from: designed
+    to: approved
+    at: '2026-10-27T17:00:00Z'
+    by: /idea-approve
+    contract_version: "2.0.0"
+    bypass_flags: []
+    note: operator-approved ("approve and implement it"); predicate + disclosures in APPROVE_LOG.yaml

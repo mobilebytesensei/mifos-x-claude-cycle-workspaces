@@ -1,0 +1,98 @@
+# home — data flow. Generated via /idea-data-flow (cascade of /idea-feature-enrich) 2026-10-26.
+# Inputs: ui.yaml + api.yaml.
+
+schema_version: "3.1"
+feature: home
+
+scope_resolution:
+  source: "SessionRepository.user + GET users/{userId} (staff link)"
+  shape: "DashboardScope(officeId: Long, staffId: Long?, username: String)"
+  rule: "staffId != null → my portfolio; else office-wide on officeId (docs.yaml#decisions.portfolio-scope)"
+
+permissions:
+  source: "SessionRepository.user.permissions (persisted at sign-in)"
+  predicate: "PermissionChecker.has(code) — docs.yaml#permission_model"
+  effect: "a card whose permission is absent is never subscribed — no request, no 403"
+
+screen_state_aggregation:
+  rule: >
+    content when every subscribed card has content or empty; partial_failure when at least one card
+    errored and at least one has content or cache; error when every REMOTE card errored with nothing
+    cached; offline when the device is offline and cards serve cache. Local sources (drafts, recent,
+    quick actions) never move the screen into error.
+  helper: "aggregateDashboardProgress (core-base/ui IndependentCardLayout)"
+
+entries:
+  - id: header
+    trigger: on_mount
+    source: "SessionRepository.user + DashboardRepository.businessDateStream(scope) + ServerConfigRepository live instance"
+    shape: "ScreenState<DashboardHeader>"
+    cardinality: one
+    fetch_policy: NETWORK_WITH_CACHE
+    target_state: content
+    loading_state: loading
+    error_state: error
+    note: "greeting, office and instance come from the session and render at once; only the business date is fetched"
+
+  - id: collections
+    trigger: on_mount
+    gated_by: [READ_COLLECTIONSHEET]
+    source: "DashboardRepository.collectionsStream(scope, businessDate)"
+    shape: "ScreenState<CollectionsSummary(dueClients, dueAmount, collectedAmount, overdueClients, currency)>"
+    cardinality: one
+    is_empty: "dueClients == 0"
+    fetch_policy: NETWORK_WITH_CACHE
+    on_error: { nav_target: null, error_code: network_error, scope: card }
+
+  - id: work_queue
+    trigger: on_mount
+    gated_by_any: [READ_LOAN, READ_CLIENT, READ_RESCHEDULELOAN, "*_CHECKER", CHECKER_SUPER_USER]
+    source: "DashboardRepository.workQueueStream(scope) — combines only the rows the user may read"
+    shape: "ScreenState<WorkQueue(checkerTasks?, awaitingApproval?, awaitingDisbursal?, pendingClients?, pendingReschedules?)>"
+    cardinality: one
+    note: "a null row = not permitted (absent); a 0 row = permitted and empty"
+    fetch_policy: NETWORK_WITH_CACHE
+    on_error: { nav_target: null, error_code: network_error, scope: card }
+
+  - id: drafts
+    trigger: on_mount
+    source: "FormDraftRepository.observeAll() (local)"
+    shape: "Flow<List<SavedFormDraft>>"
+    cardinality: many
+    note: "always live, offline included"
+
+  - id: meetings
+    trigger: on_mount
+    gated_by: [READ_CALENDAR]
+    gated_by_any: [READ_CENTER, READ_GROUP]
+    source: "DashboardRepository.meetingsTodayStream(scope, businessDate)"
+    shape: "ScreenState<List<MeetingToday(entityType, entityId, name, memberCount, time?)>>"
+    cardinality: many
+    is_empty: "it.isEmpty()"
+    fetch_policy: NETWORK_WITH_CACHE
+    on_error: { nav_target: null, error_code: network_error, scope: card }
+
+  - id: portfolio
+    trigger: on_mount
+    gated_by_any: [READ_LOAN, READ_CLIENT, READ_SAVINGSACCOUNT, READ_GROUP, READ_CENTER]
+    source: "DashboardRepository.portfolioStream(scope)"
+    shape: "ScreenState<PortfolioSummary(activeClients?, activeLoans?, outstanding: Map<Currency,Double>?, overdue?, inArrears?, par?, savingsBalance?, groups?, centers?)>"
+    cardinality: one
+    fetch_policy: NETWORK_WITH_CACHE
+    on_error: { nav_target: null, error_code: network_error, scope: card }
+
+  - id: recent
+    trigger: on_mount
+    source: "SearchRecord history (local, last 5)"
+    shape: "Flow<List<RecentRecord>>"
+    cardinality: many
+
+writes: []      # read-only screen — every write happens in the destination it opens
+
+layering: "network → database (Store5 SOT) → store → data (DashboardRepository) → VM (stateIn WhileSubscribed, no init{})"
+
+last_generate:
+  command: "/idea-data-flow home"
+  timestamp: "2026-10-26T17:40:00Z"
+  framework_version: "home/2026-10-26"
+  content_hash: "c8624cabbf313a7b5e419c30f889e30c83699c14cedee965825750869dc18858"

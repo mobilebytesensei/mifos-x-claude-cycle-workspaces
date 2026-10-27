@@ -1,0 +1,91 @@
+# offlineSync — API contract. AUTHORED via /idea-plan-add 2026-10-27; extended by /idea-api-extend the
+# same day after probing every path live on the gateway (fieldofficer @ apis.mifos.community,
+# tenant mifos-bank-1, Fineract 1.17.0-SNAPSHOT).
+#
+# The SCREEN reads only local state (sync_job, offline_record, refresh prefs). These are the
+# calls the background job and the record picker make. Every download read is the SAME call (and the
+# same store key) the record's own screen makes, so a downloaded record opens offline on its screen.
+
+schema_version: "3.1"
+feature: offlineSync
+
+endpoints:
+  # ── Picker ──
+  - id: list_centres
+    method: GET
+    path: "centers?officeId={officeId}&staffId={staffId}"
+    requires_permission: [READ_CENTER]
+    response: { type: "Page<Center>", items_key: pageItems, fields_used: [id, name, accountNo, officeName, staffName, status] }
+    note: "staffId only when the user has a staff link; else the office. 200 verified."
+  - id: list_groups
+    method: GET
+    path: "groups?officeId={officeId}&staffId={staffId}"
+    requires_permission: [READ_GROUP]
+    response: { type: "Page<Group>", items_key: pageItems, fields_used: [id, name, accountNo, centerName, status] }
+  - id: list_clients
+    method: GET
+    path: "clients?officeId={officeId}&staffId={staffId}"
+    requires_permission: [READ_CLIENT]
+    response: { type: "Page<Client>", items_key: pageItems, fields_used: [id, displayName, accountNo, status] }
+
+  # ── Download: batched where the batch API routes it ──
+  - id: batch_reads
+    method: POST
+    path: "batches?enclosingTransaction=false"
+    request: { body: "List<BatchRequest>" }
+    requires_permission: []        # each row is checked against its own read permission
+    response: { type: "List<BatchResponse>" }
+    batchable_verified:            # probed 2026-10-27 — only these route; everything else answers 501
+      - "loans/{id}?associations=all"
+      - "loans/{id}?associations=repaymentSchedule"
+      - "datatables/{name}/{appTableId}"
+    not_batchable_verified:        # 501 "Resource with method GET and relativeUrl … doesn't exist" → single call
+      - "clients/{id}"
+      - "clients/{id}/accounts"
+      - "clients/{id}/identifiers"
+      - "clients/{id}/documents"
+      - "clients/{id}/charges"
+      - "clients/{id}/collaterals"
+      - "groups/{id}?associations=all"
+      - "groups/{id}/accounts"
+      - "centers/{id}?associations=groupMembers,collectionMeetingCalendar"
+      - "loans/{id}/transactions/template?command=repayment"
+      - "savingsaccounts/{id}/transactions/template"
+    batch_rejected: ["savingsaccounts/{id}?associations=all"]   # 400 in a batch AND as a single call — use associations=transactions,charges
+    note: >-
+      ≤100 rows per call. A centre's loans are the bulk of its reads, and those batch, so batching still
+      carries the job; every other read goes single, at most 5 in flight (OkHttp's per-host limit).
+
+  # ── Download: single reads (each the call the record's screen already makes) ──
+  - { id: get_centre,              method: GET, path: "centers/{centerId}?associations=groupMembers,collectionMeetingCalendar", requires_permission: [READ_CENTER] }
+  - { id: get_centre_accounts,     method: GET, path: "centers/{centerId}/accounts",       requires_permission: [READ_CENTER] }
+  - { id: get_group,               method: GET, path: "groups/{groupId}?associations=all",  requires_permission: [READ_GROUP], note: "carries clientMembers — the group→client edge" }
+  - { id: get_group_accounts,      method: GET, path: "groups/{groupId}/accounts",          requires_permission: [READ_GROUP] }
+  - { id: get_group_notes,         method: GET, path: "groups/{groupId}/notes",             requires_permission: [READ_GROUPNOTE] }
+  - { id: get_client,              method: GET, path: "clients/{clientId}",                 requires_permission: [READ_CLIENT] }
+  - { id: get_client_accounts,     method: GET, path: "clients/{clientId}/accounts",        requires_permission: [READ_CLIENT], note: "includes closed loans + savings — closed are downloaded too (docs.yaml#closed-accounts-included)" }
+  - { id: get_client_addresses,    method: GET, path: "client/{clientId}/addresses",        requires_permission: [READ_ADDRESS], note: "SINGULAR 'client/' — clients/{id}/addresses is 404 (verified)" }
+  - { id: get_client_identifiers,  method: GET, path: "clients/{clientId}/identifiers",     requires_permission: [READ_CLIENTIDENTIFIER] }
+  - { id: get_client_notes,        method: GET, path: "clients/{clientId}/notes",           requires_permission: [READ_CLIENTNOTE], note: "notes?resourceType= is 404" }
+  - { id: get_client_charges,      method: GET, path: "clients/{clientId}/charges",         requires_permission: [READ_CLIENTCHARGE] }
+  - { id: get_client_collaterals,  method: GET, path: "clients/{clientId}/collaterals",     requires_permission: [READ_CLIENT_COLLATERAL_PRODUCT] }
+  - { id: get_client_image,        method: GET, path: "clients/{clientId}/images",          requires_permission: [READ_CLIENTIMAGE], note: "404 when the client has no image — NOT a failure, skip" }
+  - { id: get_documents,           method: GET, path: "{entityType}/{entityId}/documents",  requires_permission: [READ_DOCUMENT], note: "entityType ∈ clients | loans | savings | groups" }
+  - { id: document_content,        method: GET, path: "{entityType}/{entityId}/documents/{documentId}/attachment", requires_permission: [READ_DOCUMENT], response: { type: bytes } }
+  - { id: get_loan_charges,        method: GET, path: "loans/{loanId}/charges",             requires_permission: [READ_LOANCHARGE] }
+  - { id: get_loan_notes,          method: GET, path: "loans/{loanId}/notes",               requires_permission: [READ_LOANNOTE] }
+  - { id: get_loan_reschedules,    method: GET, path: "rescheduleloans?loanId={loanId}",    requires_permission: [READ_RESCHEDULELOAN], note: "loans/{id}/rescheduleloans is 404" }
+  - { id: get_repayment_template,  method: GET, path: "loans/{loanId}/transactions/template?command=repayment", requires_permission: [READ_LOAN], note: "active loans only" }
+  - { id: get_savings,             method: GET, path: "savingsaccounts/{accountId}?associations=transactions,charges", requires_permission: [READ_SAVINGSACCOUNT], note: "associations=all is 400" }
+  - { id: get_savings_template,    method: GET, path: "savingsaccounts/{accountId}/transactions/template", requires_permission: [READ_SAVINGSACCOUNT], note: "active accounts only" }
+  - { id: list_datatables,         method: GET, path: "datatables?apptable={m_client|m_loan|m_savings_account|m_group|m_center}", requires_permission: [READ_DATATABLE] }
+  - { id: get_datatable_row,       method: GET, path: "datatables/{name}/{appTableId}",     requires_permission: ["READ_{name}"], note: "batchable" }
+
+  # ── Download: global templates, once per job ──
+  - { id: get_loan_products,       method: GET, path: "loanproducts",                       requires_permission: [READ_LOANPRODUCT] }
+  - { id: get_savings_products,    method: GET, path: "savingsproducts",                    requires_permission: [READ_SAVINGSPRODUCT] }
+  - { id: get_client_template,     method: GET, path: "clients/template",                   requires_permission: [READ_CLIENT] }
+  - { id: get_offices,             method: GET, path: "offices",                            requires_permission: [READ_OFFICE] }
+  - { id: get_staff,               method: GET, path: "staff?officeId={officeId}",          requires_permission: [READ_STAFF] }
+
+  # No writes: download-only (operator 2026-10-27). Offline actions are drafts; Sync & Drafts sends them.

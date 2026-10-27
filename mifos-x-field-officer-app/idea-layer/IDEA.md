@@ -68,4 +68,6 @@ A Kotlin Multiplatform mobile app that provides offline-first client and financi
 
 | # | Idea | From | Priority | Status | Added |
 |:-:|------|------|:--------:|:------:|:-----:|
-| — | _No ideas yet — use /idea add to start_ | — | — | — | — |
+| 1 | Permission-aware field officer home dashboard — today's collections, work queue, meetings, portfolio, quick actions; every card gated by the user's Fineract permissions (feature `home`; search moves to feature `search`) | Operator, Fineract permission/API audit | P0 | Scaffolded | 2026-10-26 |
+| 2 | Offline sync (Settings → Offline sync, separate from Sync & Drafts) — select centres / groups / clients and a background job downloads each one's full downstream tree (closed accounts and document files included); download-only — offline actions are drafts that Sync & Drafts uploads; live dashboard of everything on the device at three levels (Centre / Group / Client) with per-record sync status; Manual or Automatic sync of the chosen records (feature `offlineSync`) | Operator, redesign of 6b66e8a43 feature/offline | P1 | Scaffolded | 2026-10-27 |
+| 3 | Profile, opened from the Home avatar — who is signed in (full name, username, Loan officer / Staff, office, roles), what Home shows (my portfolio vs office), the live server session, Change password and Sign out; offline shows the identity saved at sign-in (feature `profile`) | Operator, after the drawer was removed | P1 | Scaffolded | 2026-10-27 |

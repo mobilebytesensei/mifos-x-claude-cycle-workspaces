@@ -1,0 +1,430 @@
+# home — UI contract. AUTHORED via /idea-plan-add 2026-10-26; enriched by /idea-feature-enrich the same day.
+
+schema_version: "3.1"
+screen_id: home
+name: Home
+status: enriched
+archetype: dashboard          # templates/prototype-render/ARCHETYPES.yaml id (RV-020)
+
+business_logic:               # STEP 5.AUTHOR-LOGIC 2026-10-26
+  kind: composite
+  processing_kind: on_demand
+  library_refs: []
+  external_library_refs: [ktor, store5]
+  required_modules: [core/data, core/model, core/network, core/store, feature/home]
+  required_modules_hash: "2b022cb0e7035dc8a76b16418a91819880df5d35765f28b05fd91bbab4431e20"
+  description: "Read-only fan-out over the signed-in officer's day: resolves scope from the staff link (my portfolio, else office-wide), subscribes only the cards the permission list allows, and folds each source into its own cached card. PAR, outstanding and overdue are computed per currency from active loans, never from stretchy reports."
+  description_hash: "6923fa39b556063876d33a2abf35c1c18cb6df61dbf5c26702160e771fb37d23"
+  description_author: "claude-via-idea-feature-enrich"
+  description_authored_at: "2026-10-26T17:30:00Z"
+
+feature_profile:                # STEP 5.PROFILE 2026-10-26 — re-derived from scaffold-default
+  combo_id: read_dashboard      # FEATURE_FACETS canonical_combos: read_shape dashboard (N per-card streams), baseline feature/home
+  facets: [content, offline]
+  archetype: dashboard          # legacy composable — independent cards → IndependentCardLayout
+  store_archetype: NETWORK_WITH_CACHE   # store_archetype_map[read_dashboard]; every card source is remote
+  recipe_ref: CORE_STORE.md
+  heal: auto
+  profile_hash: "sha256:efe8bfdc248db93a3ea9e80b2b28fffca234e3faf8f812cfc8a1e555e561fd8f"
+
+# ──────────────── STATES ────────────────
+# The SCREEN never blocks on one source: each card owns its ScreenState (loading / content / empty /
+# error / offline) via IndependentCardLayout + aggregateDashboardProgress. The screen-level states
+# below describe the shell only.
+# Vocabulary = SCREEN_ARCHETYPES.yaml#dashboard.states_required.
+states: [loading, content, partial_failure, error, offline]
+initial_state: loading       # ES3 — api-backed primary read
+
+# `demo_data` per row = the fixture `{{bindings}}` resolve against in prompts/previews (MXN gateway shape).
+state_detail:
+  - id: loading
+    components: [header, card_skeletons]
+    note: "first open with an empty cache: header renders from the session immediately, cards show shimmer"
+    demo_data: &header_demo
+      greeting: "Good morning, Irving"
+      headerContext: "CENTRAL · Mon 26 Oct 2026 · Mifos field officer gateway"
+      scopeLabel: "My portfolio"
+  - id: content
+    components: [header, collections_card, work_queue_card, meetings_card, portfolio_card, quick_actions, recent_card]
+    demo_data: &content_demo
+      <<: *header_demo
+      collectionsSummary: "14 clients due · MX$18,450 due · MX$6,200 collected · 3 overdue"
+      portfolioSummary: "1,098 active clients · 60 active loans · MX$1,284,500 outstanding · PAR 7.5%"
+  - id: partial_failure
+    components: [header, collections_card, work_queue_card, meetings_card, portfolio_card, quick_actions, recent_card, card_error_retry]
+    note: "one or more cards show their own error with retry (per-card error_badge); the others keep rendering — never a whole-screen error for one failing source"
+    demo_data:
+      <<: *content_demo
+      collectionsSummary: "Couldn't load this card · Retry"
+  - id: error
+    components: [header, screen_error_retry, quick_actions, recent_card]
+    demo_data: *header_demo
+    note: >
+      EVERY remote card failed and nothing is cached (first open, server unreachable). One combined
+      error with a single retry-all replaces six stacked card errors. Header (from the session),
+      quick actions (local permission list) and recent records (local) still render — the officer can
+      still start a create or reopen a record.
+  - id: offline
+    components: [header, collections_card, work_queue_card, meetings_card, portfolio_card, quick_actions, recent_card]
+    note: "cached figures render with their age (DashboardProgressBar freshness strip); drafts row still live"
+    demo_data:
+      <<: *content_demo
+      headerContext: "CENTRAL · Mon 26 Oct 2026 · Offline · Updated 2 h ago"
+
+state_compositions:          # SCREEN_ARCHETYPES dashboard defaults
+  loading: { replace: [collections_card, work_queue_card, meetings_card, portfolio_card], with: shimmer }
+  partial_failure: { per_card: error_badge }
+
+visual_assets: []            # dashboard archetype: figures are data-driven renders, no generated art; empty states are copy-only
+
+refresh:
+  pull_to_refresh: true
+  effect: "retry every visible card's stream (forceFresh)"
+
+# ──────────────── STRINGS (RULE-IDEA-I18N-COVERAGE-001 / RULE-IMPL-NO-HARDCODED-STRING-001) ────────────────
+# Every visible label references `{strings.screens.home.<key>}` in the project table
+# idea-layer/_strings/strings.yaml; implementation emits them to feature/home
+# composeResources/values/strings.xml as feature_home_<key>.
+
+# ──────────────── COMPONENTS ────────────────
+# `permission:` = the code(s) whose ABSENCE removes the component (docs.yaml#permission_model).
+components:
+  - id: header
+    type: header
+    testTag: home_header
+    title: "{{greeting}}"
+    subtitle: "{{headerContext}}"
+    chip: "{{scopeLabel}}"
+    title_binding: "greeting = {strings.screens.home.greeting_morning|greeting_afternoon|greeting_evening} by device local time, formatted with session.user.firstname"
+    title_note: "data-bound (not a brand) — the shell top bar carries the app identity"
+    fields:
+      - { key: office, from: "session.user.officeName" }
+      - { key: businessDate, from: "businessDate", format: date, note: "Fineract BUSINESS_DATE, not the device date" }
+      - { key: instance, from: "liveServerInstance.name" }
+    scope_chip:
+      label_when_staff: "{strings.screens.home.scope_my_portfolio}"
+      label_when_office: "{strings.screens.home.scope_office}"
+      testTag: home_scope_chip
+    actions:
+      # operator 2026-10-27: the navigation drawer is removed; its entries live on Home (checker inbox =
+      # work-queue tile; collection sheet / run reports / path tracker = quick actions; settings + profile here).
+      - id: open_profile
+        type: avatar_button
+        label: "{strings.screens.home.action_profile}"
+        testTag: home_profile
+        states: [content, partial_failure]
+        on_click:
+          action: open_profile
+          target: profile
+      # Settings inline with the greeting. Hidden while loading.
+      - id: open_settings
+        type: icon_button
+        icon: settings
+        label: "{strings.screens.home.action_settings}"
+        testTag: home_settings
+        states: [content, partial_failure, error, offline]
+        on_click:
+          action: open_settings
+          target: settings
+
+  - id: card_skeletons
+    type: shimmer
+    testTag: home_skeleton
+    states: [loading]
+
+  # ── 1. Today's collections ──
+  - id: collections_card
+    type: card
+    testTag: home_collections
+    states: [content, partial_failure, offline]
+    title: "{strings.screens.home.collections_title}"
+    subtitle: "{{collectionsSummary}}"
+    permission: [READ_COLLECTIONSHEET]
+    items:          # KPI figures (label + bound value) — `items` is the key the prompt builder enumerates
+      - { key: dueClients, from: "collectionSheet.clients.size", label: "{strings.screens.home.collections_due_clients}" }
+      - { key: dueAmount, from: "collectionSheet.totalDue", label: "{strings.screens.home.collections_due_amount}", format: currency, emphasis: true }
+      - { key: collectedAmount, from: "collectionSheet.totalCollected", label: "{strings.screens.home.collections_collected}", format: currency, semantic: moneyPositive }
+      - { key: overdueClients, from: "collectionSheet.overdueCount", label: "{strings.screens.home.collections_overdue}", semantic: moneyNegative }
+    empty_copy: "{strings.screens.home.collections_empty}"
+    actions:
+      - id: open_collection_sheet
+        type: button
+        label: "{strings.screens.home.collections_open}"
+        testTag: home_open_collection_sheet
+        permission: [READ_COLLECTIONSHEET]
+        on_click:
+          action: open_collection_sheet
+          target: individualCollectionSheet
+          action_contract:
+            effect: navigate
+            library_refs: []
+            description: "Opens the collection sheet for the officer's office and today's business date, where amounts are entered and posted (posting additionally needs SAVE_COLLECTIONSHEET)."
+            action_contract_hash: "6944c315dbdcefcc1653c1e3f544f5821a76b71cdd33cd8e24c1946bda4b4e15"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-26T16:30:00Z"
+
+  # ── 2. Work queue ──
+  - id: work_queue_card
+    type: card
+    testTag: home_work_queue
+    states: [content, partial_failure, offline]
+    title: "{strings.screens.home.queue_title}"
+    hidden_when: "every row below is absent"
+    items:          # count rows, each tappable
+
+      - id: queue_checker
+        type: row
+        testTag: home_queue_checker
+        label: "{strings.screens.home.queue_checker}"
+        count_from: "checkerTasks.size"
+        permission_any: ["*_CHECKER", CHECKER_SUPER_USER]
+        on_click:
+          action: open_checker_inbox
+          target: checkerInbox
+          action_contract:
+            effect: navigate
+            library_refs: []
+            description: "Opens the checker inbox listing maker-checker tasks awaiting this user's approval; shown only when the user holds a _CHECKER permission or CHECKER_SUPER_USER."
+            action_contract_hash: "859cfb8b68c9b8fe51a6768bc0ca2df829ef836f128121397a4182be24f9414f"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-26T16:30:00Z"
+      - id: queue_awaiting_approval
+        type: row
+        testTag: home_queue_approval
+        label: "{strings.screens.home.queue_approval}"
+        count_from: "ownLoans(status=100).size"
+        permission: [READ_LOAN]
+        on_click:
+          action: open_loans_awaiting_approval
+          target: loanAccountList
+          params: { status: 100, scope: own }
+          action_contract:
+            effect: navigate
+            library_refs: []
+            description: "Opens the officer's own loan applications in Submitted-and-pending-approval status (Fineract status 100), filtered by loan officer or submitter per the portfolio scope."
+            action_contract_hash: "6fb50ba68f85f5dab4d07bf47a40e9db99dc50156f708ee1bdffd8c7394d8a1a"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-26T16:30:00Z"
+      - id: queue_awaiting_disbursal
+        type: row
+        testTag: home_queue_disbursal
+        label: "{strings.screens.home.queue_disbursal}"
+        count_from: "ownLoans(status=200).size"
+        permission: [READ_LOAN]
+        on_click:
+          action: open_loans_awaiting_disbursal
+          target: loanAccountList
+          params: { status: 200, scope: own }
+          action_contract:
+            effect: navigate
+            library_refs: []
+            description: "Opens the officer's own approved loans that have not yet been disbursed (Fineract status 200), so disbursal can be followed up."
+            action_contract_hash: "8fb1e837ef2593c0cedd6e92fe16c2fdd87d1b3165765a627ab94604ec77db04"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-26T16:30:00Z"
+      - id: queue_pending_clients
+        type: row
+        testTag: home_queue_pending_clients
+        label: "{strings.screens.home.queue_pending_clients}"
+        count_from: "pendingClients.totalFilteredRecords"
+        permission: [READ_CLIENT]
+        on_click:
+          action: open_pending_clients
+          target: clientList
+          params: { status: pending }
+          action_contract:
+            effect: navigate
+            library_refs: []
+            description: "Opens the client list filtered to Pending clients in the portfolio scope, where each can be opened and activated by a user holding ACTIVATE_CLIENT."
+            action_contract_hash: "0e9786a130173af76b87319572137b2aadf70c75f996d6d80ce4a82623aa4d45"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-26T16:30:00Z"
+      - id: queue_reschedules
+        type: row
+        testTag: home_queue_reschedules
+        label: "{strings.screens.home.queue_reschedules}"
+        count_from: "pendingReschedules.size"
+        permission: [READ_RESCHEDULELOAN]
+        on_click:
+          action: open_pending_reschedules
+          target: loanReschedules
+          action_contract:
+            effect: navigate
+            library_refs: []
+            description: "Opens the pending loan reschedule requests (GET /rescheduleloans?command=pending) so the officer can follow each to its loan."
+            action_contract_hash: "2537cce1546bb3e2efb9ddeb5571938e85d1b8db73065222d6a38fed91f71b9f"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-26T16:30:00Z"
+      - id: queue_drafts
+        type: row
+        testTag: home_queue_drafts
+        label: "{strings.screens.home.queue_drafts}"
+        count_from: "formDrafts.size"
+        permission: []          # local — always shown when > 0
+        hidden_when: "count == 0"
+        on_click:
+          action: open_sync_and_drafts
+          target: syncAndDrafts
+          action_contract:
+            effect: navigate
+            library_refs: []
+            description: "Opens Settings › Sync & Drafts, where the officer's kept creates can be opened, resumed, retried or discarded."
+            action_contract_hash: "206dcb4051ecbebebf3446a6becd06a2c17a0efcbc6113dc8bae7e354764514c"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-26T16:30:00Z"
+
+  # ── 3. Meetings today ──
+  - id: meetings_card
+    type: list
+    container: card           # a list drawn inside an elevated card (SCREEN_ARCHETYPES dashboard activity_list)
+    testTag: home_meetings
+    states: [content, partial_failure, offline]
+    title: "{strings.screens.home.meetings_title}"
+    permission_all: [READ_CALENDAR]
+    permission_any: [READ_CENTER, READ_GROUP]
+    empty_copy: "{strings.screens.home.meetings_empty}"
+    item:
+      id: meeting_row
+      type: list_item
+      testTag: home_meeting_row
+      fields:
+        - { key: name, from: "meeting.entityName" }
+        - { key: kind, from: "meeting.entityType", values: [center, group] }
+        - { key: time, from: "meeting.time", optional: true }
+        - { key: members, from: "meeting.memberCount", label: "{strings.screens.home.meetings_members}" }
+      on_click:
+        action: open_meeting_entity
+        target: "centerDetail | groupDetail (by entityType)"
+        action_contract:
+          effect: navigate
+          library_refs: []
+          description: "Opens the centre or group whose collection meeting falls today, from where its collection sheet and members are reached."
+          action_contract_hash: "6bede9d9ddba29c93df0f22a6893a0e6ea9fb03ba8fd47c180e54cd80b1c74fe"
+          action_contract_author: "claude-via-idea-plan-add"
+          action_contract_authored_at: "2026-10-26T16:30:00Z"
+
+  # ── 4. Portfolio at a glance ──
+  - id: portfolio_card
+    type: card
+    testTag: home_portfolio
+    states: [content, partial_failure, offline]
+    title: "{strings.screens.home.portfolio_title}"
+    subtitle: "{{portfolioSummary}}"
+    items:          # figure tiles (2-column grid; long currency figures span both columns)
+      - { id: tile_active_clients, label: "{strings.screens.home.tile_active_clients}", from: "clients(status=active).total", permission: [READ_CLIENT] }
+      - { id: tile_active_loans, label: "{strings.screens.home.tile_active_loans}", from: "activeLoans.size", permission: [READ_LOAN] }
+      - { id: tile_outstanding, label: "{strings.screens.home.tile_outstanding}", from: "Σ activeLoans.summary.totalOutstanding", format: currency, permission: [READ_LOAN] }
+      - { id: tile_overdue, label: "{strings.screens.home.tile_overdue}", from: "Σ activeLoans.summary.totalOverdue", format: currency, semantic: moneyNegative, permission: [READ_LOAN] }
+      - { id: tile_in_arrears, label: "{strings.screens.home.tile_in_arrears}", from: "activeLoans.count(inArrears)", permission: [READ_LOAN] }
+      - { id: tile_par, label: "{strings.screens.home.tile_par}", from: "Σ principalOverdue / Σ principalOutstanding", format: percent, permission: [READ_LOAN], note: "computed client-side — the Portfolio at Risk report is not reliable across servers" }
+      - { id: tile_savings, label: "{strings.screens.home.tile_savings}", from: "Σ savings.summary.accountBalance", format: currency, permission: [READ_SAVINGSACCOUNT] }
+      - { id: tile_groups, label: "{strings.screens.home.tile_groups}", from: "groups.total", permission: [READ_GROUP] }
+      - { id: tile_centers, label: "{strings.screens.home.tile_centers}", from: "centers.total", permission: [READ_CENTER] }
+    multi_currency_note: "sums are grouped per currency; a single-currency portfolio shows one figure, a mixed one shows one line per currency — never a cross-currency sum"
+    interactive: false
+    interactive_note: "tiles are figures, not destinations — no tap handler at all (absent affordance, not an empty lambda)"
+
+  # ── 5. Quick actions ──
+  - id: quick_actions
+    type: action_grid
+    testTag: home_quick_actions
+    states: [content, partial_failure, error, offline]
+    title: "{strings.screens.home.quick_actions_title}"
+    hidden_when: "every action below is absent"
+    # Account creates (loan, savings, share, collateral) are NOT here: each is owned by a client, so
+    # they start from the client profile where that client is known (operator, 2026-10-26).
+    items:
+      - { id: qa_new_client, label: "{strings.screens.home.qa_new_client}", icon: person_add, permission: [CREATE_CLIENT], target: createNewClient, testTag: home_qa_client }
+      - { id: qa_new_group, label: "{strings.screens.home.qa_new_group}", icon: groups, permission: [CREATE_GROUP], target: createGroup, testTag: home_qa_group }
+      - { id: qa_new_center, label: "{strings.screens.home.qa_new_center}", icon: domain, permission: [CREATE_CENTER], target: createCenter, testTag: home_qa_center }
+      - { id: qa_collection_sheet, label: "{strings.screens.home.qa_collection_sheet}", icon: fact_check, permission: [READ_COLLECTIONSHEET], target: individualCollectionSheet, testTag: home_qa_collection }
+      - { id: qa_run_reports, label: "{strings.screens.home.qa_run_reports}", icon: bar_chart, permission: [READ_REPORT], permission_note: "and at least one READ_<report> (or REPORTING_SUPER_USER)", target: runReports, testTag: home_qa_reports }
+      - { id: qa_search, label: "{strings.screens.home.qa_search}", icon: search, permission: [], target: search, testTag: home_qa_search }
+      # operator 2026-10-27: Path Tracker on Home (the drawer that held it is removed).
+      - { id: qa_path_tracker, label: "{strings.screens.home.qa_path_tracker}", icon: person_pin_circle, permission: [], target: pathTracker, testTag: home_qa_path_tracker }
+    item_on_click:
+      action: open_quick_action
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Each tile opens its form or tool directly: new client, group or centre, the collection sheet, run reports or search. Account creates (loan, savings, share, collateral) stay on the client profile, where the owning client is known."
+        action_contract_hash: "12afd571cf901d21f879df030f8328a5b9a72fd177f77e7c14d8cf9ec45bc7c2"
+        action_contract_author: "claude-via-idea-feature-enrich"
+        action_contract_authored_at: "2026-10-26T17:45:00Z"
+
+  # ── 6. Recent records ──
+  - id: recent_card
+    type: list
+    container: card
+    testTag: home_recent
+    states: [content, partial_failure, error, offline]
+    title: "{strings.screens.home.recent_title}"
+    hidden_when: "no recent records"
+    source: "local search history (last 5 clients/groups/loans opened)"
+    item:
+      id: recent_row
+      type: list_item
+      testTag: home_recent_row
+      fields:
+        - { key: title, from: "record.name" }
+        - { key: kind, from: "record.type", values: [client, group, center, loan] }
+        - { key: accountNo, from: "record.accountNo" }
+      on_click:
+        action: open_recent_record
+        target: "clientDetail | groupDetail | centerDetail | loanSummary (by type)"
+        action_contract:
+          effect: navigate
+          library_refs: []
+          description: "Reopens a recently viewed client, group, centre or loan straight from home, so a field officer returning to the same record skips search."
+          action_contract_hash: "3ab1e9c597b1cc5c8f26d1139a91176b052a254b3e2d8dbde85180eb3749dcec"
+          action_contract_author: "claude-via-idea-plan-add"
+          action_contract_authored_at: "2026-10-26T16:30:00Z"
+
+  - id: screen_error_retry
+    type: error_state
+    testTag: home_screen_error
+    states: [error]
+    title: "{strings.screens.home.error_title}"
+    subtitle: "{strings.screens.home.error_body}"
+    label: "{strings.screens.home.retry}"
+    on_click:
+      action: retry_all_cards
+      action_contract:
+        effect: call_api
+        library_refs: []
+        external_library_refs: [ktor, store5]
+        description: "Retries every visible card's stream at once (forceFresh) from the combined error state, where all remote cards failed with nothing cached."
+        action_contract_hash: "cd78ef489f016d76e7f66a061df02192d9da23b4ba63dd82a001cf9b51608209"
+        action_contract_author: "claude-via-idea-feature-enrich"
+        action_contract_authored_at: "2026-10-26T17:20:00Z"
+
+  - id: card_error_retry
+    type: error_state
+    testTag: home_card_error
+    states: [partial_failure]
+    title: "{strings.screens.home.card_error}"
+    label: "{strings.screens.home.retry}"
+    source: "LocalScreenStateDefaults (per card)"
+    on_click:
+      action: retry_card
+      action_contract:
+        effect: call_api
+        library_refs: []
+        external_library_refs: [ktor, store5]
+        description: "Retries only the failed card's stream (forceFresh); the other cards keep their content."
+        action_contract_hash: "8d44c62ee2cffe449f19ff92937b448ccac16fe765e68b86a7633079f5da5165"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-10-26T16:30:00Z"
+
+# ──────────────── LAYOUT ────────────────
+layout:
+  order: [header, collections_card, work_queue_card, meetings_card, portfolio_card, quick_actions, recent_card]
+  phone: "single column; portfolio tiles in a 2-column grid; quick actions in a 4-column grid"
+  tablet: "two columns: (collections, work queue, meetings) | (portfolio, quick actions, recent)"
+
+# ──────────────── ACCESSIBILITY ────────────────
+a11y:
+  - "every count row announces label + count ('Loans awaiting approval, 4')"
+  - "currency figures carry a contentDescription with the currency, never a bare number"
+  - "rows and tiles meet spacing.touchTargetMin (48dp)"
+  - "money semantics use LocalFinanceColors (moneyPositive / moneyNegative), not the brand primary (DESIGN.md §Money is not brand)"
