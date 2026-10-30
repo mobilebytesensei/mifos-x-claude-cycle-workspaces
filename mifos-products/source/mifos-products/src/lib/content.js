@@ -20,6 +20,18 @@ export function loadSite() {
   return yaml.load(fs.readFileSync(p, "utf8")) || {};
 }
 
+/** Legal pages an app ships: content/legal/<appId>/<page>.md → { page: markdown }. Empty when none. */
+export const LEGAL_PAGES = { privacy: "Privacy Policy", terms: "Terms & Conditions" };
+export function loadLegal(appId) {
+  const dir = path.join(CONTENT, "legal", appId);
+  const out = {};
+  for (const page of Object.keys(LEGAL_PAGES)) {
+    const p = path.join(dir, `${page}.md`);
+    if (fs.existsSync(p)) out[page] = fs.readFileSync(p, "utf8");
+  }
+  return out;
+}
+
 /** Normalize a nav/footer/CTA href so a bare in-page anchor (#products) works from ANY route. */
 export function href(h) {
   if (typeof h === "string" && h.startsWith("#")) return "/" + h;
