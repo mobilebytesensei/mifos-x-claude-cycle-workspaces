@@ -54,7 +54,8 @@ route is missing here, if this file documents a route the table does not have, o
 Every error is JSON with a snake_case `error` code. Some codes carry extra fields:
 
 ```json
-{ "error": "bank_error", "bankStatus": 400, "bankError": "UK.OBIE.Field.Invalid | Data.Initiation | …" }
+{ "error": "bank_error", "bankStatus": 400, "bankError": "400 ; U002 | Data.Initiation… | …",
+  "Errors": [{ "ErrorCode": "U002", "Path": "Data.Initiation…", "Message": "…" }] }
 ```
 
 | Field | Present on |
@@ -63,7 +64,8 @@ Every error is JSON with a snake_case `error` code. Some codes carry extra field
 | `requestId` | the router and entry-point errors: `404 route_not_found`, `413 payload_too_large`, `415 unsupported_media_type`, `500 internal`. Every other error carries the same id in the `x-request-id` header only. |
 | `bankStatus` | `bank_error`, `token_exchange_failed`: the HTTP status HSBC returned. |
 | `bankError` | `bank_error` on signed writes: HSBC's error codes, paths and messages only, at most 400 characters (`bankError()` in `src/hsbc/client.ts`). Never tokens, headers or request data. |
-| `reason` | `attestation_invalid`: which check failed (for example `challenge`, `request_hash`, `device_verdict`, `counter`). |
+| `Errors` | `bank_error` on signed writes: HSBC's `Errors[]` cut to `ErrorCode`, `Path`, `Message` — the OBIE shape, so a client reads it exactly as it would read the bank (`bankErrorDetail()` in `src/hsbc/client.ts`). |
+| `reason` | `attestation_invalid`: which check failed (for example `challenge`, `request_hash`, `device_verdict`, `counter`, `package`, `undecodable`, `google_error`). |
 | `retryAfter` | `rate_limited`: seconds until the window resets. |
 
 Errors every route can return:
