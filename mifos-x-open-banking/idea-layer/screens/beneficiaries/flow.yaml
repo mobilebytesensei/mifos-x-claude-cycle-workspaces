@@ -1,0 +1,55 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: beneficiaries
+_source: source_analysis
+
+navigates_to:
+  - account-detail      # onBack (popBackStack)
+
+inbound_routes:
+  - { from: account-detail, type: push, trigger: "AccountDetailChip.Beneficiaries", params: { accountId: String } }
+
+transitions:
+  - { from: beneficiaries, to: account-detail, type: pop, trigger: "top_bar back" }
+
+on_load:
+  - step: read_nav_args
+    from: SavedStateHandle
+    keys: [accountId]
+  - step: open_stream
+    call: "BeneficiariesRepository.beneficiariesStream(accountId, viewModelScope)"
+    api: get_beneficiaries
+  - step: coerce_empty
+    call: "stream.state.emptyIfContent { beneficiaries -> beneficiaries.isEmpty() }"
+  - step: map_screen_state
+    mapping:
+      "ScreenState.Loading": Loading
+      "ScreenState.Content(rows)": "Content(all = rows, filtered = rows.matching(currentQuery), query = currentQuery)"
+      "ScreenState.Empty": Empty
+      "ScreenState.Error(e)": "Error(classifyBeneficiariesError(e))"
+      "ScreenState.NoNetwork": "Error(NetworkError)"
+      "ScreenState.Unauthenticated": "Error(TokenExpired)"
+
+flow_logic:
+  - { component: top_bar, action: back, effect: "navigate:account-detail" }
+  - { component: search_field, action: change, effect: "action:Search", then: "state:Content.filtered = all.matching(query) (trimmed, case-insensitive creditorName|reference); no-op unless uiState is Content" }
+  - { component: error_state, action: click, effect: "action:RetryLoad", then: "stream.refresh() re-fetches get_beneficiaries", visible_when: "kind.isRetriable" }
+
+error_handling:
+  classifier: classifyBeneficiariesError
+  mapping:
+    - { network_error: "NetworkError.Client.Unauthorized (401)", kind: TokenExpired, retry: true }
+    - { network_error: "NetworkError.Client.Forbidden (403)", kind: ConsentRevoked, retry: false }
+    - { network_error: "NetworkError.Client.RateLimited (429)", kind: RateLimited, retry: true }
+    - { network_error: "NetworkError.Server (5xx)", kind: ServerError, retry: true }
+    - { network_error: "NetworkError.Network / anything else", kind: NetworkError, retry: true }
+  note: "No capability registry — beneficiaries are offered on every HSBC product, so U000 is not an unsupported signal."
+
+dependencies:
+  repositories:
+    - name: BeneficiariesRepository
+      methods: ["beneficiariesStream(accountId: String, scope: CoroutineScope): ScreenDataStream<List<BeneficiaryItem>>"]
+      store: "BankingStores.beneficiariesStore(aisp) — memory store, key AccountId, cacheKey beneficiaries:list:{accountId}"
+  services: [NetworkMonitor, FetchedAtRepository]
+
+journey_ids: []

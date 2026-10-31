@@ -1,7 +1,7 @@
 # Feature Registry — mifos-x-field-officer-app
 
-> **Total**: 20 | **Designed**: 20 | **Implemented**: 20
-> **Last Updated**: 2026-03-22
+> **Total**: 21 | **Designed**: 20 | **Implemented**: 20
+> **Last Updated**: 2026-10-26
 
 ---
 
@@ -29,3 +29,6 @@
 | 18 | search-record | — | P0 | — | v1 | ✅ | ✅ | — |
 | 19 | search | — | P0 | — | v1 | ✅ | ✅ | — |
 | 20 | settings | — | P0 | — | v1 | ✅ | ✅ | — |
+| 21 | home | home | P0 | signin, search, clientList, individualCollectionSheet, checkerInbox, syncAndDrafts, runReports | v2 | ❌ | ❌ | scaffold · enrich_staleness: stale |
+| 22 | offlineSync | offlineSync | P1 | settings, clientList, individualCollectionSheet | v2 | ❌ | ❌ | scaffold · enrich_staleness: stale |
+| 23 | profile | account | P1 | signin, home, serverConfig, settings | v2 | ❌ | ❌ | scaffold · enrich_staleness: stale |

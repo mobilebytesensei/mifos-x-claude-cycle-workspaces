@@ -1,0 +1,76 @@
+sibling: api
+schema_version: "4.0"
+feature_id: consent-detail
+_source: source_analysis
+
+auth:
+  scheme: "client_credentials (temporary, scope=accounts, never persisted)"
+  description: >
+    Consent reads and the revoke DELETE each mint their own client_credentials token
+    (OAuth.clientCredentialsToken(ConsentCreationScope.ACCOUNTS), private_key_jwt PS256) and pass it as
+    an explicit Bearer; account-access-consents paths are excluded from PSU-bearer injection. mTLS on every call.
+
+api:
+  - id: get_client_credentials_token_accounts
+    function: "OAuth.clientCredentialsToken(ConsentCreationScope.ACCOUNTS)"
+    method: POST
+    path: "/v1.1/oauth2/token"
+    description: "client_credentials grant, scope=accounts; used before both the read and the revoke."
+    response: AccessTokenResponse
+    errors:
+      401: "Unauthorized → TokenExpired (read path); RevokeFailed(TokenUnavailable) on revoke path"
+    cache: none
+
+  - id: get_account_access_consent
+    function: "Aisp.getConsent(consentCreationAccessToken, consentId)"
+    method: GET
+    path: "/v4.0/aisp/account-access-consents/{ConsentId}"
+    description: "Consent status, permissions, creation/expiry and transaction window for the detail screen."
+    headers:
+      Authorization: "Bearer {client_credentials token, scope=accounts}"
+    params:
+      ConsentId: { type: String, required: true, source: nav_params.consentId }
+    response: HSBCCreateConsentResponse
+    maps_to: ConsentSummary
+    errors:
+      401: "Unauthorized → ConsentDetailErrorKind.TokenExpired"
+      403: "Forbidden → ConsentRevoked"
+      404: "NotFound → ConsentNotFound"
+      5xx: "Server → RevokeServerError"
+      network: "→ NetworkError"
+    cache:
+      strategy: "Store5 memory store shared with consent-list"
+      cache_key: "consent:detail:{ConsentId}"
+
+  - id: revoke_account_access_consent
+    function: "Aisp.deleteConsent(consentCreationAccessToken, consentId) via ConsentRevokeRepositoryImpl.revokeConsent"
+    method: DELETE
+    path: "/v4.0/aisp/account-access-consents/{ConsentId}"
+    description: >
+      Revokes the AIS consent. Called by ConsentDetailViewModel.executeRevoke() (ExecuteRevoke /
+      RetryRevoke) BEFORE any local logout. 2xx and 404 (already gone) confirm the revoke and
+      unlock AppLogout.logOut(); every other outcome is surfaced as RevokeFailed and the session
+      is kept (NFR-006 FAPI: revocation confirmed at the ASPSP before local logout; heals DEF-003).
+    headers:
+      Authorization: "Bearer {client_credentials token, scope=accounts}"
+    params:
+      ConsentId: { type: String, required: true, source: "ConsentDetailState.consentId (equals ConsentSession.consentId() for the signed-in consent)" }
+    response: "Unit (204 No Content)"
+    errors:
+      404: "treated as Success (confirmed — consent already gone at the bank)"
+      401: "token mint failed → RevokeFailed(TokenUnavailable); session kept"
+      4xx: "→ RevokeFailed(BankRejected); session kept"
+      5xx: "→ RevokeFailed(BankRejected); session kept"
+      network: "→ RevokeFailed(Network); outcome unknown, treated as unconfirmed; session kept"
+    cache: none
+    side_effects: "ONLY on 2xx/404: local session/token/cache/history/VRP wipe via AppLogout.logOut(), then LoggedOut"
+
+dtos:
+  ConsentSummary:
+    consentId: String
+    status: ConsentStatus
+    permissions: "List<String>"
+    creationDateTime: String
+    expirationDateTime: String
+    transactionFromDateTime: String
+    transactionToDateTime: String

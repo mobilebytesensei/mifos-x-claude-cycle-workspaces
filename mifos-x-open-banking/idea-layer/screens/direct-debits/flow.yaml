@@ -1,0 +1,56 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: direct-debits
+_source: source_analysis
+
+navigates_to:
+  - account-detail      # onBack (popBackStack)
+
+inbound_routes:
+  - { from: account-detail, type: push, trigger: "AccountDetailChip.DirectDebits", params: { accountId: String } }
+
+transitions:
+  - { from: direct-debits, to: account-detail, type: pop, trigger: "top_bar back" }
+
+on_load:
+  - step: read_nav_args
+    from: SavedStateHandle
+    keys: [accountId]
+  - step: open_stream
+    call: "DirectDebitsRepository.directDebitsStream(accountId, viewModelScope)"
+    api: get_direct_debits
+  - step: coerce_empty
+    call: "stream.state.emptyIfContent { summary -> summary.isEmpty }"
+  - step: map_screen_state
+    mapping:
+      "ScreenState.Loading": Loading
+      "ScreenState.Content(summary)": "summary.isEmpty ? Empty : Content(summary.items.map { toRowUi() })"
+      "ScreenState.Empty": Empty
+      "ScreenState.Error(e)": "e.isUnsupportedForProduct() ? Unsupported(e.obieMessage().orEmpty()) : Error(classifyDirectDebitsError(e))"
+      "ScreenState.NoNetwork": "Error(NetworkError)"
+      "ScreenState.Unauthenticated": "Error(TokenExpired)"
+
+flow_logic:
+  - { component: top_bar, action: back, effect: "navigate:account-detail" }
+  - { component: error_state, action: click, effect: "action:RetryLoad", then: "stream.refresh() re-fetches get_direct_debits", visible_when: "kind.isRetriable" }
+
+error_handling:
+  pre_classification: "U000 (isUnsupportedForProduct) → Unsupported(bank message verbatim), never a retryable error (FR-013)"
+  classifier: classifyDirectDebitsError
+  mapping:
+    - { network_error: "NetworkError.Client.Unauthorized (401)", kind: TokenExpired, retry: true }
+    - { network_error: "NetworkError.Client.Forbidden (403)", kind: ConsentRevoked, retry: false }
+    - { network_error: "NetworkError.Client.RateLimited (429)", kind: RateLimited, retry: true }
+    - { network_error: "NetworkError.Network", kind: NetworkError, retry: true }
+    - { network_error: "anything else (5xx)", kind: ServerError, retry: true }
+  side_effects:
+    - "Fetcher: U000 → AccountCapabilityRegistry.markUnsupported(accountId, AccountEndpoint.DirectDebits) before rethrow"
+
+dependencies:
+  repositories:
+    - name: DirectDebitsRepository
+      methods: ["directDebitsStream(accountId: String, scope: CoroutineScope): ScreenDataStream<DirectDebitsSummary>"]
+      store: "BankingStores.directDebitsStore(aisp, capabilityRegistry) — memory store, key AccountId, cacheKey directDebits:mandates:{accountId}"
+  services: [NetworkMonitor, FetchedAtRepository, AccountCapabilityRegistry]
+
+journey_ids: []

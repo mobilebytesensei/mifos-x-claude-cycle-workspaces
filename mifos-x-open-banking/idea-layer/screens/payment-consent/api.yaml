@@ -1,0 +1,90 @@
+sibling: api
+schema_version: "4.0"
+feature_id: payment-consent
+_source: source_analysis
+
+auth_common:
+  transport: "mTLS to HSBC UK sandbox; FAPI headers (x-fapi-financial-id) on every pisp call"
+  bearer_injection: "pisp/ paths are excluded from the PSU-bearer interceptor — every call passes its own token"
+  write_headers: "POSTs carry x-jws-signature (detached PS256 JWS over the exact JSON payload, iss = HSBC_SIGNING_ISSUER, kid) and x-idempotency-key (1..40 chars, enforced by writeHeaders)"
+
+api:
+  - id: post_token_authorization_code
+    method: POST
+    path: "/v1.1/oauth2/token"
+    description: "grant_type=authorization_code with the redirect's code + registered redirect_uri → payments-scoped PSU token stored in PaymentAuthSession (PaymentAuthRepository.exchangeCode). id_token nonce is checked after error classification."
+    auth: "client_assertion (private_key_jwt)"
+    response: TokenResponse
+    errors: { 400: CodeExpired, 401: CodeExpired, 403: ConsentRejected, 5xx: AuthorisationTimedOut, network: NetworkError }
+
+  - id: post_token_client_credentials
+    method: POST
+    path: "/v1.1/oauth2/token"
+    description: "grant_type=client_credentials, scope=payments — used only to READ the consent status (never the PSU token)."
+    response: TokenResponse
+
+  - id: get_consent
+    description: "PaymentAuthRepository.consentStatus(consentId) dispatches on pendingConsentType() to one GET below and returns Data.Status (AWAU | AUTH | COND | RJCT)."
+    method: GET
+    path: "/v4.0/pisp/{product}-consents/{ConsentId}"
+    auth: client_credentials (payments)
+    response: "String (consent Status)"
+    variants:
+      - { method: GET, path: "/v4.0/pisp/domestic-payment-consents/{ConsentId}", when: DomesticSinglePayment, response: DomesticPaymentConsentResponse }
+      - { method: GET, path: "/v4.0/pisp/international-payment-consents/{ConsentId}", when: InternationalSinglePayment, response: InternationalPaymentConsentResponse }
+      - { method: GET, path: "/v4.0/pisp/domestic-scheduled-payment-consents/{ConsentId}", when: DomesticScheduledPayment, response: DomesticScheduledPaymentConsentResponse }
+      - { method: GET, path: "/v4.0/pisp/international-scheduled-payment-consents/{ConsentId}", when: InternationalScheduledPayment, response: InternationalScheduledPaymentConsentResponse }
+      - { method: GET, path: "/v4.0/pisp/domestic-standing-order-consents/{ConsentId}", when: DomesticStandingOrder, response: DomesticStandingOrderConsentResponse }
+      - { method: GET, path: "/v4.0/pisp/international-standing-order-consents/{ConsentId}", when: InternationalStandingOrder, response: InternationalStandingOrderConsentResponse }
+    errors: { 401: CodeExpired, 403: ConsentRejected, 404: CodeExpired, 429: AuthorisationTimedOut, 5xx: AuthorisationTimedOut, 400: RequestRejected, serialization: ResponseUnreadable }
+
+  - id: get_funds_confirmation
+    description: "Immediate rails only — SinglePaymentInitiationRepository.confirmFunds(consentId). Scheduled and standing-order rails never call it (OBIE defines no such sub-resource for standing orders). false → InsufficientFunds."
+    method: GET
+    path: "/v4.0/pisp/domestic-payment-consents/{ConsentId}/funds-confirmation"
+    auth: "PSU payments token (PaymentAuthSession.paymentToken)"
+    variants:
+      - { method: GET, path: "/v4.0/pisp/domestic-payment-consents/{ConsentId}/funds-confirmation", when: DomesticSinglePayment }
+      - { method: GET, path: "/v4.0/pisp/international-payment-consents/{ConsentId}/funds-confirmation", when: InternationalSinglePayment }
+    response: "FundsConfirmationResponse → Boolean"
+
+  - id: post_payment
+    description: "SinglePaymentInitiationRepository.submitPayment(draft, consentId). Data.Initiation must be byte-identical to the staged one (else U008); the draft's paymentIdempotencyKey is reused."
+    method: POST
+    path: "/v4.0/pisp/domestic-payments"
+    auth: PSU payments token
+    headers: { x-jws-signature: required, x-idempotency-key: "draft.paymentIdempotencyKey (≤40)" }
+    variants:
+      - { method: POST, path: "/v4.0/pisp/domestic-payments", when: DomesticSinglePayment, request: DomesticPaymentRequest, response: DomesticPaymentResponse }
+      - { method: POST, path: "/v4.0/pisp/international-payments", when: InternationalSinglePayment, request: InternationalPaymentRequest, response: InternationalPaymentResponse }
+    response: "PaymentReceipt (domesticPaymentId → PaymentSubmitted)"
+    errors: { 401: CodeExpired, 403: ConsentRejected, 400: RequestRejected, serialization: SubmissionUnconfirmed, other: SubmissionFailed }
+
+  - id: post_scheduled_payment
+    description: "ScheduledPaymentInitiationRepository.submitPayment(draft, consentId) — no funds confirmation."
+    method: POST
+    path: "/v4.0/pisp/domestic-scheduled-payments"
+    auth: PSU payments token
+    headers: { x-jws-signature: required, x-idempotency-key: "draft.paymentIdempotencyKey (≤40)" }
+    variants:
+      - { method: POST, path: "/v4.0/pisp/domestic-scheduled-payments", when: DomesticScheduledPayment, request: DomesticScheduledPaymentRequest }
+      - { method: POST, path: "/v4.0/pisp/international-scheduled-payments", when: InternationalScheduledPayment, request: InternationalScheduledPaymentRequest }
+    response: PaymentReceipt
+    errors: { 401: CodeExpired, 403: ConsentRejected, 400: RequestRejected, serialization: SubmissionUnconfirmed, other: SubmissionFailed }
+
+  - id: post_standing_order
+    description: "StandingOrderInitiationRepository.submitStandingOrder(draft, consentId) — no funds confirmation; saves the submitted history row on success."
+    method: POST
+    path: "/v4.0/pisp/domestic-standing-orders"
+    auth: PSU payments token
+    headers: { x-jws-signature: required, x-idempotency-key: "draft.paymentIdempotencyKey (≤40)" }
+    variants:
+      - { method: POST, path: "/v4.0/pisp/domestic-standing-orders", when: DomesticStandingOrder, request: DomesticStandingOrderRequest, response: DomesticStandingOrderResponse }
+      - { method: POST, path: "/v4.0/pisp/international-standing-orders", when: InternationalStandingOrder, request: InternationalStandingOrderRequest, response: InternationalStandingOrderResponse }
+    response: PaymentReceipt
+    errors: { 401: CodeExpired, 403: ConsentRejected, 400: RequestRejected, serialization: SubmissionUnconfirmed, other: SubmissionFailed }
+
+local_writes:
+  - { id: record_approved, source: "PaymentAuthRepository.recordApproved()", note: "approvedAt stamp for the payment-status timeline" }
+  - { id: save_failed_history, source: "PaymentHistoryRepository.saveFailed(draft, kind.name, description)", table: payment_history }
+  - { id: discard_authorisation, source: "PaymentAuthRepository.discardAuthorisation()", secure_settings: [PendingAuth] }

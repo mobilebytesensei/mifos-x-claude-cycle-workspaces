@@ -1,0 +1,102 @@
+# screens/consent-relay/docs.yaml — implementation-ready context schema v2
+# emitted by /idea-feature-enrich STEP 5.6 (2026-10-21 regen: matches the built + deployed relay/)
+feature: consent-relay
+status: draft
+cluster: auth-infrastructure
+is_primary_flow: false
+acceptance_refs: [FR-050, FR-051, FR-052, NFR-011]
+scaffolded_at: "2026-10-21T10:00:00Z"
+scaffolded_by: "/idea-plan-add"
+summary: >-
+  Open-source static web page, hosted on Cloudflare Pages, that sits between the bank (HSBC UK OBIE
+  sandbox) and the app. HSBC uses the OIDC hybrid flow, so the authorisation response arrives in the URL
+  fragment, which only browser JavaScript can read. The page reads it, scrubs it from browser history, and
+  delivers it to the desktop app (loopback 127.0.0.1:8765) when a listener answers, otherwise to the mobile
+  app via the custom scheme org.mifosx.openbanking://callback (App Links / Universal Links planned, FR-052).
+  Holds no secrets and stores nothing.
+delivery_surface: web-hosted            # NOT a KMP feature module — no Compose screen is generated for it
+metadata:
+  category: nav_only                    # pure hand-off page: no data, no persistence, no native capability
+  implementation_ready: true
+  impl_ready_at: "2026-10-21T00:00:00Z"
+  impl_ready_schema: "v2"
+implementation:
+  status: deployed
+  repo_path: "relay/"                   # in openMF/mifos-x-open-banking (TD-007)
+  runbook: "relay/README.md"            # deploy, rollback, credentials, forking — single source, not duplicated here
+  deploy_root: "relay/site/"            # exactly what is deployed (wrangler.toml pages_build_output_dir = site)
+  files:
+    - relay/README.md                   # runbook
+    - relay/wrangler.toml               # Pages project name + output dir (no account ID, no token)
+    - relay/site/index.html             # root page — explains the site, links to source
+    - relay/site/_headers               # security headers for every response
+    - relay/site/callback/index.html    # the redirect target — no inline script/style
+    - relay/site/callback/bridge.js     # pure helpers: readParams / appUrl / loopbackUrl + SCHEME / LOOPBACK_PORT
+    - relay/site/callback/relay.js      # the flow: history scrub → loopback probe → mobile hand-off
+    - relay/site/callback/relay.css
+    - relay/test/bridge.test.js         # node:test, no dependencies
+  not_yet_built:
+    - "relay/site/.well-known/assetlinks.json + apple-app-site-association — FR-052 App Links / Universal Links; needs release signing-cert SHA-256 + Apple team ID"
+  hosting: cloudflare-pages
+  deployment:                           # facts mirrored from idea-plan.yaml#features[consent-relay].deployment
+    production_url: "https://mifos-x-open-banking-relay.pages.dev"
+    redirect_uri: "https://mifos-x-open-banking-relay.pages.dev/callback/"   # must match HSBC_REDIRECT_URI byte-for-byte
+    cloudflare_project: mifos-x-open-banking-relay
+    production_branch: dev              # --branch dev publishes production; any other branch = preview URL
+    deploy_and_rollback: "see relay/README.md#deploy"
+  license: MPL-2.0
+  constants_source_of_truth: "app repo — CONSENT_REDIRECT_SCHEME (cmp-android ConsentRedirectIntent.kt / cmp-shared ConsentRedirectBridge.kt) + ConsentRedirectListener.PORT (cmp-desktop); bridge.js SCHEME / LOOPBACK_PORT mirror them and relay/test/bridge.test.js pins both (TD-006)"
+supersedes:
+  - "https://thekalpeshpawar.github.io/obp-callback/callback/ (personal GitHub Pages — read location.search in a fragment flow, so relayed zero parameters; archive after HSBC re-registration)"
+  - "docs/consent-callback-page/ (in-repo copy, older logic)"
+contracts:
+  - capability: loopback-handoff
+    platform_spec: "fetch('http://127.0.0.1:8765/callback?' + raw, {mode: 'no-cors', cache: 'no-store', targetAddressSpace: 'loopback'}) — fragment rewritten to query; resolve = desktop listener took it"
+    permission: chrome_local_network_access   # one-time browser prompt per site on desktop
+    error_cases:
+      - LoopbackRefused
+      - LocalNetworkAccessDenied
+      - FetchUnavailable
+  - capability: custom-scheme-handoff
+    platform_spec: "location.href = 'org.mifosx.openbanking://callback?' + raw (Android intent-filter / iOS CFBundleURLSchemes)"
+    permission: none
+    error_cases:
+      - SchemeNavigationBlocked
+      - AppNotInstalled
+libraries: []                           # no dependencies: plain browser JS, node:test for units
+vm_actions:                             # web page — "actions" are relay.js handlers, not a Kotlin ViewModel
+  - name: ReopenApp
+    signature: "retry.onclick = () => { location.href = appUrl(raw) }"
+    state_mutations: []
+    side_effects: ["navigate to org.mifosx.openbanking://callback?{raw} (user gesture satisfies iOS Safari)"]
+    error_handling:
+      AppNotInstalled: "page stays on open_app_prompt; no store redirect (sandbox)"
+error_cases:
+  - LoopbackRefused
+  - LocalNetworkAccessDenied
+  - FetchUnavailable
+  - SchemeNavigationBlocked
+  - AppNotInstalled
+test_fixtures:
+  source: "screens/consent-relay/tests.yaml"
+  scenario_count: 8
+  priority_distribution:
+    high: 5
+    medium: 3
+    low: 0
+test_strategy:
+  unit: "node --test \"relay/test/*.test.js\" (from the app repo root) — readParams / appUrl / loopbackUrl, relay.js flow via a fake window (history scrub, desktop-only delivery, mobile hand-off + reopen prompt, empty state), no-inline-script rule, _headers policy, SCHEME/LOOPBACK_PORT pinned to the app. Run before every deploy."
+  e2e: "Playwright against the deployed and local page: fragment read, loopback probe, mobile hand-off fallback, history scrub, response headers, iframe refused"
+  maestro: "not applicable — the relay is a browser page, not an app screen; the app-side receipt of the redirect is covered by consent-callback / payment-consent / vrp Maestro flows"
+  last_verified: "2026-10-21 — unit 17/17; live headers present; Playwright: history scrub, no CSP violations, mobile fallback, empty state, iframe refused; desktop loopback passes once Local Network Access is granted"
+security_notes:
+  - "Secrets never live here — the relay holds no keys; Cloudflare credentials come from the vault (see relay/README.md); TPP private keys belong in a future Cloudflare Worker (task cloudflare-bank-gateway), not this site"
+  - "Strict _headers: CSP default-src 'none', script-src 'self', style-src 'self', connect-src only http://127.0.0.1:8765, frame-ancestors 'none'; HSTS, no-referrer, no-store, nosniff, X-Frame-Options DENY, noindex"
+  - "No inline script or style in callback/index.html, so the CSP needs no 'unsafe-inline' (pinned by a unit test)"
+  - "History scrub: history.replaceState(null, '', location.pathname) removes the code from the address bar + history entry as soon as it is read"
+  - "Custom-scheme hijack: any app can claim org.mifosx.openbanking — App Links / Universal Links (FR-052) are the mitigation"
+  - "Fixed loopback port 8765: a local process could squat it; state/nonce single-use (NFR-002) prevents forged callbacks but not interception — residual desktop risk"
+known_limitations:
+  - "Chrome Local Network Access: the first desktop sign-in shows a one-time prompt asking to let the site access devices on the local network. Allow → loopback delivery. Deny → the probe rejects and the page falls back to the custom-scheme hand-off (which on desktop usually finds no handler)."
+  - "Mobile hand-off uses the custom scheme only until FR-052 App Links / Universal Links ship"
+  - "Pending human: register the redirect URI on HSBC DevHub + set HSBC_REDIRECT_URI; archive TheKalpeshPawar/obp-callback afterwards"

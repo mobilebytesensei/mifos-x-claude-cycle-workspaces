@@ -1,0 +1,480 @@
+# offlineSync — UI contract. AUTHORED via /idea-plan-add 2026-10-27 from the operator's decisions
+# (docs.yaml#decisions); enriched by /idea-feature-enrich the same day.
+
+schema_version: "3.1"
+screen_id: offlineSync
+name: Offline sync
+status: enriched
+archetype: list_screen        # templates/prototype-render ARCHETYPES id — app bar + chip row (Centres/Groups/Clients) + list.
+                              # Was `dashboard` until 2026-10-27; that archetype forces a KPI hero + stat grid,
+                              # and Stitch invented "99.7% ready" heroes and upload queues from it.
+
+shell:                        # Settings sub-screen — owns the back stack, no tab bar (app-shell.yaml default overridden)
+  bottom_navigation_visible: false
+  top_app_bar_visible: true
+  fab_visible: true
+  drawer_accessible: false
+  top_app_bar:
+    title_source: screen
+    title: "Offline sync"
+    leading: back
+    trailing_actions: []
+
+business_logic:               # STEP 5.AUTHOR-LOGIC 2026-10-27
+  kind: composite
+  processing_kind: background
+  library_refs: []
+  external_library_refs: [store5, room, multiplatform-settings, worker-kmp, ktor]
+  required_modules: [core/model, core/database, core/store, core/data, core/datastore, sync, feature/offlinesync]
+  required_modules_hash: "ff33e88cd9ea6b56a16cf3f2cb07516e5e0e866649dcdd83ffb64231b9817859"
+  description: "Local-first control surface over a durable background download: it observes job rows, chosen-record rows with their sync status, and refresh preferences, and every action enqueues or edits a row the sync/ worker consumes. The worker walks each chosen record's downstream tree through the screens' own stores, writing progress live. It only downloads; work done offline is saved as drafts and uploaded by Sync & Drafts."
+  description_hash: "77215abf0df55be353a66947d709c0d4321cdc4860042ff69a8d9a5537c1da84"
+  scope_note: "operator 2026-10-27 — download-only: sync chosen records before going to the field; offline actions are drafts (settings → Sync & Drafts uploads them)"
+  description_author: "claude-via-idea-feature-enrich"
+  description_authored_at: "2026-10-27T14:00:00Z"
+
+feature_profile:              # STEP 5.PROFILE 2026-10-27 — re-derived from scaffold-default
+  combo_id: content_input_submit   # unique match for read_shape detail + [content, input, offline]: the
+                                   # screen reads local rows reactively AND its actions write rows
+  facets: [content, input, offline]
+  archetype: screen-content
+  store_archetype: MUTABLE         # job + offline-record rows are written by the screen's actions and by
+                                   # the sync/ worker, and observed by the screen (local MutableStores,
+                                   # like the existing local MutableStores). The picker's centre /
+                                   # group / client lists reuse the existing NETWORK_WITH_CACHE stores.
+  recipe_ref: CORE_STORE.md
+  heal: auto
+  profile_hash: "sha256:ae41974905621c5c5c72d86f196fd9f2a4b6777cd5896af3c7c19d042e4140bc"
+
+# ──────────────── STATES ────────────────
+# Everything on this screen is LOCAL (job rows, chosen-record rows, preferences), so the screen never
+# waits on the network; only the picker's record lists are remote.
+states: [loading, content, syncing, partial_failure, empty, offline]
+initial_state: loading       # ES3 — first read of the local job/record tables
+
+state_detail:
+  - id: loading
+    components: [summary_header, section_skeletons]
+    note: "local tables opening — a frame, never a spinner the officer waits on"
+    demo_data: &header_demo
+      title: "Offline sync"
+      lastSyncLine: "Last synced 2 h ago · next in ~4 h"
+  - id: content
+    components: [summary_header, offline_records_section, refresh_mode_card, add_records_fab]
+    note: "nothing running: header totals, the chosen records with what still needs syncing, the refresh setting"
+    demo_data: &content_demo
+      <<: *header_demo
+      toSync: 2
+      recordsOnDevice: 4
+  - id: syncing
+    components: [summary_header, active_job_card, offline_records_section, refresh_mode_card, add_records_fab]
+    note: "a job is running: live progress, Cancel; Sync now disabled"
+    demo_data:
+      <<: *content_demo
+      jobTitle: "Downloading 2 records"
+      jobProgress: "312 of 1,040 · Client FOTest Asha · loans"
+  - id: partial_failure
+    components: [summary_header, job_result_card, offline_records_section, refresh_mode_card, add_records_fab]
+    note: "the last job finished with failures — each failed read with the server's message, Retry failed"
+    demo_data:
+      <<: *content_demo
+      jobResultLine: "Done · 1,037 synced · 3 failed"
+  - id: empty
+    components: [summary_header, empty_offline, refresh_mode_card, add_records_fab]
+    note: "nothing downloaded and nothing waiting — explains the feature and leads to Add records"
+    demo_data:
+      <<: *header_demo
+      lastSyncLine: "Not synced yet · Manual refresh"
+  - id: offline
+    components: [summary_header, offline_banner, offline_records_section, drafts_link]
+    note: "no connection: everything on the device still opens; Sync now and downloads wait for a network (queued, not lost)"
+    demo_data:
+      <<: *content_demo
+      lastSyncLine: "Offline · last synced 2 h ago"
+
+state_compositions:
+  loading: { replace: [offline_records_section], with: shimmer }
+  syncing: { prepend: active_job_card }
+  partial_failure: { prepend: job_result_card }
+  offline: { prepend: offline_banner, disable: [sync_now, picker_download] }
+
+visual_assets: []             # status surface — figures and lists, no generated art; the empty state is copy + an icon
+
+refresh:
+  pull_to_refresh: false      # this screen reads local state; syncing is the explicit Sync now action
+
+# ──────────────── STRINGS (RULE-IDEA-I18N-COVERAGE-001 / RULE-IMPL-NO-HARDCODED-STRING-001) ────────────────
+# Every visible label references `{strings.screens.offlineSync.<key>}` in idea-layer/_strings/strings.yaml;
+# implementation emits them to feature/offlinesync composeResources as feature_offlinesync_<key>.
+
+# ──────────────── COMPONENTS ────────────────
+components:
+  - id: summary_header
+    type: header
+    testTag: offline_sync_header
+    title: "{strings.screens.offlineSync.title}"
+    subtitle: "{{lastSyncLine}}"
+    subtitle_binding: "last_synced (relative) + next_refresh when automatic, else {strings.screens.offlineSync.refresh_manual_label}"
+    fields:
+      - { key: connection, from: "networkMonitor.isOnline", label: "{strings.screens.offlineSync.online}|{strings.screens.offlineSync.offline}" }
+      - { key: toSync, from: "offlineRecords.count(status in [waiting, out_of_date, failed])", label: "{strings.screens.offlineSync.stat_to_sync}" }
+      - { key: recordsOnDevice, from: "offlineRecords.count", label: "{strings.screens.offlineSync.stat_on_device}" }
+      - { key: levelTotals, from: "local centres / groups / clients counts", label: "{strings.screens.offlineSync.level_totals}" }   # "2 centres · 9 groups · 61 clients"
+      - { key: lastSync, from: "syncJobs.lastFinished.finishedAt", format: relative_time }
+    actions:
+      - id: sync_now
+        type: button
+        label: "{strings.screens.offlineSync.sync_now}"
+        testTag: offline_sync_sync_now
+        enabled_when: "online && no running job"
+        on_click:
+          action: sync_now
+          action_contract:
+            effect: persist_db
+            library_refs: []
+            external_library_refs: [room, store5, worker-kmp]
+            description: "Enqueues one background download job that syncs every chosen record still waiting or out of date to the device; the button disables while a job runs and when offline."
+            action_contract_hash: "9f95da45dd29f50181053b1859ace889e833146238cfa5650ccba3642d33f71f"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T13:30:00Z"
+
+  - id: section_skeletons
+    type: shimmer
+    testTag: offline_sync_skeleton
+    states: [loading]
+
+  - id: offline_banner
+    type: banner
+    testTag: offline_sync_offline_banner
+    states: [offline]
+    text: "{strings.screens.offlineSync.offline_banner}"
+
+  # ── Active job (live) ──
+  - id: active_job_card
+    type: card
+    testTag: offline_sync_active_job
+    states: [syncing]
+    title: "{{jobTitle}}"
+    title_binding: "{strings.screens.offlineSync.job_downloading}|job_refreshing, with the record count"
+    progress:
+      done: "{{job.done}}"
+      total: "{{job.total}}"
+      current: "{{job.currentLabel}}"
+      label: "{strings.screens.offlineSync.job_progress}"   # "%1$d of %2$d · %3$s"
+    actions:
+      - id: cancel_job
+        type: button
+        label: "{strings.screens.offlineSync.cancel}"
+        testTag: offline_sync_cancel_job
+        on_click:
+          action: cancel_job
+          action_contract:
+            effect: persist_db
+            library_refs: []
+            external_library_refs: [room, worker-kmp]
+            description: "Cancels the running sync job: the background work is stopped and the job row is marked cancelled; reads already completed stay cached on the device."
+            action_contract_hash: "9f3ebc4ece9e8e76c0a4a65b21789daba202d9623e9b4c0032d5e91b38c14cfc"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T13:30:00Z"
+
+  # ── Last job result (partial failure) ──
+  - id: job_result_card
+    type: card
+    testTag: offline_sync_job_result
+    states: [partial_failure]
+    title: "{{jobResultLine}}"
+    title_binding: "{strings.screens.offlineSync.job_result} — '%1$d synced · %2$d failed'"
+    rows: "{{failedItems}}"               # each: what failed + the server's own message (ServerErrorParser), never a raw body
+    actions:
+      - id: retry_failed
+        type: button
+        label: "{strings.screens.offlineSync.retry_failed}"
+        testTag: offline_sync_retry_failed
+        on_click:
+          action: retry_failed
+          action_contract:
+            effect: persist_db
+            library_refs: []
+            external_library_refs: [room, store5, worker-kmp]
+            description: "Re-enqueues only the reads that failed in a finished job (listed with the server error) as a new background job, leaving the successful ones untouched."
+            action_contract_hash: "aada7b0fd4f136a783414ceeede3c774357d3e5cfbc760e6005c820618d91a98"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T13:30:00Z"
+
+  # ── Refresh setting ──
+  - id: refresh_mode_card
+    type: card
+    testTag: offline_sync_refresh_mode
+    title: "{strings.screens.offlineSync.refresh_title}"
+    subtitle: "{strings.screens.offlineSync.refresh_manual_note}|refresh_automatic_note"   # per mode — what each choice does to the chosen records
+    data_note: "{strings.screens.offlineSync.refresh_data_note}"         # syncing downloads a lot — only the records you chose
+    controls:
+      - id: refresh_mode
+        type: chip
+        options: [manual, automatic]
+        option_labels: ["{strings.screens.offlineSync.refresh_manual}", "{strings.screens.offlineSync.refresh_automatic}"]
+        testTag: offline_sync_refresh_mode_toggle
+        on_click:
+          action: set_refresh_mode
+          action_contract:
+            effect: persist_db
+            library_refs: []
+            external_library_refs: [multiplatform-settings, worker-kmp]
+            description: "Saves the officer's refresh choice (Manual or Automatic) to preferences; Automatic schedules one named periodic background job with the chosen interval and constraints, Manual cancels it."
+            action_contract_hash: "76c7d25f532035cfcf9e16a0df0106c9769a9b758910ac3f24bd3d3e4a67d420"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T13:30:00Z"
+      - id: refresh_interval
+        type: chip
+        options: [1h, 6h, 12h, 24h]
+        option_labels: ["{strings.screens.offlineSync.every_hours}"]       # "Every %1$d h"
+        visible_when: "mode == automatic"
+        testTag: offline_sync_refresh_interval
+        on_click:
+          action: set_refresh_interval
+          action_contract:
+            effect: persist_db
+            library_refs: []
+            external_library_refs: [multiplatform-settings, worker-kmp]
+            description: "Saves the automatic refresh interval (1, 6, 12 or 24 hours) and reschedules the single named periodic job with the new period; never creates a second job."
+            action_contract_hash: "f4e969284b3f138b12d7288a50bb920f2ec5740d293bb952b5374b3f72c01b89"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T13:30:00Z"
+      - id: wifi_only
+        type: switch
+        label: "{strings.screens.offlineSync.wifi_only}"
+        visible_when: "mode == automatic"
+        testTag: offline_sync_wifi_only
+        on_click:
+          action: set_wifi_only
+          action_contract:
+            effect: persist_db
+            library_refs: []
+            external_library_refs: [multiplatform-settings, worker-kmp]
+            description: "Saves the Wi-Fi-only constraint for automatic refresh and reschedules the periodic job so it runs only on an unmetered network."
+            action_contract_hash: "4ac1dc934b1524d1ebcb762886509f610e8e2cc059e72e83ef53c5ca74ac4439"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T13:30:00Z"
+      - id: charging_only
+        type: switch
+        label: "{strings.screens.offlineSync.charging_only}"
+        visible_when: "mode == automatic"
+        testTag: offline_sync_charging_only
+        on_click:
+          action: set_charging_only
+          action_contract:
+            effect: persist_db
+            library_refs: []
+            external_library_refs: [multiplatform-settings, worker-kmp]
+            description: "Saves the only-while-charging constraint for automatic refresh and reschedules the periodic job so it runs only while the device charges."
+            action_contract_hash: "ffd7feb6fff5efc2c8fb851b372be48980690964d21b6dea070fe228f6441bbb"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T13:30:00Z"
+    platform_note: "iOS decides when background work runs — the helper text says 'at most every N h' there ({strings.screens.offlineSync.ios_interval_note})."
+
+  # ── On this device — the full local (Room) inventory at three levels ──
+  # operator 2026-10-27: "show full dashboard what's in the room locally records wise on three level
+  # Center, Group, Client". Every record held locally appears at its level — chosen directly OR brought
+  # in through a parent (a centre's groups and clients) — with its sync status.
+  - id: offline_records_section
+    type: list
+    testTag: offline_sync_records
+    title: "{strings.screens.offlineSync.records_title}"
+    level_tabs:
+      id: records_level
+      type: chip
+      options: [centres, groups, clients]
+      option_labels: ["{strings.screens.offlineSync.level_centres}", "{strings.screens.offlineSync.level_groups}", "{strings.screens.offlineSync.level_clients}"]   # each with its local count
+      testTag: offline_sync_records_level
+      on_click:
+        action: records_level
+        action_contract:
+          effect: transform_state
+          library_refs: []
+          description: "Switches the on-device inventory between the Centres, Groups and Clients levels, each listing every locally stored record at that level with its count and sync status."
+          action_contract_hash: "490c8a93ee839d98553bc3aee8c5ecf27bee448ee60318bb46017584a4de0a63"
+          action_contract_author: "claude-via-idea-feature-enrich"
+          action_contract_authored_at: "2026-10-27T15:20:00Z"
+    row_fields:
+      centre: "name · N groups · N clients · N accounts"
+      group:  "name · N clients · N accounts · 'via <centre>' when it came in through a centre"
+      client: "name · N loans · N savings · N documents · 'via <group>' when it came in through a group"
+    expand:
+      centre: "tap the chevron → its groups (each with status), then a group → its clients"
+      group: "tap the chevron → its clients"
+    origin: "chosen (has Refresh + Remove) | via parent (opens and shows status; Remove is on the parent)"
+    item_testTag: offline_sync_record_row
+    item_status:                          # per chosen record, from offline_record.status
+      waiting:     { label: "{strings.screens.offlineSync.status_waiting}",     tone: primary }    # chosen, never downloaded
+      syncing:     { label: "{strings.screens.offlineSync.status_syncing}",     tone: primary }    # in the running job
+      synced:      { label: "{strings.screens.offlineSync.status_synced}",      tone: secondary }  # "Synced 2 h ago"
+      out_of_date: { label: "{strings.screens.offlineSync.status_out_of_date}", tone: tertiary }   # older than the refresh interval (automatic) or 24 h (manual)
+      failed:      { label: "{strings.screens.offlineSync.status_failed}",      tone: error }      # some reads failed — server message in the result card
+    sort: "needs-sync first (failed, waiting, out_of_date), then synced by name"
+    rows:                                 # sample rows (Centres tab, Centro Arin expanded) — mirrors demo-data.inventory
+      - { title: "Arin Savings", subtitle: "Centre · 2 groups · 11 clients", status: "Waiting to sync" }
+      - { title: "Centro Arin", subtitle: "Centre · 3 groups · 31 clients · 74 accounts", status: "Synced 2 h ago" }
+      - { title: "MARIPOSAS MONARCAS", subtitle: "Group · 12 clients · via Centro Arin", status: "Synced" }
+      - { title: "Las Margaritas", subtitle: "Group · 10 clients · via Centro Arin", status: "Synced" }
+      - { title: "Girasoles", subtitle: "Group · 9 clients · via Centro Arin", status: "2 failed" }
+    item: "{{recordRow}}"                 # name · kind · downstream counts · refreshed-at
+    item_binding: "{strings.screens.offlineSync.kind_centre}|kind_group|kind_client · counts · {strings.screens.offlineSync.refreshed_ago}"
+    on_click:
+      action: open_record
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Opens the downloaded centre, group or client on its own detail screen, which renders from the offline cache when there is no connection."
+        action_contract_hash: "dceb7f612aaf20b4433ad92a53a3a37ec6bb81686586352fe786f23dcc51d746"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-10-27T13:30:00Z"
+    row_actions:
+      - id: refresh_record
+        type: icon_button
+        content_description: "{strings.screens.offlineSync.refresh}"
+        testTag: offline_sync_record_refresh
+        on_click:
+          action: refresh_record
+          action_contract:
+            effect: persist_db
+            library_refs: []
+            external_library_refs: [room, store5, worker-kmp]
+            description: "Enqueues a background download job for one downloaded centre, group or client, re-reading its whole downstream tree and updating its refreshed-at time."
+            action_contract_hash: "2f4f50f7ab9dc7c7fbb80197ed836cbf9bbfe20f4de5b10323dd6d557e4abc76"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T13:30:00Z"
+      - id: remove_record
+        type: icon_button
+        content_description: "{strings.screens.offlineSync.remove}"
+        testTag: offline_sync_record_remove
+        confirm: "{strings.screens.offlineSync.remove_confirm}"
+        on_click:
+          action: remove_record
+          action_contract:
+            effect: delete
+            library_refs: []
+            external_library_refs: [room, store5]
+            description: "Removes one downloaded centre, group or client and every downstream cached read that no other downloaded record still needs, after the officer confirms."
+            action_contract_hash: "67ffd4df4d1cd063ba65bddb67c27b6c189200a16c8e7c0615d49eaf1713b5e3"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T13:30:00Z"
+
+  - id: drafts_link
+    type: card
+    testTag: offline_sync_drafts_link
+    states: [offline]
+    text: "{strings.screens.offlineSync.drafts_note}"            # "Work you do offline is saved as drafts."
+    action_label: "{strings.screens.offlineSync.drafts_link}"     # "Sync & Drafts"
+    on_click:
+      action: open_drafts
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Opens Settings → Sync & Drafts, where the work the officer recorded offline is saved as drafts and uploaded when the network returns."
+        action_contract_hash: "0a488f8ed932d4d2804f37f89dc73f7d1276ef39cd7b2ffa88174488d6dc2b28"
+        action_contract_author: "claude-via-idea-flows"
+        action_contract_authored_at: "2026-10-27T16:30:00Z"
+
+  - id: empty_offline
+    type: empty_state
+    testTag: offline_sync_empty
+    states: [empty]
+    title: "{strings.screens.offlineSync.empty_title}"
+    body: "{strings.screens.offlineSync.empty_body}"
+
+  - id: add_records_fab
+    type: fab
+    label: "{strings.screens.offlineSync.add_records}"
+    testTag: offline_sync_add_records
+    on_click:
+      action: add_records
+      action_contract:
+        effect: transform_state
+        library_refs: []
+        description: "Opens the record picker sheet with tabs for centres, groups and clients so the officer can choose existing server records to keep on the device."
+        action_contract_hash: "f34aa52ad6e16a03873bee2bb80df4de8aadf3971250ce727fdf5419fd20edf6"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-10-27T13:30:00Z"
+
+  # ── Record picker (full-screen sheet over this screen) ──
+  - id: record_picker
+    type: bottom_sheet
+    testTag: offline_sync_picker
+    presented_by: add_records_fab
+    title: "{strings.screens.offlineSync.picker_title}"
+    states: [picker_open]                         # an overlay, NOT part of any screen state (rendered only by preview/picker.html)
+    sheet_states: [loading, content, empty, error] # its own internal states — the lists are remote
+    empty_text: "{strings.screens.offlineSync.picker_empty}"
+    children:
+      - id: picker_tabs
+        type: chip
+        options: [centres, groups, clients]
+        option_labels: ["{strings.screens.offlineSync.tab_centres}", "{strings.screens.offlineSync.tab_groups}", "{strings.screens.offlineSync.tab_clients}"]
+        testTag: offline_sync_picker_tabs
+        on_click:
+          action: picker_tab
+          action_contract:
+            effect: transform_state
+            library_refs: []
+            description: "Switches the record picker between the Centres, Groups and Clients tabs, keeping the current selection across tabs."
+            action_contract_hash: "7b01d65bf0752fa7f409b487c75e598764818fc8421f1c30141449f45e26af5b"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T13:30:00Z"
+      - id: picker_search
+        type: text_field
+        label: "{strings.screens.offlineSync.picker_search}"
+        testTag: offline_sync_picker_search
+        on_click:
+          action: picker_search
+          action_contract:
+            effect: transform_state
+            library_refs: []
+            description: "Filters the active picker tab by name or account number as the officer types; filtering is local over the loaded list."
+            action_contract_hash: "8fe81e610a17ad171028de84cc63453846ffa5e70d225ee4f157bcac0c5195dd"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T13:30:00Z"
+      - id: picker_list
+        type: list
+        testTag: offline_sync_picker_list
+        item_testTag: offline_sync_picker_row
+        item: "{{pickerRow}}"             # checkbox · name · counts / account no · "On device" chip
+        on_device_chip: "{strings.screens.offlineSync.on_device}"
+        on_click:
+          action: picker_select
+          action_contract:
+            effect: transform_state
+            library_refs: []
+            description: "Toggles one record in the picker selection; a record already on the device shows as downloaded and selecting it schedules a refresh instead."
+            action_contract_hash: "dddc18cdebc250bfeabef3f21f1a2fbc0328976b0310ce1911e8cc9c334cec82"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T13:30:00Z"
+      - id: picker_download
+        type: button
+        label: "{strings.screens.offlineSync.picker_download}"   # "Download %1$d for offline"
+        testTag: offline_sync_picker_download
+        enabled_when: "selection.size > 0"
+        on_click:
+          action: picker_download
+          action_contract:
+            effect: persist_db
+            library_refs: []
+            external_library_refs: [room, store5, worker-kmp]
+            description: "Enqueues one background download job for every selected record (deduplicating shared downstream records) and closes the picker; progress appears in Active."
+            action_contract_hash: "8af01088cbe9eaa278a8dc612d72ffeff9cc88903e105802e475b5777e545963"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T13:30:00Z"
+
+# ──────────────── LAYOUT ────────────────
+layout:
+  order: [summary_header, offline_banner, active_job_card, job_result_card, offline_records_section, refresh_mode_card]
+  fab: add_records_fab
+  phone: "single column; header carries three stat chips (connection · waiting · on device) and Sync now"
+  tablet: "two columns: (header, active/result, refresh) | (chosen records)"
+  picker: "full-height sheet: tabs, search, checkbox list, sticky Download button"
+
+# ──────────────── ACCESSIBILITY ────────────────
+a11y:
+  - "the progress bar announces 'Downloading, 312 of 1,040'; updates are polite, not on every row"
+  - "each chosen record announces its name, kind and sync status (e.g. 'Centro Arin, centre, out of date')"
+  - "Retry, Discard, Refresh and Remove icon buttons carry content descriptions; destructive ones confirm"
+  - "rows and controls meet spacing.touchTargetMin (48dp)"

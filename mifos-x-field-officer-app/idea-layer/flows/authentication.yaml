@@ -1,0 +1,116 @@
+# authentication — the unauthenticated flow, from cold start to the authenticated shell.
+#
+# Project-level flow (cross-screen). Per-screen transitions live in
+# `screens/{id}/flow.yaml`; this file is the graph that joins them.
+#
+# Measured against the running app 2026-10-03 (OnePlus CPH2423) and against
+# `cmp-navigation/.../rootnav/RootNavScreen.kt` — not assumed.
+
+schema_version: "1.0"
+flow_id: authentication
+name: Authentication
+description: "Cold start → credential check → authenticated shell, plus the server-config side trip."
+
+# ──────────────── ENTRY ────────────────
+# THREE distinct root states all land on sign-in. That is not redundancy — the app ships no
+# onboarding screen and no unlock screen, so both fall through to the gate.
+entry_points:
+  - from: rootNav
+    when: "RootNavState.Auth"
+    to: signin
+    meaning: "not authenticated"
+  - from: rootNav
+    when: "RootNavState.ShowOnboarding"
+    to: signin
+    meaning: "first run — no onboarding screen exists in this fork"
+    gap: "ui.yaml#feature_split.deferred_candidate — onboarding is a real missing screen, recorded not invented"
+  - from: rootNav
+    when: "RootNavState.UserLocked"
+    to: signin
+    meaning: >
+      authenticated but locked. v1's passcode UI was an Android-only library with no multiplatform
+      form, so this routes to sign-in. v2's biometric unlock is the modern answer to the need that
+      dead passcode screen was reaching for.
+
+# ──────────────── SCREENS ────────────────
+screens:
+  - id: signin
+    role: gate
+    shell: none
+  - id: serverConfig
+    role: side-trip
+    shell: detail
+    note: "reachable BEFORE authentication by design — a wrong instance cannot otherwise be corrected"
+
+# ──────────────── EDGES ────────────────
+edges:
+  - id: configure-instance
+    from: signin
+    to: serverConfig
+    trigger: "instance_chip tapped"
+    reversible: true
+    why: >
+      Load-bearing on first run AND on failure. A user whose Fineract instance differs from the
+      shipped default cannot sign in until this is reachable, and a misconfigured instance is
+      exactly the condition under which sign-in keeps failing — so the exit stays available in
+      every state, including submitting and locked_out.
+
+  - id: instance-changed
+    from: serverConfig
+    to: signin
+    trigger: "save or back"
+    carries: "the new host/tenant, which the instance chip then displays"
+
+  - id: authenticate
+    from: signin
+    to: home
+    trigger: "credentials accepted (HTTP 200 AND authenticated == true)"
+    network: true
+    side_effects:
+      - "persist the session (User + base64 credential, never the raw password)"
+      - "set isAuthenticated = true"
+      - "set isUnlocked = true"
+    note: >
+      isUnlocked matters: sign-out sets it false, and RootNavViewModel sends an
+      authenticated-but-locked user back to sign-in. Without setting it, the first sign-in AFTER a
+      sign-out bounced straight back — observed on device as AuthenticatedGraphRoute → SignInRoute
+      52 ms apart, with a successful 200 in the log.
+
+  - id: biometric-unlock
+    from: signin
+    to: home
+    trigger: "biometric_action tapped AND BiometricResult.Success"
+    network: false
+    precondition: "a stored session exists AND BiometricAuthenticator.isAvailable()"
+    fallback: >
+      BiometricResult.{Failure,Cancelled,Unavailable} returns to the form — never a dead end. A
+      field officer may hand the device to a colleague, so the credential path is always present.
+
+  - id: sign-out
+    from: home
+    to: signin
+    trigger: "profile → sign out"
+    side_effects: ["clear the session", "storeCacheManager.clearAll()"]
+
+# ──────────────── EXITS ────────────────
+exits:
+  - { to: home, when: "authenticated and unlocked" }
+
+# ──────────────── TERMINAL FAILURE MODES ────────────────
+# Enumerated so a flow test cannot pass by only walking the happy path.
+failure_modes:
+  - id: rejected
+    at: signin
+    cause: "200 with authenticated == false, OR a non-2xx, OR a transport failure"
+    surfaces_as: snackbar
+    recovery: "fields are preserved; the user re-taps Login"
+  - id: offline
+    at: signin
+    cause: "MutationResult.Blocked(OFFLINE)"
+    surfaces_as: snackbar
+    recovery: "fields preserved; distinct message from a rejected credential, because the officer's next step differs"
+  - id: locked_out
+    at: signin
+    cause: "FailedAttemptTracker.isLockedOut"
+    surfaces_as: inline_banner
+    recovery: "submit disabled until the lockout clears; the instance chip stays reachable"

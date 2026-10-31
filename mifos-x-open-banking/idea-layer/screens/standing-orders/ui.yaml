@@ -1,0 +1,233 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: standing-orders
+screen_id: standing-orders
+name: "Standing Orders"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/standing-orders/src/commonMain/kotlin/org/mifosx/openbanking/feature/standingorders/StandingOrdersDestination.kt
+  - feature/standing-orders/src/commonMain/kotlin/org/mifosx/openbanking/feature/standingorders/StandingOrdersScreen.kt
+  - feature/standing-orders/src/commonMain/kotlin/org/mifosx/openbanking/feature/standingorders/StandingOrdersContent.kt
+  - feature/standing-orders/src/commonMain/kotlin/org/mifosx/openbanking/feature/standingorders/StandingOrdersTestTags.kt
+  - feature/standing-orders/src/commonMain/kotlin/org/mifosx/openbanking/feature/standingorders/ui/StandingOrdersState.kt
+  - feature/standing-orders/src/commonMain/kotlin/org/mifosx/openbanking/feature/standingorders/ui/StandingOrdersViewModel.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/StandingOrdersRepository.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/mapper/StandingOrderMapper.kt
+  - cmp-navigation/src/commonMain/kotlin/cmp/navigation/placeholder/BankingDestinations.kt
+requirement_refs: [FR-012, FR-013, FR-040]
+screen_ref: StandingOrders
+archetype: index_list
+archetype_overrides: { empty: empty_state, unsupported: empty_state, error: error_state, loading: loading }
+
+feature_profile:
+  combo_id: read_detail
+  facets: [content]
+  archetype: screen-content
+  store_archetype: MEMORY_ONLY
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default
+
+route: "StandingOrdersRoute(accountId)"
+entry_points:
+  - source: account-detail
+    trigger: "Explore chip AccountDetailChip.StandingOrders → navigateFromChip"
+    params: { accountId: String }
+nav_params:
+  accountId: { type: String, required: true, savedstate_key: accountId }
+
+business_logic:
+  kind: transformer
+  description: >-
+    Streams the account's standing orders via StandingOrdersRepository.standingOrdersStream (in-memory Store5 keyed by
+    AccountId). The mapper sorts active-first and pre-computes active/inactive counts (StandingOrdersSummary). A U000
+    BadRequest is checked BEFORE error classification and becomes Unsupported carrying the bank's own message verbatim
+    (FR-013), and is recorded in AccountCapabilityRegistry so account-detail hides the chip. Inactive orders keep their
+    OBIE status label and render dimmed; blank amount/frequency/date/identification/reference lines are omitted, never
+    replaced with placeholder text (FR-012).
+  library_refs: []
+  external_library_refs: ["Store5"]
+
+screens:
+  - id: standing-orders-screen
+    title: "{strings.feature_standing_orders_screen_title}"
+    type: list
+    description: >-
+      KptScaffold with back arrow and title "Standing Orders". Content is a LazyColumn of outlined surfaceContainer cards,
+      active orders first; inactive cards render at 72% alpha. Each card: payee name (titleMedium) with a pill status badge
+      (primaryContainer when active, secondaryContainer otherwise), the next-payment amount (headlineSmall monospace) with
+      its currency, then schedule lines (Frequency, Next, Final when the order ends), a hairline divider, and destination
+      lines (identification monospace, Ref). Cards are read-only — no detail or edit entry point.
+
+state_model:
+  StandingOrdersViewModel:
+    base: BaseViewModel<StandingOrdersState, Nothing, StandingOrdersAction>
+    state:
+      name: StandingOrdersState
+      fields:
+        accountId: { type: String, default: "savedStateHandle[accountId].orEmpty()" }
+        uiState: { type: StandingOrdersUiState, default: "StandingOrdersUiState.Loading" }
+    screen_state:
+      name: StandingOrdersUiState
+      members: [Loading, "Content(orders: List<StandingOrderRowUi>)", Empty, "Unsupported(message: String)", "Error(kind: StandingOrdersErrorKind)"]
+    ui_model:
+      name: StandingOrderRowUi
+      fields:
+        standingOrderId: { type: String }
+        payeeName: { type: String }
+        statusLabel: { type: String, note: "OBIE StandingOrderStatusCode verbatim" }
+        isActive: { type: Boolean }
+        amountLabel: { type: String, note: "formatMoney(nextPaymentAmount, currency) or '' when blank" }
+        currencyLabel: { type: String }
+        frequencyLabel: { type: String, note: "decoded OBIE frequency" }
+        nextDateLabel: { type: String, note: "formatStandingOrderDate → 'd Mon yyyy' or raw string" }
+        finalDateLabel: { type: String }
+        hasFinalPayment: { type: Boolean }
+        sortCodeLabel: { type: String, note: "creditorIdentification" }
+        referenceLabel: { type: String }
+    errors:
+      name: StandingOrdersErrorKind
+      types:
+        - { type: TokenExpired, retry: true, http: 401, message_key: feature_standing_orders_error_token_expired }
+        - { type: ConsentRevoked, retry: true, http: 403, message_key: feature_standing_orders_error_consent_revoked }
+        - { type: RateLimited, retry: true, http: 429, message_key: feature_standing_orders_error_rate_limited }
+        - { type: ServerError, retry: true, cause: "5xx and any other unclassified error", message_key: feature_standing_orders_error_server }
+        - { type: NetworkError, retry: true, cause: "NetworkError.Network / NoNetwork", message_key: feature_standing_orders_error_network }
+    events:
+      name: Nothing
+      members: []
+    actions:
+      name: StandingOrdersAction
+      members:
+        - { name: RetryLoad, trigger: "Tap Retry on the error component", handler: "stream.refresh()" }
+    di:
+      - StandingOrdersRepository
+      - SavedStateHandle
+
+components:
+  - id: top_bar
+    type: top-bar
+    source: KptScaffold
+    title: "{strings.feature_standing_orders_screen_title}"
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      target: account-detail
+      action_contract:
+        effect: navigate
+        description: "Pops StandingOrdersRoute off the back stack (navController.popBackStack) returning to account-detail; no network call."
+        action_contract_author: "claude-via-source-analysis"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+  - id: loading_indicator
+    type: progress-indicator
+    source: MifosProgressIndicator
+  - id: orders_list
+    type: list
+    source: LazyColumn
+    test_tag: "StandingOrdersTestTags.CONTENT"
+    content_description: "{strings.feature_standing_orders_list_accessibility}"
+    item_key: "standingOrderId.ifBlank { payeeName }"
+    item:
+      id: order_card
+      type: card
+      test_tag: "StandingOrdersTestTags.card(standingOrderId)"
+      content_description: "{strings.feature_standing_orders_card_accessibility}"
+      style: { background: surfaceContainer, corner_radius: medium, border: "hairline outlineVariant", alpha: "isActive ? 1.0 : 0.72" }
+      content:
+        - id: card_header
+          type: row
+          children:
+            - { id: payee_name, type: text, value: "{{order.payeeName}}", style: { text_style: titleMedium, color: onSurface } }  # i18n: skip — bank payload
+            - id: status_badge
+              type: chip
+              test_tag: "StandingOrdersTestTags.statusBadge(standingOrderId)"
+              label: "{{order.statusLabel}}"  # i18n: skip — OBIE status verbatim
+              style:
+                shape: pill
+                text_style: labelMedium
+                active: { background: primaryContainer, text_color: onPrimaryContainer }
+                inactive: { background: secondaryContainer, text_color: onSecondaryContainer }
+        - id: amount_row
+          type: row
+          visible: "{{order.amountLabel != ''}}"
+          test_tag: "StandingOrdersTestTags.amount(standingOrderId)"
+          children:
+            - { id: amount, type: text, value: "{{order.amountLabel}}", style: { text_style: headlineSmall, font_family: monospace, color: "isActive ? onSurface : onSurfaceVariant" } }  # i18n: skip — formatted money
+            - { id: currency, type: text, visible: "{{order.currencyLabel != ''}}", value: "{{order.currencyLabel}}", style: { text_style: bodyMedium, color: onSurfaceVariant } }  # i18n: skip — ISO currency
+        - { id: frequency_line, type: meta-line, visible: "{{order.frequencyLabel != ''}}", test_tag: "StandingOrdersTestTags.frequency(standingOrderId)", label: "{strings.feature_standing_orders_frequency_accessibility}", value: "{{order.frequencyLabel}}" }
+        - { id: next_date_line, type: meta-line, visible: "{{order.nextDateLabel != ''}}", test_tag: "StandingOrdersTestTags.nextDate(standingOrderId)", label: "{strings.feature_standing_orders_next_payment}", value: "{{order.nextDateLabel}}" }
+        - { id: final_date_line, type: meta-line, visible: "{{order.hasFinalPayment}}", test_tag: "StandingOrdersTestTags.finalDate(standingOrderId)", label: "{strings.feature_standing_orders_final_payment}", value: "{{order.finalDateLabel}}" }
+        - { id: meta_divider, type: divider, style: { color: outlineVariant, thickness: hairline } }
+        - { id: sort_code_line, type: meta-line, visible: "{{order.sortCodeLabel != ''}}", test_tag: "StandingOrdersTestTags.sortCode(standingOrderId)", label: "{strings.feature_standing_orders_sort_code_accessibility}", value: "{{order.sortCodeLabel}}", style: { font_family: monospace } }
+        - { id: reference_line, type: meta-line, visible: "{{order.referenceLabel != ''}}", test_tag: "StandingOrdersTestTags.reference(standingOrderId)", label: "{strings.feature_standing_orders_reference}", value: "{{order.referenceLabel}}" }
+  - id: empty_state
+    type: empty-state
+    source: EmptyDataComponent
+    message: "{strings.feature_standing_orders_empty_title}"
+  - id: unsupported_state
+    type: error-state
+    source: MifosErrorComponent
+    message: "{{message.ifBlank(strings.feature_standing_orders_unsupported_title)}}"  # i18n: skip — ASPSP message verbatim, falls back to string key
+    retry_visible: false
+  - id: error_state
+    type: error-state
+    source: MifosErrorComponent
+    message: "{strings.feature_standing_orders_error_*}"   # selected by StandingOrdersErrorKind.bodyResource()
+    retry_visible: true
+    on_click:
+      action: RetryLoad
+      action_contract:
+        effect: call_api
+        external_library_refs: ["Store5", "core/data/StandingOrdersRepository"]
+        description: "Sends RetryLoad which calls stream.refresh() on the Store5-backed StandingOrdersRepository stream, re-fetching GET /accounts/{AccountId}/standing-orders; retry is shown for every error kind."
+        action_contract_author: "claude-via-source-analysis"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+states: [loading, content, empty, unsupported, error]
+initial_state: loading
+state_renders:
+  loading: { components: [top_bar, loading_indicator], description: "Store fetch in flight" }
+  content: { components: [top_bar, orders_list], description: "Active-first order cards; inactive dimmed with status label kept" }
+  empty: { components: [top_bar, empty_state], description: "Bank returned zero standing orders (summary.isEmpty)" }
+  unsupported: { components: [top_bar, unsupported_state], description: "U000 BadRequest — product does not offer standing orders; no retry" }
+  error: { components: [top_bar, error_state], description: "TokenExpired / ConsentRevoked / RateLimited / ServerError / NetworkError — all retryable" }
+
+visual_assets: []   # text-only list; empty/error components use design-system vector icons
+
+known_gaps:
+  - id: SO-GAP-1
+    severity: medium
+    description: "Standing-order detail and edit destinations (StandingOrderDetailRoute, StandingOrderEditRoute) are registered in cmp-navigation bankingPlaceholderDestinations as PlaceholderScreen and have no caller — order cards are not clickable, so there is no detail/edit flow."
+    source: "cmp-navigation/.../placeholder/BankingDestinations.kt"
+  - id: SO-GAP-2
+    severity: medium
+    description: "FR-040: 403 ConsentRevoked must not be retriable, but the error component always passes isRetryEnabled = true (direct-debits and beneficiaries gate it correctly)."
+    source: "StandingOrdersScreen.kt StandingOrdersScreenContent"
+  - id: SO-GAP-3
+    severity: low
+    description: "A11y strings feature_standing_orders_payee_accessibility / _status_accessibility are passed a format argument but contain no %1$s placeholder, so the payee/status value is dropped from the description."
+  - id: SO-GAP-4
+    severity: low
+    description: "StandingOrdersSummary.activeCount/inactiveCount are computed but never rendered; navigateToStandingOrders() helper is unused (nav host navigates via StandingOrdersRoute directly). Pull-to-refresh a11y string exists but there is no pull-to-refresh."
+
+i18n:
+  en:
+    feature_standing_orders_screen_title: "Standing Orders"
+    feature_standing_orders_list_accessibility: "Standing orders list"
+    feature_standing_orders_card_accessibility: "Standing order for %1$s, %2$s"
+    feature_standing_orders_payee_accessibility: "Payee: "
+    feature_standing_orders_status_accessibility: "Status: "
+    feature_standing_orders_amount_accessibility: "Next payment: %1$s %2$s"
+    feature_standing_orders_frequency_accessibility: "Frequency: "
+    feature_standing_orders_next_payment: "Next: "
+    feature_standing_orders_final_payment: "Final: "
+    feature_standing_orders_sort_code_accessibility: "Identification: "
+    feature_standing_orders_reference: "Ref: "
+    feature_standing_orders_empty_title: "No standing orders"
+    feature_standing_orders_unsupported_title: "Not available for this account"
+    feature_standing_orders_error_token_expired: "Session expired. Please log in again."
+    feature_standing_orders_error_consent_revoked: "Account access consent has been revoked."
+    feature_standing_orders_error_rate_limited: "Too many requests. Please wait a moment and try again."
+    feature_standing_orders_error_server: "Something went wrong. Please try again later."
+    feature_standing_orders_error_network: "No network connection. Check your connection and retry."

@@ -1,0 +1,69 @@
+sibling: api
+schema_version: "4.0"
+feature_id: statements
+_source: source_analysis
+base_url: "https://{HSBC_BANK_HOST} (HSBCUKSandboxConfig defaultRequest base; mTLS transport.p12 QWAC)"
+
+auth:
+  scheme: psu_bearer
+  description: >-
+    AIS reads — PSU access token (secure Settings hsbc_tokens) auto-attached by the Ktor Auth plugin with
+    refresh-on-401; mTLS transport. Tokens originate from the authorization_code exchange in consent-callback.
+
+api:
+  - id: get_account_statements
+    method: GET
+    path: "/v4.0/aisp/accounts/{AccountId}/statements"
+    source_ref: "core/network/.../api/Aisp.kt#getStatements"
+    repository_ref: "core/data/.../banking/StatementsRepository.kt#statementsStream"
+    description: >-
+      Lists statement periods for one account. Served through a Store5 ScreenDataStream keyed by AccountId
+      (cacheKey "statements:{accountId}"); StatementMapper maps OBReadStatement2 → List<StatementPeriod>
+      sorted newest-first by startDateTime.
+    params:
+      AccountId: { type: String, required: true, in: path, source: nav_params.accountId }
+    response:
+      type: StatementsResponse
+      domain: "List<StatementPeriod>"
+      fields:
+        statementId: String
+        statementReference: String
+        startDateTime: String
+        endDateTime: String
+        closingBalanceAmount: String
+        closingBalanceCurrency: String
+    response_dto: StatementsResponse
+    error_dto: ObErrorResponse
+    errors:
+      401: "TokenExpired (after one refresh)"
+      403: "ConsentScope — consent lacks ReadStatementsBasic/Detail"
+      429: "RateLimited"
+      5xx: "ServerError"
+    cache: { strategy: store5, key: "statements:{accountId}", offline: show_cached }
+    pagination: { type: none }
+    required_permission: ReadStatementsBasic
+
+  - id: get_statement_file
+    method: GET
+    path: "/v4.0/aisp/accounts/{AccountId}/statements/{StatementId}/file"
+    source_ref: "core/network/.../api/Aisp.kt#getStatementFile"
+    repository_ref: "core/data/.../banking/StatementFileRepository.kt#downloadStatementFile"
+    description: >-
+      Raw statement file bytes. Accept headers request application/pdf, then text/csv; body read as
+      ByteArray (bypasses JSON negotiation). The VM hands bytes to the platform StatementFileHandler —
+      FileKit save dialog on android/ios/desktop; the web (js/wasmJs) handler is an intentional no-op.
+    params:
+      AccountId: { type: String, required: true, in: path, source: nav_params.accountId }
+      StatementId: { type: String, required: true, in: path, source: row.statementId }
+    headers:
+      Accept: "application/pdf, text/csv"
+    response:
+      type: ByteArray
+      content_types: [application/pdf, text/csv]
+    response_dto: null
+    error_dto: ObErrorResponse
+    errors:
+      501: "Not Implemented → ShowDownloadUnavailable snackbar"
+      default: "→ ShowDownloadError snackbar"
+    cache: none
+    required_permission: ReadStatementsDetail

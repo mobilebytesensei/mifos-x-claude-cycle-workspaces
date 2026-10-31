@@ -1,0 +1,298 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: product
+screen_id: product
+name: "Product Terms"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/product/src/commonMain/kotlin/org/mifosx/openbanking/feature/product/ProductScreen.kt
+  - feature/product/src/commonMain/kotlin/org/mifosx/openbanking/feature/product/ProductContent.kt
+  - feature/product/src/commonMain/kotlin/org/mifosx/openbanking/feature/product/ProductSkeleton.kt
+  - feature/product/src/commonMain/kotlin/org/mifosx/openbanking/feature/product/ProductEmpty.kt
+  - feature/product/src/commonMain/kotlin/org/mifosx/openbanking/feature/product/ProductError.kt
+  - feature/product/src/commonMain/kotlin/org/mifosx/openbanking/feature/product/ui/ProductState.kt
+  - feature/product/src/commonMain/kotlin/org/mifosx/openbanking/feature/product/ui/ProductViewModel.kt
+  - feature/product/src/commonMain/kotlin/org/mifosx/openbanking/feature/product/ProductDestination.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/ProductRepository.kt
+requirement_refs: [FR-015, FR-040]
+archetype: detail_screen
+states: [loading, content, empty, error]
+initial_state: loading
+feature_profile:
+  combo_id: read_detail
+  facets: [content]
+  archetype: screen-content
+  store_archetype: NETWORK_ONLY      # source: one-shot repository call, cache_strategy none (no Store5 stream)
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default     # source-derived best effort; /idea-feature-enrich STEP 5.PROFILE re-derives
+
+route: "ProductRoute(accountId)"     # @Serializable data class; nav arg key == ProductViewModel.ACCOUNT_ID_ARG
+entry_points:
+  - source: account-detail
+    trigger: "Explore chip AccountDetailChip.Product → navigateFromChip → navigate(ProductRoute(accountId))"
+    params: { accountId: String }
+nav_params:
+  accountId: { type: String, required: true, source: "SavedStateHandle[accountId]" }
+
+business_logic:
+  kind: transformer
+  description: >-
+    One-shot fetch of OBIE product terms for one account (no Store5 stream, cache_strategy none — the bank
+    can revise terms, so a cached copy could misstate charges). ProductRepository.getProduct maps
+    ProductResponse → ProductTerms? (PCA/BCA only); the VM formats MonthlyMaximumCharge as GBP and
+    derives isFeeFree (charge == 0). A null payload (GlobalMoney/Savings/CreditCard) and HTTP 404 both
+    land on Empty, never Error.
+
+screens:
+  - id: product-screen
+    title: "{strings.feature_product_title}"
+    type: detail
+    archetype: detail_screen
+    states: [loading, content, empty, error]
+    description: >-
+      Pushed account-scoped screen inside KptScaffold (back arrow, no bottom nav). Content is a scrolling
+      column: header card (product-type badge, product name, product id), then Fees, Credit Interest,
+      Overdraft and Features list sections — each section rendered only when it has data.
+
+state_model:
+  ProductViewModel:
+    base: "BaseViewModel<ProductState, Nothing, ProductAction>"
+    state:
+      name: ProductState
+      fields:
+        accountId: { type: String, default: '""', source: "SavedStateHandle[accountId]" }
+        uiState: { type: ProductUiState, default: ProductUiState.Loading }
+    ui_state:
+      name: ProductUiState
+      members:
+        - { name: Loading }
+        - { name: Content, params: { product: ProductUiModel } }
+        - { name: Empty }
+        - { name: Error, params: { kind: ProductErrorKind } }
+    ui_models:
+      ProductUiModel:
+        productType: String
+        productName: String
+        productId: String
+        monthlyMaximumChargeLabel: "String?"      # formatted GBP; null → Fees section omitted
+        isFeeFree: Boolean                         # tints the charge primary
+        creditInterestTiers: "List<CreditTierUiModel>"
+        overdraftTiers: "List<OverdraftTierUiModel>"
+        features: "List<String>"
+      CreditTierUiModel: { bandLimit: String, aer: String, applicationFrequency: String }
+      OverdraftTierUiModel: { overdraftType: String, ear: String }
+    errors:
+      name: ProductErrorKind
+      types:
+        - { type: TokenExpired, http: 401, retry: true, message_key: feature_product_error_session_expired }
+        - { type: ConsentScope, http: 403, retry: true, message_key: feature_product_error_consent_denied }
+        - { type: Network, http: "other / offline", retry: true, message_key: feature_product_error_network }
+      note: "404 is NOT an error — routed to Empty before classifyProductError runs."
+    events:
+      name: Nothing
+      members: []
+      note: "No events — navigation (back) is owned by the screen's onBack lambda."
+    actions:
+      name: ProductAction
+      members:
+        - { name: ProductLoad, trigger: "Dispatched once from init {} on mount" }
+        - { name: RetryLoad, trigger: "Tap Retry on the error state" }
+    di:
+      - SavedStateHandle
+      - ProductRepository
+
+components:
+  - id: top_bar
+    type: top-bar
+    host: KptScaffold
+    title: "{strings.feature_product_title}"
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      target: account-detail
+      action_contract:
+        effect: navigate
+        description: "KptScaffold onNavigationIconClick invokes onBack, which the authenticated nav host wires to navController.popBackStack(), returning to account-detail; no network call."
+
+  - id: product_skeleton
+    type: shimmer
+    test_tag: "product:loading"
+    a11y: "{strings.feature_product_loading_a11y}"
+
+  - id: header_card
+    type: card
+    test_tag: "product:headerCard"
+    a11y: "{strings.feature_product_header_card_a11y}"
+    content:
+      - { id: type_badge, type: badge, test_tag: "product:typeBadge", value: "{{product.productType}}", style: { background: secondaryContainer, text_color: onSecondaryContainer } }  # i18n: skip — bank payload
+      - { id: product_name, type: text, test_tag: "product:productName", value: "{{product.productName}}", style: { color: onSurface } }  # i18n: skip — bank payload
+      - { id: product_id, type: text, test_tag: "product:productId", value: "{strings.feature_product_id_label}", style: { color: onSurfaceVariant } }
+
+  - id: fees_section
+    type: list-section
+    visible: "{{product.monthlyMaximumChargeLabel != null}}"
+    test_tag: "product:feesSection"
+    header: "{strings.feature_product_section_fees}"
+    content:
+      - id: monthly_max_charge_row
+        type: term-row
+        test_tag: "product:monthlyMaxChargeRow"
+        label: "{strings.feature_product_monthly_max_charge_label}"
+        trailing: "{{product.monthlyMaximumChargeLabel}}"  # i18n: skip — formatted money
+        trailing_color: "{{product.isFeeFree ? primary : onSurface}}"
+        a11y: "{strings.feature_product_monthly_max_charge_a11y}"
+
+  - id: credit_interest_section
+    type: list-section
+    visible: "{{product.creditInterestTiers.isNotEmpty()}}"
+    test_tag: "product:creditInterestSection"
+    header: "{strings.feature_product_section_credit_interest}"
+    a11y: "{strings.feature_product_credit_interest_list_a11y}"
+    item:
+      id: credit_tier_row
+      type: term-row
+      test_tag: "product:creditTier:{index}"
+      label: "{strings.feature_product_tier_band_info}"
+      trailing: "{strings.feature_product_tier_aer}"
+      a11y: "{strings.feature_product_credit_band_a11y}"
+
+  - id: overdraft_section
+    type: list-section
+    visible: "{{product.overdraftTiers.isNotEmpty()}}"
+    test_tag: "product:overdraftSection"
+    header: "{strings.feature_product_section_overdraft}"
+    a11y: "{strings.feature_product_overdraft_list_a11y}"
+    item:
+      id: overdraft_tier_row
+      type: term-row
+      test_tag: "product:overdraftTier:{index}"
+      label: "{strings.feature_product_overdraft_type_label}"
+      trailing: "{strings.feature_product_overdraft_ear}"
+      a11y: "{strings.feature_product_overdraft_band_a11y}"
+
+  - id: features_section
+    type: list-section
+    visible: "{{product.features.isNotEmpty()}}"
+    test_tag: "product:featuresSection"
+    header: "{strings.feature_product_section_features}"
+    a11y: "{strings.feature_product_features_list_a11y}"
+    item:
+      id: feature_row
+      type: text-row
+      test_tag: "product:feature:{index}"
+      leading_icon: { asset: feature_check_icon, size: 20dp }
+      value: "{{feature}}"  # i18n: skip — bank payload
+      a11y: "{strings.feature_product_feature_a11y}"
+
+  - id: empty_state
+    type: empty-state
+    test_tag: "product:empty"
+    icon: { asset: empty_info_icon, size: 48dp }
+    title: "{strings.feature_product_empty_title}"
+    body: "{strings.feature_product_empty_body}"
+    a11y: "{strings.feature_product_empty_a11y}"
+
+  - id: error_state
+    type: error-state
+    test_tag: "product:error"
+    icon: { asset: error_outline_icon, size: 48dp }
+    title: "{strings.feature_product_error_title}"
+    body: "{{kind.messageResource()}}"   # i18n: skip — resolves to one of the three error message_keys
+    cta:
+      id: retry_button
+      type: button
+      variant: filled
+      test_tag: "product:retryButton"
+      label: "{strings.feature_product_retry_button}"
+      a11y: "{strings.feature_product_retry_a11y}"
+      on_click:
+        action: RetryLoad
+        handler: "ProductViewModel.handleAction(RetryLoad) → load()"
+        action_contract:
+          effect: call_api
+          library_refs: [ktor]
+          external_library_refs: ["core/data ProductRepository.getProduct", "core/network Aisp.getProduct"]
+          writes_to: "ProductState.uiState"
+          description: "Resets uiState to Loading and re-invokes ProductRepository.getProduct(accountId) (GET /v4.0/aisp/accounts/{AccountId}/product); maps Success→Content/Empty, 404→Empty, other errors→Error(kind)."
+
+state_renders:
+  loading: { components: [top_bar, product_skeleton], description: "ProductUiState.Loading — skeleton rows while the one-shot GET is in flight (initial state)." }
+  content: { components: [top_bar, header_card, fees_section, credit_interest_section, overdraft_section, features_section], description: "ProductUiState.Content — sections hidden when their list/value is empty." }
+  empty: { components: [top_bar, empty_state], description: "ProductUiState.Empty — null product (non-PCA/BCA) or HTTP 404; informational, no Retry." }
+  error: { components: [top_bar, error_state], description: "ProductUiState.Error(kind) — TokenExpired / ConsentScope / Network message + Retry." }
+
+visual_assets:
+  - id: feature_check_icon
+    kind: icon
+    role: list-leading-check
+    intent: "Material Icons.Filled.CheckCircle tinted as a confirmation tick beside each product feature line."
+    produced_by: design-system
+    states: [content]
+    consistency: none
+    source: "androidx.compose.material.icons Icons.Filled.CheckCircle"
+  - id: empty_info_icon
+    kind: icon
+    role: empty-state-icon
+    intent: "Material Icons.Outlined.Info at 48dp signalling that the bank publishes no product data for this account."
+    produced_by: design-system
+    states: [empty]
+    consistency: none
+    source: "Icons.Outlined.Info"
+  - id: error_outline_icon
+    kind: icon
+    role: error-state-icon
+    intent: "Material Icons.Outlined.ErrorOutline at 48dp above the product-terms failure message."
+    produced_by: design-system
+    states: [error]
+    consistency: none
+    source: "Icons.Outlined.ErrorOutline"
+
+known_gaps:
+  - id: KG-PRODUCT-1
+    severity: low
+    description: "ProductTestTags.BACK_BUTTON ('product:backButton') is declared but never applied — KptScaffold's navigation icon carries no testTag, so UI/Maestro suites cannot target back by tag."
+  - id: KG-PRODUCT-2
+    severity: medium
+    description: "TokenExpired (401) and ConsentScope (403) offer only Retry, which cannot succeed — no route to re-authenticate (LoginRenew) or to Consents from this screen (FR-040 says 403 is not retriable)."
+  - id: KG-PRODUCT-3
+    severity: low
+    description: "feature_product_back_a11y string is defined but unused (scaffold back arrow has no screen-specific content description)."
+  - id: KG-PRODUCT-4
+    severity: low
+    description: "Archetype detail_screen default detail_hero is not inherited — source renders no hero imagery; only Material glyphs are used."
+
+i18n:
+  en:
+    feature_product_title: "Product Terms"
+    feature_product_back_a11y: "Navigate back to account details"
+    feature_product_loading_a11y: "Loading product terms"
+    feature_product_header_card_a11y: "Product identity and type"
+    feature_product_id_label: "Product ID: %1$s"
+    feature_product_section_fees: "Fees"
+    feature_product_monthly_max_charge_label: "Monthly Maximum Charge"
+    feature_product_monthly_max_charge_a11y: "Monthly maximum charge: %1$s"
+    feature_product_section_credit_interest: "Credit Interest"
+    feature_product_credit_interest_list_a11y: "Credit interest tier bands"
+    feature_product_tier_band_info: "Up to %1$s · paid %2$s"
+    feature_product_tier_aer: "%1$s% AER"
+    feature_product_credit_band_a11y: "Credit interest up to %1$s: %2$s% AER, paid %3$s"
+    feature_product_section_overdraft: "Overdraft"
+    feature_product_overdraft_list_a11y: "Overdraft tier bands"
+    feature_product_overdraft_type_label: "%1$s overdraft"
+    feature_product_overdraft_ear: "%1$s% EAR"
+    feature_product_overdraft_band_a11y: "%1$s overdraft: %2$s% EAR"
+    feature_product_section_features: "Features"
+    feature_product_features_list_a11y: "Product features list"
+    feature_product_feature_a11y: "Feature: %1$s"
+    feature_product_empty_title: "No product information"
+    feature_product_empty_body: "No product data is available for this account."
+    feature_product_empty_a11y: "No product information for this account"
+    feature_product_error_title: "Could not load product terms"
+    feature_product_error_a11y: "Error loading product terms"
+    feature_product_retry_button: "Retry"
+    feature_product_retry_a11y: "Retry loading product terms"
+    feature_product_error_session_expired: "Session expired. Please re-authenticate."
+    feature_product_error_consent_denied: "Consent does not include ReadProducts."
+    feature_product_error_network: "Could not reach the bank. Check your connection and try again."

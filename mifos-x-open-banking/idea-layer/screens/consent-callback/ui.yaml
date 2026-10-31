@@ -1,0 +1,358 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: consent-callback
+screen_id: consent-callback
+name: "Consent Callback"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/consent-callback/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentcallback/ConsentCallbackScreen.kt
+  - feature/consent-callback/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentcallback/ConsentCallbackNavigation.kt
+  - feature/consent-callback/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentcallback/ui/ConsentCallbackViewModel.kt
+  - feature/consent-callback/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentcallback/steps/LoadingStep.kt
+  - feature/consent-callback/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentcallback/steps/SuccessStep.kt
+  - feature/consent-callback/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentcallback/steps/AwaitingStep.kt
+  - feature/consent-callback/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentcallback/steps/ErrorStep.kt
+  - feature/consent-callback/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentcallback/steps/AccessDeniedStep.kt
+  - feature/consent-callback/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentcallback/steps/SecurityErrorStep.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/callback/ConsentCallbackRepository.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/callback/impl/ConsentCallbackRepositoryImpl.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/callback/PendingAuthStore.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/callback/ConsentSession.kt
+  - cmp-navigation/src/commonMain/kotlin/cmp/navigation/rootnav/RootNavScreen.kt
+requirement_refs: [FR-021, FR-022]
+archetype: loading
+states: [loading, content, awaiting, rejected, error, access_denied, security_error]
+initial_state: loading
+feature_profile:
+  combo_id: content_input_submit
+  facets: [content, input]
+  archetype: screen-content
+  store_archetype: NETWORK_ONLY      # one-shot token exchange + consent GET; tokens written to secure Settings (ConsentSession)
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default     # source-derived best effort; /idea-feature-enrich STEP 5.PROFILE re-derives
+
+route: "ConsentCallbackRoute(redirectUrl)"
+entry_points:
+  - source: login
+    trigger: >-
+      Not user-navigable. HSBC → HTTPS relay page → org.mifosx.openbanking://callback (Android intent / iOS
+      onOpenURL) or the desktop 127.0.0.1:8765 loopback listener publishes the URL to ConsentRedirectBus;
+      RootNavScreen collects it, de-duplicates on lastRoutedRedirect (rememberSaveable), classifies the leg
+      with authorisationLegOf(...) and, for AuthorisationLeg.SignIn, calls
+      navigateToConsentCallback(ConsentCallbackRoute(redirectUrl), rootNavOptions()).
+    params: { redirectUrl: String }
+nav_params:
+  redirectUrl: { type: String, required: true, source: "entry.toRoute<ConsentCallbackRoute>().redirectUrl" }
+
+business_logic:
+  kind: processor
+  description: >-
+    On composition LaunchedEffect(redirectUrl) dispatches ProcessCallback. validateCallback consumes the
+    single-use PendingAuth (TTL 1200s) — missing/expired PendingAuth or state mismatch → SecurityError;
+    error=access_denied → AccessDenied; other error → Error(error_description); id_token nonce mismatch →
+    SecurityError; no code → Error(MISSING_CODE); else Valid(code, consentId).
+    Valid → POST /v1.1/oauth2/token authorization_code (private_key_jwt) → on success pollConsentStatus
+    (client_credentials + GET account-access-consents/{ConsentId}) BEFORE any token is persisted, and
+    the returned ConsentStatus is ACTED ON (DEF-001 / FR-022): Rejected → discard the just-exchanged PSU
+    tokens (never call consentSession.save), consentSession.clear(), render Rejected — sign-in does NOT
+    complete; Authorised / AwaitingAuthorisation / poll-failure → record consentId + expiry in
+    ConsentSession, persist PSU tokens, show Content for 1500 ms, then NavigateToHome. Failures are
+    classified (DEF-006): a PSU decline (error=access_denied) renders the neutral AccessDenied step, never
+    an error; every other failure renders Error(kind) whose copy names the real cause — PROVIDER_ERROR
+    (bank returned an error other than access_denied), MISSING_CODE, AUTHORISATION_FAILED (token 401),
+    TOKEN_EXCHANGE_FAILED (token 4xx/5xx), NETWORK_UNREACHABLE (offline) — so a network or token-exchange
+    failure is never presented as a declined consent. All copy comes from string resources keyed by kind.
+
+screens:
+  - id: consent-callback-screen
+    title: null
+    type: status
+    archetype: loading
+    states: [loading, content, awaiting, rejected, error, access_denied, security_error]
+    description: >-
+      Full-screen centred status step (status-bar padded, no top bar), one composable per state:
+      LoadingStep (spinner + verifying copy), SuccessStep (check icon, "Connected to HSBC"), AwaitingStep
+      (hourglass + Check again), RejectedStep (cancel icon, "Your bank rejected this request" + Start again),
+      CallbackErrorStep (warning icon + kind-specific title/body + Try again), AccessDeniedStep (neutral
+      info icon + Start over), SecurityErrorStep (security icon + Start again).
+
+state_model:
+  ConsentCallbackViewModel:
+    base: "BaseViewModel<ConsentCallbackUiState, ConsentCallbackEvent, ConsentCallbackAction>"
+    state:
+      name: ConsentCallbackUiState
+      note: "The sealed UI state IS the VM state. A private var pendingConsentId: String? holds the consent id between validate and poll."
+      members:
+        - { name: Loading, renders: loading }
+        - { name: Content, renders: content }
+        - { name: Awaiting, renders: awaiting }
+        - { name: Rejected, renders: rejected, note: "Terminal for this redirect — consent status Rejected; no PSU token persisted, ConsentSession cleared (DEF-001)." }
+        - { name: Error, params: { kind: CallbackErrorKind }, renders: error, note: "Copy resolved from strings by kind (DEF-006 / KG-CALLBACK-2/4) — no free-text message rendered." }
+        - { name: AccessDenied, renders: access_denied }
+        - { name: SecurityError, renders: security_error }
+      default: ConsentCallbackUiState.Loading
+      fields:
+        pendingConsentId: { type: "String?", default: "null", visibility: private }
+    error_kinds:
+      name: CallbackErrorKind
+      note: "enum carried by ConsentCallbackUiState.Error; each value maps to its own title/body string pair (DEF-006)."
+      members:
+        - { name: PROVIDER_ERROR, cause: "redirect error present and != access_denied", title: feature_callback_error_provider_title, body: feature_callback_error_provider_body }
+        - { name: MISSING_CODE, cause: "valid state/nonce but no code param", title: feature_callback_error_missing_code_title, body: feature_callback_error_missing_code_body }
+        - { name: AUTHORISATION_FAILED, cause: "token exchange 401 (ScreenState.Unauthenticated)", title: feature_callback_error_auth_failed_title, body: feature_callback_error_auth_failed_body }
+        - { name: TOKEN_EXCHANGE_FAILED, cause: "token exchange 4xx/5xx (ScreenState.Error)", title: feature_callback_error_exchange_title, body: feature_callback_error_exchange_body }
+        - { name: NETWORK_UNREACHABLE, cause: "token exchange offline (ScreenState.NoNetwork)", title: feature_callback_error_network_title, body: feature_callback_error_network_body }
+    errors:
+      name: ValidationResult
+      types:
+        - { type: SecurityError, cause: "PendingAuth missing/expired (>1200s) | state mismatch | id_token nonce mismatch", ui: security_error, retry: false }
+        - { type: AccessDenied, cause: "redirect error=access_denied (PSU declined at HSBC) — a user CHOICE, rendered neutrally, never as an error (DEF-006)", ui: access_denied, retry: false }
+        - { type: Error, cause: "redirect error != access_denied (error_description logged, not rendered)", ui: error, kind: PROVIDER_ERROR }
+        - { type: MissingCode, cause: "no code param", ui: error, kind: MISSING_CODE }
+        - { type: ExchangeUnauthenticated, cause: "token exchange 401", ui: error, kind: AUTHORISATION_FAILED }
+        - { type: ExchangeError, cause: "token exchange ScreenState.Error", ui: error, kind: TOKEN_EXCHANGE_FAILED }
+        - { type: ExchangeNoNetwork, cause: "token exchange offline", ui: error, kind: NETWORK_UNREACHABLE }
+        - { type: ConsentRejected, cause: "pollConsentStatus → ConsentStatus.Rejected after a successful exchange", ui: rejected, retry: false }
+    events:
+      name: ConsentCallbackEvent
+      members:
+        - { name: NavigateToHome, kind: BackgroundEvent, handled_by: "onNavigateToHome → navigateToAuthenticatedGraph(rootNavOptions)" }
+        - { name: NavigateToLogin, kind: BackgroundEvent, handled_by: "onNavigateToLogin → navigateToAuthGraph(rootNavOptions)" }
+    actions:
+      name: ConsentCallbackAction
+      members:
+        - { name: ProcessCallback, params: { redirectUrl: String }, trigger: "LaunchedEffect(redirectUrl) on entry" }
+        - { name: PollConsentStatus, trigger: "Tap Check again (awaiting step)" }
+        - { name: NavigateRetry, trigger: "Tap Try again (error) or Start over (access denied)" }
+        - { name: NavigateLogin, trigger: "Tap Start again (security error or rejected) — also clears ConsentSession" }
+    di:
+      - ConsentCallbackRepository
+      - ConsentSession
+      - "redirectUri: String (HsbcConfig.REDIRECT_URI)"
+
+components:
+  - id: loading_step
+    type: status-view
+    test_tag: callback_loading
+    content:
+      - { id: loading_spinner, type: circular-progress, size: 48dp }
+      - { id: loading_title, type: text, value: "{strings.feature_callback_loading_title}" }
+      - { id: loading_body, type: text, value: "{strings.feature_callback_loading_body}" }
+
+  - id: success_step
+    type: status-view
+    test_tag: callback_content
+    content:
+      - { id: success_icon, type: icon, asset: success_check_icon, size: 64dp, tint: primary }
+      - { id: success_title, type: text, value: "{strings.feature_callback_connected_title}" }
+      - { id: success_body, type: text, value: "{strings.feature_callback_connected_body}" }
+
+  - id: awaiting_step
+    type: status-view
+    test_tag: callback_awaiting
+    content:
+      - { id: awaiting_icon, type: icon, asset: awaiting_hourglass_icon }
+      - { id: awaiting_title, type: text, value: "{strings.feature_callback_awaiting_title}" }
+      - { id: awaiting_body, type: text, value: "{strings.feature_callback_awaiting_body}" }
+      - id: check_again_button
+        type: button
+        variant: filled_pill
+        test_tag: callback_check_again
+        label: "{strings.feature_callback_check_again}"
+        on_click:
+          action: PollConsentStatus
+          handler: "ConsentCallbackViewModel.repoll()"
+          action_contract:
+            effect: call_api
+            library_refs: [ktor, multiplatform-settings]
+            writes_to: "ConsentSession (consent id + expiry); ConsentCallbackUiState"
+            description: "If pendingConsentId is set, re-polls GET account-access-consents/{ConsentId} with a client_credentials token and branches on the status: Rejected → consentSession.clear() and Rejected state (no NavigateToHome); otherwise saves consentId+expiry to ConsentSession, shows Content for 1500 ms and emits NavigateToHome; no-op when pendingConsentId is null."
+
+  - id: rejected_step
+    type: status-view
+    test_tag: callback_rejected
+    content:
+      - { id: rejected_icon, type: icon, asset: rejected_cancel_icon, size: 64dp, tint: error }
+      - { id: rejected_title, type: text, value: "{strings.feature_callback_rejected_title}" }
+      - { id: rejected_body, type: text, value: "{strings.feature_callback_rejected_body}" }
+      - id: rejected_start_again_button
+        type: button
+        variant: filled_pill
+        test_tag: callback_rejected_start_again
+        label: "{strings.feature_callback_start_again}"
+        on_click:
+          action: NavigateLogin
+          target: login
+          action_contract:
+            effect: delete
+            library_refs: [multiplatform-settings]
+            writes_to: "ConsentSession (secure Settings) — cleared"
+            description: "Calls consentSession.clear() (idempotent — already cleared on entry to Rejected) so no PSU token or consent metadata from the rejected consent survives, then emits NavigateToLogin so RootNavScreen calls navigateToAuthGraph(rootNavOptions) back to Intro to create a fresh consent."
+
+  - id: error_step
+    type: status-view
+    test_tag: callback_error
+    content:
+      - { id: error_icon, type: icon, asset: error_warning_icon, size: 64dp, tint: error }
+      - { id: error_title, type: text, value: "{strings.feature_callback_error_{kind}_title}", note: "resolved from CallbackErrorKind (provider | missing_code | auth_failed | exchange | network)" }
+      - { id: error_body, type: text, value: "{strings.feature_callback_error_{kind}_body}" }
+      - id: error_retry_button
+        type: button
+        variant: filled_pill
+        test_tag: callback_error_retry
+        label: "{strings.feature_callback_try_again}"
+        on_click:
+          action: NavigateRetry
+          target: login
+          action_contract:
+            effect: navigate
+            description: "Emits NavigateToLogin; RootNavScreen calls navigateToAuthGraph(rootNavOptions), restarting at Intro. ConsentSession is NOT cleared on this path."
+
+  - id: access_denied_step
+    type: status-view
+    test_tag: callback_access_denied
+    content:
+      - { id: denied_icon, type: icon, asset: declined_info_icon, size: 64dp, tint: on_surface_variant }
+      - { id: denied_title, type: text, value: "{strings.feature_callback_access_denied_title}" }
+      - { id: denied_body, type: text, value: "{strings.feature_callback_access_denied_body}" }
+      - id: start_over_button
+        type: button
+        variant: filled_pill
+        test_tag: callback_start_over
+        label: "{strings.feature_callback_start_over}"
+        on_click:
+          action: NavigateRetry
+          target: login
+          action_contract:
+            effect: navigate
+            description: "Emits NavigateToLogin after the PSU declined at HSBC; RootNavScreen calls navigateToAuthGraph(rootNavOptions) back to Intro without clearing ConsentSession."
+
+  - id: security_error_step
+    type: status-view
+    test_tag: callback_security_error
+    content:
+      - { id: security_icon, type: icon, asset: security_shield_icon, size: 64dp, tint: error }
+      - { id: security_title, type: text, value: "{strings.feature_callback_security_error_title}" }
+      - { id: security_body, type: text, value: "{strings.feature_callback_security_error_body}" }
+      - id: start_again_button
+        type: button
+        variant: filled_pill
+        test_tag: callback_start_again
+        label: "{strings.feature_callback_start_again}"
+        on_click:
+          action: NavigateLogin
+          target: login
+          action_contract:
+            effect: delete
+            library_refs: [multiplatform-settings]
+            writes_to: "ConsentSession (secure Settings) — cleared"
+            description: "Calls consentSession.clear() to wipe stored PSU tokens and consent metadata, then emits NavigateToLogin so RootNavScreen calls navigateToAuthGraph(rootNavOptions) back to Intro."
+
+state_renders:
+  loading: { components: [loading_step], description: "Initial — validating the redirect and exchanging the code." }
+  content: { components: [success_step], description: "Tokens persisted; auto-navigates to Home (AuthenticatedGraph) after 1500 ms." }
+  awaiting: { components: [awaiting_step], description: "Declared consent-status wait with Check again — NO code path currently sets this state (KG-CALLBACK-1)." }
+  rejected: { components: [rejected_step], description: "HSBC reports the consent as Rejected after the code exchange — sign-in does NOT complete, no tokens persisted, ConsentSession cleared; Start again → Login (DEF-001 / FR-022)." }
+  error: { components: [error_step], description: "Technical failure classified by CallbackErrorKind — provider error, missing code, authorisation 401, token-exchange 4xx/5xx, or network unreachable — each with its own copy; never worded as a declined consent (DEF-006)." }
+  access_denied: { components: [access_denied_step], description: "PSU chose not to share at HSBC (error=access_denied) — neutral, non-error copy and tint (DEF-006)." }
+  security_error: { components: [security_error_step], description: "state / nonce / PendingAuth validation failed — possible replay or tampering." }
+
+visual_assets:
+  - id: success_check_icon
+    kind: icon
+    role: success-icon
+    intent: "Icons.Outlined.CheckCircle at 64dp tinted primary confirming the HSBC connection succeeded."
+    produced_by: design-system
+    states: [content]
+    consistency: none
+    source: "Icons.Outlined.CheckCircle"
+  - id: awaiting_hourglass_icon
+    kind: icon
+    role: status-icon
+    intent: "Icons.Outlined.HourglassEmpty indicating HSBC has not yet confirmed the consent status."
+    produced_by: design-system
+    states: [awaiting]
+    consistency: none
+    source: "Icons.Outlined.HourglassEmpty"
+  - id: rejected_cancel_icon
+    kind: icon
+    role: error-state-icon
+    intent: "Icons.Outlined.Cancel at 64dp tinted error — the bank rejected the consent request."
+    produced_by: design-system
+    states: [rejected]
+    consistency: none
+    source: "Icons.Outlined.Cancel"
+  - id: error_warning_icon
+    kind: icon
+    role: error-state-icon
+    intent: "Icons.Outlined.ErrorOutline at 64dp tinted error for a technical failure (network, token exchange, provider error) — deliberately distinct from the decline icon."
+    produced_by: design-system
+    states: [error]
+    consistency: none
+    source: "Icons.Outlined.ErrorOutline"
+  - id: declined_info_icon
+    kind: icon
+    role: status-icon
+    intent: "Icons.Outlined.Info at 64dp tinted onSurfaceVariant — neutral acknowledgement that the user chose not to share."
+    produced_by: design-system
+    states: [access_denied]
+    consistency: none
+    source: "Icons.Outlined.Info"
+  - id: security_shield_icon
+    kind: icon
+    role: error-state-icon
+    intent: "Icons.Outlined.Security at 64dp tinted error signalling a failed state/nonce security check."
+    produced_by: design-system
+    states: [security_error]
+    consistency: none
+    source: "Icons.Outlined.Security"
+
+known_gaps:
+  - id: KG-CALLBACK-1
+    severity: medium
+    description: "Awaiting is unreachable: ConsentCallbackViewModel never sets ConsentCallbackUiState.Awaiting, and pollConsentStatus' ConsentStatus (AwaitingAuthorisation/Rejected/Authorised) is ignored — sign-in completes regardless of status, so a Rejected consent still lands on Home."
+    spec_resolution: "Rejected half specified (2026-10-21, prototype gap-005): `rejected` state + ConsentRejected branch in flow_logic; source still ignores the status until /kmp-implement. Awaiting reachability unchanged — FR-022 AC keeps 'Awaiting poll still completes sign-in'."
+  - id: KG-CALLBACK-2
+    severity: medium
+    description: "CallbackErrorStep ignores Error.message and always shows 'Authorisation was declined / not approved' copy — network outages, missing code and token-exchange failures are mislabelled as a declined consent."
+    spec_resolution: "Specified (2026-10-21, DEF-006): Error carries CallbackErrorKind with per-kind strings; access_denied uses neutral copy/icon. Source pending /kmp-implement."
+  - id: KG-CALLBACK-3
+    severity: low
+    description: "If the consent poll fails, consentSession.saveConsentMeta stores an empty expiry string silently (no error surfaced); consent-list expiry banners then lack data."
+  - id: KG-CALLBACK-4
+    severity: medium
+    description: "Hardcoded English error messages in the VM ('No authorisation code received.', 'Token exchange failed.', 'Authorisation failed.', 'Unable to reach HSBC.') and the repository ('HSBC reported an error: …') bypass strings.xml (RULE-IMPL-NO-HARDCODED-STRING-001) — currently masked by KG-CALLBACK-2."
+  - id: KG-CALLBACK-5
+    severity: low
+    description: "NavigateRetry (Try again / Start over) does not clear PendingAuth/ConsentSession while NavigateLogin (Start again) does — inconsistent cleanup between failure paths."
+
+i18n:
+  en:
+    feature_callback_loading_title: "Verifying your authorisation…"
+    feature_callback_loading_body: "Securely exchanging credentials with HSBC. This takes a few seconds."
+    feature_callback_connected_title: "Connected to HSBC"
+    feature_callback_connected_body: "Your account data is ready. Taking you to your accounts now."
+    feature_callback_awaiting_title: "Waiting for HSBC to confirm"
+    feature_callback_awaiting_body: "HSBC has not yet updated the consent status. Please wait a moment or try again."
+    feature_callback_check_again: "Check again"
+    feature_callback_rejected_title: "Your bank rejected this request"
+    feature_callback_rejected_body: "HSBC marked this account-access request as rejected, so you have not been signed in and nothing was saved. Start again to create a new request."
+    feature_callback_error_provider_title: "HSBC couldn't complete the request"
+    feature_callback_error_provider_body: "HSBC returned an error while authorising. Nothing was shared. Please try again."
+    feature_callback_error_missing_code_title: "Authorisation incomplete"
+    feature_callback_error_missing_code_body: "HSBC didn't send back an authorisation code. Please try connecting again."
+    feature_callback_error_auth_failed_title: "Authorisation failed"
+    feature_callback_error_auth_failed_body: "HSBC didn't accept the authorisation. Please try connecting again."
+    feature_callback_error_exchange_title: "Couldn't finish connecting"
+    feature_callback_error_exchange_body: "Something went wrong while securing your connection with HSBC. Please try again."
+    feature_callback_error_network_title: "Unable to reach HSBC"
+    feature_callback_error_network_body: "Check your internet connection and try again."
+    feature_callback_try_again: "Try again"
+    feature_callback_access_denied_title: "Access not shared"
+    feature_callback_access_denied_body: "You chose not to share your HSBC account data. You can start again at any time."
+    feature_callback_start_over: "Start over"
+    feature_callback_security_error_title: "Security check failed"
+    feature_callback_security_error_body: "The authorisation response could not be verified. Please start the connection process again."
+    feature_callback_start_again: "Start again"

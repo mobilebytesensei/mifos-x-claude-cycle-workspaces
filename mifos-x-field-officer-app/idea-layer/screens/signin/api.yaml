@@ -1,0 +1,147 @@
+# signin — API contract. IMPORTED from source 2026-10-02; RECONCILED against the shipped v2
+# 2026-10-05.
+#
+# Endpoint, request/response shape and the success condition are READ from LoginViewModel.kt
+# (original) reconciled against AuthCommandRepositoryImpl + AuthApi (shipped port).
+
+schema_version: "3.1"
+feature: signin
+
+endpoints:
+  - id: authenticate
+    method: POST
+    path: authentication
+    full_path_note: >
+      Resolved against the access point's effectiveUrl. For this app that is
+      https://apis.mifos.community/ + 1.0/field/v1/ — the FIELD-OFFICER gateway path, NOT plain
+      Fineract's fineract-provider/api/v1/. Measured 2026-10-01 by probing both: the gateway path
+      answers 401 (exists, credential rejected), the Fineract path answers 404.
+    request:
+      content_type: application/json
+      body:
+        username: string
+        password: string
+      headers:
+        - name: Fineract-Platform-TenantId
+          value: mifos-bank-1
+          source: access_point_declaration
+        - name: Content-Type
+          value: application/json
+          note: >
+            REQUIRED. ContentNegotiation only serializes a body whose request declares a type it has
+            a converter for, and a Ktorfit @Body sets none. Without it Ktor throws before opening a
+            socket and the screen renders "Login failed" with no HTTP log at all.
+        - name: Authorization
+          value: null
+          note: "anonymous — this is the call that MINTS the credential"
+    response:
+      type: PostAuthenticationResponse
+      fields:
+        username: string
+        userId: int
+        base64EncodedAuthenticationKey: string
+        authenticated: boolean
+        officeId: int
+        officeName: string
+        roles: array
+        permissions: array
+    success_condition:
+      expression: "status == 200 AND body.authenticated == true"
+      note: >
+        NOT status alone. Fineract answers 200 with `authenticated: false` for a bad credential, so
+        a successful CALL is not a successful LOGIN. Both the original and the port check the flag
+        explicitly; dropping it admits a failed login.
+      verified_at: '2026-10-05'
+      verified_by: "SignInViewModelTest.authenticatedFalseIsAFailedLoginEvenThoughTheCallSucceeded"
+    write_policy: OnlineRequired
+    write_policy_why: >
+      An authentication cannot be queued. A credential check that "succeeds" locally and syncs later
+      would admit a user the server never agreed to. Offline yields MutationResult.Blocked(OFFLINE),
+      which the screen renders as its own message rather than a spinner.
+    on_success:
+      - persist: User(username, userId, base64EncodedAuthenticationKey, officeId, officeName, permissions)
+      - reset_failure_counter: true
+        note: >
+          A success clears `failedAttempts`. The throttle counts CONSECUTIVE failures; a user who
+          gets it right on the fourth try must not stay one mistake away from being locked out.
+      - emit: LoggedIn
+
+    # CLOSED 2026-10-02, verified in source 2026-10-05. This previously read
+    # `persist_raw_password: true, status: OPEN`, which the implementation had already resolved —
+    # the docset was asserting a defect that no longer existed.
+    not_persisted:
+      - field: password
+        status: CLOSED
+        why: >
+          Nothing reads `User.password`. Every consumer reads `username` or
+          `base64EncodedAuthenticationKey`, and `authHeader` derives from the encoded key — which is
+          what Fineract needs for subsequent Basic auth. Storing the password bought nothing and kept
+          a credential on disk for the life of the session.
+        locked_by: "SignInViewModelTest.theRawPasswordIsNeverPersisted"
+
+# ──────────────── WHAT HAS NO ENDPOINT ────────────────
+# Recorded so a reader does not go looking for a call that does not exist.
+local_only_capabilities:
+  - id: biometric-unlock
+    endpoint: none
+    why: >
+      Biometric unlock does NOT re-authenticate against Fineract. The stored
+      `base64EncodedAuthenticationKey` is already what every subsequent call uses, so unlocking
+      re-affirms a session the server previously granted. It cannot mint one, and it cannot be used
+      to bypass a credential the server would refuse.
+    implication: >
+      The security boundary is the DEVICE, not the server. A stolen unlocked device carries a valid
+      session either way; biometrics narrows the window rather than creating a new trust path.
+    backed_by: "core-base/security BiometricAuthenticator.authenticate(reason)"
+
+  - id: failure-throttle
+    endpoint: none
+    why: >
+      The lockout is client-side only. Fineract is not told about it and does not enforce it, so the
+      throttle protects a lost device from casual password guessing — not the account from a
+      determined attacker with the API. Server-side lockout, if wanted, is a Fineract configuration
+      matter, not this screen's.
+
+# ──────────────── SUBSTRATE (shipped port) ────────────────
+substrate:
+  repository: kpt.core.data.auth.AuthCommandRepository
+  gateway: MutationGateway.command(spec, policy = OnlineRequired)
+  api_interface: kpt.core.network.mifos.auth.api.AuthApi
+  access_point: mifos
+  original_substrate: "LoginUseCase → DataState<PostAuthenticationResponse> (retired, spec §2)"
+
+# ──────────────── CREDENTIAL HANDOFF (what the rest of the app depends on) ────────────────
+# Recorded because it is invisible from this screen alone and every authenticated call depends on it.
+credential_handoff:
+  stored_as: "raw base64EncodedAuthenticationKey"
+  formatted_by: "AuthScheme.BASIC.format → 'Basic <token>'"
+  note: >
+    The RAW value is stored; the wire prefix is added by the access point's declared scheme. Storing
+    a pre-formatted "Basic <token>" produced `Authorization: Basic Basic <token>` and 401'd every
+    authenticated call while sign-in itself kept working — measured on device 2026-10-01.
+
+# ──────────────── KNOWN GAPS ────────────────
+known_gaps:
+  - id: no-expect-success
+    severity: advisory
+    description: >
+      The shared HTTP client does not set expectSuccess, so a non-2xx body is deserialized onto the
+      DTO's defaults and reaches the screen as a successful empty result. For THIS endpoint the
+      explicit `authenticated == true` check masks it; for list reads it surfaced as "Nothing here
+      yet" on a 401/502. Raised for upstream (core-base/network).
+
+  - id: access-point-ignores-saved-server-config
+    severity: error
+    added_at: '2026-10-05'
+    description: >
+      MEASURED: no production code under `core/network` reads `ServerConfig`. The access point's
+      baseUrl is a build-time constant, so a user edit on the server-configuration screen does not
+      change where this endpoint posts.
+    endpoint_impact: >
+      `full_path_note` above is accurate for the SHIPPED DEFAULT and only for it.
+      `ServerConfigAccessPointParityTest` pins `ServerConfig.DEFAULT` equal to the `mifos` access
+      point on origin, path and tenant — so the two agree by construction until someone edits one.
+    newly_visible_because: >
+      v2's instance chip displays the ServerConfig value. v1 showed nothing, so nothing could
+      contradict the constant. See docs.yaml#known_gaps.chip-states-a-value-the-client-may-not-use.
+    fix_belongs_in: "core/network — resolve the access point from ServerConfig"

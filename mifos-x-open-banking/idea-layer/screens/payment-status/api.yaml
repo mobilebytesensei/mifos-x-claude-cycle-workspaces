@@ -1,0 +1,70 @@
+sibling: api
+schema_version: "4.0"
+feature_id: payment-status
+_source: source_analysis
+
+auth_common:
+  token: "client_credentials, scope=payments (OAuthApi.clientCredentialsToken(ConsentCreationScope.PAYMENTS), private_key_jwt)"
+  transport: "mTLS to HSBC UK sandbox; FAPI headers (x-fapi-financial-id) via fapiHeaders(financialId)"
+  bearer_injection: "pisp/ paths are excluded from the PSU-bearer interceptor — each call supplies its own token"
+  note: "Reads are GETs: no x-jws-signature and no x-idempotency-key."
+
+api:
+  - id: get_payment_receipt
+    description: >
+      Dispatcher — PaymentStatusRepositoryImpl reads the ConsentType from the local payment_history row
+      and calls Pisp.readReceipt(token, paymentId, type), which hits exactly one of the six GETs below.
+      No row / unknown type → NetworkResult.Error (PaymentNotFound), never a guessed endpoint.
+    method: GET
+    path: "/v4.0/pisp/{product}/{PaymentId}"
+    params:
+      paymentId: { type: String, required: true, source: nav_params }
+    response: PaymentReceipt
+    errors:
+      401: "TokenExpired"
+      403: "ConsentRevoked"
+      404: "PaymentNotFound"
+      other: "NetworkError"
+    cache: null
+
+  - id: get_domestic_payment
+    method: GET
+    path: "/v4.0/pisp/domestic-payments/{DomesticPaymentId}"
+    when: "ConsentType.DomesticSinglePayment"
+    response: "DomesticPaymentResponse → PaymentReceipt"
+  - id: get_international_payment
+    method: GET
+    path: "/v4.0/pisp/international-payments/{InternationalPaymentId}"
+    when: "ConsentType.InternationalSinglePayment"
+    response: "InternationalPaymentResponse → PaymentReceipt"
+  - id: get_domestic_scheduled_payment
+    method: GET
+    path: "/v4.0/pisp/domestic-scheduled-payments/{DomesticScheduledPaymentId}"
+    when: "ConsentType.DomesticScheduledPayment"
+    response: "DomesticScheduledPaymentResponse → PaymentReceipt (scheduledForAt from RequestedExecutionDateTime)"
+  - id: get_international_scheduled_payment
+    method: GET
+    path: "/v4.0/pisp/international-scheduled-payments/{InternationalScheduledPaymentId}"
+    when: "ConsentType.InternationalScheduledPayment"
+    response: "InternationalScheduledPaymentResponse → PaymentReceipt"
+  - id: get_domestic_standing_order
+    method: GET
+    path: "/v4.0/pisp/domestic-standing-orders/{DomesticStandingOrderId}"
+    when: "ConsentType.DomesticStandingOrder"
+    response: "DomesticStandingOrderResponse → PaymentReceipt (frequency, finalPaymentDateTime, recurringAmountLabel)"
+  - id: get_international_standing_order
+    method: GET
+    path: "/v4.0/pisp/international-standing-orders/{InternationalStandingOrderId}"
+    when: "ConsentType.InternationalStandingOrder"
+    response: "InternationalStandingOrderResponse → PaymentReceipt"
+
+  - id: post_token_client_credentials
+    method: POST
+    path: "/v1.1/oauth2/token"
+    description: "grant_type=client_credentials, scope=payments, client_assertion (private_key_jwt) — minted before each receipt read."
+    response: TokenResponse
+
+local_reads:
+  - { id: history_stage_timestamps, source: "PaymentHistoryRepository.stageTimestampsOf(paymentId)", table: payment_history }
+  - { id: history_consent_type, source: "PaymentHistoryRepository.consentTypeOf(paymentId)", table: payment_history }
+  - { id: history_parties, source: "PaymentHistoryRepository.partiesOf(paymentId)", table: payment_history }

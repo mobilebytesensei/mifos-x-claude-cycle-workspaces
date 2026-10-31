@@ -1,0 +1,67 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: product
+_source: source_analysis
+
+entry_points:
+  - type: push
+    source: account-detail
+    route: "ProductRoute(accountId)"
+    description: "AccountDetail Explore chip 'Product' → AuthenticatedNavHost navigateFromChip(AccountDetailChip.Product, accountId)."
+inbound_routes:
+  - { from: account-detail, type: push, params: { accountId: String } }
+outbound_routes:
+  - { to: account-detail, type: pop, trigger: "top-bar back arrow (KptScaffold onNavigationIconClick → popBackStack)" }
+
+navigates_to:
+  - account-detail
+
+transitions:
+  - { from: loading, to: content, on: "getProduct Success with non-null ProductTerms" }
+  - { from: loading, to: empty, on: "getProduct Success(null) OR NetworkError.Client.NotFound (404)" }
+  - { from: loading, to: error, on: "NetworkError.Client.Unauthorized | Forbidden | any other failure" }
+  - { from: error, to: loading, on: "RetryLoad" }
+
+flow_logic:
+  on_load:
+    - action: ProductLoad
+      trigger: "ProductViewModel init { trySendAction(ProductLoad) }"
+      steps:
+        - transform_state: { uiState: Loading }
+        - api: get_account_product
+          params: { accountId: "{state.accountId}" }
+          on_success:
+            - if: "data == null"
+              then: { transform_state: { uiState: Empty } }
+            - else:
+                map: "ProductTerms → ProductUiModel (formatMoney(monthlyMaximumCharge, GBP); isFeeFree = charge.toDouble() == 0.0)"
+                transform_state: { uiState: "Content(product)" }
+          on_error:
+            - if: "error is NetworkError.Client.NotFound"
+              then: { transform_state: { uiState: Empty } }
+            - else: { transform_state: { uiState: "Error(classifyProductError(error))" } }
+  on_retry:
+    - action: RetryLoad
+      same_as: on_load
+  on_back:
+    - navigate: account-detail
+      type: pop
+
+error_handling:
+  classifier: classifyProductError
+  mapping:
+    - { error: "NetworkError.Client.Unauthorized (401)", kind: TokenExpired, ui: "error state + Retry", message_key: feature_product_error_session_expired }
+    - { error: "NetworkError.Client.Forbidden (403)", kind: ConsentScope, ui: "error state + Retry", message_key: feature_product_error_consent_denied }
+    - { error: "NetworkError.Client.NotFound (404)", kind: null, ui: "empty state (not an error)" }
+    - { error: "other / NetworkError.Network", kind: Network, ui: "error state + Retry", message_key: feature_product_error_network }
+  token_refresh: "PSU bearer auto-attached by the Ktor Auth plugin; refresh-on-401 happens in the client before the 401 reaches this screen (expired-psu-token flow)."
+
+journey_ids: [view-accounts]
+
+dependencies:
+  repositories:
+    - name: ProductRepository
+      methods:
+        - "suspend getProduct(accountId: String): NetworkResult<ProductTerms?, NetworkError>"
+  network:
+    - "Aisp.getProduct(accountId) → GET v4.0/aisp/accounts/{accountId}/product → ProductResponse"

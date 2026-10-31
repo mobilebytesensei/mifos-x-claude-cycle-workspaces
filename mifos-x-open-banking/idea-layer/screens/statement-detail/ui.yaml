@@ -1,0 +1,322 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: statement-detail
+screen_id: statement-detail
+name: "Statement Detail"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/statement-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/statementdetail/StatementDetailScreen.kt
+  - feature/statement-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/statementdetail/StatementDetailContent.kt
+  - feature/statement-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/statementdetail/StatementDetailEmpty.kt
+  - feature/statement-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/statementdetail/StatementDetailDestination.kt
+  - feature/statement-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/statementdetail/ui/StatementDetailState.kt
+  - feature/statement-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/statementdetail/ui/StatementDetailViewModel.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/StatementDetailRepository.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/StatementFileRepository.kt
+requirement_refs: [FR-016, FR-018, FR-040]
+archetype: detail_screen
+states: [loading, content, empty, error, downloading]
+initial_state: loading
+feature_profile:
+  combo_id: read_detail
+  facets: [content, offline]
+  archetype: screen-content
+  store_archetype: NETWORK_WITH_CACHE   # two Store5 streams keyed "{accountId}|{statementId}"
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default        # source-derived best effort; /idea-feature-enrich STEP 5.PROFILE re-derives
+
+route: "StatementDetailRoute(accountId, statementId)"
+entry_points:
+  - source: statements
+    trigger: "Statement row tap → onNavigateToStatementDetail(statementId, accountId)"
+    params: { accountId: String, statementId: String }
+nav_params:
+  accountId: { type: String, required: true, source: "SavedStateHandle[accountId]" }
+  statementId: { type: String, required: true, source: "SavedStateHandle[statementId]" }
+
+business_logic:
+  kind: composite
+  description: >-
+    Combines two Store5 streams (statement metadata + statement transactions, both keyed
+    "{accountId}|{statementId}") via combineScreenStates. Metadata maps to a header (reference, period
+    range "d Mon YYYY – d Mon YYYY", type, created) and Balances / Fees / Interest line sections with
+    Credit/Debit/Neutral amount colouring; transactions map to signed (+/-) rows. Empty transaction list →
+    Empty(statement) which still shows header + sections + download. Download PDF fetches the statement file
+    and delivers it through the platform StatementFileHandler, emitting DownloadSucceeded / DownloadFailed.
+
+screens:
+  - id: statement-detail-screen
+    title: "{{statement.reference}}"  # i18n: skip — falls back to {strings.feature_statement_detail_screen_title} when blank or not loaded
+    type: detail
+    archetype: detail_screen
+    states: [loading, content, empty, error, downloading]
+    description: >-
+      KptScaffold (back + SnackbarHost) whose title is the statement reference once loaded. LazyColumn:
+      header card, Balances section, optional Fees and Interest sections (omitted when empty),
+      Transactions header + tappable transaction rows, and a full-width outlined "Download PDF" button
+      with a linear progress bar beneath while downloading.
+
+state_model:
+  StatementDetailViewModel:
+    base: "BaseViewModel<StatementDetailState, StatementDetailEvent, StatementDetailAction>"
+    state:
+      name: StatementDetailState
+      fields:
+        accountId: { type: String, default: '""', source: "SavedStateHandle[accountId]" }
+        statementId: { type: String, default: '""', source: "SavedStateHandle[statementId]" }
+        uiState: { type: StatementDetailUiState, default: StatementDetailUiState.Loading }
+        downloadState: { type: DownloadState, default: DownloadState.Idle, values: [Idle, Downloading] }
+    ui_state:
+      name: StatementDetailUiState
+      members:
+        - { name: Loading }
+        - { name: Content, params: { statement: StatementDetailUiModel, transactions: "List<StatementTxnRowUiModel>" } }
+        - { name: Empty, params: { statement: StatementDetailUiModel } }
+        - { name: Error, params: { code: StatementDetailErrorCode } }
+    ui_models:
+      StatementDetailUiModel:
+        reference: String
+        periodLabel: String
+        type: String
+        createdDateLabel: String
+        balances: "List<StatementLineUiModel>"
+        fees: "List<StatementLineUiModel>"
+        interest: "List<StatementLineUiModel>"
+      StatementLineUiModel: { label: String, amountFormatted: String, color: "StatementAmountColor{Credit,Debit,Neutral}" }
+      StatementTxnRowUiModel: { transactionId: String, accountId: String, dateLabel: String, info: String, amountFormatted: String, isCredit: Boolean }
+    errors:
+      name: StatementDetailErrorCode
+      types:
+        - { type: SessionExpired, source: "401 / ScreenState.Unauthenticated", retry: true, message_key: feature_statement_detail_error_session_expired }
+        - { type: ConsentMissingReadStatements, source: "403", retry: true, message_key: feature_statement_detail_error_consent_missing }
+        - { type: StatementNotFound, source: "404", retry: true, message_key: feature_statement_detail_error_statement_not_found }
+        - { type: StatementFileNotFound, source: "404 on file download (event reason only)", retry: n/a, message_key: feature_statement_detail_error_file_not_found }
+        - { type: NetworkError, source: "NetworkError.Network / NoNetwork / anything else", retry: true, message_key: feature_statement_detail_error_network }
+    events:
+      name: StatementDetailEvent
+      members:
+        - { name: DownloadSucceeded, ui: "snackbar feature_statement_detail_download_success" }
+        - { name: DownloadFailed, params: { reason: String }, ui: "snackbar feature_statement_detail_download_error (reason ignored by UI)" }
+    actions:
+      name: StatementDetailAction
+      members:
+        - { name: RetryLoad, trigger: "Tap Retry → refresh() both streams" }
+        - { name: DownloadPdf, trigger: "Tap Download PDF button" }
+    di:
+      - SavedStateHandle
+      - StatementDetailRepository
+      - StatementFileRepository
+      - StatementFileHandler
+
+components:
+  - id: top_bar
+    type: top-bar
+    host: KptScaffold
+    title: "{{statement.reference ?: strings.feature_statement_detail_screen_title}}"  # i18n: skip — bank payload with i18n fallback
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      target: statements
+      action_contract:
+        effect: navigate
+        description: "KptScaffold onNavigationIconClick invokes onBack, wired by the authenticated nav host to navController.popBackStack(), returning to the statements list."
+
+  - id: loading_indicator
+    type: progress-indicator
+    impl: MifosProgressIndicator
+
+  - id: header_card
+    type: card
+    test_tag: "statementDetail:headerCard"
+    a11y: "{strings.feature_statement_detail_header_card_a11y}"
+    content:
+      - { id: reference_text, type: text, value: "{{statement.reference}}", style: { text_style: labelMedium, color: secondary } }  # i18n: skip — bank payload
+      - { id: period_text, type: text, value: "{{statement.periodLabel}}", style: { text_style: titleMedium, color: onSurface } }  # i18n: skip — formatted dates
+      - { id: type_text, type: text, value: "{{statement.type}}", style: { text_style: bodySmall, color: onSurfaceVariant } }  # i18n: skip — bank payload
+      - { id: created_text, type: text, value: "{strings.feature_statement_detail_created}", style: { text_style: labelSmall, color: onSurfaceVariant } }
+
+  - id: balances_section
+    type: list-section
+    test_tag: "statementDetail:balancesSection"
+    header: "{strings.feature_statement_detail_section_balances}"
+    a11y: "{strings.feature_statement_detail_balances_list_a11y}"
+    item: { id: balance_line, type: term-row, label: "{{line.label}}", trailing: "{{line.amountFormatted}}", trailing_color: "Credit→tertiary · Debit→error · Neutral→onSurface", a11y: "{strings.feature_statement_detail_line_a11y}" }  # i18n: skip — bank payload
+
+  - id: fees_section
+    type: list-section
+    visible: "{{statement.fees.isNotEmpty()}}"
+    test_tag: "statementDetail:feesSection"
+    header: "{strings.feature_statement_detail_section_fees}"
+    a11y: "{strings.feature_statement_detail_fees_list_a11y}"
+    item: { id: fee_line, type: term-row, label: "{{line.label}}", trailing: "{{line.amountFormatted}}", trailing_color: Neutral }  # i18n: skip — bank payload
+
+  - id: interest_section
+    type: list-section
+    visible: "{{statement.interest.isNotEmpty()}}"
+    test_tag: "statementDetail:interestSection"
+    header: "{strings.feature_statement_detail_section_interest}"
+    a11y: "{strings.feature_statement_detail_interest_list_a11y}"
+    item: { id: interest_line, type: term-row, label: "{{line.label}}", trailing: "{{line.amountFormatted}}", trailing_color: "Credit|Debit" }  # i18n: skip — bank payload
+
+  - id: transactions_section
+    type: list-section
+    test_tag: "statementDetail:transactionsSection"
+    header: "{strings.feature_statement_detail_section_transactions}"
+    a11y: "{strings.feature_statement_detail_transactions_list_a11y}"
+    item:
+      id: txn_row
+      type: row
+      test_tag: "statementDetail_txn_{transactionId}"
+      a11y: "{strings.feature_statement_detail_transaction_row_a11y}"
+      content:
+        - { id: txn_info, type: text, value: "{{row.info}}" }  # i18n: skip — bank payload
+        - { id: txn_date, type: text, value: "{{row.dateLabel}}" }  # i18n: skip — formatted date
+        - { id: txn_amount, type: text, value: "{{row.amountFormatted}}", color: "{{row.isCredit ? tertiary : error}}" }  # i18n: skip — formatted money
+      on_click:
+        action: onRowClick
+        target: transaction-detail
+        params: { transactionId: "{row.transactionId}", accountId: "{row.accountId}" }
+        action_contract:
+          effect: navigate
+          description: "Row clickable invokes onNavigateToTransactionDetail(transactionId, accountId); the nav host pushes TransactionDetailRoute(transactionId, accountId)."
+
+  - id: empty_transactions
+    type: empty-state
+    test_tag: "statementDetail:emptyTransactions"
+    a11y: "{strings.feature_statement_detail_empty_txns_a11y}"
+    icon: { asset: empty_receipt_icon }
+    title: { value: "{strings.feature_statement_detail_empty_txns_title}", test_tag: "statementDetail:emptyTransactionsTitle" }
+    body: { value: "{strings.feature_statement_detail_empty_txns_body}", test_tag: "statementDetail:emptyTransactionsBody" }
+
+  - id: download_section
+    type: column
+    content:
+      - id: download_button
+        type: button
+        variant: outlined
+        full_width: true
+        enabled: "{{downloadState != Downloading}}"
+        test_tag: "statementDetail:downloadButton"
+        icon: { asset: download_icon }
+        label: "{strings.feature_statement_detail_action_download_pdf}"
+        a11y: "{strings.feature_statement_detail_download_pdf_a11y}"
+        on_click:
+          action: DownloadPdf
+          handler: "StatementDetailViewModel.download()"
+          action_contract:
+            effect: persist_file
+            library_refs: [filekit-core, ktor]
+            writes_to: "platform file statement-{statementId}.pdf via StatementFileHandler.deliver; StatementDetailState.downloadState"
+            description: "Sets downloadState=Downloading, GETs /statements/{id}/file and passes bytes to StatementFileHandler.deliver as statement-{id}.pdf, then emits DownloadSucceeded; on failure emits DownloadFailed(StatementFileNotFound|NetworkError); finally resets downloadState=Idle."
+      - id: download_progress
+        type: linear-progress
+        visible: "{{downloadState == Downloading}}"
+        test_tag: "statementDetail:downloadProgress"
+        a11y: "{strings.feature_statement_detail_downloading}"
+
+  - id: error_state
+    type: error-state
+    impl: "MifosErrorComponent(isRetryEnabled = true)"
+    message: "{{code.bodyResource()}}"   # i18n: skip — resolves to one of the error message_keys
+    on_retry:
+      action: RetryLoad
+      handler: "statementStream.refresh(); transactionsStream.refresh()"
+      action_contract:
+        effect: call_api
+        library_refs: [ktor]
+        writes_to: "StatementDetailState.uiState"
+        description: "Refreshes both Store5 streams, re-fetching GET statements/{StatementId} and GET statements/{StatementId}/transactions; combineScreenStates re-emits into uiState as Content, Empty or Error."
+
+  - id: snackbar_host
+    type: snackbar
+    messages: ["{strings.feature_statement_detail_download_success}", "{strings.feature_statement_detail_download_error}"]
+
+state_renders:
+  loading: { components: [top_bar, loading_indicator], description: "Either stream still Loading (also ScreenState.Empty maps to Loading)." }
+  content: { components: [top_bar, header_card, balances_section, fees_section, interest_section, transactions_section, download_section, snackbar_host], description: "test_tag statementDetail:contentList." }
+  empty: { components: [top_bar, header_card, balances_section, fees_section, interest_section, empty_transactions, download_section, snackbar_host], description: "No transactions in the period — balances still apply; test_tag statementDetail:emptyList." }
+  error: { components: [top_bar, error_state], description: "Error(code) with Retry." }
+  downloading: { components: [top_bar, header_card, balances_section, transactions_section, download_section, snackbar_host], description: "Overlay on content/empty — download button disabled, linear progress visible." }
+
+visual_assets:
+  - id: download_icon
+    kind: icon
+    role: button-leading-icon
+    intent: "Material Icons.Filled.FileDownload inside the outlined Download PDF button."
+    produced_by: design-system
+    states: [content, empty, downloading]
+    consistency: none
+    source: "Icons.Filled.FileDownload"
+  - id: empty_receipt_icon
+    kind: icon
+    role: empty-state-icon
+    intent: "Material Icons.AutoMirrored.Filled.ReceiptLong signalling a statement period with no transactions."
+    produced_by: design-system
+    states: [empty]
+    consistency: none
+    source: "Icons.AutoMirrored.Filled.ReceiptLong"
+  - id: error_icon
+    kind: icon
+    role: error-state-icon
+    intent: "Shared MifosErrorComponent glyph shown with the statement load failure message."
+    produced_by: design-system
+    states: [error]
+    consistency: none
+    source: "core/ui MifosErrorComponent default icon"
+
+known_gaps:
+  - id: KG-STMTDETAIL-1
+    severity: medium
+    description: "DownloadSucceeded ('Statement PDF saved') fires even when nothing was saved — the web NoOpStatementFileHandler and a cancelled FileKit save dialog both return normally."
+  - id: KG-STMTDETAIL-2
+    severity: low
+    description: "DownloadFailed.reason (StatementFileNotFound vs NetworkError) is discarded by the screen — the defined feature_statement_detail_error_file_not_found string is never shown; every failure shows the generic download_error snackbar."
+  - id: KG-STMTDETAIL-3
+    severity: low
+    description: "ScreenState.Empty from either stream maps to Loading, so an empty metadata response spins indefinitely instead of rendering an empty/error state."
+  - id: KG-STMTDETAIL-4
+    severity: low
+    description: "File always named .pdf / application/pdf although Accept also allows text/csv."
+  - id: KG-STMTDETAIL-5
+    severity: medium
+    description: "SessionExpired / ConsentMissingReadStatements offer only Retry — no route to LoginRenew or Consents (FR-040: 403 not retriable)."
+  - id: KG-STMTDETAIL-6
+    severity: low
+    description: "Archetype detail_screen default detail_hero is not inherited — source renders no hero imagery."
+
+i18n:
+  en:
+    feature_statement_detail_screen_title: "Statement"
+    feature_statement_detail_navigate_back: "Navigate back to statements list"
+    feature_statement_detail_loading: "Loading statement"
+    feature_statement_detail_header_card_a11y: "Statement details"
+    feature_statement_detail_created: "Created %1$s"
+    feature_statement_detail_section_balances: "Balances"
+    feature_statement_detail_balances_list_a11y: "Statement balances"
+    feature_statement_detail_section_fees: "Fees"
+    feature_statement_detail_fees_list_a11y: "Statement fees"
+    feature_statement_detail_section_interest: "Interest"
+    feature_statement_detail_interest_list_a11y: "Statement interest"
+    feature_statement_detail_section_transactions: "Transactions"
+    feature_statement_detail_transactions_list_a11y: "Transactions in this statement period"
+    feature_statement_detail_line_a11y: "%1$s: %2$s"
+    feature_statement_detail_transaction_row_a11y: "%1$s, %2$s, on %3$s"
+    feature_statement_detail_empty_txns_title: "No transactions"
+    feature_statement_detail_empty_txns_body: "There were no transactions in this statement period. The balances above still apply."
+    feature_statement_detail_empty_txns_a11y: "No transactions in this statement period"
+    feature_statement_detail_action_download_pdf: "Download PDF"
+    feature_statement_detail_download_pdf_a11y: "Download statement as PDF"
+    feature_statement_detail_downloading: "Downloading statement PDF"
+    feature_statement_detail_download_success: "Statement PDF saved"
+    feature_statement_detail_download_error: "Couldn’t download the statement. Try again."
+    feature_statement_detail_error_title: "Could not load statement"
+    feature_statement_detail_error_a11y: "Could not load statement"
+    feature_statement_detail_error_statement_not_found: "This statement could not be found."
+    feature_statement_detail_error_consent_missing: "Account access consent does not cover statements. Re-authorise in Consents."
+    feature_statement_detail_error_session_expired: "Session expired. Please re-authenticate."
+    feature_statement_detail_error_file_not_found: "The statement file is not available yet."
+    feature_statement_detail_error_network: "No network connection. Check your connection and retry."
+    feature_statement_detail_action_retry: "Retry"
+    feature_statement_detail_retry_a11y: "Retry loading statement"

@@ -1,0 +1,102 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: consent-list
+_source: source_analysis
+flow_ref: manage-consent
+
+navigates_to:
+  - consent-detail     # card tap → ConsentDetailRoute(consentId)
+  - login              # Connect HSBC / Sign in again → LoginRenewRoute (login feature)
+
+inbound_routes:
+  - from: settings
+    type: push
+    via: "onNavigateToConsents → navController.navigate(ConsentListRoute)"
+  - from: consent-detail
+    type: pop
+    via: "back (popBackStack)"
+
+transitions:
+  - id: load
+    from: loading
+    trigger: "screen opened"
+    to: [content, empty, error, error_auth]
+    decided_by: "session.consentId() == null → empty; else ScreenState from consentStream"
+  - id: retry
+    from: error
+    trigger: "RetryLoad (Retry button)"
+    to: loading
+    side_effects: ["stream?.refresh()"]
+  - id: open_detail
+    from: content
+    trigger: "tap consent card"
+    to: consent-detail
+    type: push
+  - id: connect
+    from: empty
+    trigger: "Connect HSBC"
+    to: login
+    type: push
+  - id: reauth
+    from: error_auth
+    trigger: "Sign in again"
+    to: login
+    type: push
+
+flow_logic:
+  on_load:
+    - check: "session.consentId()"
+      if_null:
+        - transform_state: { uiState: Empty }
+        - note: "no network call — nothing is connected on this device"
+      if_present:
+        - action: subscribe_stream
+          api: get_account_access_consent
+          via: "ConsentDetailRepository.consentStream(consentId, viewModelScope).state"
+          map:
+            "ScreenState.Loading": "uiState = Loading"
+            "ScreenState.Content": "uiState = Content(active = [card], showReconfirmBanner = card.isNearExpiry)"
+            "ScreenState.Empty": "uiState = Empty"
+            "ScreenState.Error": "classifyConsentListError(error) → Error(kind) | null → ErrorAuth"
+            "ScreenState.NoNetwork": "uiState = Error(NetworkError)"
+            "ScreenState.Unauthenticated": "uiState = ErrorAuth"
+  compute_derived_state:
+    - daysUntilExpiry: "max(0, (Instant.parse(expirationDateTime) - Clock.System.now()).inWholeDays); unparseable → 0"
+    - isNearExpiry: "daysUntilExpiry <= 14"
+    - connectedDate: "formatConsentDate(creationDateTime) → 'd Mon yyyy' (UTC); raw string if unparseable"
+    - permissionCount: "permissions.size"
+  on_card_click:
+    - navigate: consent-detail
+      params: { consentId: "{card.consentId}" }
+  on_connect_bank:
+    - navigate: login
+      route: LoginRenewRoute
+  on_reauthenticate:
+    - navigate: login
+      route: LoginRenewRoute
+  on_retry:
+    - action: RetryLoad
+      effect: "stream?.refresh()"
+  on_back:
+    - navigate: back
+
+error_handling:
+  NetworkError: { ui: error_state, body: feature_consent_list_error_network, recovery: RetryLoad }
+  ServerError: { ui: error_state, body: feature_consent_list_error_server, recovery: RetryLoad }
+  Unauthorized_401: { ui: auth_error_state, recovery: "navigate login (LoginRenewRoute)" }
+
+journey_ids: [manage-consent]
+
+dependencies:
+  repositories:
+    - name: ConsentDetailRepository
+      methods:
+        - "consentStream(consentId: String, scope: CoroutineScope): ScreenDataStream<ConsentSummary>"
+    - name: ConsentSession
+      methods:
+        - "consentId(): String?"
+  stores:
+    - "ConsentStores.consentDetailStore(aisp, oauth) — StoreFactory.createMemoryStore, key = ConsentId, cacheKey 'consent:detail:{id}'"
+  services:
+    - NetworkMonitor
+    - FetchedAtRepository

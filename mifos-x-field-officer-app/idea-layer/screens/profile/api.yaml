@@ -1,0 +1,79 @@
+# profile — API contract. AUTHORED via /idea-plan-add 2026-10-27; extended by /idea-api-extend the same day
+# after probing every path live on the gateway (fieldofficer @ apis.mifos.community, tenant mifos-bank-1,
+# Fineract 1.17.0-SNAPSHOT). The password probes sent MISMATCHED pairs, so the server validated and
+# refused them and the password never changed (re-sign-in with the old password: 200).
+
+schema_version: "3.1"
+feature: profile
+
+endpoints:
+  - id: get_user
+    method: GET
+    path: "users/{userId}"
+    requires_auth: true
+    requires_permission: [READ_USER]
+    response: { type: AppUser, dto: dtos/AppUser.yaml, fields_used: [id, username, firstname, lastname, email, officeId, officeName, "staff.id", "staff.displayName", "selectedRoles[].name"] }
+    reuse: "core/data DashboardRepository.userStream(userId) — the same store and key Home reads; not a second call"
+    verified: "200 2026-10-27 — fieldofficer: IRVING ZEPEDA, CENTRAL, staff null, selectedRoles [OFICIAL DE CAMPO]"
+
+  - id: get_staff
+    method: GET
+    path: "staff/{staffId}"
+    requires_auth: true
+    requires_permission: [READ_STAFF]
+    response: { type: Staff, fields_used: [id, displayName, isLoanOfficer, officeName] }
+    when: "users/{userId}.staff present"
+    verified: "not exercised — fieldofficer has no staff link; on 403 the chip reads 'Staff'"
+
+  - id: change_password
+    method: POST
+    path: "users/{userId}/pwd"
+    requires_auth: true
+    requires_permission: []
+    request: { dto: dtos/ChangePasswordRequest.yaml, fields: [password, repeatPassword] }
+    response: { type: CommandProcessingResult, fields_used: [resourceId], note: "success body not measured — no real change was made" }
+    verified: >-
+      400 2026-10-27 — the path routes and validates for fieldofficer (a validation error, not 403): the password policy
+      and `repeatPassword is not equal to password` come back as errors[].defaultUserMessage.
+    fallback:
+      method: PUT
+      path: "users/{userId}"
+      request: { password: string, repeatPassword: string }
+      requires_permission: [UPDATE_USER]
+      verified: "400 2026-10-27 — also routes; kept as fallback only, it is the admin user-edit path"
+    errors:
+      - { status: 400, source: "errors[].defaultUserMessage", shown: "under the fields, each message on its own line" }
+      - { status: 403, source: defaultUserMessage, shown: "under the fields" }
+
+  - id: reauthenticate
+    method: POST
+    path: "authentication"
+    requires_auth: false
+    request: { dto: dtos/PostAuthenticationRequest.yaml, username: "session.username", password: "the new password" }
+    response: { type: PostAuthenticationResponse, dto: dtos/PostAuthenticationResponse.yaml, fields_used: [base64EncodedAuthenticationKey, userId, officeId, officeName, roles, permissions, shouldRenewPassword] }
+    when: "after change_password succeeds"
+    reuse: "core/data AuthCommandRepository sign-in"
+    note: "replaces the stored session key; on failure the app signs out keeping data"
+
+password_policy:
+  source: "the server's own message (measured above) — the app does not hard-code the rule"
+  hint: "{strings.screens.profile.password_hint}"
+  hint_note: "a static hint under the field; the server's message stays authoritative when it differs"
+
+# ──────────────── LOCAL READS ────────────────
+reads:
+  - id: session
+    source: "ProjectPreferencesRepository.fineractUser"
+    fields: [userId, username, officeId, officeName, roles, permissions]
+    note: "written at sign-in; renders immediately and offline"
+  - id: server
+    source: "ServerConfigRepository.serverConfigStream + ServerInstancesStore (live instance)"
+    fields: [instanceName, instanceUrl, tenant]
+
+# ──────────────── LOCAL WRITES ────────────────
+local_writes:
+  - id: session_key
+    target: "ProjectPreferencesRepository — fineractUser.base64EncodedAuthenticationKey + password"
+    when: "reauthenticate succeeds"
+  - id: sign_out
+    target: "feature/settings SignOutViewModel — clears the session; 'clear data' also wipes Room caches and drafts"

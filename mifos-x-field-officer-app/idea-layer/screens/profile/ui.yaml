@@ -1,0 +1,281 @@
+# profile — UI contract. AUTHORED via /idea-plan-add 2026-10-27 (--rebind of the `discovered` plan row);
+# docs.yaml#decisions carries the why.
+
+schema_version: "3.1"
+screen_id: profile
+name: Profile
+status: enriched
+archetype: detail_screen      # templates/prototype-render ARCHETYPES id — app bar + identity hero + sections
+
+shell:                         # opened from the Home avatar — owns the back stack, no tab bar
+  bottom_navigation_visible: false
+  top_app_bar_visible: true
+  fab_visible: false
+  drawer_accessible: false
+  top_app_bar:
+    title_source: screen
+    title: "{strings.screens.profile.title}"
+    leading: back
+    trailing_actions: []
+
+business_logic:                # STEP 5.AUTHOR-LOGIC 2026-10-27
+  kind: composite
+  processing_kind: on_demand
+  library_refs: []
+  external_library_refs: [store5, ktor, multiplatform-settings]
+  required_modules: [core/data, core/datastore, core/model, core/network, core/store, feature/profile, feature/settings]
+  required_modules_hash: "72b0133b800cf8fc9b8e2b7b443f5f52438f8bd6d6859cd63e65f879a81e910a"
+  description: "Read-mostly account surface: it composes the session saved at sign-in (renders at once and offline) with the cached GET users/{id} read Home already uses, and derives the scope label with Home's rule. Its one write is a self password change, validated locally for a match, sent to Fineract, and followed by a re-sign-in that replaces the stored session key; sign-out delegates to the Settings flow."
+  description_hash: "c28606c769e08ae6476bac7d5cd0dd55ae3dcaf9bc344c98bf008207a40ed64e"
+  description_author: "claude-via-idea-feature-enrich"
+  description_authored_at: "2026-10-27T19:00:00Z"
+
+feature_profile:               # STEP 5.PROFILE 2026-10-27 — re-derived from scaffold-default
+  combo_id: content_input_submit   # reads the user (cached) AND submits a validated form (password)
+  facets: [content, input, offline]
+  archetype: screen-content
+  store_archetype: NETWORK_WITH_CACHE   # GET users/{id} through the existing dashboard user store; the
+                                        # password change is a SubmitHandler call, never cached
+  recipe_ref: CORE_STORE.md
+  heal: auto
+  profile_hash: "sha256:6fdb9af32070cf9807725ee6c71bf2a3032bfe4d142788b87fba1b54dad2a881"
+
+# ──────────────── STATES ────────────────
+# The session saved at sign-in renders at once, so `loading` is only the name/staff read in flight.
+states: [loading, content, error, offline, change_password]
+initial_state: loading         # ES3 — api-backed primary read (GET users/{userId})
+
+state_detail:
+  - id: loading
+    components: [identity_card, roles_section, scope_row, session_card, account_actions]
+    note: "username, office and roles from the session render at once; the full name and staff chip shimmer"
+    demo_data: &session_demo
+      initials: "IZ"
+      username: "fieldofficer"
+      officeName: "CENTRAL"
+      roles: ["OFICIAL DE CAMPO"]
+  - id: content
+    components: [identity_card, roles_section, scope_row, session_card, account_actions]
+    demo_data: &content_demo
+      <<: *session_demo
+      fullName: "Irving Zepeda"       # gateway users/32: IRVING ZEPEDA, name-cased
+      email: "oficial.campo@gmail.com"
+      staffName: null                 # fieldofficer has no staff link (measured) — chip hidden
+      scopeLabel: "Office: CENTRAL"   # Home's rule with no staff link
+      instanceName: "Mifos field officer gateway"
+      instanceUrl: "https://apis.mifos.community/1.0/field/v1/"
+      tenant: "mifos-bank-1"
+  - id: error
+    components: [identity_card, name_error_banner, roles_section, scope_row, session_card, account_actions]
+    note: "GET users/{userId} failed with nothing cached — the session identity stays; a banner with the reason and Retry replaces the name"
+    demo_data:
+      <<: *session_demo
+      errorReason: "Server error (500). Try again."
+  - id: offline
+    components: [offline_banner, identity_card, roles_section, scope_row, session_card, account_actions]
+    note: "no network — everything held from sign-in shows; Change password is disabled with a reason"
+    demo_data:
+      <<: *content_demo
+  - id: change_password
+    components: [identity_card, change_password_sheet]
+    note: "bottom sheet over content"
+    demo_data:
+      <<: *content_demo
+
+state_compositions:
+  loading: { shimmer: [identity_card.full_name, identity_card.staff_chip] }
+  error: { insert_after: { identity_card: name_error_banner } }
+  offline: { prepend: offline_banner, disable: [change_password] }
+  change_password: { overlay: change_password_sheet }
+
+visual_assets: []              # identity surface — the avatar is initials on a tinted circle, no generated art
+
+refresh:
+  pull_to_refresh: true        # re-reads GET users/{userId}
+
+# ──────────────── STRINGS ────────────────
+# Every visible label references `{strings.screens.profile.<key>}`; implementation emits them to
+# feature/profile composeResources as feature_profile_<key>.
+
+# ──────────────── COMPONENTS ────────────────
+components:
+  - id: back
+    type: icon_button
+    testTag: profile_back
+    label: "{strings.screens.profile.back}"
+    on_click:
+      action: navigate_back
+      target: home
+      action_contract:
+        effect: navigate
+        library_refs: []
+        description: "Returns to the previous screen, normally Home, without changing anything."
+        action_contract_hash: "6d472ed89f468d572e18818c0d3268bdbfa01a34697cbfec1f65fb220763f138"
+        action_contract_author: "claude-via-idea-plan-add"
+        action_contract_authored_at: "2026-10-27T18:30:00Z"
+
+  - id: offline_banner
+    type: banner
+    testTag: profile_offline_banner
+    states: [offline]
+    text: "{strings.screens.profile.offline_banner}"
+
+  - id: identity_card
+    type: card
+    testTag: profile_identity
+    fields:
+      - { key: avatar, from: "initials(firstname, lastname) else username[0]", note: "same initials and tint as the Home avatar" }
+      - { key: full_name, from: "users/{userId}.firstname + lastname", fallback: "session.username" }
+      - { key: username, from: "session.username", label: "{strings.screens.profile.username}" }
+      - { key: email, from: "users/{userId}.email", label: "{strings.screens.profile.email}", shown_when: "present" }
+      - { key: staff_chip, from: "users/{userId}.staff.displayName", label: "{strings.screens.profile.loan_officer}", shown_when: "staff link present", note: "'Loan officer' when the staff record isLoanOfficer, else 'Staff'" }
+      - { key: office, from: "session.officeName", label: "{strings.screens.profile.office}" }
+
+  - id: name_error_banner
+    type: inline_error
+    testTag: profile_name_error
+    states: [error]
+    text: "{strings.screens.profile.name_error}"
+    reason_from: "serverErrorMessage(throwable)"
+    actions:
+      - id: retry_name
+        type: button
+        label: "{strings.screens.profile.retry}"
+        testTag: profile_retry
+        on_click:
+          action: retry
+          action_contract:
+            effect: call_api
+            library_refs: []
+            external_library_refs: [store5, ktor]
+            description: "Re-reads the signed-in user's name and staff link from Fineract after a failed read; the identity from the session stays on screen meanwhile."
+            action_contract_hash: "cf13c35743d869d3f770b28297349c244d53cfdb99bec93e10312f76d5c87788"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T18:30:00Z"
+
+  - id: roles_section
+    type: section
+    testTag: profile_roles
+    title: "{strings.screens.profile.roles_title}"
+    items_from: "session.roles[].name"
+    item_type: chip
+    empty_copy: "{strings.screens.profile.roles_empty}"
+
+  - id: scope_row
+    type: info_row
+    testTag: profile_scope
+    title: "{strings.screens.profile.scope_title}"
+    value: "{{scopeLabel}}"
+    value_binding: "staff link → {strings.screens.home.scope_my_portfolio}; none → {strings.screens.home.scope_office}"
+    supporting: "{strings.screens.profile.scope_note}"
+
+  - id: session_card
+    type: card
+    testTag: profile_session
+    title: "{strings.screens.profile.session_title}"
+    fields:
+      - { key: instance, from: "liveInstance.name", badge: "{strings.screens.profile.live}", fallback: "the stored config's host" }
+      - { key: url, from: "serverConfig.instanceUrl", label: "{strings.screens.profile.server}" }
+      - { key: tenant, from: "serverConfig.tenant", label: "{strings.screens.profile.tenant}" }
+    actions:
+      - id: open_server_config
+        type: link
+        label: "{strings.screens.profile.server_settings}"
+        testTag: profile_server_settings
+        on_click:
+          action: open_server_config
+          target: serverConfig
+          action_contract:
+            effect: navigate
+            library_refs: []
+            description: "Opens Server config, where the live instance can be inspected or switched; switching while signed in asks for confirmation there."
+            action_contract_hash: "5d03e84b46617633523e55cd6cd74533ee3810547a933add07532eb615e0375a"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T18:30:00Z"
+
+  - id: account_actions
+    type: section
+    testTag: profile_actions
+    items:
+      - id: change_password
+        type: list_item
+        label: "{strings.screens.profile.change_password}"
+        icon: lock_reset
+        testTag: profile_change_password
+        enabled_when: online
+        disabled_reason: "{strings.screens.profile.change_password_offline}"
+        on_click:
+          action: open_change_password
+          action_contract:
+            effect: transform_state
+            library_refs: []
+            description: "Opens the change-password sheet over the profile; nothing is sent until the officer submits two matching passwords."
+            action_contract_hash: "2e0748f9be55dc4b4f0cf0758c91b93db143d272d9ea7999b9c7f2ecac2ddc8b"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T18:30:00Z"
+      - id: sign_out
+        type: list_item
+        label: "{strings.screens.profile.sign_out}"
+        icon: logout
+        tone: destructive
+        testTag: profile_sign_out
+        on_click:
+          action: sign_out
+          action_contract:
+            effect: transform_state      # opens the dialog; its confirm runs the Settings sign-out (session + local data delete)
+            library_refs: []
+            description: "Opens the sign-out confirmation; confirming ends the session through the same flow as Settings, clearing this officer's local data unless they untick it."
+            action_contract_hash: "0aff69401a1b4e9551975fc377c7cee397ed04de3409f81c14edea9aaf573446"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T18:30:00Z"
+        note: "reuses feature/settings SignOutDialog — 'Sign out and clear data' ticked by default"
+
+  - id: change_password_sheet
+    type: bottom_sheet
+    testTag: profile_password_sheet
+    states: [change_password]
+    title: "{strings.screens.profile.change_password}"
+    lead: "{strings.screens.profile.password_lead}"
+    fields:
+      - id: new_password
+        type: password_field
+        label: "{strings.screens.profile.new_password}"
+        testTag: profile_new_password
+        supporting_text: "{strings.screens.profile.password_hint}"
+        validation: { rule: "non-empty; the server's password policy decides the rest (api.yaml#password_policy)" }
+      - id: repeat_password
+        type: password_field
+        label: "{strings.screens.profile.repeat_password}"
+        testTag: profile_repeat_password
+        validation: { rule: "equals new_password", error: "{strings.screens.profile.passwords_differ}" }
+    server_error: "each errors[].defaultUserMessage on its own line under the fields; the old password stays valid"
+    actions:
+      - id: cancel_password
+        type: text_button
+        label: "{strings.screens.profile.cancel}"
+        testTag: profile_password_cancel
+      - id: submit_password
+        type: button
+        label: "{strings.screens.profile.save_password}"
+        testTag: profile_password_save
+        enabled_when: "both fields filled and equal and not submitting"
+        on_click:
+          action: change_password
+          action_contract:
+            effect: call_api
+            library_refs: []
+            external_library_refs: [ktor]
+            description: "Sends the new password for the signed-in user to Fineract, then signs in again with it so the stored session key stays valid; a refusal shows the server's reason on the sheet and keeps the old password."
+            action_contract_hash: "b20daf57bc7dec7639a64b4e18e6e33c5142b0c005f69e43277d0fb8ff37703c"
+            action_contract_author: "claude-via-idea-plan-add"
+            action_contract_authored_at: "2026-10-27T18:30:00Z"
+    success: "sheet closes; snackbar {strings.screens.profile.password_changed}"
+
+  - id: snackbar
+    type: snackbar_host
+    renders: [password_changed]
+
+layout:
+  order: [offline_banner, identity_card, name_error_banner, roles_section, scope_row, session_card, account_actions]
+  phone: "single column; identity card is the hero (64dp avatar, full name headlineSmall)"
+  tablet: "max content width 600dp, centred"

@@ -1,0 +1,494 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: settings
+status: enriched
+_source: source_analysis
+_source_modules: [":feature:settings"]
+_source_paths:
+  - feature/settings/src/commonMain/kotlin/org/mifosx/openbanking/feature/settings/
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/openSourceLicence/
+requirement_refs: [FR-037, FR-038, FR-046]
+
+# ── Primary-screen header (born-default contract; per-screen detail lives in screens[]) ──
+screen_id: settings-screen
+name: Settings
+archetype: settings
+states: [idle, sign_out_confirm, signing_out]
+initial_state: idle
+feature_profile:
+  combo_id: local_settings_form
+  facets: [settings, preferences, remote-text-detail]
+  archetype: preferences-backed
+  store_archetype: PREFERENCES
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default
+components:
+  - { id: settings_screen_root, type: screen, screen_ref: settings-screen, testTag: "settings:content" }
+  - { id: licences_screen_root, type: screen, screen_ref: licences-screen, testTag: "settings:licences:screen" }
+
+route: SettingsRoute            # @Serializable data object — no params
+entry_points:
+  - source: home
+    trigger: "Home avatar / settings affordance → onNavigateToSettings"
+    via: "AuthenticatedNavHostScreen.homeGraph(onNavigateToSettings = { navController.navigate(SettingsRoute) })"
+    params: {}
+nav_params: {}
+
+business_logic:
+  kind: composite
+  description: >
+    Two screens in one module. Settings observes UserDataRepository.observeDarkThemeConfig and writes
+    the chosen DarkThemeConfig back (one write per selection); its other rows are pure navigation
+    callbacks (consents, licences) and an external browser hand-off to the Mifos privacy policy.
+    A final destructive "Sign out" row (FR-046) opens a confirm dialog; confirming moves to
+    signing_out and calls AppLogout.logOut() — forget PSU + payment tokens, clear user data, Store
+    caches, payment history and VRP sessions — then emits SettingsEvent.LoggedOut so the host routes
+    to the auth graph (navigateToAuthGraph(rootNavOptions())). Sign-out is NOT a consent revoke:
+    Manage Consents stays the path for revoking access at the bank.
+    Licences is a list: a "This app" section with the project LICENSE (OpenSourceLicenceRepo, a
+    Store5 store, 24h TTL, source of truth user preferences, surfaced as a ScreenDataStream; a blank
+    licence is Empty and rendered as an inline error with Retry) followed by a "Third-party
+    libraries" section read locally from the build-generated aboutlibraries.json via
+    ThirdPartyLibrariesRepo (aboutlibraries-core) — one row per dependency with name, version and
+    licence, tapping a row with a website opens it in the browser.
+  library_refs: [core-data, core-datastore, store5, aboutlibraries-core]
+
+screens:
+  # ─────────────────────────────────────────────────────────────────────
+  - id: settings-screen
+    name: Settings
+    route: SettingsRoute
+    archetype: settings
+    title: "{strings.feature_settings_screen_title}"
+    description: >
+      KptScaffold with back arrow. Vertically scrolling column (testTag settings:content) with three
+      sections: Appearance (three theme preview cards Light / Dark / System as radio-selectable
+      miniatures), Account (Manage Consents row), About & Legal (Privacy Policy external link,
+      Open Source Licences row) and a last Sign out section (destructive row in the error colour,
+      FR-046). No loading or error state for the list itself — the theme is observed from local
+      preferences and starts at FOLLOW_SYSTEM; the sign-out confirm dialog is the only overlay.
+    states: [idle, sign_out_confirm, signing_out]
+    initial_state: idle
+    state_descriptions:
+      idle: "Always rendered underneath. themeConfig reflects the persisted preference; the matching theme card shows the selected border/badge."
+      sign_out_confirm: "showSignOutDialog = true. AlertDialog over idle: title 'Sign out?', body explains PSU tokens and payment history are removed from this device, buttons Cancel / Sign out (error colour)."
+      signing_out: "isSigningOut = true. Dialog stays up with both buttons disabled and a small progress indicator in place of the confirm label; back is ignored until AppLogout.logOut() returns and LoggedOut is emitted."
+
+    state_model:
+      SettingsViewModel:
+        base: "BaseViewModel<SettingsState, SettingsEvent, SettingsAction>"
+        state:
+          name: SettingsState
+          fields:
+            themeConfig: { type: DarkThemeConfig, default: "DarkThemeConfig.FOLLOW_SYSTEM", values: [FOLLOW_SYSTEM, LIGHT, DARK] }
+            showSignOutDialog: { type: Boolean, default: "false" }
+            isSigningOut: { type: Boolean, default: "false" }
+        events:
+          name: SettingsEvent
+          members:
+            - { name: LoggedOut, trigger: "AppLogout.logOut() completed after ConfirmSignOut" }
+        actions:
+          name: SettingsAction
+          members:
+            - { name: SelectTheme, params: { config: DarkThemeConfig }, trigger: "Tap a theme preview card" }
+            - { name: RequestSignOut, trigger: "Tap the Sign out row", guard: "!isSigningOut" }
+            - { name: DismissSignOut, trigger: "Cancel / dialog dismiss", guard: "!isSigningOut" }
+            - { name: ConfirmSignOut, trigger: "Sign out button in the confirm dialog", guard: "showSignOutDialog && !isSigningOut" }
+        di: [UserDataRepository, AppLogout]
+      screen_callbacks:
+        - { name: onBack, owner: AuthenticatedNavHostScreen, effect: "navController.popBackStack()" }
+        - { name: onNavigateToConsents, owner: AuthenticatedNavHostScreen, effect: "navController.navigate(ConsentListRoute)" }
+        - { name: onNavigateToLicences, owner: AuthenticatedNavHostScreen, effect: "navController.navigate(LicencesRoute)" }
+        - { name: onOpenUrl, owner: AuthenticatedNavHostScreen, effect: "LocalUriHandler.openUri(url)" }
+        - { name: onLoggedOut, owner: AuthenticatedNavHostScreen, effect: "navController.navigateToAuthGraph(rootNavOptions()) — same handler consent-detail uses for its LoggedOut event" }
+
+    components:
+      - id: top_bar
+        type: top-bar
+        title: "{strings.feature_settings_screen_title}"
+        navigation_icon: arrow_back
+        on_navigation_click:
+          action: onBack
+          target: back
+          action_contract:
+            effect: navigate
+            description: "Invokes the onBack callback, which pops SettingsRoute off the authenticated NavHost back stack and returns to Home; no state or network change."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: appearance_section
+        type: section
+        testTag: "settings:section:appearance"
+        label: "{strings.feature_settings_section_appearance}"
+        children:
+          - id: theme_preview_row
+            type: row
+            testTag: "settings:section"
+            description: "ThemePreviewRow — DarkThemeConfig.entries ordered Light(0), Dark(1), System(2) by an exhaustive displayOrder when."
+            children:
+              - id: theme_card
+                type: card
+                role: RadioButton
+                repeat_for: "DarkThemeConfig.entries (LIGHT, DARK, FOLLOW_SYSTEM)"
+                testTag: "settings:themeCard:{config.name}"
+                content_description: "{strings.feature_settings_theme_option_accessibility}"
+                content:
+                  - { id: theme_swatch, type: surface, aspect_ratio: 1.30, description: "Miniature of the app rendered in that theme with an 'Aa' sample; selection border when isSelected" }
+                  - { id: theme_label, type: text, value: "{strings.feature_settings_theme_light | feature_settings_theme_dark | feature_settings_theme_follow_system}" }
+                selected: "{{config == themeConfig}}"
+                on_click:
+                  action: SelectTheme
+                  params: { config: "{config}" }
+                  action_contract:
+                    effect: persist_db
+                    external_library_refs: ["UserDataRepository.setDarkThemeConfig (multiplatform-settings)"]
+                    writes_to: "UserDataRepository.darkThemeConfig"
+                    description: "Launches userDataRepository.setDarkThemeConfig(config) in viewModelScope — one preference write per tap. State is not set optimistically; themeConfig updates when observeDarkThemeConfig re-emits the persisted value."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: account_section
+        type: section
+        testTag: "settings:section:account"
+        label: "{strings.feature_settings_section_account}"
+        children:
+          - id: consents_row
+            type: list_item
+            testTag: "settings:row:consents"
+            leading_icon: Policy
+            headline: "{strings.feature_settings_consents_title}"
+            supporting: "{strings.feature_settings_consents_subtitle}"
+            trailing: { type: icon, icon: KeyboardArrowRight, testTag: "settings:row:consents:chevron", content_description: "{strings.feature_settings_opens_in_app_accessibility}" }
+            on_click:
+              action: onNavigateToConsents
+              target: consent-list
+              action_contract:
+                effect: navigate
+                description: "Invokes onNavigateToConsents, which the authenticated host maps to navController.navigate(ConsentListRoute) — the AIS consent list where consents are viewed, reconfirmed or revoked."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: about_section
+        type: section
+        testTag: "settings:section:about"
+        label: "{strings.feature_settings_section_about}"
+        children:
+          - id: privacy_row
+            type: list_item
+            testTag: "settings:row:privacy"
+            leading_icon: PrivacyTip
+            headline: "{strings.feature_settings_privacy_title}"
+            trailing: { type: icon, icon: OpenInNew, testTag: "settings:row:privacy:externalLink", content_description: "{strings.feature_settings_opens_externally_accessibility}" }
+            on_click:
+              action: onOpenUrl
+              params: { url: "https://mifos.org/privacy-policy/" }
+              external: true
+              external_kind: os-dialer-or-browser
+              action_contract:
+                effect: emit_event
+                external_library_refs: ["androidx.compose.ui.platform.LocalUriHandler"]
+                description: "Calls onOpenUrl(PRIVACY_URL) with the constant https://mifos.org/privacy-policy/; the host opens it through LocalUriHandler.openUri in the system browser. Nothing in app state changes."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: about_divider
+            type: divider
+            color: outlineVariant
+          - id: licences_row
+            type: list_item
+            testTag: "settings:row:licences"
+            leading_icon: Info
+            headline: "{strings.feature_settings_licences_title}"
+            trailing: { type: icon, icon: KeyboardArrowRight, testTag: "settings:row:licences:chevron", content_description: "{strings.feature_settings_opens_in_app_accessibility}" }
+            on_click:
+              action: onNavigateToLicences
+              target: settings
+              target_screen: licences-screen
+              action_contract:
+                effect: navigate
+                description: "Invokes onNavigateToLicences, mapped by the authenticated host to navController.navigate(LicencesRoute) — the in-module Open Source Licences screen."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: sign_out_section
+        type: section
+        testTag: "settings:section:signOut"
+        description: "Last section per the settings archetype destructive_action slot (FR-046)."
+        children:
+          - id: sign_out_row
+            type: list_item
+            variant: destructive
+            testTag: "settings:row:signOut"
+            leading_icon: Logout
+            headline: "{strings.feature_settings_sign_out_title}"
+            supporting: "{strings.feature_settings_sign_out_subtitle}"
+            style: { headline_color: error, icon_tint: error }
+            enabled: "{{!isSigningOut}}"
+            on_click:
+              action: RequestSignOut
+              action_contract:
+                effect: update_state
+                writes_to: "SettingsState.showSignOutDialog"
+                description: "Sets showSignOutDialog = true, moving idle → sign_out_confirm. No token, cache or network change until the user confirms."
+                action_contract_author: "claude-via-idea-feature-enrich"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: sign_out_confirm_dialog
+        type: dialog
+        variant: alert
+        testTag: "settings:signOut:dialog"
+        visible: "{{showSignOutDialog}}"
+        dismiss_on_outside_click: "{{!isSigningOut}}"
+        icon: Logout
+        title: "{strings.feature_settings_sign_out_dialog_title}"
+        body: "{strings.feature_settings_sign_out_dialog_body}"
+        on_dismiss:
+          action: DismissSignOut
+          action_contract:
+            effect: update_state
+            writes_to: "SettingsState.showSignOutDialog"
+            description: "Outside tap / system back while not signing out: sets showSignOutDialog = false and returns to idle. Ignored while isSigningOut."
+            action_contract_author: "claude-via-idea-feature-enrich"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+        children:
+          - id: sign_out_cancel_button
+            type: text-button
+            testTag: "settings:signOut:cancel"
+            label: "{strings.feature_settings_sign_out_cancel}"
+            enabled: "{{!isSigningOut}}"
+            on_click:
+              action: DismissSignOut
+              action_contract:
+                effect: update_state
+                writes_to: "SettingsState.showSignOutDialog"
+                description: "Sets showSignOutDialog = false; the user stays signed in on the Settings screen (sign_out_confirm → idle)."
+                action_contract_author: "claude-via-idea-feature-enrich"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: sign_out_confirm_button
+            type: text-button
+            testTag: "settings:signOut:confirm"
+            label: "{strings.feature_settings_sign_out_confirm}"
+            style: { color: error }
+            enabled: "{{!isSigningOut}}"
+            loading: "{{isSigningOut}}"
+            on_click:
+              action: ConfirmSignOut
+              target: login
+              action_contract:
+                effect: persist_db
+                writes_to: "AppLogout.logOut() — ConsentSession, PaymentAuthSession, UserDataRepository user data, StoreCacheManager, PaymentHistoryDao, VRP sessions"
+                external_library_refs: ["AppLogout.logOut (core/data AppLogoutImpl)"]
+                description: "Sets isSigningOut = true (sign_out_confirm → signing_out), then calls AppLogout.logOut() in viewModelScope: forgets PSU + payment tokens, clears user data, Store caches, payment history and VRP sessions. On return it sends SettingsEvent.LoggedOut; the screen's EventsEffect invokes onLoggedOut → navigateToAuthGraph(rootNavOptions()), landing on the auth graph with the authenticated back stack cleared."
+                action_contract_author: "claude-via-idea-feature-enrich"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  # ─────────────────────────────────────────────────────────────────────
+  - id: licences-screen
+    name: Licences
+    route: LicencesRoute
+    # Re-archetyped detail_screen → index_list (gap-009). The screen is a browsable collection of
+    # licences (project + third-party libraries, per the settings acceptance criterion), not a
+    # single-entity detail with media — so the detail_screen hero floor never applied.
+    archetype: index_list
+    archetype_notes: >
+      index_list (default visual_assets: []) — rows are text-only (library name, version, SPDX
+      licence chip) with Material vector icons; the project LICENSE is a monospace text block. No
+      hero, illustration, thumbnail or logo role in any state, so this is the pure text/list
+      exception of RULE-SCREEN-VISUAL-ASSETS-001 (SCREEN_ARCHETYPES.yaml#pure_form_exception).
+    title: "{strings.feature_settings_licences_screen_title}"
+    description: >
+      KptScaffold with back arrow. Intro line ("MifosXOpenBanking App is an open-source software.")
+      then a LazyColumn (testTag settings:licences:list) with two sections. "This app": the project
+      LICENSE in a monospace, bordered Surface capped at 12 lines with a "Show full licence" toggle —
+      a spinner while it loads, or an inline MifosErrorComponent with Retry if the fetch fails
+      (network vs generic copy chosen by isNetworkError). "Third-party libraries (N)": one row per
+      bundled dependency from aboutlibraries.json — name, version, licence chip(s); rows with a
+      website open it in the browser. The library list is local and renders in every state, so a
+      LICENSE fetch failure never hides the third-party licences.
+    states: [loading, content, error]
+    initial_state: loading
+    state_descriptions:
+      loading: "dialogState = Loading (initial). MifosProgressIndicator in the This app section; intro and the third-party list (local, available immediately) still shown."
+      content: "dialogState = null. LicenceText renders state.licence in FontFamily.Monospace bodySmall; the third-party section lists state.libraries."
+      error: "dialogState = Error(message, isNetworkError). Inline MifosErrorComponent(isNetworkConnected = !isNetworkError, message ?: feature_settings_licences_error, Retry) in the This app section; the third-party list stays visible. Reached on NoNetwork, Error, Unauthenticated and Empty (blank licence)."
+
+    state_model:
+      LicencesViewModel:
+        base: "BaseViewModel<LicencesState, Nothing, LicencesAction>"
+        state:
+          name: LicencesState
+          fields:
+            licence: { type: String, default: '""' }
+            licenceExpanded: { type: Boolean, default: "false" }
+            libraries: { type: "ImmutableList<LibraryUi>", default: "persistentListOf()", note: "LibraryUi(id, name, version?, licences: List<String> SPDX ids/names, website?) — loaded once from ThirdPartyLibrariesRepo" }
+            dialogState: { type: "LicencesState.DialogState?", default: "DialogState.Loading", note: "scoped to the project LICENSE section; null means the licence text is showing" }
+          sealed:
+            DialogState:
+              - { name: Loading }
+              - { name: Error, fields: { message: "String?", isNetworkError: Boolean } }
+        mapping:
+          "ScreenState.Content": "LicencesState(licence = data)"
+          "ScreenState.Loading": "DialogState.Loading"
+          "ScreenState.NoNetwork": "Error(message = null, isNetworkError = true)"
+          "ScreenState.Error": "Error(message = error.message, isNetworkError = false)"
+          "ScreenState.Unauthenticated": "Error(message = null, isNetworkError = false)"
+          "ScreenState.Empty": "Error(message = null, isNetworkError = false) — produced by emptyIfContent { it.isBlank() }"
+        events: { name: "Nothing", members: [] }
+        actions:
+          name: LicencesAction
+          members:
+            - { name: RetryLoad, trigger: "Tap Retry on the error component" }
+            - { name: ToggleLicenceExpanded, trigger: "Tap Show full licence / Show less" }
+        di: [OpenSourceLicenceRepo, ThirdPartyLibrariesRepo]
+      screen_callbacks:
+        - { name: onBack, owner: AuthenticatedNavHostScreen, effect: "navController.popBackStack()" }
+        - { name: onOpenUrl, owner: AuthenticatedNavHostScreen, effect: "LocalUriHandler.openUri(url)" }
+
+    components:
+      - id: licences_top_bar
+        type: top-bar
+        title: "{strings.feature_settings_licences_screen_title}"
+        navigation_icon: arrow_back
+        on_navigation_click:
+          action: onBack
+          target: back
+          action_contract:
+            effect: navigate
+            description: "Invokes onBack, which pops LicencesRoute off the authenticated back stack and returns to the Settings screen."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: licences_intro
+        type: text
+        style: { text_style: titleMedium, color: onSurface }
+        value: "{strings.feature_settings_licences_intro}"
+      - id: licences_list
+        type: lazy_column
+        testTag: "settings:licences:list"
+        description: "Scrolling container for both sections below."
+      - id: project_licence_header
+        type: section-header
+        testTag: "settings:licences:section:app"
+        label: "{strings.feature_settings_licences_section_app}"
+      - id: licence_progress
+        type: progress-indicator
+        visible: "{{dialogState == Loading}}"
+      - id: licence_text
+        type: text-block
+        testTag: "settings:licences:projectLicence"
+        visible: "{{dialogState == null}}"
+        max_lines: "{{licenceExpanded ? null : 12}}"
+        style: { text_style: bodySmall, font_family: Monospace, color: onSurfaceVariant, container: "Surface(shape=medium, border=hairline outlineVariant)" }
+        value: "{{licence}}"  # i18n: skip — remote LICENSE text
+      - id: licence_expand_toggle
+        type: text-button
+        testTag: "settings:licences:projectLicence:toggle"
+        visible: "{{dialogState == null}}"
+        label: "{{licenceExpanded ? strings.feature_settings_licences_show_less : strings.feature_settings_licences_show_full}}"
+        on_click:
+          action: ToggleLicenceExpanded
+          action_contract:
+            effect: update_state
+            writes_to: "LicencesState.licenceExpanded"
+            description: "Flips licenceExpanded; the project LICENSE text switches between a 12-line preview and the full text. No network or persistence."
+            action_contract_author: "claude-via-idea-feature-enrich"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: libraries_header
+        type: section-header
+        testTag: "settings:licences:section:libraries"
+        label: "{strings.feature_settings_licences_section_libraries}"
+        count: "{{libraries.size}}"
+      - id: libraries_empty
+        type: text
+        visible: "{{libraries.isEmpty()}}"
+        style: { text_style: bodyMedium, color: onSurfaceVariant }
+        value: "{strings.feature_settings_licences_libraries_empty}"
+        description: "Only reachable if the build shipped without aboutlibraries.json — a build defect, surfaced rather than hidden."
+      - id: library_row
+        type: list_item
+        repeat_for: "libraries"
+        testTag: "settings:licences:library:{library.id}"
+        headline: "{{library.name}}"  # i18n: skip — dependency metadata
+        supporting: "{{library.version}}"  # i18n: skip — dependency metadata
+        trailing: { type: chip_group, items: "{{library.licences}}", testTag: "settings:licences:library:{library.id}:licence" }  # i18n: skip — SPDX ids
+        content_description: "{strings.feature_settings_licences_library_accessibility}"
+        enabled: "{{library.website != null}}"
+        on_click:
+          action: onOpenUrl
+          params: { url: "{{library.website}}" }
+          external: true
+          external_kind: os-dialer-or-browser
+          action_contract:
+            effect: emit_event
+            external_library_refs: ["androidx.compose.ui.platform.LocalUriHandler"]
+            description: "Calls onOpenUrl(library.website); the host opens the dependency's project page (which carries its licence) in the system browser. Rows without a website are not clickable. No app state changes."
+            action_contract_author: "claude-via-idea-feature-enrich"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: licence_error
+        type: error-state
+        visible: "{{dialogState is Error}}"
+        component: MifosErrorComponent
+        body: "{{dialogState.message ?: strings.feature_settings_licences_error}}"  # i18n: skip — server message binding with localized fallback
+        is_network_connected: "{{!dialogState.isNetworkError}}"
+        on_click:
+          action: RetryLoad
+          action_contract:
+            effect: call_api
+            external_library_refs: ["OpenSourceLicenceRepo.getLicence ScreenDataStream.retry (Store5)", "OpenSourceLicenceAPI (Ktor)"]
+            description: "Calls stream.retry() on the licence ScreenDataStream, re-running the Store5 fetch of the LICENSE file from raw.githubusercontent.com; the stream re-emits Loading then Content or an error state."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+visual_assets: []   # pure text/list exception (RULE-SCREEN-VISUAL-ASSETS-001): settings-screen is the `settings` archetype (default []) — theme swatches are live Compose miniatures, rows use Material vector icons; licences-screen is `index_list` (default []) — text rows + monospace LICENSE, no hero/illustration/logo role in any state (gap-009)
+
+i18n:
+  en:
+    feature_settings_screen_title: "Settings"
+    feature_settings_content_accessibility: "Settings list"
+    feature_settings_section_appearance: "Appearance"
+    feature_settings_section_account: "Account"
+    feature_settings_section_about: "About & Legal"
+    feature_settings_theme_follow_system: "System"
+    feature_settings_theme_light: "Light"
+    feature_settings_theme_dark: "Dark"
+    feature_settings_theme_option_accessibility: "Use %s theme"
+    feature_settings_theme_sample: "Aa"
+    feature_settings_consents_title: "Manage Consents"
+    feature_settings_consents_subtitle: "View, revoke or reconfirm Open Banking consents"
+    feature_settings_privacy_title: "Privacy Policy"
+    feature_settings_licences_title: "Open Source Licences"
+    feature_settings_licences_screen_title: "Open Source Licences"
+    feature_settings_licences_intro: "MifosXOpenBanking App is an open-source software."
+    feature_settings_licences_error: "The licence could not be loaded. Please try again."
+    feature_settings_opens_in_app_accessibility: "Opens in the app"
+    feature_settings_opens_externally_accessibility: "Opens in your browser"
+    feature_settings_sign_out_title: "Sign out"
+    feature_settings_sign_out_subtitle: "Remove your bank session and payment history from this device"
+    feature_settings_sign_out_dialog_title: "Sign out?"
+    feature_settings_sign_out_dialog_body: "Your bank tokens and payment history will be removed from this device. You will need to connect your bank again to continue."
+    feature_settings_sign_out_cancel: "Cancel"
+    feature_settings_sign_out_confirm: "Sign out"
+    feature_settings_licences_section_app: "This app"
+    feature_settings_licences_section_libraries: "Third-party libraries"
+    feature_settings_licences_show_full: "Show full licence"
+    feature_settings_licences_show_less: "Show less"
+    feature_settings_licences_libraries_empty: "No third-party licence information is bundled with this build."
+    feature_settings_licences_library_accessibility: "%1$s, licensed under %2$s"
+
+known_gaps:
+  - id: SET-GAP-1
+    severity: should
+    requirement_ref: FR-046
+    status: specified
+    resolution: "Spec authored 2026-10-21 (sign_out_section + sign_out_confirm_dialog, SettingsEvent.LoggedOut → onLoggedOut). Source still lacks the row until /kmp-implement runs."
+    description: "No sign-out row. Settings has Appearance, Account (consents only) and About sections; the only way to sign out today is revoking the AIS consent from consent-detail (onLoggedOut)."
+  - id: SET-GAP-2
+    severity: could
+    description: "Privacy policy URL is a hard-coded constant (PRIVACY_URL = https://mifos.org/privacy-policy/) in SettingsContent.kt rather than configuration."
+  - id: SET-GAP-3
+    severity: could
+    status: specified
+    resolution: "Spec authored 2026-10-21: Licences re-archetyped to index_list with a Third-party libraries section from aboutlibraries.json (ThirdPartyLibrariesRepo). Source change pending /kmp-implement — the aboutLibraries plugin is applied only to cmp-android today and must export the JSON into commonMain composeResources."
+    description: "Licences shows only the project's own LICENSE file fetched from raw.githubusercontent.com (dev branch); there is no third-party dependency licence list despite the 'Open Source Licences' title."
+  - id: SET-GAP-4
+    severity: could
+    description: "SettingsAction.SelectTheme writes without a guard — tapping the already-selected card still issues a preference write."

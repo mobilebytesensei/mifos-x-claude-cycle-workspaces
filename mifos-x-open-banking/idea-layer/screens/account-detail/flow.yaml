@@ -1,0 +1,102 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: account-detail
+feature: account-detail
+_source: source_analysis
+
+entry_points:
+  - type: push
+    source: home
+    description: "Tap a card face or account row → AccountDetailRoute(accountId)."
+  - type: push
+    source: accounts
+    description: "Tap an account card → AccountDetailRoute(accountId) (accounts screen itself is unreachable)."
+
+navigates_to:
+  - transactions
+  - statements
+  - standing-orders
+  - direct-debits
+  - scheduled-payments
+  - beneficiaries
+  - product
+  - account-holder
+  - login            # LoginRenewRoute on 401 TokenExpired (FR-049)
+  - consent-list     # ConsentListRoute on 403 ConsentWithdrawn (FR-049)
+
+transitions:
+  - { from: account-detail, to: login, type: navigate, trigger: sign_in_again_button, route: LoginRenewRoute, condition: "Error(TokenExpired)" }
+  - { from: account-detail, to: consent-list, type: navigate, trigger: view_consents_button, route: ConsentListRoute, condition: "Error(ConsentWithdrawn)" }
+  - { from: account-detail, to: transactions, type: navigate, trigger: chip_transactions, params: { accountId: String } }
+  - { from: account-detail, to: statements, type: navigate, trigger: chip_statements, params: { accountId: String }, condition: "Statements in availableChips" }
+  - { from: account-detail, to: standing-orders, type: navigate, trigger: chip_standing_orders, params: { accountId: String }, condition: "StandingOrders in availableChips" }
+  - { from: account-detail, to: direct-debits, type: navigate, trigger: chip_direct_debits, params: { accountId: String }, condition: "DirectDebits in availableChips" }
+  - { from: account-detail, to: scheduled-payments, type: navigate, trigger: chip_scheduled, params: { accountId: String }, condition: "ScheduledPayments in availableChips" }
+  - { from: account-detail, to: beneficiaries, type: navigate, trigger: chip_beneficiaries, params: { accountId: String }, condition: "Beneficiaries in availableChips" }
+  - { from: account-detail, to: product, type: navigate, trigger: chip_product, params: { accountId: String } }
+  - { from: account-detail, to: account-holder, type: navigate, trigger: chip_party, params: { accountId: String } }
+  - { from: account-detail, to: placeholder-atm-locator, type: navigate, trigger: chip_atm, note: "AtmLocatorRoute → PlaceholderScreen; not a feature (ui.yaml known_gaps AD-G1)" }
+
+journey_ids: [view-accounts]
+
+lifecycle:
+  on_load:
+    - action: open_streams
+      calls:
+        - api: get_account_detail       # repository.detailStream(accountId, viewModelScope)
+        - api: get_balance_lines        # repository.balanceLinesStream(accountId, viewModelScope)
+      combine: "combineScreenStates(detail.state, balanceLines.state) → AccountDetailWithBalances"
+      plus: "combine(capabilityRegistry.unsupportedStream(accountId))"
+      on_state:
+        Content: "hasNoBalances ? Empty(header) : Content(header, balances.map { BalanceRowUi(type, groupThousands(amount) + ' ' + currency) })"
+        Error: "classifyAccountDetailError(throwable) → Error(kind, kind.recoverable)"
+        NoNetwork: "Error(Network)"
+        Unauthenticated: "Error(TokenExpired)"
+        Loading: "Loading"                     # only while a stream is in flight
+        Empty: "Error(AccountNotFound)"         # never an endless Loading (FR-049 / DEF-008)
+      chips: "availableChips = availableChipsFor(productType ?: Unknown, unsupported)"
+
+flow_logic:
+  - { id: back, component: top_bar, action: back, effect: "event:onBack" }   # popBackStack
+  - { id: open_transactions, component: chip_transactions, action: click, effect: "navigate:transactions", journey_id: view-accounts }
+  - { id: open_statements, component: chip_statements, action: click, effect: "navigate:statements", journey_id: view-accounts }
+  - { id: open_standing_orders, component: chip_standing_orders, action: click, effect: "navigate:standing-orders", journey_id: view-accounts }
+  - { id: open_direct_debits, component: chip_direct_debits, action: click, effect: "navigate:direct-debits", journey_id: view-accounts }
+  - { id: open_scheduled, component: chip_scheduled, action: click, effect: "navigate:scheduled-payments", journey_id: view-accounts }
+  - { id: open_beneficiaries, component: chip_beneficiaries, action: click, effect: "navigate:beneficiaries", journey_id: view-accounts }
+  - { id: open_atm, component: chip_atm, action: click, effect: "state:placeholder-atm-locator" }
+  - { id: open_product, component: chip_product, action: click, effect: "navigate:product", journey_id: view-accounts }
+  - { id: open_party, component: chip_party, action: click, effect: "navigate:account-holder", journey_id: view-accounts }
+  - { id: retry, component: error_state, action: click, effect: "action:RetryLoad", condition: "kind in [Network, Unexpected]" }
+  - { id: sign_in_again, component: sign_in_again_button, action: click, effect: "navigate:login", route: LoginRenewRoute, condition: "kind == TokenExpired" }
+  - { id: view_consents, component: view_consents_button, action: click, effect: "navigate:consent-list", route: ConsentListRoute, condition: "kind == ConsentWithdrawn" }
+
+action_logic:
+  RetryLoad:
+    - call: "detail.refresh()"
+    - call: "balanceLines.refresh()"
+
+error_handling:
+  enum: AccountDetailErrorKind
+  classifier: "classifyAccountDetailError(throwable) on RemoteException.networkError"
+  TokenExpired: { from: "401 Unauthorized | ScreenState.Unauthenticated", retry: false, recovery: "navigate:login (LoginRenewRoute)", ui: "error + 'Sign in again'" }
+  ConsentWithdrawn: { from: "403 Forbidden", retry: false, recovery: "navigate:consent-list (ConsentListRoute)", ui: "error + 'View consents'" }
+  AccountNotFound: { from: "404 NotFound | combined ScreenState.Empty", retry: false, ui: "error, back only" }
+  Network: { from: "NetworkError.Network | ScreenState.NoNetwork", retry: true }
+  Unexpected: { from: "other", retry: true }
+
+dependencies:
+  repositories:
+    - name: AccountDetailRepository
+      methods:
+        - "detailStream(accountId: String, scope: CoroutineScope): ScreenDataStream<AccountDetail>"
+        - "balanceLinesStream(accountId: String, scope: CoroutineScope): ScreenDataStream<List<AccountBalanceLine>>"
+    - name: AccountCapabilityRegistry
+      methods:
+        - "unsupportedStream(accountId: String): Flow<Set<AccountEndpoint>>"
+  stores:
+    - "BankingStores.accountDetailStore(aisp)"
+    - "BankingStores.balanceLinesStore(aisp)"
+  services:
+    - NetworkMonitor
+    - FetchedAtRepository

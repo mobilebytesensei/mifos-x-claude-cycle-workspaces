@@ -1,0 +1,493 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: account-detail
+screen_id: account-detail
+name: "Account Detail"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/account-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/accountdetail/AccountDetailScreen.kt
+  - feature/account-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/accountdetail/AccountDetailContent.kt
+  - feature/account-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/accountdetail/AccountDetailChip.kt
+  - feature/account-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/accountdetail/ui/AccountDetailViewModel.kt
+  - feature/account-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/accountdetail/ui/AccountDetailState.kt
+  - feature/account-detail/src/commonMain/kotlin/org/mifosx/openbanking/feature/accountdetail/components/
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/impl/AccountDetailRepositoryImpl.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/AccountCapabilityRegistry.kt
+  - cmp-navigation/src/commonMain/kotlin/cmp/navigation/authenticatednavhost/AuthenticatedNavHostScreen.kt  # navigateFromChip
+archetype: detail_screen
+requirement_refs: [FR-004, FR-005, FR-040, FR-049]
+
+states: [loading, content, empty, error]
+initial_state: loading
+
+feature_profile:
+  combo_id: read_detail
+  facets: [content, network, cache]
+  archetype: screen-content
+  store_archetype: NETWORK_WITH_CACHE
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default   # enrich STEP 5.PROFILE re-derives
+
+route: "AccountDetailRoute(accountId)"
+entry_points:
+  - source: home
+    trigger: card_face | account_row
+    params: { accountId: String }
+  - source: accounts
+    trigger: account_card
+    params: { accountId: String }
+nav_params:
+  accountId: { type: String, required: true, source: "SavedStateHandle[ACCOUNT_ID_ARG]", default_if_missing: '""' }   # missing id does not crash (FR-004)
+
+business_logic:
+  kind: composite
+  description: >-
+    Opens two Store5 ScreenDataStreams from AccountDetailRepository — detailStream (GET accounts/{id})
+    and balanceLinesStream (GET accounts/{id}/balances, every typed balance row) — merged with
+    combineScreenStates into AccountDetailWithBalances, then combined with
+    AccountCapabilityRegistry.unsupportedStream(accountId) (endpoints the bank has refused with U000 for
+    this account, recorded by sibling screens). availableChipsFor(productType, unsupported) hides the
+    StandingOrders / DirectDebits / Statements / ScheduledPayments / Beneficiaries chips when the endpoint
+    is marked unsupported OR HsbcProductCapability.supports(endpoint, productType) is false; Transactions,
+    AtmLocator, Product and Party are always shown. No balances → Empty with the header kept.
+    A combined ScreenState.Empty (detail store resolved with no account) maps to Error(AccountNotFound),
+    never to Loading — Loading is only shown while a stream is actually in flight (FR-049 / DEF-008).
+    Balance amounts are thousands-grouped ("2,847.63 GBP"). Errors are classified to AccountDetailErrorKind;
+    each kind declares its recovery: 401 TokenExpired → NavigateToLoginRenew (re-authorise, no Retry),
+    403 ConsentWithdrawn → NavigateToConsents (consent list, no Retry), Network/Unexpected → RetryLoad,
+    404 AccountNotFound → back only. No dead-end Retry on a non-retriable kind (FR-049).
+
+screens:
+  - id: account-detail-screen
+    title: "{{accountTitle(accountHolderName, accountTypeCode, description)}}"  # i18n: skip — falls back to feature_account_detail_screen_title while Loading/Error
+    type: detail
+    description: >-
+      KptScaffold with back arrow; title = derived account title (holder name / type / description).
+      Scrolling column: header card (uppercase subtype label, holder name, formatted identifier in
+      monospace, currency badge + servicer badge), optional description card, "Balances" section (one
+      row per OBIE balance type with monospace amount, or a "No balances available" block), "Explore"
+      section listing the available navigation rows (icon + label + chevron) in fixed declaration
+      order: Transactions, Statements, Standing Orders, Direct Debits, Scheduled, Beneficiaries,
+      Nearby ATMs, Product, Account Holder. Each row navigates with the accountId.
+
+state_model:
+  AccountDetailViewModel:
+    base: "BaseViewModel<AccountDetailState, Nothing, AccountDetailAction>"
+    state:
+      name: AccountDetailState
+      fields:
+        accountId: { type: String, default: "savedStateHandle[accountId].orEmpty()" }
+        uiState: { type: AccountDetailUiState, default: "AccountDetailUiState.Loading" }
+        availableChips: { type: "Set<AccountDetailChip>", default: "AccountDetailChip.entries.toSet()" }
+    screen_state:
+      name: AccountDetailUiState
+      members:
+        - { name: Loading }
+        - { name: Content, fields: { header: AccountDetail, balances: "List<BalanceRowUi>" } }
+        - { name: Empty, fields: { header: AccountDetail } }
+        - { name: Error, fields: { kind: AccountDetailErrorKind, recoverable: Boolean } }
+    row_model:
+      name: BalanceRowUi
+      fields:
+        type: { type: String, default: '""' }          # OBIE balance Type, e.g. InterimAvailable
+        amountLabel: { type: String, default: '""' }   # "2,847.63 GBP"
+    enums:
+      AccountDetailChip: [Transactions, Statements, StandingOrders, DirectDebits, ScheduledPayments, Beneficiaries, AtmLocator, Product, Party]
+    errors:
+      name: AccountDetailErrorKind
+      types:
+        - { type: TokenExpired, retry: false, recovery_action: NavigateToLoginRenew, message_key: feature_account_detail_error_token_expired, source: "401 Unauthorized / ScreenState.Unauthenticated" }
+        - { type: ConsentWithdrawn, retry: false, recovery_action: NavigateToConsents, message_key: feature_account_detail_error_consent_withdrawn, source: "403 Forbidden" }
+        - { type: AccountNotFound, retry: false, recovery_action: null, message_key: feature_account_detail_error_not_found, source: "404 NotFound / combined ScreenState.Empty (no account resolved)" }
+        - { type: Network, retry: true, recovery_action: RetryLoad, message_key: feature_account_detail_error_network, source: "NetworkError.Network / ScreenState.NoNetwork" }
+        - { type: Unexpected, retry: true, recovery_action: RetryLoad, message_key: feature_account_detail_error_unexpected, source: "anything else" }
+    events:
+      name: "Nothing"
+      members: []
+    actions:
+      name: AccountDetailAction
+      members:
+        - { name: RetryLoad, trigger: "Tap Retry on a retriable error (Network, Unexpected)" }
+    callbacks:
+      - { name: onNavigateToChip, params: { chip: AccountDetailChip, accountId: String }, trigger: "Tap an Explore row" }
+      - { name: onBack, trigger: "Tap top-bar back arrow" }
+      - { name: onNavigateToLoginRenew, owner: AuthenticatedNavHostScreen, effect: "navController.navigate(LoginRenewRoute)", trigger: "Tap 'Sign in again' on Error(TokenExpired) (FR-049)" }
+      - { name: onNavigateToConsents, owner: AuthenticatedNavHostScreen, effect: "navController.navigate(ConsentListRoute)", trigger: "Tap 'View consents' on Error(ConsentWithdrawn) (FR-049)" }
+    di:
+      - AccountDetailRepository
+      - AccountCapabilityRegistry      # InMemoryAccountCapabilityRegistry, cleared on logout
+      - SavedStateHandle
+
+components:
+  - id: top_bar
+    type: top-bar
+    title: "{{topBarTitle}}"  # i18n: skip — derived account title binding
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      action_contract:
+        effect: navigate_back
+        handler: "AccountDetailScreen.onBack → navController.popBackStack()"
+        library_refs: []
+        description: "Pops AccountDetail off the back stack, returning to home (or the accounts list); no network call."
+
+  - id: header_card
+    type: card
+    testTag: "accountDetail:headerCard"
+    role: hero                       # detail_screen archetype hero slot — the header card IS the entity hero
+    visual_asset_ref: account_detail_hero
+    content_description: "{strings.feature_account_detail_header_accessibility}"
+    style: { background: surfaceContainer, border: outlineVariant, shape: medium }
+    content:
+      - { id: subtype_label, type: text, testTag: "accountDetail:subtypeLabel", value: "{{accountTypeLabel(accountTypeCode, description).uppercase()}}", style: { text_style: labelMedium, color: secondary, letter_spacing: 0.6sp } }  # i18n: skip — core/ui label resolver
+      - { id: display_name, type: text, testTag: "accountDetail:displayName", value: "{{header.accountHolderName}}", visible: "{{accountHolderName.isNotBlank()}}", style: { text_style: headlineMedium } }  # i18n: skip — bank payload
+      - { id: identification, type: text, testTag: "accountDetail:identification", value: "{{formatAccountIdentifier(scheme, identification)}}", style: { text_style: bodyMedium, font_family: monospace } }  # i18n: skip — formatted identifier
+      - id: badges_row
+        type: row
+        children:
+          - { id: currency_badge, type: badge, testTag: "accountDetail:currencyBadge", value: "{{header.currency}}" }  # i18n: skip — ISO currency
+          - { id: servicer_badge, type: badge, testTag: "accountDetail:servicerBadge", value: "{{header.servicerIdentification}}", visible: "{{servicerIdentification.isNotBlank()}}", style: { font_family: monospace } }  # i18n: skip — BIC/servicer id
+
+  - id: description_card
+    type: card
+    testTag: "accountDetail:descriptionCard"
+    visible: "{{header.description.isNotBlank()}}"
+    content:
+      - { id: description_label, type: text, value: "{strings.feature_account_detail_description_label}", style: { text_style: labelMedium } }
+      - { id: description_value, type: text, value: "{{header.description}}" }  # i18n: skip — bank payload
+
+  - { id: balances_header, type: section-heading, testTag: "accountDetail:balancesHeader", value: "{strings.feature_account_detail_section_balances}" }
+
+  - id: balances_list
+    type: list
+    testTag: "accountDetail:balancesList"
+    content_description: "{strings.feature_account_detail_balances_list_accessibility}"
+    children:
+      - id: balance_row
+        type: row
+        repeat: "{{balances}}"
+        testTag: "accountDetail:balanceRow:{type}"
+        content:
+          - { id: balance_type, type: text, value: "{{row.type}}" }  # i18n: skip — OBIE balance type code
+          - { id: balance_amount, type: text, value: "{{row.amountLabel}}", style: { font_family: monospace, color: primary } }  # i18n: skip — formatted amount
+
+  - id: balances_empty_block
+    type: card
+    testTag: "accountDetail:balancesEmptyState"
+    content_description: "{strings.feature_account_detail_balances_empty_accessibility}"
+    content:
+      - { id: balances_empty_title, type: text, value: "{strings.feature_account_detail_balances_empty_title}" }
+      - { id: balances_empty_body, type: text, value: "{strings.feature_account_detail_balances_empty_body}" }
+
+  - { id: explore_header, type: section-heading, testTag: "accountDetail:exploreHeader", value: "{strings.feature_account_detail_section_explore}" }
+
+  - id: explore_options
+    type: list
+    testTag: "accountDetail:chipRow"
+    content_description: "{strings.feature_account_detail_chip_row_accessibility}"
+    order: "AccountDetailChip.entries filtered by availableChips (declaration order is asserted by UI tests)"
+    children:
+      - id: chip_transactions
+        type: row
+        testTag: "accountDetail:chip:Transactions"
+        icon: receipt_long
+        label: "{strings.feature_account_detail_chip_transactions}"
+        content_description: "{strings.feature_account_detail_chip_transactions_accessibility}"
+        on_click:
+          action: onNavigateToChip
+          params: { chip: Transactions, accountId: "{{accountId}}" }
+          target: transactions
+          action_contract:
+            effect: navigate
+            handler: "onNavigateToChip(Transactions, accountId) → navigateFromChip → navigate(TransactionsRoute(accountId))"
+            library_refs: []
+            description: "Opens the paginated transaction history for this account; always visible (not capability-gated)."
+      - id: chip_statements
+        type: row
+        testTag: "accountDetail:chip:Statements"
+        icon: description
+        label: "{strings.feature_account_detail_chip_statements}"
+        visible: "{{Statements in availableChips}}"
+        content_description: "{strings.feature_account_detail_chip_statements_accessibility}"
+        on_click:
+          action: onNavigateToChip
+          params: { chip: Statements, accountId: "{{accountId}}" }
+          target: statements
+          action_contract:
+            effect: navigate
+            handler: "navigateFromChip → navigate(StatementsRoute(accountId))"
+            library_refs: []
+            description: "Opens statements for this account; hidden when Statements is marked unsupported or the HSBC product type does not support it."
+      - id: chip_standing_orders
+        type: row
+        testTag: "accountDetail:chip:StandingOrders"
+        icon: autorenew
+        label: "{strings.feature_account_detail_chip_standing_orders}"
+        visible: "{{StandingOrders in availableChips}}"
+        content_description: "{strings.feature_account_detail_chip_standing_orders_accessibility}"
+        on_click:
+          action: onNavigateToChip
+          params: { chip: StandingOrders, accountId: "{{accountId}}" }
+          target: standing-orders
+          action_contract:
+            effect: navigate
+            handler: "navigateFromChip → navigate(StandingOrdersRoute(accountId))"
+            library_refs: []
+            description: "Opens the existing standing-order list for this account; capability-gated on AccountEndpoint.StandingOrders."
+      - id: chip_direct_debits
+        type: row
+        testTag: "accountDetail:chip:DirectDebits"
+        icon: subscriptions
+        label: "{strings.feature_account_detail_chip_direct_debits}"
+        visible: "{{DirectDebits in availableChips}}"
+        content_description: "{strings.feature_account_detail_chip_direct_debits_accessibility}"
+        on_click:
+          action: onNavigateToChip
+          params: { chip: DirectDebits, accountId: "{{accountId}}" }
+          target: direct-debits
+          action_contract:
+            effect: navigate
+            handler: "navigateFromChip → navigate(DirectDebitsRoute(accountId))"
+            library_refs: []
+            description: "Opens direct-debit mandates for this account; capability-gated on AccountEndpoint.DirectDebits."
+      - id: chip_scheduled
+        type: row
+        testTag: "accountDetail:chip:ScheduledPayments"
+        icon: schedule
+        label: "{strings.feature_account_detail_chip_scheduled}"
+        visible: "{{ScheduledPayments in availableChips}}"
+        content_description: "{strings.feature_account_detail_chip_scheduled_accessibility}"
+        on_click:
+          action: onNavigateToChip
+          params: { chip: ScheduledPayments, accountId: "{{accountId}}" }
+          target: scheduled-payments
+          action_contract:
+            effect: navigate
+            handler: "navigateFromChip → navigate(ScheduledPaymentsRoute(accountId))"
+            library_refs: []
+            description: "Opens scheduled payments for this account; capability-gated on AccountEndpoint.ScheduledPayments."
+      - id: chip_beneficiaries
+        type: row
+        testTag: "accountDetail:chip:Beneficiaries"
+        icon: people
+        label: "{strings.feature_account_detail_chip_beneficiaries}"
+        visible: "{{Beneficiaries in availableChips}}"
+        content_description: "{strings.feature_account_detail_chip_beneficiaries_accessibility}"
+        on_click:
+          action: onNavigateToChip
+          params: { chip: Beneficiaries, accountId: "{{accountId}}" }
+          target: beneficiaries
+          action_contract:
+            effect: navigate
+            handler: "navigateFromChip → navigate(BeneficiariesRoute(accountId))"
+            library_refs: []
+            description: "Opens saved beneficiaries for this account; capability-gated on AccountEndpoint.Beneficiaries."
+      - id: chip_atm
+        type: row
+        testTag: "accountDetail:chip:AtmLocator"
+        icon: local_atm
+        label: "{strings.feature_account_detail_chip_atm}"
+        content_description: "{strings.feature_account_detail_chip_atm_accessibility}"
+        on_click:
+          action: onNavigateToChip
+          params: { chip: AtmLocator, accountId: "{{accountId}}" }
+          target: placeholder        # AtmLocatorRoute → PlaceholderScreen("ATM locator"); no feature slug
+          action_contract:
+            effect: navigate
+            handler: "navigateFromChip → navigate(AtmLocatorRoute) (accountId dropped)"
+            library_refs: []
+            description: "Navigates to the AtmLocatorRoute placeholder screen (text 'ATM locator'); no real ATM/branch lookup exists and the accountId is not forwarded. Always visible."
+      - id: chip_product
+        type: row
+        testTag: "accountDetail:chip:Product"
+        icon: description
+        label: "{strings.feature_account_detail_chip_product}"
+        content_description: "{strings.feature_account_detail_chip_product_accessibility}"
+        on_click:
+          action: onNavigateToChip
+          params: { chip: Product, accountId: "{{accountId}}" }
+          target: product
+          action_contract:
+            effect: navigate
+            handler: "navigateFromChip → navigate(ProductRoute(accountId))"
+            library_refs: []
+            description: "Opens product terms (fees, credit/overdraft tiers, features) for this account; always visible."
+      - id: chip_party
+        type: row
+        testTag: "accountDetail:chip:Party"
+        icon: person
+        label: "{strings.feature_account_detail_chip_party}"
+        content_description: "{strings.feature_account_detail_chip_party_accessibility}"
+        on_click:
+          action: onNavigateToChip
+          params: { chip: Party, accountId: "{{accountId}}" }
+          target: account-holder
+          action_contract:
+            effect: navigate
+            handler: "navigateFromChip → navigate(AccountHolderRoute(accountId))"
+            library_refs: []
+            description: "Opens the account-holder (party) identity screen for this account; always visible."
+
+  - id: loading_indicator
+    type: progress
+    component_ref: MifosProgressIndicator
+
+  - id: error_state
+    type: error-state
+    component_ref: MifosErrorComponent
+    testTag: "accountDetail:errorState"
+    message: "{{kind.bodyResource()}}"  # i18n: skip — resolves to feature_account_detail_error_* per kind
+    retry_visible: "{{recoverable}}"
+    on_click:
+      action: RetryLoad
+      action_contract:
+        effect: call_api
+        handler: "AccountDetailViewModel.handleAction(RetryLoad) → detail.refresh(); balanceLines.refresh()"
+        library_refs: []
+        description: "Refreshes both Store5 streams (GET accounts/{id} and GET accounts/{id}/balances); only offered for retriable kinds (Network, Unexpected) — never for TokenExpired/ConsentWithdrawn (FR-049)."
+    recovery_actions:
+      - id: sign_in_again_button
+        type: filled-button
+        testTag: "accountDetail:signInAgain"
+        label: "{strings.feature_account_detail_action_sign_in_again}"
+        visible: "{{kind == TokenExpired}}"
+        on_click:
+          action: onNavigateToLoginRenew
+          target: login
+          action_contract:
+            effect: navigate
+            handler: "AccountDetailScreen.onNavigateToLoginRenew → navController.navigate(LoginRenewRoute)"
+            library_refs: []
+            description: "401 TokenExpired: opens LoginRenewRoute so the user re-authorises a fresh AIS consent with the bank; replaces the dead-end Retry (FR-049, DEF-008)."
+      - id: view_consents_button
+        type: filled-button
+        testTag: "accountDetail:viewConsents"
+        label: "{strings.feature_account_detail_action_view_consents}"
+        visible: "{{kind == ConsentWithdrawn}}"
+        on_click:
+          action: onNavigateToConsents
+          target: consent-list
+          action_contract:
+            effect: navigate
+            handler: "AccountDetailScreen.onNavigateToConsents → navController.navigate(ConsentListRoute)"
+            library_refs: []
+            description: "403 ConsentWithdrawn: opens the AIS consent list where the user can reconfirm or create a consent; no Retry is offered for this kind (FR-040, FR-049)."
+
+state_details:
+  loading:
+    components: [top_bar, loading_indicator]
+    description: "AccountDetailUiState.Loading — ONLY while a stream is in flight. A combined ScreenState.Empty maps to Error(AccountNotFound), never Loading (FR-049 / DEF-008). Title falls back to 'Account Detail'."
+  content:
+    components: [top_bar, header_card, description_card, balances_header, balances_list, explore_header, explore_options]
+    description: "Header + optional description + balance rows + Explore list filtered by availableChips."
+    demo_data:
+      accountId: acc-current
+      header: { accountId: acc-current, accountTypeCode: CACC, currency: GBP, identification: "80200110203349", scheme: SortCode, servicerIdentification: "HBUKGB4B", description: "Description of the account", accountHolderName: "Mr Nico" }
+      balances:
+        - { type: InterimAvailable, amountLabel: "2,847.63 GBP" }
+        - { type: InterimBooked, amountLabel: "2,900.00 GBP" }
+  empty:
+    components: [top_bar, header_card, description_card, balances_header, balances_empty_block, explore_header, explore_options]
+    description: "AccountDetailUiState.Empty — header kept, balances replaced by 'No balances available' block; Explore still usable (FR-004)."
+  error:
+    components: [top_bar, error_state]
+    description: "AccountDetailUiState.Error(kind, recoverable) — kind-specific message plus exactly one recovery: TokenExpired → 'Sign in again' (LoginRenew), ConsentWithdrawn → 'View consents' (ConsentList), Network/Unexpected → Retry, AccountNotFound → back only. NoNetwork maps here as Network (no separate offline state)."
+
+# RULE-SCREEN-VISUAL-ASSETS-001 SVA-1 — inherits the detail_screen archetype floor (detail_hero),
+# made content-specific: the header card is this screen's hero slot (header_card.role: hero).
+visual_assets:
+  - id: account_detail_hero
+    kind: hero
+    role: hero
+    intent: "Low-contrast abstract backdrop for the account header card: a soft layered-wave banking motif with a faint sort-code grid texture in the brand primary/secondary tones, no text, no logos, no currency symbols, leaving the left two-thirds calm so holder name, monospace account identifier and currency/servicer badges stay legible in light and dark themes"
+    produced_by: /idea-feature-stitch-art
+    states: [content, empty]
+    consistency: none
+
+strings:
+  - feature_account_detail_screen_title
+  - feature_account_detail_header_accessibility
+  - feature_account_detail_description_label
+  - feature_account_detail_section_balances
+  - feature_account_detail_balances_list_accessibility
+  - feature_account_detail_balances_empty_title
+  - feature_account_detail_balances_empty_body
+  - feature_account_detail_balances_empty_accessibility
+  - feature_account_detail_section_explore
+  - feature_account_detail_chip_row_accessibility
+  - feature_account_detail_error_token_expired
+  - feature_account_detail_error_consent_withdrawn
+  - feature_account_detail_error_not_found
+  - feature_account_detail_error_network
+  - feature_account_detail_error_unexpected
+  - feature_account_detail_chip_transactions
+  - feature_account_detail_chip_statements
+  - feature_account_detail_chip_standing_orders
+  - feature_account_detail_chip_direct_debits
+  - feature_account_detail_chip_scheduled
+  - feature_account_detail_chip_beneficiaries
+  - feature_account_detail_chip_atm
+  - feature_account_detail_chip_product
+  - feature_account_detail_chip_party
+  - feature_account_detail_action_sign_in_again
+  - feature_account_detail_action_view_consents
+
+i18n:
+  en:
+    feature_account_detail_screen_title: "Account Detail"
+    feature_account_detail_header_accessibility: "Account details"
+    feature_account_detail_description_label: "Account description"
+    feature_account_detail_section_balances: "Balances"
+    feature_account_detail_balances_list_accessibility: "Balance types list"
+    feature_account_detail_balances_empty_title: "No balances available"
+    feature_account_detail_balances_empty_body: "Balance information is not available for this account."
+    feature_account_detail_balances_empty_accessibility: "No balance information available"
+    feature_account_detail_section_explore: "Explore"
+    feature_account_detail_chip_row_accessibility: "Navigate to account sub-screens"
+    feature_account_detail_error_token_expired: "Session expired. Please log in again."
+    feature_account_detail_error_consent_withdrawn: "Access to this account has been withdrawn."
+    feature_account_detail_error_not_found: "Account not found in your authorised account set."
+    feature_account_detail_error_network: "No network connection. Please check your connection and retry."
+    feature_account_detail_error_unexpected: "Something went wrong. Please try again."
+    feature_account_detail_chip_transactions: "Transactions"
+    feature_account_detail_chip_statements: "Statements"
+    feature_account_detail_chip_standing_orders: "Standing Orders"
+    feature_account_detail_chip_direct_debits: "Direct Debits"
+    feature_account_detail_chip_scheduled: "Scheduled"
+    feature_account_detail_chip_beneficiaries: "Beneficiaries"
+    feature_account_detail_chip_atm: "Nearby ATMs"
+    feature_account_detail_chip_product: "Product"
+    feature_account_detail_chip_party: "Account Holder"
+    feature_account_detail_action_sign_in_again: "Sign in again"
+    feature_account_detail_action_view_consents: "View consents"
+
+known_gaps:
+  - id: AD-G1
+    severity: medium
+    description: "'Nearby ATMs' chip routes to AtmLocatorRoute, a PlaceholderScreen('ATM locator') in cmp-navigation BankingDestinations — dead-end placeholder, always visible, accountId dropped (RULE-IMPL-DEAD-CLICKABLE-001 class)."
+  - id: AD-G2
+    severity: medium
+    description: "TokenExpired is marked recoverable and its copy says 'Please log in again', but Retry only refreshes the two stores — there is no re-auth navigation (LoginRenewRoute) from this screen."
+    spec_status: specified   # idea-layer now declares TokenExpired → onNavigateToLoginRenew, retry:false (FR-049); source still pending /implement
+  - id: AD-G3
+    severity: low
+    description: "A combined ScreenState.Empty (e.g. detail store returns nothing) maps to AccountDetailUiState.Loading, so the user sees an indefinite spinner instead of an empty/error state."
+    spec_status: specified   # idea-layer now maps combined Empty → Error(AccountNotFound) (FR-049 / DEF-008); source still pending /implement
+  - id: AD-G8
+    severity: medium
+    description: "403 ConsentWithdrawn shows a message with no next step — no route to the consent list. Spec now declares onNavigateToConsents → ConsentListRoute (FR-049 / DEF-008)."
+    spec_status: specified
+  - id: AD-G4
+    severity: low
+    description: "Product and Party chips are never capability-gated (only 5 endpoints are in the gated map), so they show even when the bank has refused /product or /party for this account."
+  - id: AD-G5
+    severity: low
+    description: "Product chip reuses the Statements icon (Icons.Outlined.Description) — two adjacent rows share the same glyph."
+  - id: AD-G6
+    severity: low
+    description: "No offline/stale rendering — NoNetwork becomes Error(Network) and DataFreshness of cached content is not surfaced (screen does not use ScreenContent)."
+  - id: AD-G7
+    severity: low
+    description: "Unused strings: loading_label, navigate_back, subtype/identification accessibility, last_updated, section_*_accessibility, error_title, error_accessibility, retry, retry_accessibility; statusUpdateDateTime is modelled but never rendered (formatStatusTimestamp exists unused by the UI)."

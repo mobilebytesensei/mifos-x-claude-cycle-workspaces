@@ -1,0 +1,130 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: consent-callback
+_source: source_analysis
+
+entry_points:
+  - type: replace
+    source: login
+    route: "ConsentCallbackRoute(redirectUrl)"
+    description: >-
+      Deep-link / loopback redirect only: ConsentRedirectBus (replay cache for Android cold start) →
+      RootNavScreen LaunchedEffect collector → de-dup on lastRoutedRedirect → authorisationLegOf(redirectUrl,
+      vrpAuthRepository, paymentAuthRepository) == SignIn → navigateToConsentCallback(route, rootNavOptions()).
+inbound_routes:
+  - { from: login, type: replace, nav_role: external-entry, params: { redirectUrl: String } }
+outbound_routes:
+  - { to: home, type: replace, trigger: "NavigateToHome → navigateToAuthenticatedGraph(rootNavOptions) (AuthenticatedGraph start = Home)" }
+  - { to: login, type: replace, trigger: "NavigateToLogin → navigateToAuthGraph(rootNavOptions) (restarts at Intro)" }
+
+navigates_to:
+  - home
+  - login
+
+transitions:
+  - { from: loading, to: security_error, on: "ValidationResult.SecurityError" }
+  - { from: loading, to: access_denied, on: "ValidationResult.AccessDenied" }
+  - { from: loading, to: error, on: "ValidationResult.Error(PROVIDER_ERROR) | MissingCode(MISSING_CODE) | exchange Unauthenticated(AUTHORISATION_FAILED) / Error(TOKEN_EXCHANGE_FAILED) / NoNetwork(NETWORK_UNREACHABLE)" }
+  - { from: loading, to: rejected, on: "exchange Content → pollConsentStatus status == Rejected (tokens discarded, ConsentSession cleared)" }
+  - { from: loading, to: content, on: "exchange Content → pollConsentStatus status != Rejected (or poll failed) → recordConsent + persistTokens" }
+  - { from: awaiting, to: rejected, on: "PollConsentStatus → status == Rejected" }
+  - { from: awaiting, to: content, on: "PollConsentStatus (pendingConsentId != null) → status != Rejected" }
+  - { from: content, to: home, on: "after 1500 ms → NavigateToHome" }
+  - { from: rejected, to: login, on: "NavigateLogin (clears ConsentSession)" }
+  - { from: error, to: login, on: "NavigateRetry" }
+  - { from: access_denied, to: login, on: "NavigateRetry" }
+  - { from: security_error, to: login, on: "NavigateLogin (clears ConsentSession)" }
+
+flow_logic:
+  on_load:
+    - action: ProcessCallback
+      trigger: "LaunchedEffect(redirectUrl) { trySendAction(ProcessCallback(redirectUrl)) }"
+      steps:
+        - transform_state: Loading
+        - call: "repository.validateCallback(redirectUrl)"
+          rules:
+            - "params = parseCallbackUrl(redirectUrl) (fragment: code, id_token, state, error, error_description)"
+            - "pending = pendingAuthStore.consume() (single-use; null if absent or older than 1200s) → null ⇒ SecurityError"
+            - "params.state != pending.state ⇒ SecurityError"
+            - "params.error == 'access_denied' ⇒ AccessDenied (user decline — neutral, NOT an error; DEF-006)"
+            - "other params.error ⇒ Error(PROVIDER_ERROR) — error/error_description logged, never rendered"
+            - "id_token is NOT inspected on the device — the bank gateway verifies signature, iss, aud, exp, nonce, c_hash and s_hash (FR-054)"
+            - "params.code == null || params.id_token == null ⇒ Error(MISSING_CODE)"
+            - "else ⇒ Valid(code, idToken, state, flowId = pending.flowId, consentId = pending.consentId)"
+        - on_valid:
+            - set: { pendingConsentId: "v.consentId" }
+            - api: complete_auth
+              params: { flowId: "{v.flowId}", code: "{v.code}", idToken: "{v.idToken}", state: "{v.state}" }
+              note: "POST /v1/auth/complete at the bank gateway. The Worker verifies the id_token, exchanges the code, checks the consent status and stores the PSU tokens server-side; the app receives only an opaque session (TD-008)."
+              on_content:
+                - note: "Worker already confirmed status != Rejected before minting the session (DEF-001 enforced server-side)"
+                - call: "consentSession.saveConsentMeta(consentId, expiry = Content.consentExpiresAt ?: '')"
+                - call: "consentSession.save(session, expiresAt)   # GatewaySession only — no HSBC token on the device"
+                - transform_state: Content
+                - delay_ms: 1500
+                - emit_event: NavigateToHome
+              on_conflict_rejected:
+                - note: "409 consent_rejected — Worker discarded the PSU tokens (DEF-001)"
+                - call: "consentSession.clear()"
+                - transform_state: Rejected
+              on_invalid_id_token: { transform_state: SecurityError }
+              on_unauthenticated: { transform_state: "Error(AUTHORISATION_FAILED)" }
+              on_error: { transform_state: "Error(TOKEN_EXCHANGE_FAILED)" }
+              on_no_network: { transform_state: "Error(NETWORK_UNREACHABLE)" }
+  on_check_again:
+    - action: PollConsentStatus
+      guard: "pendingConsentId != null"
+      steps:
+        - api: get_account_access_consent
+          branch:
+            - when: "status == Rejected"
+              steps: [{ call: "consentSession.clear()" }, { transform_state: Rejected }]
+            - when: "otherwise"
+              steps:
+                - call: "consentSession.saveConsentMeta(consentId, expiry)"
+                - transform_state: Content
+                - delay_ms: 1500
+                - emit_event: NavigateToHome
+  on_try_again:
+    - action: NavigateRetry
+      emit_event: NavigateToLogin
+  on_start_again:
+    - action: NavigateLogin
+      from_states: [security_error, rejected]
+      steps: [{ call: "consentSession.clear()" }, { emit_event: NavigateToLogin }]
+
+error_handling:
+  decline_vs_failure: >-
+    DEF-006: a user decline (error=access_denied) and a bank-side Rejected consent are OUTCOMES, each with
+    its own state (access_denied neutral; rejected explicit). Technical failures go to `error` and carry a
+    CallbackErrorKind so the copy names the real cause — a network or token-exchange failure is never
+    worded as "declined".
+  mapping:
+    - { kind: SecurityError, cause: "missing/expired PendingAuth, state mismatch, or the bank gateway rejected the id_token (400 invalid_id_token)", state: security_error, recovery: "Start again → clears ConsentSession → AuthGraph" }
+    - { kind: AccessDenied, cause: "error=access_denied (user declined)", state: access_denied, recovery: "Start over → AuthGraph" }
+    - { kind: ConsentRejected, cause: "consent status poll returned Rejected", state: rejected, recovery: "Start again → clears ConsentSession → AuthGraph" }
+    - { kind: PROVIDER_ERROR, cause: "other provider error on the redirect", state: error, recovery: "Try again → AuthGraph" }
+    - { kind: MISSING_CODE, cause: "redirect without code", state: error, recovery: "Try again → AuthGraph" }
+    - { kind: AUTHORISATION_FAILED, cause: "token endpoint 401", state: error, recovery: "Try again → AuthGraph" }
+    - { kind: TOKEN_EXCHANGE_FAILED, cause: "token endpoint 4xx/5xx", state: error, recovery: "Try again → AuthGraph" }
+    - { kind: NETWORK_UNREACHABLE, cause: "offline", state: error, recovery: "Try again → AuthGraph" }
+  replay_protection: >-
+    PendingAuth is consumed (cleared) before any check so a redirect can be processed once; RootNavScreen
+    de-duplicates re-published redirects (Activity recreate) on lastRoutedRedirect to avoid burning the
+    single-use PendingAuth and raising a false SecurityError.
+
+journey_ids: [connect-bank, consent-callback-failures]
+
+dependencies:
+  repositories:
+    - name: ConsentCallbackRepository
+      methods:
+        - "validateCallback(redirectUrl: String): ValidationResult"
+        - "suspend exchangeCode(flowId: String, code: String, idToken: String, state: String): ScreenState<AuthCompleteResponse>   # POST /v1/auth/complete"
+        - "suspend pollConsentStatus(consentId: String): ScreenState<ConsentStatusResult{status, expirationDateTime}>   # GET /v1/consents/ais/{id}"
+  services:
+    - "ConsentSession (SettingsConsentSession — save(session, expiresAt), saveConsentMeta, clear, isActive) — holds the GatewaySession only"
+    - "PendingAuthStore (consumed inside the repository)"
+  navigation:
+    - "ConsentRedirectBus (core/data callback) — SharedFlow with replay"
+    - "authorisationLegOf(redirectUrl, vrpAuthRepository, paymentAuthRepository) → SignIn | Payment | Vrp"

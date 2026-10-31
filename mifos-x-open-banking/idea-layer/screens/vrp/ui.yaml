@@ -1,0 +1,1236 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: vrp
+status: enriched
+_source: source_analysis
+_source_modules: [":feature:vrp:vrp-consents", ":feature:vrp:vrp-setup", ":feature:vrp:vrp-callback", ":feature:vrp:vrp-payment"]
+_source_paths:
+  - feature/vrp/vrp-consents/src/commonMain/kotlin/org/mifosx/openbanking/feature/vrpconsents/
+  - feature/vrp/vrp-setup/src/commonMain/kotlin/org/mifosx/openbanking/feature/vrpsetup/
+  - feature/vrp/vrp-callback/src/commonMain/kotlin/org/mifosx/openbanking/feature/vrpcallback/
+  - feature/vrp/vrp-payment/src/commonMain/kotlin/org/mifosx/openbanking/feature/vrppayment/
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/vrp/
+  - core/network/src/commonMain/kotlin/org/mifosx/openbanking/core/network/api/Vrp.kt
+requirement_refs: [FR-041, FR-042, FR-043, FR-044, FR-045]
+
+screen_id: vrp-consent-list-screen
+name: VrpConsentList
+archetype: index_list
+states: [loading, content, empty, error]
+initial_state: loading
+feature_profile:
+  combo_id: read_paged_write
+  facets: [consent-list, consent-detail, form, oauth-redirect, payment-submit, revoke, local-room-cache]
+  archetype: list
+  store_archetype: MUTABLE
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default
+components:
+  - { id: vrp_consent_list_root, type: screen, screen_ref: vrp-consent-list-screen, testTag: "vrpConsentList:content" }
+  - { id: vrp_consent_detail_root, type: screen, screen_ref: vrp-consent-detail-screen, testTag: "vrpConsentDetail:content" }
+  - { id: vrp_setup_root, type: screen, screen_ref: vrp-setup-screen, testTag: "vrpSetup:form" }
+  - { id: vrp_callback_root, type: screen, screen_ref: vrp-callback-screen, testTag: "vrpCallback:working" }
+  - { id: vrp_payment_root, type: screen, screen_ref: vrp-payment-screen, testTag: "vrpPayment:amountPage" }
+
+route: VrpConsentListRoute
+entry_points:
+  - source: home
+    trigger: "Quick action 'VRP' → onNavigateToVrp"
+    via: "AuthenticatedNavHostScreen: navController.navigateToVrpConsentList()"
+    params: {}
+  - source: payments-hub
+    trigger: "VRP card (hub graph itself unreachable)"
+    via: "AuthenticatedNavHostScreen.paymentsHubGraph"
+    params: {}
+  - source: external-redirect
+    trigger: "VRP authorisation redirect classified AuthorisationLeg.Vrp (checked first) → VrpCallbackRoute(redirectUrl) on the ROOT navigator"
+    nav_role: external-entry
+    params: { redirectUrl: String }
+nav_params:
+  consentId: { type: String, required: true, screens: [vrp-consent-detail-screen, vrp-payment-screen], saved_state_key: consentId }
+  redirectUrl: { type: String, required: true, screens: [vrp-callback-screen], saved_state_key: redirectUrl }
+
+business_logic:
+  kind: composite
+  description: >
+    Domestic Variable Recurring Payments (sweeping) end to end across four modules. Setup stages a
+    domestic-vrp-consent on a client-credentials token with per-payment and one periodic ceiling (GBP,
+    UK.OBIE.VRPType.Sweeping) and launches bank authorisation; the callback validates the redirect,
+    exchanges the code and persists a per-consent refresh token (VrpAuthSession) BEFORE reading the
+    consent back into Room. List/detail read consents and payments from Room (vrp_consent, vrp_payment);
+    detail refreshes status on open, derives usage of the headline periodic ceiling client-side and
+    revokes via DELETE — the consent is marked revoked locally ONLY after the ASPSP confirms (2xx, or
+    404 = already gone); any other outcome lands in RevokeFailed with Retry and leaves the local row,
+    refresh token and sweeping untouched (NFR-006). Payment submits under the
+    consent on a per-consent PSU access token (VrpTokenProvider) with a stable idempotency key, bounded
+    by the tightest remaining ceiling.
+  library_refs: [core-data, core-network, core-database]
+
+screens:
+  # ═════════════════════════════════════════════════════════════════════
+  - id: vrp-consent-list-screen
+    name: VrpConsentList
+    module: ":feature:vrp:vrp-consents"
+    route: VrpConsentListRoute
+    archetype: index_list
+    title: "{strings.feature_vrp_consents_list_title}"
+    description: >
+      KptScaffold with KptTopAppBar (back) and a bottom bar holding 'Set up a Variable Recurring
+      Payment' (hidden only in Error). Body: skeleton while loading, a column of consent cards (payee,
+      headline ceiling 'per {period}', status chip, 'Until {date}' or 'No end date'), an empty state
+      with title + body (the CTA stays in the bottom bar), or an error state with Retry.
+    states: [loading, content, empty, error]
+    initial_state: loading
+    state_descriptions:
+      loading: "Loading — vrpConsentList:loadingSkeleton."
+      content: "Content(consents) — vrpConsentList:content; rows vrpConsentList:row:{id} with rowLimit/rowStatus tags."
+      empty: "Empty — vrpConsentList:emptyState with emptyTitle/emptyBody; bottom-bar create button still shown."
+      error: "Error(StorageUnavailable) — vrpConsentList:errorState, errorBody, retryButton; bottom bar hidden."
+    state_model:
+      VrpConsentListViewModel:
+        base: "BaseViewModel<VrpConsentListState, Nothing, VrpConsentListAction>"
+        state:
+          name: VrpConsentListState
+          fields:
+            uiState: { type: VrpConsentListUiState, default: Loading }
+        ui_state:
+          members:
+            - { name: Loading }
+            - { name: Content, fields: { consents: "List<ConsentRowUi>" } }
+            - { name: Empty }
+            - { name: Error, fields: { kind: "VrpConsentListErrorKind (StorageUnavailable)" } }
+        row_model:
+          ConsentRowUi: { consentId: String, payeeName: String, ceilingAmount: "String (largest periodic ceiling, else per-payment)", periodType: "PeriodType?", status: ConsentStatus, validUntil: "String?", isRevoked: Boolean }
+        actions:
+          name: VrpConsentListAction
+          members:
+            - { name: RetryLoad, trigger: "Tap Retry" }
+            - { name: "Internal.ReceiveConsents", internal: true }
+            - { name: "Internal.ReceiveFailure", internal: true }
+        di: [VrpConsentRepository]
+    components:
+      - id: list_top_bar
+        type: top-bar
+        title: "{strings.feature_vrp_consents_list_title}"
+        navigation_icon: arrow_back
+        on_navigation_click:
+          action: onBack
+          target: back
+          action_contract:
+            effect: navigate
+            description: "Invokes onBack → navController.popBackStack() in the authenticated host, returning to Home (or the hub)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: consent_card
+        type: card
+        repeat_for: consents
+        testTag: "vrpConsentList:row:{consentId}"
+        content:
+          - { id: row_payee, type: text, value: "{{payeeName}}" }  # i18n: skip — binding
+          - { id: row_limit, type: text, testTag: "vrpConsentList:rowLimit:{consentId}", value: "{{ceilingAmount}} {strings.feature_vrp_consents_list_limit_format}" }  # i18n: skip — amount binding + key
+          - { id: row_status, type: chip, testTag: "vrpConsentList:rowStatus:{consentId}", label: "{strings.feature_vrp_consents_status_*}" }
+          - { id: row_validity, type: text, value: "{strings.feature_vrp_consents_list_valid_until | feature_vrp_consents_list_no_end_date}" }
+        on_click:
+          action: onOpenConsent
+          target: vrp
+          target_screen: vrp-consent-detail-screen
+          params: { consentId: "{consentId}" }
+          action_contract:
+            effect: navigate
+            description: "Opens VrpConsentDetailRoute(consentId) via navController.navigateToVrpConsentDetail for the tapped consent."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - { id: empty_state, type: empty-state, testTag: "vrpConsentList:emptyState", title: "{strings.feature_vrp_consents_list_empty_title}", body: "{strings.feature_vrp_consents_list_empty_body}" }
+      - id: error_state
+        type: error-state
+        testTag: "vrpConsentList:errorState"
+        title: "{strings.feature_vrp_consents_list_error_title}"
+        body: "{strings.feature_vrp_consents_list_error_storage}"
+        on_click:
+          action: RetryLoad
+          action_contract:
+            effect: transform_state
+            external_library_refs: ["VrpConsentRepository.observeActive (Room vrp_consent)"]
+            description: "Sets uiState = Loading and re-subscribes to repository.observeActive(); a non-empty emission becomes Content, an empty one Empty, a thrown error Error(StorageUnavailable)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: create_button
+        type: button
+        variant: filled-pill
+        testTag: "vrpConsentList:createButton"
+        pinned: bottom
+        visible: "{{uiState !is Error}}"
+        label: "{strings.feature_vrp_consents_list_create}"
+        on_click:
+          action: onNavigateToSetup
+          target: vrp
+          target_screen: vrp-setup-screen
+          action_contract:
+            effect: navigate
+            description: "Navigates to VrpSetupRoute via navController.navigateToVrpSetup() to configure a new Variable Recurring Payment consent."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  # ═════════════════════════════════════════════════════════════════════
+  - id: vrp-consent-detail-screen
+    name: VrpConsentDetail
+    module: ":feature:vrp:vrp-consents"
+    route: "VrpConsentDetailRoute(consentId)"
+    archetype: detail_screen
+    title: "{{payeeName ?: strings.feature_vrp_consents_detail_title}}"  # i18n: skip — payee binding with key fallback
+    description: >
+      KptScaffold with DetailTopBar (back). Content: status header (status pill, 'Valid until …' /
+      'No end date', 'Checked {relative}'), Paid-from card (or 'Chosen at your bank'), usage card for
+      the headline periodic ceiling (remaining, linear progress, 'x of y used', advisory note), Limits
+      card (per payment + each periodic ceiling), 'Send money' button (only when Authorised), payment
+      history list, and a 'Remove access' button opening a confirmation dialog. When the bank does
+      not confirm the DELETE, the same content re-renders with an error-container banner pinned above
+      it ("Your bank didn't confirm the cancellation. Sweeping is still active." + Retry).
+    states: [loading, content, revoke_confirm, revoking, revoke_failed, unusable, ended, not_found]
+    initial_state: loading
+    state_descriptions:
+      loading: "Loading — vrpConsentDetail:loadingSkeleton (centred progress)."
+      content: "Content — vrpConsentDetail:content."
+      revoke_confirm: "Content.revoke = Confirming — AlertDialog vrpConsentDetail:revokeDialog with irreversible notice, Remove access / Keep it."
+      revoking: "Content.revoke = Revoking — Pay and Remove access disabled while DELETE is in flight."
+      revoke_failed: "Content.revoke = Failed(reason ∈ BankRejected | TokenUnavailable | Network) — the bank did NOT confirm the DELETE (anything but 2xx/404). Local row, revokedAt, refresh token and sweeping are UNTOUCHED (status still shown, Send money still available). vrpConsentDetail:revokeFailedBanner (live region) with 'Your bank didn't confirm the cancellation. Sweeping is still active.' + Retry (vrpConsentDetail:revokeRetryButton) which re-runs the DELETE (NFR-006)."
+      unusable: "Unusable — consent Authorised but payer is not a 14-char UK.OBIE.SortCodeAccountNumber (e.g. a card chosen at the bank). vrpConsentDetail:unusableState."
+      ended: "Ended(payeeName, payments) — revokedAt set (only ever after a bank-confirmed DELETE) or status Revoked/Rejected/Cancelled/Expired/Consumed. vrpConsentDetail:endedState. A failed DELETE never reaches Ended — it stays in revoke_failed."
+      not_found: "NotFound — no local row. vrpConsentDetail:notFoundState."
+    state_model:
+      VrpConsentDetailViewModel:
+        base: "BaseViewModel<VrpConsentDetailState, VrpConsentDetailEvent, VrpConsentDetailAction>"
+        state:
+          name: VrpConsentDetailState
+          fields:
+            consentId: { type: String, default: "savedStateHandle[consentId].orEmpty()" }
+            uiState: { type: VrpConsentDetailUiState, default: Loading }
+          private_fields:
+            readBackPayments: "mutableSetOf<String>() — payments already refreshed this visit"
+        ui_state:
+          members:
+            - { name: Loading }
+            - name: Content
+              fields:
+                payeeName: String
+                payer: "AccountIdentity?"
+                status: ConsentStatus
+                validUntil: "String?"
+                syncedAt: "Instant?"
+                perPaymentCeilingAmount: String
+                limits: "List<LimitRowUi(periodType, ceilingAmount)>"
+                periodicLimitUsage: "PeriodicLimitUsageUi?(periodType, sentAmount, ceilingAmount, remainingAmount, sentAmountFraction)"
+                payments: "List<PaymentRowUi(localId, sentAmount, status, sentOn)>"
+                revoke: { type: RevokePhase, default: Idle, values: [Idle, Confirming, Revoking, "Failed(reason: RevokeFailureReason)"] }
+              derived:
+                canPay: "status == Authorised && revoke != Revoking"
+                canRevoke: "revoke != Revoking && status in [Authorised, AwaitingAuthorisation]"
+                revokeFailed: "revoke is Failed"
+            - { name: Unusable }
+            - { name: Ended, fields: { payeeName: String, payments: "List<PaymentRowUi>" } }
+            - { name: NotFound }
+        revoke_failures:
+          name: RevokeFailureReason
+          note: "Outcomes of DELETE domestic-vrp-consents/{ConsentId} the bank did NOT confirm. Each keeps the local row, revokedAt = null, the VrpAuthSession refresh token and sweeping intact, and lands in Content.revoke = Failed (NFR-006). 2xx and 404 (already gone) are confirmations, never failures. Mirrors consent-detail RevokeFailureReason."
+          types:
+            - { type: BankRejected, http: "4xx except 404 / 5xx", retry: true, message_key: feature_vrp_consents_detail_revoke_failed }
+            - { type: TokenUnavailable, http: "token mint failed", retry: true, message_key: feature_vrp_consents_detail_revoke_failed, note: "client_credentials (payments) token could not be minted for the DELETE" }
+            - { type: Network, retry: true, message_key: feature_vrp_consents_detail_revoke_failed, note: "no response / timeout — outcome unknown, so treated as unconfirmed" }
+        events:
+          name: VrpConsentDetailEvent
+          members:
+            - { name: Revoked, handled_by: "onBack() — pops to the list" }
+        actions:
+          name: VrpConsentDetailAction
+          members:
+            - { name: RevokeRequested, trigger: "Tap Remove access" }
+            - { name: RevokeDismissed, trigger: "Tap Keep it / dismiss dialog" }
+            - { name: RevokeConfirmed, trigger: "Tap Remove access in the dialog" }
+            - { name: RetryRevoke, trigger: "Tap Retry on the revoke-failed banner (only from revoke = Failed)" }
+            - { name: "Internal.ReceiveConsent", internal: true }
+            - { name: "Internal.ReceiveRevokeResult", internal: true }
+        di: [SavedStateHandle, VrpConsentRepository, VrpPaymentRepository]
+    components:
+      - id: detail_top_bar
+        type: top-bar
+        title: "{{payeeName}}"  # i18n: skip — binding
+        navigation_icon: arrow_back
+        on_navigation_click:
+          action: onBack
+          target: back
+          action_contract:
+            effect: navigate
+            description: "Invokes onBack → navController.popBackStack(), returning to the VRP consent list."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - { id: detail_hero, type: hero, role: hero, asset_ref: vrp_consent_detail_hero, aspect_ratio: "16:9", testTag: "vrpConsentDetail:hero", visible: "{{uiState is Content}}", decorative: true }
+      - id: status_header
+        type: section
+        testTag: "vrpConsentDetail:header"
+        children:
+          - { id: status_pill, type: chip, testTag: "vrpConsentDetail:status", label: "{strings.feature_vrp_consents_status_*}" }
+          - { id: validity, type: text, testTag: "vrpConsentDetail:validity", value: "{strings.feature_vrp_consents_detail_valid_until | feature_vrp_consents_detail_no_end_date}" }
+          - { id: synced_at, type: text, testTag: "vrpConsentDetail:syncedAt", value: "{strings.feature_vrp_consents_detail_synced_at}" }
+      - { id: payer_card, type: card, testTag: "vrpConsentDetail:payer", heading: "{strings.feature_vrp_consents_detail_payer}", value: "{{payer ?: strings.feature_vrp_consents_detail_payer_chosen_at_bank}}" }  # i18n: skip — binding with key fallback
+      - id: usage_card
+        type: card
+        visible: "{{periodicLimitUsage != null}}"
+        content:
+          - { id: this_period, type: text, value: "{strings.feature_vrp_consents_detail_this_period}" }
+          - { id: remaining, type: text, testTag: "vrpConsentDetail:remaining", value: "{strings.feature_vrp_consents_detail_remaining}" }
+          - { id: usage_progress, type: progress-bar, value: "{{sentAmountFraction}}" }
+          - { id: consumed, type: text, testTag: "vrpConsentDetail:consumed", value: "{strings.feature_vrp_consents_detail_consumed}" }
+          - { id: advisory_note, type: text, value: "{strings.feature_vrp_consents_detail_remaining_note}" }
+      - id: limits_card
+        type: card
+        heading: "{strings.feature_vrp_consents_detail_limits}"
+        rows:
+          - { testTag: "vrpConsentDetail:perPaymentLimit", label: "{strings.feature_vrp_consents_detail_per_payment_limit}", value: "{{perPaymentCeilingAmount}}" }  # i18n: skip — binding
+          - { testTag: "vrpConsentDetail:periodicLimit", repeat_for: limits, label: "{strings.feature_vrp_consents_detail_periodic_limit}", value: "{{ceilingAmount}}" }  # i18n: skip — binding
+      - id: pay_button
+        type: button
+        variant: filled-pill
+        testTag: "vrpConsentDetail:payButton"
+        icon: Send
+        visible: "{{status == Authorised}}"
+        enabled: "{{canPay}}"
+        label: "{strings.feature_vrp_consents_detail_pay}"
+        on_click:
+          action: onNavigateToPayment
+          target: vrp
+          target_screen: vrp-payment-screen
+          params: { consentId: "{consentId}" }
+          action_contract:
+            effect: navigate
+            description: "Invokes onNavigateToPayment(consentId) → navController.navigateToVrpPayment(consentId), opening the payment form under this consent. Not routed through the ViewModel."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - { id: payment_history, type: list, component: MifosPaymentHistoryList, testTag: "vrpConsentDetail:history", empty_testTag: "vrpConsentDetail:historyEmpty", row_testTag: "vrpConsentDetail:paymentRow:{localId}", title: "{strings.feature_vrp_consents_detail_history_title}", empty_label: "{strings.feature_vrp_consents_detail_history_empty}" }
+      - id: revoke_button
+        type: button
+        testTag: "vrpConsentDetail:revokeButton"
+        enabled: "{{canRevoke}}"
+        label: "{strings.feature_vrp_consents_detail_revoke}"
+        on_click:
+          action: RevokeRequested
+          action_contract:
+            effect: transform_state
+            description: "Moves Content.revoke to Confirming, opening the irreversible confirmation dialog. No call is made."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: revoke_dialog
+        type: dialog
+        testTag: "vrpConsentDetail:revokeDialog"
+        visible: "{{revoke == Confirming}}"
+        title: "{strings.feature_vrp_consents_detail_revoke_title}"
+        body: "{strings.feature_vrp_consents_detail_revoke_body}"
+        body_testTag: "vrpConsentDetail:revokeIrreversibleNotice"
+        actions:
+          - id: revoke_confirm
+            type: button
+            testTag: "vrpConsentDetail:revokeConfirm"
+            label: "{strings.feature_vrp_consents_detail_revoke_confirm}"
+            on_click:
+              action: RevokeConfirmed
+              action_contract:
+                effect: delete
+                external_library_refs: ["VrpConsentRepository.revoke (core/data)", "Vrp.deleteConsent DELETE v4.0/pisp/domestic-vrp-consents/{ConsentId} (Ktor)"]
+                handler: "VrpConsentDetailViewModel.executeRevoke() → VrpConsentRepository.revoke(consentId): RevokeResult → Confirmed: sendEvent(Revoked) · Unconfirmed(reason): Content.revoke = Failed(reason)"
+                writes_to: "DELETE /v4.0/pisp/domestic-vrp-consents/{ConsentId}; then ONLY on 2xx/404: Room vrp_consent.revokedAt = now + VrpAuthSession refresh token removed + VrpTokenProvider.invalidateAccessToken(consentId); else VrpConsentDetailState.uiState = Content(revoke = Failed(reason)) with no local mutation"
+                description: "Sets revoke = Revoking and DELETEs the domestic VRP consent at HSBC. The consent is marked Revoked locally (revokedAt, tokens dropped) ONLY after the bank confirms — 2xx, or 404 = already gone — then emits Revoked (pop to list). Any other result (4xx/5xx, token mint failure, network, timeout) leaves the local row, refresh token and sweeping untouched and moves to revoke = Failed(reason): the revoke-failed banner with Retry (NFR-006, VRP-GAP-7)."
+                action_contract_author: "claude-via-idea-feature-enrich"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: revoke_cancel
+            type: button
+            testTag: "vrpConsentDetail:revokeCancel"
+            label: "{strings.feature_vrp_consents_detail_revoke_cancel}"
+            on_click:
+              action: RevokeDismissed
+              action_contract:
+                effect: transform_state
+                description: "Returns Content.revoke to Idle and closes the dialog without any call."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: revoke_failed_banner
+        type: banner
+        visible: "{{revoke is Failed}}"
+        pinned: top
+        testTag: "vrpConsentDetail:revokeFailedBanner"
+        content_description: "{strings.feature_vrp_consents_detail_revoke_failed}"
+        live_region: polite             # announced to screen readers when it appears (NFR-009)
+        icon: sync_problem
+        style: { background: errorContainer, text_color: onErrorContainer, corner_radius: 12dp, padding: 16dp }
+        message: { value: "{strings.feature_vrp_consents_detail_revoke_failed}", testTag: "vrpConsentDetail:revokeFailedBody" }
+        cta:
+          id: revoke_retry_button
+          type: button
+          variant: text
+          testTag: "vrpConsentDetail:revokeRetryButton"
+          label: "{strings.feature_vrp_consents_detail_revoke_failed_retry}"
+          style: { text_color: onErrorContainer }
+          on_click:
+            action: RetryRevoke
+            action_contract:
+              effect: delete
+              handler: "VrpConsentDetailViewModel.retryRevoke() → executeRevoke()"
+              external_library_refs: ["VrpConsentRepository.revoke (core/data)", "Vrp.deleteConsent DELETE v4.0/pisp/domestic-vrp-consents/{ConsentId} (Ktor)"]
+              writes_to: "DELETE /v4.0/pisp/domestic-vrp-consents/{ConsentId}; Content.revoke = Revoking → on 2xx/404: Room vrp_consent.revokedAt + VrpAuthSession refresh token removed + event Revoked | otherwise Content.revoke = Failed(reason) with no local mutation"
+              description: "Re-runs the revoke DELETE from revoke = Failed. Same confirm gate as Remove access: the consent is marked Revoked locally and Revoked emitted only after the bank confirms (2xx/404); another unconfirmed result returns to Failed with the local row, tokens and sweeping intact. Ignored unless revoke is Failed."
+              action_contract_author: "claude-via-idea-feature-enrich"
+              action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - { id: unusable_state, type: message-state, testTag: "vrpConsentDetail:unusableState", body_testTag: "vrpConsentDetail:unusableBody", title: "{strings.feature_vrp_consents_detail_unusable_title}", body: "{strings.feature_vrp_consents_detail_unusable_body}" }
+      - { id: ended_state, type: message-state, testTag: "vrpConsentDetail:endedState", title: "{{payeeName}}", body: "{strings.feature_vrp_consents_detail_ended}" }  # i18n: skip — payee binding
+      - { id: not_found_state, type: message-state, testTag: "vrpConsentDetail:notFoundState", title: "{strings.feature_vrp_consents_detail_error_title}", body: "{strings.feature_vrp_consents_detail_not_found}" }
+
+  # ═════════════════════════════════════════════════════════════════════
+  - id: vrp-setup-screen
+    name: VrpSetup
+    module: ":feature:vrp:vrp-setup"
+    route: VrpSetupRoute
+    archetype: form
+    title: "{strings.feature_vrp_setup_title | feature_vrp_setup_review_title}"
+    description: >
+      KptScaffold with KptTopAppBar (back); title switches to 'Review VRP' in the review phase. Form
+      page: Pay from (MifosAccountPicker + 'Choose at my bank' + card warning), Pay to
+      (MifosPayeeAvatarRow + 'Pay new' with name / sort code / account number), Maximum amount per
+      payment, Maximum amount you can send + per {period} dropdown, Stop on (optional end date with
+      Clear + earliest-date hint, DatePickerDialog). Pinned Continue. Review page: parties card, limits
+      card (Up to … per payment / per period, validity), irreversible notice, staging failure notice;
+      pinned 'Continue to your bank', 'Protected by UK Open Banking', Back.
+    states: [loading, content, review, staging, staging_failed, no_eligible_payers, error]
+    initial_state: loading
+    state_descriptions:
+      loading: "Loading — vrpSetup:loadingSkeleton (accounts overview loading)."
+      content: "Content(phase = Form) — vrpSetup:form; Continue enabled when canContinue."
+      review: "Content(phase = Review) — vrpSetup:review."
+      staging: "Content.staging = Staging — confirm and back disabled while POST consent + authorize URL build run."
+      staging_failed: "Content.staging = Failed(NetworkUnavailable | BankRefused) — vrpSetup:reviewError notice on the review page; confirm re-enabled."
+      no_eligible_payers: "NoEligiblePayers — overview Empty or no account whose HSBC product can be a VrpPayer. vrpSetup:noAccountsState."
+      error: "Error(AccountsUnavailable | NetworkUnavailable) — vrpSetup:errorState with Retry."
+    state_model:
+      VrpSetupViewModel:
+        base: "BaseViewModel<VrpSetupState, VrpSetupEvent, VrpSetupAction>"
+        state:
+          name: VrpSetupState
+          fields:
+            uiState: { type: VrpSetupUiState, default: Loading }
+        ui_state:
+          members:
+            - { name: Loading }
+            - name: Content
+              fields:
+                phase: { type: SetupPhase, values: [Form, Review] }
+                form: SetupFormUi
+                staging: { type: StagingUi, default: NotStarted, values: [NotStarted, Staging, "Failed(StagingFailure: NetworkUnavailable | BankRefused)"] }
+              derived:
+                isStaging: "staging == Staging"
+                canContinue: "!isStaging && form.isComplete"
+            - { name: NoEligiblePayers }
+            - { name: Error, fields: { kind: "VrpSetupErrorKind (AccountsUnavailable | NetworkUnavailable)" } }
+        form_model:
+          SetupFormUi:
+            payerOptions: { type: "List<AccountWithBalance>", default: "emptyList()" }
+            selectedPayerId: { type: "String?", default: "null" }
+            chooseAtBank: { type: Boolean, default: "false" }
+            payerExpanded: { type: Boolean, default: "false" }
+            payeeOptions: { type: "List<BeneficiaryItem>", default: "emptyList()" }
+            selectedPayeeId: { type: "String?", default: "null" }
+            payNewSelected: { type: Boolean, default: "false" }
+            newPayeeName: { type: String, default: '""' }
+            newPayeeNameProblem: { type: "PayeeProblem?", default: "null" }
+            newPayeeSortCode: { type: String, default: '""' }
+            newPayeeSortCodeProblem: { type: "PayeeProblem?", default: "null" }
+            newPayeeAccountNumber: { type: String, default: '""' }
+            newPayeeAccountNumberProblem: { type: "PayeeProblem?", default: "null" }
+            payeeProblem: { type: "PayeeProblem?", default: "null" }
+            perPaymentAmount: { type: String, default: '""' }
+            perPaymentProblem: { type: "AmountProblem?", default: "null" }
+            periodType: { type: PeriodType, default: Month, values: [Day, Week, Fortnight, Month, HalfYear, Year] }
+            periodicAmount: { type: String, default: '""' }
+            periodicProblem: { type: "AmountProblem?", default: "null" }
+            validTo: { type: "LocalDate?", default: "null" }
+            datePickerOpen: { type: Boolean, default: "false" }
+            earliestSelectableDate: { type: LocalDate, default: "todayUtc() + 2 days" }
+            derived:
+              hasPayer: "chooseAtBank || selectedPayerId != null"
+              hasPayee: "selectedPayeeId != null || payNewSelected"
+              payeeIdentification: "payNew ? sortCodeDigits + accountDigits : selectedPayee.identification"
+              isComplete: "hasPayer && hasPayee && amounts valid && ordering valid && payee != payer && (new payee name/sort/account valid)"
+        validation:
+          amount: "checkAmount — blank → Missing; unparseable → NotANumber; < 1 minor unit (£0.01) → BelowMinimum"
+          ceiling_ordering: "checkOrdering — perPayment >= periodic → NotBelowPeriodic (shown on the per-payment field); per-payment ceiling must be strictly below the periodic ceiling"
+          currency: "Both ceilings are GBP (LIMIT_CURRENCY); interactionType UK.OBIE.VRPType.Sweeping; exactly one periodic limit is sent"
+          end_date: "optional validTo; selectable only when date >= todayUtc() + 2 days (MIN_DAYS_AHEAD = 2, UTC); year range today..today+10; re-checked at selection and the floor recomputed when the picker opens (form can sit open across midnight)"
+          payee_name: "non-blank (new payee only)"
+          sort_code: "digits-only length == 6"
+          account_number: "digits-only length == 8"
+          payee_vs_payer: "payee digits == payer identification digits → SameAsPayer (only when a payer account is named)"
+          payers: "accounts whose HsbcProductCapability supports AccountEndpoint.VrpPayer and are not refused by AccountCapabilityRegistry"
+        events:
+          name: VrpSetupEvent
+          members:
+            - { name: LaunchAuthorisation, params: { url: String }, handled_by: "onLaunchAuthorisation → BrowserLauncher.launch(url)" }
+        actions:
+          name: VrpSetupAction
+          members:
+            - { name: RetryLoad }
+            - { name: PayerToggled }
+            - { name: PayerSelected, params: { accountId: String } }
+            - { name: ChooseAtBankSelected }
+            - { name: PayeeSelected, params: { payeeId: String } }
+            - { name: PayNewSelected }
+            - { name: NewPayeeNameChanged, params: { value: String } }
+            - { name: NewPayeeSortCodeChanged, params: { value: String } }
+            - { name: NewPayeeAccountNumberChanged, params: { value: String } }
+            - { name: PerPaymentAmountChanged, params: { value: String } }
+            - { name: PeriodTypeSelected, params: { periodType: PeriodType } }
+            - { name: PeriodicAmountChanged, params: { value: String } }
+            - { name: DatePickerOpened }
+            - { name: DatePickerDismissed }
+            - { name: ValidToSelected, params: { date: LocalDate } }
+            - { name: ValidToCleared }
+            - { name: Continue }
+            - { name: BackToForm }
+            - { name: StageConsent }
+            - { name: ReceiveAuthorisationUrl, internal: true }
+        di: [AccountsOverviewRepository, BeneficiariesRepository, AccountCapabilityRegistry, VrpConsentRepository, VrpAuthRepository]
+    components:
+      - id: setup_top_bar
+        type: top-bar
+        title: "{strings.feature_vrp_setup_title}"
+        navigation_icon: arrow_back
+        on_navigation_click:
+          action: onBack
+          target: back
+          action_contract:
+            effect: navigate
+            description: "Invokes onBack → navController.popBackStack(), returning to the VRP consent list; the form is discarded."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: payer_picker
+        type: account-picker
+        component: MifosAccountPicker
+        testTag: "vrpSetup:payerPicker"
+        label: "{strings.feature_vrp_setup_payer_label}"
+        on_toggle:
+          action: PayerToggled
+          action_contract:
+            effect: transform_state
+            description: "Toggles payerExpanded to show or hide the VRP-capable payer accounts."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+        on_click:
+          action: PayerSelected
+          action_contract:
+            effect: transform_state
+            description: "Selects the payer account, clears choose-at-bank, collapses the picker, re-checks payee-vs-payer and switches the payee list to that account's beneficiaries."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: payer_bank_choice
+        type: list_item
+        component: MifosBankChoiceRow
+        testTag: "vrpSetup:payerBankChoice"
+        label: "{strings.feature_vrp_setup_payer_choose_at_bank}"
+        supporting: "{strings.feature_vrp_setup_payer_choose_at_bank_supporting}"
+        on_click:
+          action: ChooseAtBankSelected
+          action_contract:
+            effect: transform_state
+            description: "Sets chooseAtBank = true and clears selectedPayerId; the consent is staged without a DebtorAccount and the payer is picked at HSBC."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - { id: payer_card_warning, type: banner, testTag: "vrpSetup:payerCardWarning", visible: "{{chooseAtBank}}", message: "{strings.feature_vrp_setup_payer_card_warning}" }
+      - id: payee_row
+        type: avatar-row
+        component: MifosPayeeAvatarRow
+        testTag: "vrpSetup:payeeRow"
+        label: "{strings.feature_vrp_setup_payee_label}"
+        on_click:
+          action: PayeeSelected
+          action_contract:
+            effect: transform_state
+            description: "Chooses a saved payee, wipes any typed new-payee fields and re-checks that the payee is not the payer account."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+        on_pay_new:
+          action: PayNewSelected
+          testTag: "vrpSetup:payeePayNew"
+          action_contract:
+            effect: transform_state
+            description: "Opens empty name / sort code / account number fields for a new payee, clearing any saved-payee selection and payee problems."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - { id: payee_identification, type: text, testTag: "vrpSetup:payeeIdentification", visible: "{{selectedPayee != null}}", value: "{{selectedPayee.identification}}" }  # i18n: skip — binding
+      - { id: payee_error, type: text, testTag: "vrpSetup:payeeError", visible: "{{payeeProblem == SameAsPayer}}", value: "{strings.feature_vrp_setup_payee_error_same}" }
+      - { id: new_payee_name, type: text_field, testTag: "vrpSetup:newPayeeName", visible: "{{payNewSelected}}", label: "{strings.feature_vrp_setup_payee_new_name_label}", error: "{strings.feature_vrp_setup_payee_error_name}", on_change: NewPayeeNameChanged }
+      - { id: new_payee_sort_code, type: text_field, testTag: "vrpSetup:newPayeeSortCode", visible: "{{payNewSelected}}", keyboard: number, label: "{strings.feature_vrp_setup_payee_new_sort_code_label}", error: "{strings.feature_vrp_setup_payee_error_sort_code}", on_change: NewPayeeSortCodeChanged }
+      - { id: new_payee_account_number, type: text_field, testTag: "vrpSetup:newPayeeAccountNumber", visible: "{{payNewSelected}}", keyboard: number, label: "{strings.feature_vrp_setup_payee_new_account_number_label}", error: "{strings.feature_vrp_setup_payee_error_account_number}", on_change: NewPayeeAccountNumberChanged }
+      - { id: per_payment_amount, type: text_field, testTag: "vrpSetup:perPaymentAmount", error_testTag: "vrpSetup:perPaymentError", keyboard: decimal, label: "{strings.feature_vrp_setup_per_payment_label}", errors: { Missing: "{strings.feature_vrp_setup_amount_error_missing}", NotANumber: "{strings.feature_vrp_setup_amount_error_decimals}", BelowMinimum: "{strings.feature_vrp_setup_amount_error_min}", NotBelowPeriodic: "{strings.feature_vrp_setup_amount_error_ordering}" }, on_change: PerPaymentAmountChanged }
+      - { id: periodic_amount, type: text_field, testTag: "vrpSetup:periodicAmount", error_testTag: "vrpSetup:periodicError", keyboard: decimal, label: "{strings.feature_vrp_setup_periodic_label}", on_change: PeriodicAmountChanged }
+      - id: period_dropdown
+        type: dropdown
+        testTag: "vrpSetup:periodDropdown"
+        option_testTag: "vrpSetup:periodOption:{period}"
+        label: "{strings.feature_vrp_setup_period_label}"
+        options: [Day, Week, Fortnight, Month, HalfYear, Year]
+        on_click:
+          action: PeriodTypeSelected
+          action_contract:
+            effect: transform_state
+            description: "Sets the periodic ceiling's period type (default Month); every PeriodType entry is offered."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: valid_to_row
+        type: date-field
+        testTag: "vrpSetup:validToRow"
+        label: "{strings.feature_vrp_setup_valid_to_label}"
+        empty_value: "{strings.feature_vrp_setup_valid_to_none}"
+        hint: { testTag: "vrpSetup:validToHint", text: "{strings.feature_vrp_setup_valid_to_hint}" }
+        on_click:
+          action: DatePickerOpened
+          action_contract:
+            effect: transform_state
+            description: "Opens the end-date picker and recomputes earliestSelectableDate = today (UTC) + 2 days so a form left open across midnight cannot pick a stale floor."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+        on_clear:
+          action: ValidToCleared
+          testTag: "vrpSetup:validToClear"
+          action_contract:
+            effect: transform_state
+            description: "Clears validTo so the consent has no end date and closes the picker."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: date_picker
+        type: dialog
+        component: VrpEndDatePickerDialog
+        testTag: "vrpSetup:datePicker"
+        visible: "{{datePickerOpen}}"
+        actions:
+          - id: date_picker_confirm
+            testTag: "vrpSetup:datePickerConfirm"
+            label: "{strings.feature_vrp_setup_date_picker_confirm}"
+            on_click:
+              action: ValidToSelected
+              action_contract:
+                effect: transform_state
+                description: "Accepts the UTC date only if it is on or after today+2 (re-checked now); otherwise closes the picker and refreshes the earliest selectable date."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: date_picker_cancel
+            testTag: "vrpSetup:datePickerCancel"
+            label: "{strings.feature_vrp_setup_date_picker_cancel}"
+            on_click:
+              action: DatePickerDismissed
+              action_contract:
+                effect: transform_state
+                description: "Closes the end-date picker without changing validTo."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: continue_button
+        type: button
+        variant: filled-pill
+        testTag: "vrpSetup:continueButton"
+        pinned: bottom
+        visible: "{{phase == Form}}"
+        enabled: "{{canContinue}}"
+        label: "{strings.feature_vrp_setup_continue}"
+        on_click:
+          action: Continue
+          action_contract:
+            effect: transform_state
+            description: "Re-validates every field (amounts, ordering, payee vs payer, new-payee fields), closes picker and dropdown, and moves to the Review phase only when the form is complete."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: review_page
+        type: section
+        testTag: "vrpSetup:review"
+        visible: "{{phase == Review}}"
+        children:
+          - { id: review_payer, type: text, testTag: "vrpSetup:reviewPayer", label: "{strings.feature_vrp_setup_review_payer}" }
+          - { id: review_payee, type: text, testTag: "vrpSetup:reviewPayee", label: "{strings.feature_vrp_setup_review_payee}" }
+          - { id: review_per_payment, type: text, testTag: "vrpSetup:reviewPerPayment", value: "{strings.feature_vrp_setup_review_up_to} … {strings.feature_vrp_setup_review_per_payment}" }
+          - { id: review_periodic, type: text, testTag: "vrpSetup:reviewPeriodic", value: "{strings.feature_vrp_setup_review_up_to} … {strings.feature_vrp_setup_review_per_period}" }
+          - { id: review_validity, type: text, testTag: "vrpSetup:reviewValidity", value: "{strings.feature_vrp_setup_review_validity | feature_vrp_setup_review_no_end_date}" }
+          - { id: review_irreversible, type: banner, testTag: "vrpSetup:reviewIrreversible", message: "{strings.feature_vrp_setup_review_irreversible}" }
+          - { id: review_error, type: banner, testTag: "vrpSetup:reviewError", visible: "{{staging is Failed}}", message: "{strings.feature_vrp_setup_review_error_network | feature_vrp_setup_review_error_server}" }
+      - id: review_confirm
+        type: button
+        variant: filled-pill
+        testTag: "vrpSetup:reviewConfirm"
+        pinned: bottom
+        visible: "{{phase == Review}}"
+        enabled: "{{!isStaging}}"
+        label: "{strings.feature_vrp_setup_review_confirm}"
+        protected_notice: "{strings.feature_vrp_setup_review_protected}"
+        on_click:
+          action: StageConsent
+          action_contract:
+            effect: call_api
+            external_library_refs: ["VrpConsentRepository.stageConsent (core/data)", "VrpAuthRepository.beginAuthorisation (core/data)", "Vrp.createConsent POST v4.0/pisp/domestic-vrp-consents (Ktor, detached JWS)", "BrowserLauncher"]
+            description: "Guards against double-tap and incomplete form, sets staging = Staging, stages the consent (UUID idempotency key) then builds the authorize URL; success emits LaunchAuthorisation(url), failure sets Failed(NetworkUnavailable | BankRefused)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: review_back
+        type: button
+        variant: text
+        testTag: "vrpSetup:reviewBack"
+        visible: "{{phase == Review}}"
+        enabled: "{{!isStaging}}"
+        label: "{strings.feature_vrp_setup_review_back}"
+        on_click:
+          action: BackToForm
+          action_contract:
+            effect: transform_state
+            description: "Returns to the Form phase with every entered value intact and drops any staging failure notice."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - { id: no_accounts_state, type: message-state, testTag: "vrpSetup:noAccountsState", title: "{strings.feature_vrp_setup_no_accounts_title}", body: "{strings.feature_vrp_setup_no_accounts_body}" }
+      - id: setup_error_state
+        type: error-state
+        testTag: "vrpSetup:errorState"
+        title: "{strings.feature_vrp_setup_error_title}"
+        body: "{strings.feature_vrp_setup_error_body}"
+        cta_testTag: "vrpSetup:retryButton"
+        on_click:
+          action: RetryLoad
+          action_contract:
+            effect: call_api
+            external_library_refs: ["AccountsOverviewRepository.refresh (core/data, Store5)"]
+            description: "Calls accountsOverviewRepository.refresh() so the payer stream re-fetches accounts and balances; the screen re-renders from the new ScreenState."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  # ═════════════════════════════════════════════════════════════════════
+  - id: vrp-callback-screen
+    name: VrpCallback
+    module: ":feature:vrp:vrp-callback"
+    route: "VrpCallbackRoute(redirectUrl)"
+    archetype: loading
+    title: "{strings.feature_vrp_callback_title}"
+    description: >
+      Root-level screen. KptScaffold with a centre-aligned 'Setting up' top bar and no back icon.
+      Working page (spinner + stage message) while validating / exchanging / confirming; terminal pages
+      for Success (payee named), Unusable (card or non-sort-code payer chosen at the bank), Declined
+      (the customer said no at the bank — neutral copy, never the security/failure message, DEF-006)
+      and Failed (kind-specific message + optional 'Reference: …'). The app logo sits above the
+      working spinner so the redirect back from the bank visibly lands in this app. Bottom bar:
+      'Start again' (→ VrpSetup) + 'Close' where starting again can help, otherwise a single 'Done'
+      (→ the new consent's VrpConsentDetail). DEF-010: outcomes return to the VRP flow, never Home.
+    states: [working, success, unusable, declined, failed]
+    initial_state: working
+    state_descriptions:
+      working: "Working(stage ∈ Validating | Exchanging | Confirming) — vrpCallback:working + vrpCallback:workingMessage + vrpCallback:logo; no actions."
+      success: "Success(consentId, payeeName) — vrpCallback:success / successBody; Done opens VrpConsentDetail(consentId)."
+      unusable: "Unusable(consentId) — vrpCallback:unusable; Start again (→ VrpSetup) + Close (→ VrpConsentDetail(consentId))."
+      declined: "Declined — customer declined at the bank (OAuth error=access_denied). vrpCallback:declined / declinedBody: neutral 'You declined at your bank, no limits were set up'. NO security/failure wording, NO support reference (DEF-006). Start again (→ VrpSetup) + Close (→ VrpConsentList)."
+      failed: "Failed(kind, supportReference) — vrpCallback:failed / failedBody / supportReference. ConfirmationFailed reuses the success title and offers only Done (→ VrpConsentDetail(storedConsentId)); other kinds offer Start again (→ VrpSetup) + Close (→ VrpConsentList)."
+    state_model:
+      VrpCallbackViewModel:
+        base: "BaseViewModel<VrpCallbackState, VrpCallbackEvent, VrpCallbackAction>"
+        state:
+          name: VrpCallbackState
+          fields:
+            redirectUrl: { type: String, default: "savedStateHandle[redirectUrl].orEmpty()" }
+            uiState: { type: VrpCallbackUiState, default: "Working(Validating)" }
+          private_fields:
+            storedConsentId: "String? — set once the credential is persisted"
+        ui_state:
+          members:
+            - { name: Working, fields: { stage: "CallbackStage (Validating | Exchanging | Confirming)" } }
+            - { name: Success, fields: { consentId: String, payeeName: String } }
+            - { name: Unusable, fields: { consentId: String } }
+            - { name: Declined, note: "validateCallback → AccessDenied (customer chose not to approve). A distinct UiState, NOT a CallbackErrorKind — a decline is a choice, not an error (DEF-006)." }
+            - { name: Failed, fields: { kind: CallbackErrorKind, supportReference: { type: String, default: '""' } } }
+        errors:
+          name: CallbackErrorKind
+          types:
+            - { type: CallbackInvalid, from: "SecurityError | NoPending | MissingCode | validation Error  # AccessDenied is NOT here — it maps to UiState.Declined", message_key: feature_vrp_callback_failed_invalid, start_again: true }
+            - { type: CodeExpiredOrUsed, from: "exchange 400 / 401", message_key: feature_vrp_callback_failed_expired, start_again: true }
+            - { type: AuthorityNotSaved, from: "exchange other errors (credential not persisted)", message_key: feature_vrp_callback_failed_not_saved, start_again: true }
+            - { type: ConfirmationFailed, from: "consent read-back failed after the credential was stored", message_key: feature_vrp_callback_failed_confirmation, start_again: false, leaves_usable_consent: true }
+            - { type: NetworkUnavailable, from: "exchange transport failure", message_key: feature_vrp_callback_failed_network, start_again: true }
+        events:
+          name: VrpCallbackEvent
+          members:
+            - { name: Completed, params: { consentId: String }, handled_by: "onCompleted(consentId) → root navigateToAuthenticatedGraph then navigateToVrpConsentDetail(consentId) (back stack: Home › VrpConsentList › VrpConsentDetail) — DEF-010" }
+            - { name: Abandoned, handled_by: "onAbandoned → root navigateToAuthenticatedGraph then navigateToVrpConsentList() — DEF-010" }
+            - { name: RestartSetup, handled_by: "onRestartSetup → root navigateToAuthenticatedGraph then navigateToVrpConsentList() + navigateToVrpSetup() (back stack: Home › VrpConsentList › VrpSetup) — DEF-010" }
+        actions:
+          name: VrpCallbackAction
+          members:
+            - { name: Dismiss, trigger: "Tap Done / Close" }
+            - { name: StartAgain, trigger: "Tap Start again (Unusable, Declined, Failed except ConfirmationFailed)" }
+            - { name: "Internal.ReceiveCredentialResult", internal: true }
+            - { name: "Internal.ReceiveConsentResult", internal: true }
+        di: [SavedStateHandle, VrpAuthRepository, VrpConsentRepository]
+    components:
+      - { id: callback_top_bar, type: top-bar, variant: center-aligned, title: "{strings.feature_vrp_callback_title}", navigation_icon: none }
+      - { id: callback_logo, type: image, role: logo, asset_ref: vrp_callback_logo, testTag: "vrpCallback:logo", visible: "{{uiState is Working}}", content_description: "{strings.feature_vrp_callback_logo_description}" }
+      - { id: working_page, type: progress-panel, testTag: "vrpCallback:working", message_testTag: "vrpCallback:workingMessage", message: "{strings.feature_vrp_callback_validating | feature_vrp_callback_exchanging | feature_vrp_callback_confirming}" }
+      - { id: success_page, type: success-state, testTag: "vrpCallback:success", body_testTag: "vrpCallback:successBody", title: "{strings.feature_vrp_callback_success_title}", body: "{strings.feature_vrp_callback_success_body}" }
+      - { id: unusable_page, type: message-state, testTag: "vrpCallback:unusable", title: "{strings.feature_vrp_callback_unusable_title}", body: "{strings.feature_vrp_callback_unusable_body}" }
+      - { id: declined_page, type: message-state, tone: neutral, testTag: "vrpCallback:declined", body_testTag: "vrpCallback:declinedBody", title: "{strings.feature_vrp_callback_declined_title}", body: "{strings.feature_vrp_callback_declined_body}", note: "Neutral icon/tone — never the error-state styling, never a support reference (DEF-006)." }
+      - { id: failed_page, type: error-state, testTag: "vrpCallback:failed", body_testTag: "vrpCallback:failedBody", title: "{strings.feature_vrp_callback_failed_title | feature_vrp_callback_success_title}", body: "{strings.feature_vrp_callback_failed_*}", reference: { testTag: "vrpCallback:supportReference", text: "{strings.feature_vrp_callback_support_reference}" } }
+      - id: start_again_button
+        type: button
+        variant: filled-pill
+        testTag: "vrpCallback:startAgainButton"
+        visible: "{{uiState is Unusable || uiState is Declined || (uiState is Failed && kind != ConfirmationFailed)}}"
+        label: "{strings.feature_vrp_callback_start_again}"
+        on_click:
+          action: StartAgain
+          target: vrp
+          target_screen: vrp-setup-screen
+          action_contract:
+            effect: navigate
+            description: "Discards any pending authorisation (VrpAuthRepository.discardAuthorisation) and emits RestartSetup; the root navigator enters the authenticated graph and opens VrpSetupRoute on top of VrpConsentList, so the label's promise holds (DEF-010)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: dismiss_button
+        type: button
+        variant: "text 'Close' beside Start again, otherwise filled-pill 'Done'"
+        testTag: "vrpCallback:dismissButton"
+        visible: "{{uiState !is Working}}"
+        label: "{strings.feature_vrp_callback_dismiss | feature_vrp_callback_done}"
+        on_click:
+          action: Dismiss
+          target: vrp
+          target_screen: "vrp-consent-detail-screen | vrp-consent-list-screen"
+          params: { consentId: "{consentId}" }
+          action_contract:
+            effect: navigate
+            description: "Leaves the callback: emits Completed(consentId) for Success, Unusable or ConfirmationFailed with a stored credential → root opens VrpConsentDetailRoute(consentId) of the new consent; Declined and the other Failed kinds emit Abandoned → root opens VrpConsentList. Never lands on Home (DEF-010)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  # ═════════════════════════════════════════════════════════════════════
+  - id: vrp-payment-screen
+    name: VrpPayment
+    module: ":feature:vrp:vrp-payment"
+    route: "VrpPaymentRoute(consentId)"
+    archetype: form
+    title: "{strings.feature_vrp_payment_title | feature_vrp_payment_review_title}"
+    description: >
+      KptScaffold with KptTopAppBar (back); title switches to 'Check this payment' on review. Amount
+      page: 'To {payee}', 'From {payer}', large £ amount entry, inline amount error, 'Up to … in one
+      payment', '… left this {period}' + advisory note; pinned Continue. Review page: AMOUNT, amount,
+      'To {payee}', pinned 'Send payment' + Back. After submission the review page becomes Sent
+      ('Payment sent', settled or processing copy, Check again + Done) or Failed ('Payment not sent',
+      kind copy, 'Reference: …', Retry only for network + Done).
+    states: [loading, content, review, confirming_funds, sending, sent, failed, unusable, error]
+    initial_state: loading
+    state_descriptions:
+      loading: "Loading — vrpPayment:loadingSkeleton (consent not yet observed)."
+      content: "Content(phase = Amount) — vrpPayment:amountPage."
+      review: "Content(phase = Review, outcome = NotStarted) — vrpPayment:reviewPage."
+      confirming_funds: "outcome = ConfirmingFunds — POST domestic-vrp-consents/{ConsentId}/funds-confirmation runs BEFORE any domestic-vrps submit (DEF-005); vrpPayment:confirmingFunds 'Checking the money is available…'; Send payment and Back disabled."
+      sending: "outcome = Sending — funds confirmed available; POST domestic-vrps in flight; Send payment and Back disabled."
+      sent: "outcome = Sent(payment) — vrpPayment:sentState; Check again (refreshButton) only while not settled; Done."
+      failed: "outcome = Failed(kind, supportReference) — vrpPayment:failedState / failedBody / supportReference; Retry (retrySubmissionButton) only for NetworkUnavailable; Done."
+      unusable: "Unusable — consent revoked, not Authorised, or payer not a 14-char sort-code account. vrpPayment:unusableState."
+      error: "Error(ConsentUnavailable) — no local consent row. vrpPayment:errorState + Retry."
+    state_model:
+      VrpPaymentViewModel:
+        base: "BaseViewModel<VrpPaymentState, VrpPaymentEvent, VrpPaymentAction>"
+        state:
+          name: VrpPaymentState
+          fields:
+            consentId: { type: String, default: "savedStateHandle[consentId].orEmpty()" }
+            uiState: { type: VrpPaymentUiState, default: Loading }
+          private_fields:
+            idempotencyKey: "Uuid.random() — fixed for the ViewModel's life; instruction id = VRPINSTR + key.take(20), end-to-end id = VRPE2E + key.take(20)"
+        ui_state:
+          members:
+            - { name: Loading }
+            - name: Content
+              fields:
+                phase: { type: PaymentPhase, values: [Amount, Review] }
+                form: "PaymentFormUi(payeeName, payerName, amount, problem: AmountProblem?, perPaymentCeilingAmount, remainingAmount, periodType)"
+                outcome: { type: SubmissionUi, default: NotStarted, values: [NotStarted, ConfirmingFunds, Sending, "Sent(payment)", "Failed(kind, supportReference)"] }
+              derived:
+                inFlight: "outcome is ConfirmingFunds || outcome is Sending"
+                canContinue: "!inFlight && form.isUsable (amount non-blank && problem == null)"
+            - { name: Unusable }
+            - { name: Error, fields: { kind: "VrpPaymentErrorKind (ConsentUnavailable | StorageUnavailable)" } }
+        validation:
+          amount: "blank → no problem (Continue disabled); unparseable → NotANumber; < 1 minor unit → BelowMinimum (£0.01); > maximumIndividualAmount → OverPerPayment; > remaining of the binding ceiling → OverRemaining"
+          binding_ceiling: "usage.minByOrNull { remaining } — the periodic ceiling closest to exhaustion; remaining computed client-side from settled payments in the current UTC period window"
+          currency: "payment currency = consent maximumIndividualAmount currency"
+        errors:
+          name: PaymentFailureKind
+          types:
+            - { type: InsufficientFunds, from: "funds-confirmation FundsAvailable == false (no domestic-vrps call is made)", retry: false, message_key: feature_vrp_payment_review_error_insufficient_funds }
+            - { type: OverLimit, from: "OBIE outside-control-parameters code", retry: false, message_key: feature_vrp_payment_review_error_limit }
+            - { type: ConsentUnusable, from: "403", retry: false, message_key: feature_vrp_payment_review_error_unusable }
+            - { type: NeedsReauthorisation, from: "401", retry: false, message_key: feature_vrp_payment_review_error_reauthorise }
+            - { type: Rejected, from: "other client/server errors", retry: false, message_key: feature_vrp_payment_review_error_rejected }
+            - { type: Unconfirmed, from: "Serialization", retry: false, message_key: feature_vrp_payment_review_error_unconfirmed }
+            - { type: NetworkUnavailable, from: "NetworkError.Network", retry: true, message_key: feature_vrp_payment_review_error_network }
+        events:
+          name: VrpPaymentEvent
+          members:
+            - { name: Finished, params: { localId: String }, handled_by: "onBack() — pops to the consent detail" }
+        actions:
+          name: VrpPaymentAction
+          members:
+            - { name: RetryLoad }
+            - { name: AmountChanged, params: { value: String } }
+            - { name: Continue }
+            - { name: BackToAmount }
+            - { name: Confirm }
+            - { name: RetrySubmission }
+            - { name: RefreshOutcome }
+            - { name: Done }
+            - { name: "Internal.ReceiveConsent", internal: true }
+            - { name: "Internal.ReceivePaymentResult", internal: true }
+        di: [SavedStateHandle, VrpConsentRepository, VrpPaymentRepository]
+    components:
+      - id: payment_top_bar
+        type: top-bar
+        title: "{strings.feature_vrp_payment_title}"
+        navigation_icon: arrow_back
+        on_navigation_click:
+          action: onBack
+          target: back
+          action_contract:
+            effect: navigate
+            description: "Invokes onBack → navController.popBackStack(), returning to the VRP consent detail."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: amount_page
+        type: section
+        testTag: "vrpPayment:amountPage"
+        visible: "{{phase == Amount}}"
+        children:
+          - { id: payee_line, type: text, value: "{strings.feature_vrp_payment_to}" }
+          - { id: payer_line, type: text, visible: "{{payerName.isNotBlank()}}", value: "{strings.feature_vrp_payment_from}" }
+          - { id: amount_field, type: text_field, testTag: "vrpPayment:amountField", keyboard: decimal, prefix: "{strings.feature_vrp_payment_currency_sign}", placeholder: "{strings.feature_vrp_payment_amount_resting}", on_change: AmountChanged }
+          - { id: amount_error, type: text, testTag: "vrpPayment:amountError", visible: "{{problem != null}}", value: "{strings.feature_vrp_payment_amount_error_decimals | _min | _per_payment | _remaining}" }
+          - { id: per_payment_limit, type: text, testTag: "vrpPayment:perPaymentLimit", value: "{strings.feature_vrp_payment_per_payment_limit}" }
+          - { id: remaining, type: text, testTag: "vrpPayment:remaining", visible: "{{remainingAmount.isNotBlank()}}", value: "{strings.feature_vrp_payment_remaining}" }
+          - { id: remaining_note, type: text, testTag: "vrpPayment:remainingNote", value: "{strings.feature_vrp_payment_remaining_note}" }
+      - id: continue_button
+        type: button
+        variant: filled-pill
+        testTag: "vrpPayment:continueButton"
+        pinned: bottom
+        visible: "{{phase == Amount}}"
+        enabled: "{{canContinue}}"
+        label: "{strings.feature_vrp_payment_continue}"
+        on_click:
+          action: Continue
+          action_contract:
+            effect: transform_state
+            description: "Moves to the Review phase when the amount is usable and nothing is in flight; no network call."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: review_page
+        type: section
+        testTag: "vrpPayment:reviewPage"
+        visible: "{{phase == Review}}"
+        children:
+          - { id: review_amount_label, type: text, value: "{strings.feature_vrp_payment_review_amount}" }
+          - { id: review_amount, type: text, testTag: "vrpPayment:reviewAmount", value: "{{amount}}" }  # i18n: skip — binding
+          - { id: review_payee, type: text, value: "{strings.feature_vrp_payment_to}" }
+          - { id: confirming_funds, type: progress-inline, testTag: "vrpPayment:confirmingFunds", visible: "{{outcome is ConfirmingFunds}}", message: "{strings.feature_vrp_payment_review_confirming_funds}" }
+          - { id: sent_state, type: success-state, testTag: "vrpPayment:sentState", visible: "{{outcome is Sent}}", title: "{strings.feature_vrp_payment_review_sent_title}", body: "{strings.feature_vrp_payment_review_settled | feature_vrp_payment_review_in_progress}" }
+          - { id: failed_state, type: error-state, testTag: "vrpPayment:failedState", body_testTag: "vrpPayment:failedBody", visible: "{{outcome is Failed}}", title: "{strings.feature_vrp_payment_review_failed_title}", body: "{strings.feature_vrp_payment_review_error_*}", reference: { testTag: "vrpPayment:supportReference", text: "{strings.feature_vrp_payment_review_support_reference}" } }
+      - id: confirm_button
+        type: button
+        variant: filled-pill
+        testTag: "vrpPayment:confirmButton"
+        visible: "{{phase == Review && outcome in [NotStarted, ConfirmingFunds, Sending]}}"
+        enabled: "{{!inFlight}}"
+        label: "{strings.feature_vrp_payment_review_confirm}"
+        on_click:
+          action: Confirm
+          action_contract:
+            effect: call_api
+            external_library_refs: ["VrpPaymentRepository.checkFunds (core/data)", "Vrp.checkFunds POST v4.0/pisp/domestic-vrp-consents/{ConsentId}/funds-confirmation (Ktor, detached JWS)", "VrpPaymentRepository.pay (core/data)", "VrpTokenProvider (refresh_token → PSU access token)", "Vrp.createPayment POST v4.0/pisp/domestic-vrps (Ktor, detached JWS)"]
+            writes_to: "Room vrp_payment (upsert on success)"
+            description: "Sets outcome = ConfirmingFunds and calls payments.checkFunds(consentId, amount) FIRST (DEF-005). FundsAvailable == false → Failed(InsufficientFunds) and NO payment is submitted; a funds-check error → Failed(toFailureKind()). Only when funds are available: outcome = Sending and payments.pay(consent, amount, VRPINSTR/VRPE2E ids, idempotencyKey) as the customer; success → Sent(payment) persisted to Room, error → Failed(kind, supportReference)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: back_button
+        type: button
+        variant: text
+        testTag: "vrpPayment:backButton"
+        visible: "{{phase == Review && outcome in [NotStarted, ConfirmingFunds, Sending]}}"
+        enabled: "{{!inFlight}}"
+        label: "{strings.feature_vrp_payment_review_back}"
+        on_click:
+          action: BackToAmount
+          action_contract:
+            effect: transform_state
+            description: "Returns to the Amount phase (ignored while Sending) and resets the outcome to NotStarted; the entered amount is kept."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: refresh_button
+        type: button
+        variant: text
+        testTag: "vrpPayment:refreshButton"
+        visible: "{{outcome is Sent && !outcome.settled}}"
+        label: "{strings.feature_vrp_payment_review_refresh}"
+        on_click:
+          action: RefreshOutcome
+          action_contract:
+            effect: call_api
+            external_library_refs: ["VrpPaymentRepository.refreshStatus (core/data)", "Vrp.getPayment GET v4.0/pisp/domestic-vrps/{DomesticVRPId} (Ktor)"]
+            description: "Re-reads the sent payment's status on a client-credentials token and replaces the outcome with the fresh Sent(payment) or a Failed kind."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: retry_submission_button
+        type: button
+        variant: filled-pill
+        testTag: "vrpPayment:retrySubmissionButton"
+        visible: "{{outcome is Failed && kind == NetworkUnavailable}}"
+        label: "{strings.feature_vrp_payment_review_retry}"
+        on_click:
+          action: RetrySubmission
+          action_contract:
+            effect: call_api
+            external_library_refs: ["VrpPaymentRepository.pay (core/data)"]
+            description: "Resubmits the same payment under the SAME idempotency key so the bank cannot pay twice; only offered for NetworkUnavailable."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: done_button
+        type: button
+        testTag: "vrpPayment:doneButton"
+        visible: "{{outcome is Sent || outcome is Failed}}"
+        label: "{strings.feature_vrp_payment_review_done}"
+        on_click:
+          action: Done
+          target: vrp
+          target_screen: vrp-consent-detail-screen
+          action_contract:
+            effect: navigate
+            description: "Emits Finished(localId) which the screen turns into onBack() — popping back to the consent detail, whose payment history now shows the new row."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - { id: unusable_state, type: message-state, testTag: "vrpPayment:unusableState", body: "{strings.feature_vrp_payment_unusable}" }
+      - id: payment_error_state
+        type: error-state
+        testTag: "vrpPayment:errorState"
+        title: "{strings.feature_vrp_payment_error_title}"
+        body: "{strings.feature_vrp_payment_error_body}"
+        cta_testTag: "vrpPayment:retryButton"
+        on_click:
+          action: RetryLoad
+          action_contract:
+            effect: transform_state
+            external_library_refs: ["VrpConsentRepository.observeById + VrpPaymentRepository.observeUsage (Room)"]
+            description: "Starts another observation of the consent and its usage from Room; a found consent re-renders Content or Unusable."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+# RULE-SCREEN-VISUAL-ASSETS-001 — derived per screen from SCREEN_ARCHETYPES.yaml floors (STEP 5.VISUAL-ASSETS):
+#   vrp-consent-list-screen  (index_list)    → 0 inherited; rows carry no leading imagery, empty state is title+body text (no illustration role)
+#   vrp-consent-detail-screen (detail_screen) → 1 inherited (hero), refined to this consent's subject  [PROTOTYPE_GAPS gap-009]
+#   vrp-setup-screen          (form)          → 0; pure form, no visual role
+#   vrp-callback-screen       (loading)       → 1 inherited (logo)                                    [PROTOTYPE_GAPS gap-010]
+#   vrp-payment-screen        (form)          → 0; pure form, no visual role
+visual_assets:
+  - id: vrp_consent_detail_hero
+    kind: hero
+    role: hero
+    screen: vrp-consent-detail-screen
+    intent: "Calm 16:9 header illustration for a sweeping Variable Recurring Payment: two minimal account cards linked by a gentle looping arrow that passes through a soft rounded ceiling bar (the agreed limit), suggesting money moving regularly but always within a cap. Flat, trustworthy, precise; muted brand palette, generous negative space, no text, no currency symbols, no bank logos."
+    produced_by: /idea-feature-stitch-art
+    states: [content]
+    consistency: none
+  - id: vrp_callback_logo
+    kind: logo
+    role: logo
+    screen: vrp-callback-screen
+    intent: "The Mifos X Open Banking app mark, centred above the working spinner while the bank redirect is validated, exchanged and confirmed — so the return from HSBC visibly lands in this app. Use the real brand mark from the brand kit at ~72dp, no wordmark text sampling."
+    produced_by: /idea-branding
+    states: [working]
+    consistency: none
+
+i18n:
+  en:
+    feature_vrp_consents_list_title: "Variable Recurring Payments"
+    feature_vrp_consents_list_create: "Set up a Variable Recurring Payment"
+    feature_vrp_consents_list_limit_format: "per %1$s"
+    feature_vrp_consents_list_valid_until: "Until %1$s"
+    feature_vrp_consents_list_no_end_date: "No end date"
+    feature_vrp_consents_list_empty_title: "No variable recurring payments"
+    feature_vrp_consents_list_empty_body: "Pay someone regularly without signing in to your bank each time."
+    feature_vrp_consents_list_error_title: "Could not load your Variable Recurring Payments"
+    feature_vrp_consents_list_error_storage: "Something went wrong. Please try again."
+    feature_vrp_consents_list_retry: "Retry"
+    feature_vrp_consents_detail_title: "Variable recurring payment"
+    feature_vrp_consents_detail_payer: "Paid from"
+    feature_vrp_consents_detail_payer_chosen_at_bank: "Chosen at your bank"
+    feature_vrp_consents_detail_limits: "Limits"
+    feature_vrp_consents_detail_per_payment_limit: "Per payment"
+    feature_vrp_consents_detail_periodic_limit: "Per %1$s"
+    feature_vrp_consents_detail_this_period: "This %1$s"
+    feature_vrp_consents_detail_remaining: "%1$s left"
+    feature_vrp_consents_detail_consumed: "%1$s of %2$s used"
+    feature_vrp_consents_detail_remaining_note: "Based on payments made in this app. Your bank has the final say."
+    feature_vrp_consents_detail_synced_at: "Checked %1$s"
+    feature_vrp_consents_detail_valid_until: "Valid until %1$s"
+    feature_vrp_consents_detail_no_end_date: "No end date"
+    feature_vrp_consents_detail_pay: "Send money"
+    feature_vrp_consents_detail_history_title: "Payments"
+    feature_vrp_consents_detail_history_empty: "No payments yet."
+    feature_vrp_consents_detail_revoke: "Remove access"
+    feature_vrp_consents_detail_revoke_title: "Remove access?"
+    feature_vrp_consents_detail_revoke_body: "This stops all future payments and cannot be undone."
+    feature_vrp_consents_detail_revoke_confirm: "Remove access"
+    feature_vrp_consents_detail_revoke_cancel: "Keep it"
+    feature_vrp_consents_detail_revoke_failed: "Your bank didn't confirm the cancellation. Sweeping is still active."
+    feature_vrp_consents_detail_revoke_failed_retry: "Retry"
+    feature_vrp_consents_detail_ended: "This Variable Recurring Payment has ended."
+    feature_vrp_consents_detail_unusable_title: "This Variable Recurring Payment cannot be used"
+    feature_vrp_consents_detail_unusable_body: "The account you chose at your bank cannot make these payments."
+    feature_vrp_consents_detail_not_found: "No record of this Variable Recurring Payment."
+    feature_vrp_consents_detail_error_title: "Could not load this Variable Recurring Payment"
+    feature_vrp_consents_status_awaiting: "Awaiting authorisation"
+    feature_vrp_consents_status_active: "Active"
+    feature_vrp_consents_status_rejected: "Rejected"
+    feature_vrp_consents_status_revoked: "Removed"
+    feature_vrp_consents_status_cancelled: "Cancelled"
+    feature_vrp_consents_status_expired: "Expired"
+    feature_vrp_consents_status_consumed: "Used up"
+    feature_vrp_setup_title: "Setup VRP"
+    feature_vrp_setup_payer_label: "Pay from"
+    feature_vrp_setup_payer_choose_at_bank: "Choose at my bank"
+    feature_vrp_setup_payer_choose_at_bank_supporting: "Pick the account when you approve"
+    feature_vrp_setup_payer_card_warning: "Do not pick a credit card at your bank — card payments are rejected."
+    feature_vrp_setup_payee_label: "Pay to"
+    feature_vrp_setup_payee_pay_new: "Pay new"
+    feature_vrp_setup_payee_new_name_label: "Name"
+    feature_vrp_setup_payee_new_sort_code_label: "Sort code"
+    feature_vrp_setup_payee_new_account_number_label: "Account number"
+    feature_vrp_setup_payee_error_name: "Enter a name for this payee."
+    feature_vrp_setup_payee_error_sort_code: "Enter the 6-digit sort code."
+    feature_vrp_setup_payee_error_account_number: "Enter the 8-digit account number."
+    feature_vrp_setup_payee_error_same: "This is the account you are paying from."
+    feature_vrp_setup_per_payment_label: "Maximum amount per payment"
+    feature_vrp_setup_periodic_label: "Maximum amount you can send"
+    feature_vrp_setup_period_label: "per"
+    feature_vrp_setup_amount_error_missing: "Enter an amount."
+    feature_vrp_setup_amount_error_min: "Enter at least £0.01."
+    feature_vrp_setup_amount_error_decimals: "Use pounds and pence, for example 50.00."
+    feature_vrp_setup_amount_error_ordering: "The total must be more than a single payment."
+    feature_vrp_setup_valid_to_label: "Stop on"
+    feature_vrp_setup_valid_to_none: "No end date"
+    feature_vrp_setup_valid_to_clear: "Clear"
+    feature_vrp_setup_valid_to_hint: "The earliest you can choose is %1$s."
+    feature_vrp_setup_date_picker_confirm: "Select"
+    feature_vrp_setup_date_picker_cancel: "Cancel"
+    feature_vrp_setup_continue: "Continue"
+    feature_vrp_setup_no_accounts_title: "No account can be used"
+    feature_vrp_setup_no_accounts_body: "None of your accounts can set up a Variable Recurring Payment."
+    feature_vrp_setup_error_title: "Could not load your accounts"
+    feature_vrp_setup_error_body: "Something went wrong. Please try again."
+    feature_vrp_setup_retry: "Retry"
+    feature_vrp_setup_review_title: "Review VRP"
+    feature_vrp_setup_review_payer: "From"
+    feature_vrp_setup_review_payee: "To"
+    feature_vrp_setup_review_limits: "Limits"
+    feature_vrp_setup_review_up_to: "Up to"
+    feature_vrp_setup_review_per_payment: "per payment"
+    feature_vrp_setup_review_per_period: "per %1$s"
+    feature_vrp_setup_review_validity: "Valid until %1$s"
+    feature_vrp_setup_review_no_end_date: "No end date"
+    feature_vrp_setup_review_irreversible: "These limits cannot be changed later. Changing them means setting up a new Variable Recurring Payment at your bank."
+    feature_vrp_setup_review_confirm: "Continue to your bank"
+    feature_vrp_setup_review_protected: "Protected by UK Open Banking"
+    feature_vrp_setup_review_back: "Back"
+    feature_vrp_setup_review_error_network: "We could not reach your bank. Nothing has been set up."
+    feature_vrp_setup_review_error_server: "Your bank could not complete this. Nothing has been set up."
+    feature_vrp_callback_title: "Setting up"
+    feature_vrp_callback_validating: "Checking your approval…"
+    feature_vrp_callback_exchanging: "Confirming with your bank…"
+    feature_vrp_callback_confirming: "Almost done…"
+    feature_vrp_callback_success_title: "Variable Recurring Payment set up"
+    feature_vrp_callback_success_body: "You can now pay %1$s from this app without signing in to your bank again."
+    feature_vrp_callback_done: "Done"
+    feature_vrp_callback_unusable_title: "Set up, but not usable"
+    feature_vrp_callback_unusable_body: "The account you chose at your bank cannot make these payments. Set one up again with a different account."
+    feature_vrp_callback_logo_description: "Mifos X Open Banking"
+    feature_vrp_callback_declined_title: "You declined at your bank"
+    feature_vrp_callback_declined_body: "You declined at your bank, no limits were set up."
+    feature_vrp_callback_failed_title: "Setup did not finish"
+    feature_vrp_callback_failed_invalid: "We could not confirm this came from your bank. Nothing has been set up."
+    feature_vrp_callback_failed_expired: "Your bank's approval has expired. Nothing has been set up."
+    feature_vrp_callback_failed_not_saved: "Your bank approved this, but we could not save it on this device. Please contact support and quote the reference below."
+    feature_vrp_callback_failed_confirmation: "Your Variable Recurring Payment is set up. We could not load its details just now — you will find it in your list."
+    feature_vrp_callback_failed_network: "We lost connection before finishing. Nothing has been set up."
+    feature_vrp_callback_support_reference: "Reference: %1$s"
+    feature_vrp_callback_start_again: "Start again"
+    feature_vrp_callback_dismiss: "Close"
+    feature_vrp_payment_title: "Make a payment"
+    feature_vrp_payment_to: "To %1$s"
+    feature_vrp_payment_currency_sign: "£"
+    feature_vrp_payment_amount_resting: "0.00"
+    feature_vrp_payment_from: "From %1$s"
+    feature_vrp_payment_per_payment_limit: "Up to %1$s in one payment"
+    feature_vrp_payment_remaining: "%1$s left this %2$s"
+    feature_vrp_payment_remaining_note: "Based on payments made in this app. Your bank has the final say."
+    feature_vrp_payment_amount_error_min: "Enter at least £0.01."
+    feature_vrp_payment_amount_error_decimals: "Use pounds and pence, for example 50.00."
+    feature_vrp_payment_amount_error_per_payment: "That is more than the %1$s limit for a single payment."
+    feature_vrp_payment_amount_error_remaining: "That is more than the %1$s left this %2$s."
+    feature_vrp_payment_continue: "Continue"
+    feature_vrp_payment_unusable: "This Variable Recurring Payment can no longer be used."
+    feature_vrp_payment_error_title: "Could not load this Variable Recurring Payment"
+    feature_vrp_payment_error_body: "Something went wrong. Please try again."
+    feature_vrp_payment_retry: "Retry"
+    feature_vrp_payment_review_title: "Check this payment"
+    feature_vrp_payment_review_amount: "Amount"
+    feature_vrp_payment_review_confirm: "Send payment"
+    feature_vrp_payment_review_back: "Back"
+    feature_vrp_payment_review_sent_title: "Payment sent"
+    feature_vrp_payment_review_in_progress: "Your bank is processing this payment."
+    feature_vrp_payment_review_settled: "This payment has been sent."
+    feature_vrp_payment_review_refresh: "Check again"
+    feature_vrp_payment_review_done: "Done"
+    feature_vrp_payment_review_failed_title: "Payment not sent"
+    feature_vrp_payment_review_confirming_funds: "Checking the money is available…"
+    feature_vrp_payment_review_error_insufficient_funds: "Your bank says there is not enough money in the account to cover this payment. Nothing has been sent."
+    feature_vrp_payment_review_error_limit: "This is more than your remaining limit for this %1$s."
+    feature_vrp_payment_review_error_unusable: "This Variable Recurring Payment can no longer be used. You will need to set up a new one."
+    feature_vrp_payment_review_error_reauthorise: "Your bank needs you to approve this arrangement again."
+    feature_vrp_payment_review_error_rejected: "Your bank did not accept this payment. No money has left your account."
+    feature_vrp_payment_review_error_unconfirmed: "We could not confirm whether this payment went through. Do not send it again — check your payments in a moment."
+    feature_vrp_payment_review_error_network: "We could not reach your bank. Retrying will not send it twice."
+    feature_vrp_payment_review_support_reference: "Reference: %1$s"
+    feature_vrp_payment_review_retry: "Retry"
+    _note: "Period names (day/week/fortnight/month/half-year/year) are duplicated per module: feature_vrp_consents_period_*, feature_vrp_setup_period_*, feature_vrp_payment_period_*."
+
+known_gaps:
+  - id: VRP-GAP-1
+    severity: should
+    status: spec-healed-source-pending
+    healed_in_spec: "2026-10-21 /idea-plan-preview --heal (DEF-005): VrpPayment Confirm now declares ConfirmingFunds → funds-confirmation → domestic-vrps; InsufficientFunds failure kind added."
+    description: "SOURCE DRIFT — funds confirmation is never performed before a VRP payment in source. VrpPaymentRepository.checkFunds (POST domestic-vrp-consents/{ConsentId}/funds-confirmation) is implemented in core/data but no ViewModel calls it — only test fakes reference it. Close via /kmp-implement vrp."
+  - id: VRP-GAP-2
+    severity: should
+    description: "No instrumented / device tests for any of the four vrp modules — only commonTest and androidUnitTest source sets exist (no androidInstrumentedTest)."
+  - id: VRP-GAP-3
+    severity: should
+    status: spec-healed-source-pending
+    healed_in_spec: "2026-10-21 /idea-plan-preview --heal (DEF-010): Completed(consentId) → VrpConsentDetail, new RestartSetup event → VrpSetup, Abandoned → VrpConsentList."
+    description: "SOURCE DRIFT — after the bank redirect, both VrpCallback outcomes route to navigateToAuthenticatedGraph (Home) in source. Completed(consentId) is ignored by RootNavScreen (onCompleted = { navigateToAuthenticatedGraph }), so the new consent is not opened and 'Start again' does not return to VRP setup. Close via /kmp-implement vrp."
+  - id: VRP-GAP-4
+    severity: could
+    status: spec-healed-source-pending
+    healed_in_spec: "2026-10-21 /idea-plan-preview --heal (DEF-006): AccessDenied → UiState.Declined with neutral copy; CallbackInvalid no longer includes it."
+    description: "SOURCE DRIFT — VrpCallback collapses AccessDenied (customer declined at the bank) and NoPending into CallbackInvalid ('We could not confirm this came from your bank'), so a deliberate decline reads as a security failure. Close via /kmp-implement vrp."
+  - id: VRP-GAP-5
+    severity: could
+    description: "VrpPaymentErrorKind.StorageUnavailable is declared but never produced (observeConsent has no catch), and RetryLoad starts an additional collector without cancelling the previous one."
+  - id: VRP-GAP-6
+    severity: could
+    description: "VrpSetup sends exactly one periodic limit and fixes interactionType to UK.OBIE.VRPType.Sweeping and currency to GBP; multiple periodic ceilings shown by list/detail can only come from the bank, never from this form."
+  - id: VRP-GAP-7
+    severity: should
+    status: spec-healed-source-pending
+    healed_in_spec: "2026-10-21 /idea-plan-preview --heal round 3 (gap-013, NFR-006): VrpConsentDetail gains revoke_failed (Content.revoke = Failed(RevokeFailureReason)) with banner 'Your bank didn't confirm the cancellation. Sweeping is still active.' + RetryRevoke; revoke marks Revoked locally ONLY on DELETE 2xx/404, otherwise local state untouched. bankRefusedRemoval removed from Ended."
+    description: "SOURCE DRIFT — Revoke marks the consent revoked locally and drops its refresh token even when the bank DELETE fails (and even when the client-credentials token cannot be minted); the detail then shows 'Removed on this device. Your bank refused…' with no retry path. Close via /kmp-implement vrp."

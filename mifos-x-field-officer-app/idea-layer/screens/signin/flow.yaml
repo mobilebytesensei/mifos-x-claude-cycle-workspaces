@@ -1,0 +1,245 @@
+# signin — flow contract. IMPORTED from source 2026-10-02; RECONCILED against the shipped v2
+# 2026-10-05.
+#
+# Transitions are READ from SignInViewModel.kt's state writes and the bindings in
+# AuthNavigation.kt / RootNavScreen.kt. The v1 lineage of each transition is retained inline.
+
+schema_version: "3.1"
+feature: signin
+
+# ──────────────── INBOUND ────────────────
+# Three distinct root states all land here. That is not redundancy: the app has no unlock screen,
+# so UserLocked resolves to sign-in too.
+inbound_routes:
+  - from: rootNav
+    when: "RootNavState.Auth"
+    meaning: "not authenticated"
+    reachable: true
+
+  - from: rootNav
+    when: "RootNavState.ShowOnboarding"
+    meaning: "first run — no onboarding screen exists in this fork, so it falls through to sign-in"
+    reachable: true
+
+  - from: rootNav
+    when: "RootNavState.UserLocked"
+    meaning: "authenticated but locked"
+    reachable: false
+    unreachable_since: v1
+    measured_at: '2026-10-05'
+    measured_how: >
+      Force-stop + relaunch with a stored session on OnePlus CPH2423: `RootNavViewModel` resolved to
+      `UserUnlocked` and the app landed on home, never here.
+    why: >
+      The original's passcode UI is an Android-only library with no multiplatform form, so the port
+      routes this state to sign-in rather than shipping a stub — but nothing currently PRODUCES the
+      state. This is the single reason `biometric_ready` cannot be exercised on a device; see
+      docs.yaml#pending_device_verify.
+
+entry_points:
+  - route: SignInRoute
+    params: {}
+    note: "renamed from LoginRoute in the v2 port"
+
+# ──────────────── TRANSITIONS ────────────────
+transitions:
+  - id: open_server_config
+    from: [empty, validation_error, transport_error, offline, locked_out, submitting]
+    trigger: "instance_chip.on_click"
+    to_screen: serverConfig
+    reversible: true
+    v1: "was `server_config_cta.on_click` — a full-width bottom-bar button, retired in v2"
+    note: >
+      Available from EVERY state including `submitting` and `locked_out`, by design. A wrong server
+      URL cannot otherwise be fixed, and the two states where sign-in is stuck or paused are exactly
+      when the user needs the way out most. Verified on device 2026-10-05: the chip stays enabled
+      while the submit button is disabled.
+
+  - id: submit_invalid
+    from: empty
+    trigger: "login_button.on_click with a failing CredentialRules check"
+    to: validation_error
+    network: false
+    counts_toward_lockout: false
+    note: >
+      No round trip — the rules run locally first. It does NOT count toward the throttle: mistyping a
+      short password is not an authentication attempt, and counting it would lock a user out without a
+      single credential ever reaching the server.
+
+  - id: submit
+    from: [empty, validation_error, transport_error, offline]
+    trigger: "login_button.on_click with both rules passing"
+    to: submitting
+    network: true
+    guard: "refused when isLockedOut — the ViewModel owns the invariant, not just the disabled button"
+
+  - id: rejected
+    from: submitting
+    trigger: "200 with authenticated == false, OR a non-2xx, OR a transport failure"
+    to: transport_error
+    counts_toward_lockout: true
+    note: >
+      All three collapse to one user-visible outcome in the original. The port distinguishes
+      Blocked(OFFLINE) from the rest; the remainder still collapse, which is why a 502 reads as a
+      credential problem (known gap, api.yaml#known_gaps.no-expect-success). The cause IS logged
+      (Logger.e with the throwable) so the three are separable from a device even though the message
+      is not.
+
+  - id: blocked_offline
+    from: submitting
+    trigger: "MutationResult.Blocked(OFFLINE)"
+    to: offline
+    counts_toward_lockout: true
+    note: "NOT IN ORIGINAL — the port added it"
+
+  - id: warn_before_lock
+    from: [transport_error, offline]
+    trigger: "failedAttempts reaches 3 (attemptsRemaining <= 2)"
+    to: locked_out            # same screen, warn branch of the lockout_notice
+    status: new_in_v2
+    network: false
+    note: >
+      A WARN, not a lock: the form stays fully usable and submit stays enabled. Rendered in-flow
+      rather than as a snackbar because it is a standing condition the user should keep seeing, not
+      an event that happened once. Device-verified 2026-10-05: "2 attempts remaining before sign-in
+      is paused."
+
+  - id: lock
+    from: [transport_error, offline]
+    trigger: "failedAttempts reaches LOCK_AFTER_ATTEMPTS (5)"
+    to: locked_out
+    status: new_in_v2
+    network: false
+    side_effects:
+      - "error := SignInError.LockedOut (replaces whatever error caused the fifth failure)"
+      - "login_button disabled"
+      - "biometric_action withdrawn"
+    note: >
+      The button is DISABLED, never hidden — removing the control would shift the layout under the
+      user's thumb at the exact moment they are being told to stop. Biometrics is withdrawn because
+      the throttle is on SIGNING IN, not on one credential path; leaving it live would let the same
+      person who just failed five password attempts bypass the pause. Device-verified 2026-10-05.
+
+  - id: unlock_expires
+    from: locked_out
+    trigger: "process restart"
+    to: empty
+    status: new_in_v2
+    honest_limitation: true
+    note: >
+      The counter lives in `SignInState`, so a relaunch clears it. That is the acknowledged cost of
+      NOT wiring `FailedAttemptTracker`, whose `recordFailure()` would also arm an irreversible
+      `SecureWiper` at 10 attempts. Recorded rather than hidden — see
+      data-flow.yaml#not_written.failed_attempt_count.
+
+  - id: offer_biometric
+    from: empty
+    trigger: "a stored session exists AND BiometricAuthenticator.isAvailable()"
+    to: biometric_ready
+    status: new_in_v2
+    network: false
+    reachable_on_device: false
+    note: >
+      Both halves of the guard matter: offering it with no stored credential dead-ends, and offering
+      it on hardware without enrolment is a button that cannot work. Currently unreachable because
+      nothing produces `RootNavState.UserLocked` — see inbound_routes.
+
+  - id: biometric_success
+    from: biometric_ready
+    trigger: "BiometricResult.Success"
+    to: success
+    status: new_in_v2
+    network: false
+    side_effects:
+      - "re-affirm isAuthenticated on the ALREADY-STORED user (which also sets isUnlocked)"
+      - "reset failedAttempts"
+      - "emit LoggedIn"
+    note: "no credential is minted — see api.yaml#local_only_capabilities.biometric-unlock"
+
+  - id: biometric_cancelled
+    from: biometric_ready
+    trigger: "BiometricResult.Cancelled"
+    to: biometric_ready
+    status: new_in_v2
+    counts_toward_lockout: false
+    note: >
+      A cancel is a CHOICE, not a failure. No error is surfaced and the counter is untouched —
+      punishing a user for changing their mind would be the wrong read of the signal.
+
+  - id: biometric_failed
+    from: biometric_ready
+    trigger: "BiometricResult.Failure"
+    to: biometric_ready
+    status: new_in_v2
+    counts_toward_lockout: false
+    surfaces: "SignInError.BiometricFailed via snackbar"
+    note: >
+      Falls back to the credential form rather than dead-ending: a field officer may hand the device
+      to a colleague whose biometrics are not enrolled on it. Not counted toward lockout because a
+      non-matching finger is not a wrong password.
+
+  - id: biometric_unavailable
+    from: biometric_ready
+    trigger: "BiometricResult.Unavailable"
+    to: empty
+    status: new_in_v2
+    side_effects:
+      - "biometricAvailable := false — the affordance is RETRACTED"
+    note: >
+      Hardware or enrolment went away since composition. Retracting the control is better than
+      leaving one that cannot work.
+
+  - id: authenticated
+    from: submitting
+    trigger: "200 AND authenticated == true"
+    to: success
+    side_effects:
+      - "persist session (User + credential)"
+      - "set isAuthenticated = true"
+      - "set isUnlocked = true"
+      - "reset failedAttempts to 0 (new in v2)"
+    note: >
+      isUnlocked matters: sign-out sets it false, and RootNavViewModel sends an
+      authenticated-but-locked user back to sign-in. Without setting it the first sign-in AFTER a
+      sign-out bounced straight back — observed on device as AuthenticatedGraphRoute → LoginRoute
+      52 ms apart, with a successful 200 in the log.
+
+  - id: route_onward
+    from: success
+    trigger: "LoggedIn event"
+    to_screen: home
+    note: >
+      RE-EXTRACT 2026-10-02 (ui.yaml#graph_bindings D8): this previously read "The ORIGINAL branched
+      here between home and passcode." v1 did NOT branch. It computes a `passcode` StateFlow, never
+      reads it, and the branch that would have used it is COMMENTED OUT
+      (`6b66e8a43:LoginViewModel.kt:126-130`) — `onLoginSuccessful` assigns `HomeActivityIntent`
+      unconditionally, so `PassCodeActivityIntent` was unreachable and `navigatePasscode` was a
+      graph parameter nothing could ever invoke. The port emitting ONE signal and letting
+      RootNavViewModel decide therefore MATCHES v1's real behaviour and drops a dead parameter —
+      it is not a simplification of something that worked.
+    device_verified: '2026-10-05'
+
+# ──────────────── EXIT ────────────────
+exits:
+  - to: home
+    when: "authenticated and unlocked"
+  - to: serverConfig
+    when: "instance_chip tapped — from any state"
+
+# The audit nav graph reads `outbound_routes` (not `exits`) when checking inbound/outbound symmetry;
+# mirror the exits so home + serverConfig's `inbound_routes: from: signin` have their echo.
+outbound_routes:
+  - to: home
+    when: "authenticated and unlocked"
+  - to: serverConfig
+    when: "instance_chip tapped — from any state"
+
+# ──────────────── RETRY ────────────────
+retry:
+  transport_error: "user re-taps Login; fields are preserved"
+  offline: "user re-taps Login; the port keeps the entered credentials"
+  locked_out: "no retry until the process restarts — see unlock_expires"
+  note: >
+    Fields MUST survive a failed attempt — retyping a password after a 502 is the behaviour this
+    guards against. Confirmed on device 2026-10-05 across five consecutive failures: both fields
+    retained their values through the warn and locked states.

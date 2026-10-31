@@ -1,0 +1,56 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: standing-orders
+_source: source_analysis
+
+navigates_to:
+  - account-detail      # onBack (popBackStack)
+
+inbound_routes:
+  - { from: account-detail, type: push, trigger: "AccountDetailChip.StandingOrders", params: { accountId: String } }
+
+transitions:
+  - { from: standing-orders, to: account-detail, type: pop, trigger: "top_bar back" }
+
+on_load:
+  - step: read_nav_args
+    from: SavedStateHandle
+    keys: [accountId]
+  - step: open_stream
+    call: "StandingOrdersRepository.standingOrdersStream(accountId, viewModelScope)"
+    api: get_standing_orders
+  - step: coerce_empty
+    call: "stream.state.emptyIfContent { summary -> summary.isEmpty }"
+  - step: map_screen_state
+    mapping:
+      "ScreenState.Loading": Loading
+      "ScreenState.Content(summary)": "summary.isEmpty ? Empty : Content(summary.items.map { toRowUi() })"
+      "ScreenState.Empty": Empty
+      "ScreenState.Error(e)": "e.isUnsupportedForProduct() ? Unsupported(e.obieMessage().orEmpty()) : Error(classifyStandingOrdersError(e))"
+      "ScreenState.NoNetwork": "Error(NetworkError)"
+      "ScreenState.Unauthenticated": "Error(TokenExpired)"
+
+flow_logic:
+  - { component: top_bar, action: back, effect: "navigate:account-detail" }
+  - { component: error_state, action: click, effect: "action:RetryLoad", then: "stream.refresh() re-fetches get_standing_orders" }
+
+error_handling:
+  pre_classification: "U000 (isUnsupportedForProduct) → Unsupported(bank message verbatim), never a retryable error (FR-013)"
+  classifier: classifyStandingOrdersError
+  mapping:
+    - { network_error: "NetworkError.Client.Unauthorized (401)", kind: TokenExpired, retry: true }
+    - { network_error: "NetworkError.Client.Forbidden (403)", kind: ConsentRevoked, retry: true, note: "FR-040 says not retriable — gap SO-GAP-2" }
+    - { network_error: "NetworkError.Client.RateLimited (429)", kind: RateLimited, retry: true }
+    - { network_error: "NetworkError.Network", kind: NetworkError, retry: true }
+    - { network_error: "anything else (5xx)", kind: ServerError, retry: true }
+  side_effects:
+    - "Fetcher: U000 → AccountCapabilityRegistry.markUnsupported(accountId, AccountEndpoint.StandingOrders) before rethrow"
+
+dependencies:
+  repositories:
+    - name: StandingOrdersRepository
+      methods: ["standingOrdersStream(accountId: String, scope: CoroutineScope): ScreenDataStream<StandingOrdersSummary>"]
+      store: "BankingStores.standingOrdersStore(aisp, capabilityRegistry) — memory store, key AccountId, cacheKey standingOrders:orders:{accountId}"
+  services: [NetworkMonitor, FetchedAtRepository, AccountCapabilityRegistry]
+
+journey_ids: []

@@ -1,0 +1,940 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: payments-schedule-payment
+screen_id: payments-schedule-payment
+name: "Schedule A Payment"
+status: enriched
+_source: source_analysis
+_source_paths:
+  - feature/payments-schedule-payment/src/commonMain/kotlin/org/mifosx/openbanking/feature/paymentsschedulepayment/SchedulePaymentScreen.kt
+  - feature/payments-schedule-payment/src/commonMain/kotlin/org/mifosx/openbanking/feature/paymentsschedulepayment/SchedulePaymentContent.kt
+  - feature/payments-schedule-payment/src/commonMain/kotlin/org/mifosx/openbanking/feature/paymentsschedulepayment/SchedulePaymentReviewPage.kt
+  - feature/payments-schedule-payment/src/commonMain/kotlin/org/mifosx/openbanking/feature/paymentsschedulepayment/SchedulePaymentSubmitting.kt
+  - feature/payments-schedule-payment/src/commonMain/kotlin/org/mifosx/openbanking/feature/paymentsschedulepayment/SchedulePaymentError.kt
+  - feature/payments-schedule-payment/src/commonMain/kotlin/org/mifosx/openbanking/feature/paymentsschedulepayment/SchedulePaymentHistoryScreen.kt
+  - feature/payments-schedule-payment/src/commonMain/kotlin/org/mifosx/openbanking/feature/paymentsschedulepayment/components/ExecutionDatePicker.kt
+  - feature/payments-schedule-payment/src/commonMain/kotlin/org/mifosx/openbanking/feature/paymentsschedulepayment/components/DateField.kt
+  - feature/payments-schedule-payment/src/commonMain/kotlin/org/mifosx/openbanking/feature/paymentsschedulepayment/ui/SchedulePaymentViewModel.kt
+  - feature/payments-schedule-payment/src/commonMain/kotlin/org/mifosx/openbanking/feature/paymentsschedulepayment/ui/SchedulePaymentState.kt
+  - feature/payments-schedule-payment/src/commonMain/kotlin/org/mifosx/openbanking/feature/paymentsschedulepayment/ui/SchedulePaymentDateRules.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/impl/ScheduledPaymentInitiationRepositoryImpl.kt
+requirement_refs: [FR-027, FR-028, FR-029, FR-031, FR-032, FR-047]
+archetype: form
+states: [loading, content, date_picker, review, submitting, error, history_content, history_empty]
+initial_state: loading
+feature_profile:
+  combo_id: content_input_submit
+  facets: [input, network, external-handoff, date]
+  archetype: screen-content
+  store_archetype: NETWORK_WITH_CACHE
+  recipe_ref: CORE_STORE.md
+  heal: auto
+  profile_hash: scaffold-default
+
+route: SchedulePaymentRoute
+graph: "navigation<SchedulePaymentDestination>(startDestination = SchedulePaymentRoute) { SchedulePaymentRoute; SchedulePaymentHistoryRoute }"
+entry_points:
+  - source: home
+    trigger: "Home quick action Schedule → navController.navigate(SchedulePaymentRoute)"
+    params: {}
+  - source: payments-hub
+    trigger: "Schedule card (hub graph itself unreachable)"
+    params: {}
+nav_params: {}
+
+business_logic:
+  kind: composite
+  description: >
+    Future-dated single PIS payment. Same form as send-money (rail toggle, payer or bank-chosen payer,
+    saved/manual payee, amount + currency, reference or charges, recent scheduled payments) plus a Date
+    section whose Material3 DatePicker only enables dates strictly after today (UTC), at most 365 days
+    ahead, and on the International rail only Monday-Friday. Confirm builds a ScheduledPaymentDraft
+    (requestedExecutionDate ISO yyyy-MM-dd, sent as yyyy-MM-ddT00:00:00+00:00) and
+    ScheduledPaymentInitiationRepository.stagePayment POSTs the domestic or international
+    scheduled-payment consent (JWS + idempotency, client_credentials scope=payments), builds the PS256
+    authorize URL, persists pending state + draft, and emits LaunchAuthorisation(url). While awaiting
+    authorisation the user can Cancel (AbandonAuthorisation) back to Review. Funds confirmation is never
+    called for scheduled payments; submission happens in payment-consent.
+  library_refs: [store5, kotlinx-datetime, material3-datepicker, kotlin-uuid]
+
+screens:
+  - id: schedule-payment-form
+    route: SchedulePaymentRoute
+    title: "{strings.feature_payments_schedule_payment_screen_title}"
+    type: form
+    archetype: form
+    states: [loading, content, date_picker, review, submitting, error]
+    description: >
+      KptScaffold with back arrow. Loading → MifosProgressIndicator; Content(step=Form) → form page
+      (+ ExecutionDatePickerDialog when datePickerVisible); Content(step=Review) → review page;
+      Submitting → staging / awaiting spinner with Cancel while awaiting; Error → kind message + actions.
+  - id: schedule-payment-history
+    route: SchedulePaymentHistoryRoute
+    title: "{strings.feature_payments_schedule_payment_history_screen_title}"
+    type: list
+    archetype: index_list
+    states: [history_content, history_empty]
+    description: >
+      "Scheduled payments" — MifosPaymentHistoryPage over SchedulePaymentHistoryViewModel.payments
+      (DomesticScheduledPayment + InternationalScheduledPayment rows, cap 200). Row tap → payment-status.
+
+state_model:
+  SchedulePaymentViewModel:
+    base: "BaseViewModel<SchedulePaymentState, SchedulePaymentEvent, SchedulePaymentAction>"
+    constructor_extra: "clock: Clock = Clock.System"
+    state:
+      name: SchedulePaymentState
+      fields:
+        uiState: { type: SchedulePaymentUiState, default: "SchedulePaymentUiState.Loading" }
+        draft: { type: "ScheduledPaymentDraft?", default: "null" }
+        consentId: { type: "String?", default: "null" }
+    screen_state:
+      name: SchedulePaymentUiState
+      members:
+        - { name: Loading }
+        - name: Content
+          fields:
+            step: { type: SchedulePaymentStep, values: [Form, Review] }
+            rail: { type: PaymentRail, default: Domestic }
+            debtorAccounts: { type: "List<BankAccount>" }
+            beneficiaries: { type: "List<BeneficiaryItem>" }
+            debtorRows: { type: "List<AccountWithBalance>" }
+            debtorAccountId: { type: "String?", default: "null" }
+            payerPickerExpanded: { type: Boolean, default: "false" }
+            letBankChoosePayer: { type: Boolean, default: "false" }
+            creditor: { type: "CreditorSelection?", default: "null" }
+            creditorLabel: { type: String, default: '""' }
+            creditorSupporting: { type: String, default: '""' }
+            debtorAccountRow: { type: "AccountWithBalance?", default: "null" }
+            manualEntryVisible: { type: Boolean, default: "false" }
+            manualSortCode: { type: String, default: '""' }
+            manualAccountNumber: { type: String, default: '""' }
+            manualIban: { type: String, default: '""' }
+            manualName: { type: String, default: '""' }
+            amountInput: { type: String, default: '""' }
+            amountLabel: { type: String, default: '""' }
+            instructedCurrency: { type: String, default: '"GBP"' }
+            chargeBearer: { type: ChargeBearer, default: BorneByCreditor }
+            reference: { type: String, default: '""' }
+            executionDate: { type: "LocalDate?", default: "null" }
+            executionDateLabel: { type: String, default: '""', note: "formatExecutionDate → 'Monday, 3 November 2026' (hardcoded English names)" }
+            datePickerVisible: { type: Boolean, default: "false" }
+            today: { type: LocalDate, default: "todayUtc(clock)" }
+            amountProblem: { type: "SchedulePaymentAmountProblem?", default: "null" }
+            fieldErrors: { type: SchedulePaymentFieldErrors, default: "SchedulePaymentFieldErrors()" }
+            availableBalanceMinorUnits: { type: "Long?", default: "null" }
+            availableBalanceLabel: { type: String, default: '""' }
+            debtorCurrency: { type: String, default: '""' }
+            offeredCurrencies: { type: "List<String>", default: "emptyList()" }
+            recentPayments: { type: "List<PaymentHistoryEntry>", default: "emptyList()" }
+            hasMorePayments: { type: Boolean, default: "false" }
+            payeesFailed: { type: Boolean, default: "false" }
+            payeesLoading: { type: Boolean, default: "false" }
+          derived:
+            canReview: "amountProblem == null && amountInput.isNotBlank() && creditor != null && executionDate != null && !payerUndecided"
+            payerUndecided: "debtorAccountId == null && !letBankChoosePayer"
+            payeesUnavailable: "debtorAccountId == null"
+            showsConversionAdvisory: "debtorCurrency.isNotBlank() && debtorCurrency != instructedCurrency (ignoreCase)"
+        - name: Submitting
+          fields:
+            stage: { type: SchedulePaymentStage, values: [StagingConsent, AwaitingAuthorisation] }
+            amountLabel: { type: String }
+            creditorName: { type: String }
+            consentId: { type: "String?", default: "null" }
+        - name: Error
+          fields:
+            kind: { type: SchedulePaymentErrorKind }
+            supportReference: { type: "String?", default: "null" }
+    errors:
+      name: SchedulePaymentErrorKind
+      types:
+        - { type: SignatureMissing, obie_code: U019, retry: false, message_key: feature_payments_schedule_payment_error_signature_missing }
+        - { type: ConsentNotAuthorised, obie_code: U009, reauthorise: true, message_key: feature_payments_schedule_payment_error_consent_not_authorised }
+        - { type: ConsentMismatch, obie_code: U008, message_key: feature_payments_schedule_payment_error_consent_mismatch }
+        - { type: OutsideControlParameters, obie_code: U014, edit_amount: true, message_key: feature_payments_schedule_payment_error_outside_limits }
+        - { type: InvalidField, obie_code: "U002|U021", message_key: feature_payments_schedule_payment_error_invalid_field }
+        - { type: DateRefused, obie_code: U003, obie_path: "*RequestedExecutionDateTime*", change_date: true, message_key: feature_payments_schedule_payment_error_date_refused }
+        - { type: RequestMalformed, obie_code: "U004|U005", retry: false, message_key: feature_payments_schedule_payment_error_request_malformed }
+        - { type: SchemeNotSupported, obie_code: U027, message_key: feature_payments_schedule_payment_error_scheme_not_supported }
+        - { type: ConsentRevoked, http: 403, view_consents: true, message_key: feature_payments_schedule_payment_error_consent_revoked }
+        - { type: TokenExpired, http: 401, retry: true, reauthorise: true, message_key: feature_payments_schedule_payment_error_token_expired }
+        - { type: RateLimited, http: 429, retry: true, message_key: feature_payments_schedule_payment_error_rate_limited }
+        - { type: PayerNotSupported, obie_path: "*DebtorAccount*", change_payer: true, message_key: feature_payments_schedule_payment_error_payer_not_supported }
+        - { type: NetworkError, retry: true, message_key: feature_payments_schedule_payment_error_network }
+      classification: "executionDateRefusal (Path RequestedExecutionDateTime) → payerRefusal (Path DebtorAccount) → OBIE ErrorCode suffix → HTTP transport"
+    events:
+      name: SchedulePaymentEvent
+      members:
+        - { name: LaunchAuthorisation, params: { url: String } }
+    actions:
+      name: SchedulePaymentAction
+      members:
+        - { name: SelectRail, params: { rail: PaymentRail } }
+        - { name: SelectDebtorAccount, params: { accountId: String } }
+        - { name: TogglePayerPicker }
+        - { name: LetBankChoosePayer }
+        - { name: SelectCreditor, params: { beneficiaryId: String } }
+        - { name: ShowManualCreditorEntry }
+        - { name: EnterManualSortCode, params: { sortCode: String } }
+        - { name: EnterManualAccountNumber, params: { accountNumber: String } }
+        - { name: EnterManualIban, params: { iban: String } }
+        - { name: EnterManualName, params: { name: String } }
+        - { name: ConfirmManualCreditor }
+        - { name: EnterAmount, params: { amount: String } }
+        - { name: SelectInstructedCurrency, params: { currency: String } }
+        - { name: SelectChargeBearer, params: { bearer: ChargeBearer } }
+        - { name: EnterReference, params: { reference: String } }
+        - { name: OpenDatePicker }
+        - { name: DismissDatePicker }
+        - { name: SelectExecutionDate, params: { date: LocalDate } }
+        - { name: ReviewPayment }
+        - { name: ConfirmAndStageConsent }
+        - { name: RetryStaging }
+        - { name: ChangePayer }
+        - { name: AbandonAuthorisation }
+        - { name: BackStep }
+        - { name: RetryLoad, note: "handled but never dispatched by any UI" }
+    di:
+      - AccountsOverviewRepository
+      - BeneficiariesRepository
+      - ScheduledPaymentInitiationRepository
+      - AccountCapabilityRegistry
+      - PaymentHistoryRepository
+      - PaymentStatusRepository
+      - Clock
+  SchedulePaymentHistoryViewModel:
+    base: "androidx ViewModel"
+    state:
+      name: payments
+      fields:
+        payments: { type: "StateFlow<List<PaymentHistoryEntry>>", default: "emptyList()" }
+    di: [PaymentHistoryRepository, PaymentStatusRepository]
+
+validation:
+  execution_date:
+    field: executionDate
+    rule: "date > todayUtc && date <= todayUtc + 365 days && (rail == Domestic || dayOfWeek !in [SATURDAY, SUNDAY])"
+    today_source: "Clock.System.now() in TimeZone.UTC (deliberately not the device zone)"
+    picker: "ExecutionSelectableDates.isSelectableDate(utcMillis) = isSelectableExecutionDate(utcDateOf(millis)); isSelectableYear limited to today.year..(today+365).year"
+    on_open_picker: "today re-read; a previously chosen date that has fallen out of the window (midnight rollover) is cleared"
+    on_select: "non-selectable date → picker closes, date unchanged"
+    on_rail_change: "date dropped when invalid for the new rail (weekend on International)"
+    on_confirm: "re-checked against todayUtc(clock); invalid → buildDraft returns null (silent no-op)"
+    helper: { Domestic: "{strings.feature_payments_schedule_payment_date_helper_domestic}", International: "{strings.feature_payments_schedule_payment_date_helper_international}" }
+    wire_format: "requestedExecutionDate 'yyyy-MM-dd' + 'T00:00:00+00:00' → RequestedExecutionDateTime"
+  sort_code: { rule: "6 digits after stripping non-digits; live flag when non-empty and != 6; required on confirm", message_key: feature_payments_schedule_payment_manual_sort_code_error }
+  account_number: { rule: "8 digits after stripping non-digits; live flag when non-empty and != 8; required on confirm", message_key: feature_payments_schedule_payment_manual_account_number_error }
+  iban: { rule: "whitespace-stripped uppercase, 15..34 alphanumerics, first two letters; no checksum", message_key: feature_payments_schedule_payment_manual_iban_error, rail: International }
+  amount:
+    rules:
+      - "blank → no problem (canReview false)"
+      - "unparseable → NotANumber"
+      - "> 2 decimals → TooManyDecimals"
+      - "<= 0 → NotPositive"
+      - "> payer available balance when payer chosen and currencies match → ExceedsAvailableBalance"
+  reference: { rule: "Domestic only, UI-truncated to 35 chars; omitted on International" }
+  currency: { rule: "Domestic GBP; International one of 19 OFFERED_CURRENCIES" }
+
+components:
+  - id: top_bar
+    type: top-bar
+    impl: KptScaffold
+    title: "{strings.feature_payments_schedule_payment_screen_title}"
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      target: back
+      action_contract:
+        effect: navigate
+        handler: "onBack → navController.popBackStack()"
+        description: "Pops the schedule-payment form off the authenticated stack back to Home; unsaved form state is discarded."
+        action_contract_author: "claude-via-idea-plan-source"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: loading_indicator
+    type: progress
+    impl: MifosProgressIndicator
+
+  - id: form_page
+    type: form
+    test_tag: "schedulePayment:formPage"
+    layout: "scrollable column + pinned FormActions bar"
+    children:
+      - id: rail_toggle
+        type: segmented-toggle
+        impl: MifosRailToggle
+        test_tag: "schedulePayment:railToggle"
+        option_test_tag: "schedulePayment:rail:{rail}"
+        options: ["{strings.feature_payments_schedule_payment_rail_domestic}", "{strings.feature_payments_schedule_payment_rail_international}"]
+        on_change:
+          action: SelectRail
+          action_contract:
+            effect: transform_state
+            handler: "SchedulePaymentViewModel.selectRail(rail)"
+            writes_to: "Form.rail, creditor=null, manual fields cleared, fieldErrors reset, instructedCurrency, executionDate (dropped if invalid for rail), amountProblem"
+            description: "Switches Domestic/International: clears payee and manual fields, forces GBP on Domestic, drops an execution date the new rail forbids (weekend on International) and revalidates the amount."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: payer_section
+        type: section
+        heading: "{strings.feature_payments_schedule_payment_debtor_heading}"
+        children:
+          - id: payer_picker
+            type: account-picker
+            impl: MifosAccountPicker
+            test_tag: "schedulePayment:payerPicker"
+            row_test_tag: "schedulePayment:debtorRow:{accountId}"
+            on_toggle:
+              action: TogglePayerPicker
+              action_contract:
+                effect: transform_state
+                handler: "form.payerPickerExpanded = !payerPickerExpanded"
+                description: "Expands or collapses the payer account list; local UI state only."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+            on_select:
+              action: SelectDebtorAccount
+              action_contract:
+                effect: transform_state
+                handler: "SchedulePaymentViewModel.selectDebtor(accountId)"
+                writes_to: "selectedAccountId, Form.debtorAccountId, creditor=null, letBankChoosePayer=false, amountProblem"
+                description: "Selects the paying account, clears the payee, re-keys the beneficiaries stream to that account and revalidates the amount against its balance."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: payer_bank_choice
+            type: list-item
+            impl: MifosBankChoiceRow
+            test_tag: "schedulePayment:payerBankChoice"
+            on_click:
+              action: LetBankChoosePayer
+              action_contract:
+                effect: transform_state
+                handler: "SchedulePaymentViewModel.letBankChoosePayer()"
+                writes_to: "selectedAccountId='', debtorAccountId=null, letBankChoosePayer=true, creditor=null"
+                description: "Leaves payer choice to the bank (DebtorAccount omitted from the consent); saved payees become unavailable."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - { id: non_gbp_notice, type: banner, visible: "{{showsConversionAdvisory}}", test_tag: "schedulePayment:nonGbpNotice", message: "{strings.feature_payments_schedule_payment_non_gbp_notice}" }
+      - id: payee_section
+        type: section
+        heading: "{strings.feature_payments_schedule_payment_creditor_heading}"
+        children:
+          - id: creditor_list
+            type: avatar-row
+            impl: MifosPayeeAvatarRow
+            test_tag: "schedulePayment:creditorList"
+            item_test_tag: "schedulePayment:creditorRow:{identification}"
+            loading_test_tag: "schedulePayment:payeesLoading"
+            on_select:
+              action: SelectCreditor
+              action_contract:
+                effect: transform_state
+                handler: "SchedulePaymentViewModel.selectCreditor(identification)"
+                writes_to: "Form.creditor, Form.reference, manualEntryVisible=false"
+                description: "Picks a saved payee (matched by identification), builds the CreditorSelection and pre-fills the reference."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: manual_entry_button
+            type: button
+            test_tag: "schedulePayment:manualEntryButton"
+            label: "{strings.feature_payments_schedule_payment_payee_pay_new}"
+            on_click:
+              action: ShowManualCreditorEntry
+              action_contract:
+                effect: transform_state
+                handler: "form.manualEntryVisible = true"
+                description: "Reveals manual payee fields for a payee that is not saved."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: manual_creditor_fields
+            type: field-group
+            visible: "{{manualEntryVisible}}"
+            children:
+              - id: manual_name
+                type: text_field
+                test_tag: "schedulePayment:manualName"
+                label: "{strings.feature_payments_schedule_payment_manual_name}"
+                on_change:
+                  action: EnterManualName
+                  action_contract:
+                    effect: transform_state
+                    handler: "form.manualName = name"
+                    description: "Stores the payee name; unvalidated and may be blank."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+              - id: manual_sort_code
+                type: text_field
+                visible: "{{rail == Domestic}}"
+                keyboard: number
+                test_tag: "schedulePayment:manualSortCode"
+                label: "{strings.feature_payments_schedule_payment_manual_sort_code}"
+                error: { when: "fieldErrors.sortCodeInvalid", message: "{strings.feature_payments_schedule_payment_manual_sort_code_error}" }
+                validation: { ref: validation.sort_code }
+                on_change:
+                  action: EnterManualSortCode
+                  action_contract:
+                    effect: transform_state
+                    handler: "SchedulePaymentViewModel.enterSortCode(raw)"
+                    description: "Stores the raw sort code and flags it invalid while non-empty with a digit count other than 6."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+              - id: manual_account_number
+                type: text_field
+                visible: "{{rail == Domestic}}"
+                keyboard: number
+                test_tag: "schedulePayment:manualAccountNumber"
+                label: "{strings.feature_payments_schedule_payment_manual_account_number}"
+                error: { when: "fieldErrors.accountNumberInvalid", message: "{strings.feature_payments_schedule_payment_manual_account_number_error}" }
+                validation: { ref: validation.account_number }
+                on_change:
+                  action: EnterManualAccountNumber
+                  action_contract:
+                    effect: transform_state
+                    handler: "SchedulePaymentViewModel.enterAccountNumber(raw)"
+                    description: "Stores the raw account number and flags it invalid while non-empty with a digit count other than 8."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+              - id: manual_iban
+                type: text_field
+                visible: "{{rail == International}}"
+                test_tag: "schedulePayment:manualIban"
+                label: "{strings.feature_payments_schedule_payment_manual_iban}"
+                error: { when: "fieldErrors.ibanInvalid", message: "{strings.feature_payments_schedule_payment_manual_iban_error}", test_tag: "schedulePayment:manualIbanError" }
+                validation: { ref: validation.iban }
+                on_change:
+                  action: EnterManualIban
+                  action_contract:
+                    effect: transform_state
+                    handler: "SchedulePaymentViewModel.enterIban(raw)"
+                    description: "Stores the raw IBAN and flags it invalid while non-blank and implausible (15-34 alphanumerics, letter country prefix)."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+              - id: manual_confirm
+                type: button
+                test_tag: "schedulePayment:manualConfirm"
+                label: "{strings.feature_payments_schedule_payment_manual_confirm}"
+                on_click:
+                  action: ConfirmManualCreditor
+                  action_contract:
+                    effect: transform_state
+                    handler: "SchedulePaymentViewModel.confirmManualCreditor()"
+                    writes_to: "Form.creditor | Form.fieldErrors"
+                    description: "Validates the manual payee per rail and either sets the creditor (SortCode identification = sort code + account, or normalised IBAN) or the field errors."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: date_section
+        type: section
+        heading: "{strings.feature_payments_schedule_payment_date_heading}"
+        children:
+          - id: date_field
+            type: date_field
+            impl: DateField
+            role: button
+            test_tag: "schedulePayment:dateField"
+            value: "{{executionDateLabel}}"
+            placeholder: "{strings.feature_payments_schedule_payment_date_placeholder}"
+            helper: { Domestic: "{strings.feature_payments_schedule_payment_date_helper_domestic}", International: "{strings.feature_payments_schedule_payment_date_helper_international}" }
+            content_description: "{strings.feature_payments_schedule_payment_date_content_description}"
+            validation: { ref: validation.execution_date }
+            on_click:
+              action: OpenDatePicker
+              action_contract:
+                effect: transform_state
+                handler: "SchedulePaymentViewModel.openDatePicker()"
+                writes_to: "Form.today, Form.datePickerVisible=true, Form.executionDate (cleared if no longer selectable)"
+                description: "Re-reads today in UTC, drops a previously chosen date that midnight has invalidated, and opens the execution-date picker dialog."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: amount_section
+        type: section
+        children:
+          - id: amount_card
+            type: amount-input
+            impl: MifosAmountCard
+            test_tag: "schedulePayment:amountCard"
+            field_test_tag: "schedulePayment:amountField"
+            error_test_tag: "schedulePayment:amountError"
+            balance_test_tag: "schedulePayment:amountBalance"
+            label: "{strings.feature_payments_schedule_payment_amount_label}"
+            placeholder: "{strings.feature_payments_schedule_payment_amount_placeholder}"
+            error: { when: "amountProblem != null", messages: { NotANumber: "{strings.feature_payments_schedule_payment_amount_error_not_a_number}", TooManyDecimals: "{strings.feature_payments_schedule_payment_amount_error_too_many_decimals}", NotPositive: "{strings.feature_payments_schedule_payment_amount_error_not_positive}", ExceedsAvailableBalance: "{strings.feature_payments_schedule_payment_amount_error_exceeds_balance}" } }
+            validation: { ref: validation.amount }
+            on_change:
+              action: EnterAmount
+              action_contract:
+                effect: transform_state
+                handler: "SchedulePaymentViewModel.enterAmount(amount) → revalidated()"
+                writes_to: "Form.amountInput, Form.amountProblem"
+                description: "Stores the major-unit amount and recomputes the amount problem against the payer's balance when currencies match."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+            currency_slot:
+              domestic: { id: static_currency_box, type: text, test_tag: "schedulePayment:staticCurrencyBox", value: "GBP" }
+              international:
+                id: instructed_currency_picker
+                type: dropdown
+                test_tag: "schedulePayment:instructedCurrencyPicker"
+                option_test_tag: "schedulePayment:instructedCurrency:{code}"
+                on_select:
+                  action: SelectInstructedCurrency
+                  action_contract:
+                    effect: transform_state
+                    handler: "form.copy(instructedCurrency = currency).revalidated()"
+                    description: "Sets the instructed currency on the International rail and revalidates the amount."
+                    action_contract_author: "claude-via-idea-plan-source"
+                    action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: reference_field
+            type: text_field
+            visible: "{{rail == Domestic}}"
+            test_tag: "schedulePayment:referenceField"
+            label: "{strings.feature_payments_schedule_payment_reference_label}"
+            supporting_text: "{strings.feature_payments_schedule_payment_reference_helper}"
+            max_length: 35
+            on_change:
+              action: EnterReference
+              action_contract:
+                effect: transform_state
+                handler: "form.reference = reference"
+                description: "Stores the payment reference (35-char cap in UI); sent only on the Domestic rail."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: charge_bearer_picker
+            type: dropdown
+            visible: "{{rail == International}}"
+            test_tag: "schedulePayment:chargeBearerPicker"
+            option_test_tag: "schedulePayment:chargeBearer:{bearer}"
+            options: ["{strings.feature_payments_schedule_payment_charge_bearer_creditor}", "{strings.feature_payments_schedule_payment_charge_bearer_debtor}", "{strings.feature_payments_schedule_payment_charge_bearer_shared}"]
+            caveat: "{strings.feature_payments_schedule_payment_charges_caveat}"
+            on_select:
+              action: SelectChargeBearer
+              action_contract:
+                effect: transform_state
+                handler: "form.chargeBearer = bearer"
+                description: "Chooses who bears international charges; included in the draft only on the International rail."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: recent_payments
+        type: list
+        impl: MifosPaymentHistoryList
+        visible: "{{recentPayments.isNotEmpty()}}"
+        test_tag: "schedulePayment:history"
+        row_test_tag: "schedulePayment:historyRow:{paymentId}"
+        title: "{strings.feature_payments_schedule_payment_history_title}"
+        on_item_click:
+          action: onOpenPayment
+          target: payment-status
+          action_contract:
+            effect: navigate
+            handler: "onNavigateToPayment(paymentId) → navController.navigate(PaymentStatusRoute(paymentId))"
+            description: "Opens the payment-status receipt for a recently scheduled payment from local history."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+        see_all:
+          visible: "{{hasMorePayments}}"
+          action: onShowAllPayments
+          action_contract:
+            effect: navigate
+            handler: "onNavigateToHistory → navController.navigate(SchedulePaymentHistoryRoute)"
+            description: "Opens the full 'Scheduled payments' history screen; shown only when more than five exist."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: form_actions
+        type: bottom-bar
+        pinned: true
+        test_tag: "schedulePayment:formActions"
+        children:
+          - id: review_button
+            type: button
+            variant: filled-pill
+            test_tag: "schedulePayment:reviewButton"
+            label: "{strings.feature_payments_schedule_payment_review_button}"
+            enabled: "{{canReview}}"
+            on_click:
+              action: ReviewPayment
+              action_contract:
+                effect: transform_state
+                handler: "form.step = SchedulePaymentStep.Review"
+                description: "Moves to the Review step; enabled only when amount, payee, payer decision and execution date are all valid."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - { id: form_trust_note, type: text, test_tag: "schedulePayment:formTrustNote", value: "{strings.feature_payments_schedule_payment_form_trust_note}" }
+
+  - id: date_picker_dialog
+    type: dialog
+    impl: "ExecutionDatePickerDialog (Material3 DatePickerDialog)"
+    visible: "{{datePickerVisible}}"
+    test_tag: "schedulePayment:datePicker"
+    title: "{strings.feature_payments_schedule_payment_date_picker_title}"
+    selectable_dates: "isSelectableExecutionDate(utcDateOf(millis), today, rail); years today.year..(today+365).year"
+    on_dismiss_request:
+      action: DismissDatePicker
+      action_contract:
+        effect: transform_state
+        handler: "form.datePickerVisible = false"
+        description: "Closes the date picker without changing the execution date."
+        action_contract_author: "claude-via-idea-plan-source"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+    buttons:
+      - id: date_picker_confirm
+        type: button
+        test_tag: "schedulePayment:datePickerConfirm"
+        label: "{strings.feature_payments_schedule_payment_date_picker_confirm}"
+        on_click:
+          action: SelectExecutionDate
+          action_contract:
+            effect: transform_state
+            handler: "state.selectedDateMillis?.let { onSelect(utcDateOf(it)) } → SchedulePaymentViewModel.selectExecutionDate(date)"
+            writes_to: "Form.executionDate, Form.datePickerVisible=false"
+            description: "Commits the highlighted day as the execution date if it passes the window/weekday rule; otherwise just closes. Does nothing when no day is highlighted."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: date_picker_cancel
+        type: button
+        test_tag: "schedulePayment:datePickerCancel"
+        label: "{strings.feature_payments_schedule_payment_date_picker_cancel}"
+        on_click:
+          action: DismissDatePicker
+          action_contract:
+            effect: transform_state
+            handler: "form.datePickerVisible = false"
+            description: "Cancels the picker, keeping the previous execution date."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: review_page
+    type: review
+    impl: SchedulePaymentReviewPage
+    test_tag: "schedulePayment:reviewPage"
+    children:
+      - { id: review_lead, type: text, test_tag: "schedulePayment:reviewLead", value: "{strings.feature_payments_schedule_payment_review_heading}" }
+      - id: review_hero
+        type: hero
+        test_tag: "schedulePayment:reviewHero"
+        children:
+          - { id: review_date_row, type: text, test_tag: "schedulePayment:reviewDateRow", label: "{strings.feature_payments_schedule_payment_review_scheduled_for}", value: "{{executionDateLabel}}" }
+          - { id: review_amount, type: text, test_tag: "schedulePayment:reviewAmount", value: "{{amountLabel}}" }
+          - { id: review_payee_chip, type: chip, test_tag: "schedulePayment:reviewPayeeChip", label: "{{creditorLabel}}" }
+      - { id: review_not_yet_made, type: banner, test_tag: "schedulePayment:reviewNotYetMade", title: "{strings.feature_payments_schedule_payment_review_not_yet_made_title}", message: "{strings.feature_payments_schedule_payment_review_not_yet_made_body}" }
+      - id: review_summary
+        type: card
+        test_tag: "schedulePayment:reviewSummary"
+        heading: "{strings.feature_payments_schedule_payment_review_details_heading}"
+        rows:
+          - { id: review_from, test_tag: "schedulePayment:reviewFrom", label: "{strings.feature_payments_schedule_payment_review_from}", absent: "{strings.feature_payments_schedule_payment_review_from_bank_choice}" }
+          - { id: review_to, test_tag: "schedulePayment:reviewTo", label: "{strings.feature_payments_schedule_payment_review_to}" }
+          - { id: review_reference, visible: "{{rail == Domestic}}", test_tag: "schedulePayment:reviewReference", label: "{strings.feature_payments_schedule_payment_review_reference}", empty: "{strings.feature_payments_schedule_payment_review_reference_empty}" }
+          - { id: review_sent_as, visible: "{{rail == International}}", test_tag: "schedulePayment:reviewSentAs", label: "{strings.feature_payments_schedule_payment_review_sent_as}", value: "{{instructedCurrency | currencyName}}" }
+          - { id: review_charge_row, visible: "{{rail == International}}", test_tag: "schedulePayment:reviewChargeRow", label: "{strings.feature_payments_schedule_payment_review_charge_bearer}" }
+      - { id: review_charge_caveat, type: text, visible: "{{rail == International}}", test_tag: "schedulePayment:reviewChargeCaveat", value: "{strings.feature_payments_schedule_payment_review_charge_caveat}" }
+      - { id: review_auth_notice, type: banner, test_tag: "schedulePayment:reviewAuthNotice", message: "{strings.feature_payments_schedule_payment_review_auth_notice}" }
+      - id: confirm_button
+        type: button
+        variant: filled-pill
+        test_tag: "schedulePayment:confirmButton"
+        label: "{strings.feature_payments_schedule_payment_review_confirm}"
+        on_click:
+          action: ConfirmAndStageConsent
+          action_contract:
+            effect: call_api
+            handler: "SchedulePaymentViewModel.confirmAndStageConsent() → ScheduledPaymentInitiationRepository.stagePayment(draft)"
+            writes_to: "SchedulePaymentState.draft, consentId, phase, PaymentAuthSession (pending + scheduled draft)"
+            calls: [get_client_credentials_token_payments, create_domestic_scheduled_payment_consent, create_international_scheduled_payment_consent]
+            description: "Builds the ScheduledPaymentDraft (date re-checked against today UTC), stages the domestic or international scheduled-payment consent with JWS and idempotency key, then awaits authorisation and launches the bank authorize URL in the browser."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: edit_payment_button
+        type: button
+        variant: tonal-pill
+        test_tag: "schedulePayment:editPaymentButton"
+        label: "{strings.feature_payments_schedule_payment_review_edit}"
+        on_click:
+          action: BackStep
+          action_contract:
+            effect: transform_state
+            handler: "SchedulePaymentViewModel.backStep()"
+            writes_to: "Form.step=Form, phase=Form, draft=null, consentId=null"
+            description: "Returns from Review to the editable form with all values kept."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: submitting_state
+    type: progress
+    impl: SchedulePaymentSubmitting
+    test_tag: "schedulePayment:submittingIndicator"
+    caption: { StagingConsent: "{strings.feature_payments_schedule_payment_submitting_staging}", AwaitingAuthorisation: "{strings.feature_payments_schedule_payment_submitting_awaiting}" }
+    children:
+      - { id: submitting_amount, type: text, test_tag: "schedulePayment:submittingAmount", value: "{strings.feature_payments_schedule_payment_submitting_amount}" }
+      - id: abandon_authorisation_button
+        type: button
+        variant: tonal-pill
+        visible: "{{stage == AwaitingAuthorisation}}"
+        test_tag: "schedulePayment:abandonAuthorisationButton"
+        label: "{strings.feature_payments_schedule_payment_abandon_authorisation}"
+        on_click:
+          action: AbandonAuthorisation
+          action_contract:
+            effect: transform_state
+            handler: "SchedulePaymentViewModel.abandonAuthorisation()"
+            writes_to: "Form.step=Review, phase=Form, draft=null, consentId=null"
+            description: "Cancels the not-yet-authorised payment and returns to Review; the staged consent is left to expire unauthorised because the bank answers 405 to a consent delete."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - { id: submitting_lock_note, type: text, test_tag: "schedulePayment:submittingLockNote", value: "{strings.feature_payments_schedule_payment_submitting_lock}" }
+
+  - id: error_state
+    type: error-state
+    impl: SchedulePaymentError
+    test_tag: "schedulePayment:errorState"
+    title: "{strings.feature_payments_schedule_payment_error_title}"
+    body: "{{kind | bodyResource}}"   # i18n: skip — resolves to feature_payments_schedule_payment_error_* keys
+    support_reference: { visible: "{{supportReference != null}}", test_tag: "schedulePayment:errorSupportReference", value: "{strings.feature_payments_schedule_payment_error_reference}" }
+    actions:
+      - id: retry_button
+        type: button
+        visible: "{{kind in [NetworkError, RateLimited, TokenExpired]}}"
+        test_tag: "schedulePayment:retryButton"
+        label: "{strings.feature_payments_schedule_payment_retry}"
+        on_click:
+          action: RetryStaging
+          action_contract:
+            effect: call_api
+            handler: "handleAction(RetryStaging) → confirmAndStageConsent()"
+            description: "Re-stages the scheduled-payment consent with a fresh draft; a no-op for accounts-load failures with no payee/date (see known_gaps)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: reauthorise_button
+        type: button
+        visible: "{{kind in [ConsentNotAuthorised, TokenExpired]}}"
+        test_tag: "schedulePayment:reauthoriseButton"
+        label: "{strings.feature_payments_schedule_payment_reauthorise}"
+        on_click:
+          action: ConfirmAndStageConsent
+          action_contract:
+            effect: call_api
+            handler: "confirmAndStageConsent()"
+            description: "Stages a new scheduled-payment consent from the retained form and relaunches bank authorisation."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: view_consents_button
+        type: button
+        visible: "{{kind == ConsentRevoked}}"
+        test_tag: "schedulePayment:viewConsentsButton"
+        label: "{strings.feature_payments_schedule_payment_view_consents}"
+        on_click:
+          action: onNavigateToConsents
+          target: consent-list
+          action_contract:
+            effect: navigate
+            handler: "onViewConsents = onNavigateToConsents (wired to {} in AuthenticatedNavHostScreen)"
+            description: "Intended to open consent-list after a 403 refusal; currently a no-op because the nav host passes an empty lambda (FR-047)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: edit_amount_button
+        type: button
+        visible: "{{kind == OutsideControlParameters}}"
+        test_tag: "schedulePayment:editAmountButton"
+        label: "{strings.feature_payments_schedule_payment_edit_amount}"
+        on_click:
+          action: BackStep
+          action_contract:
+            effect: transform_state
+            handler: "backStep()"
+            description: "Returns to the form so the amount can be changed after a bank limit refusal."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: change_date_button
+        type: button
+        visible: "{{kind == DateRefused}}"
+        test_tag: "schedulePayment:changeDateButton"
+        label: "{strings.feature_payments_schedule_payment_change_date}"
+        on_click:
+          action: BackStep
+          action_contract:
+            effect: transform_state
+            handler: "onChangeDate = BackStep → backStep()"
+            description: "Returns to the form so a different execution date can be chosen after the bank refused the date (U003 or RequestedExecutionDateTime path)."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+      - id: change_payer_button
+        type: button
+        visible: "{{kind == PayerNotSupported}}"
+        test_tag: "schedulePayment:changePayerButton"
+        label: "{strings.feature_payments_schedule_payment_change_payer}"
+        on_click:
+          action: ChangePayer
+          action_contract:
+            effect: transform_state
+            handler: "changePayer()"
+            writes_to: "Form.step=Form, debtorAccountId=null, letBankChoosePayer=false, phase=Form, draft=null, consentId=null"
+            description: "Clears the refused payer and returns to the form so another account can be chosen."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: history_top_bar
+    type: top-bar
+    screen: schedule-payment-history
+    title: "{strings.feature_payments_schedule_payment_history_screen_title}"
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      target: back
+      action_contract:
+        effect: navigate
+        handler: "onBack → navController.popBackStack()"
+        description: "Pops the scheduled-payments history back to the schedule form."
+        action_contract_author: "claude-via-idea-plan-source"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+  - id: history_page
+    type: list
+    screen: schedule-payment-history
+    impl: MifosPaymentHistoryPage
+    test_tag: "schedulePayment:historyScreen"
+    row_test_tag: "schedulePayment:historyRow:{paymentId}"
+    empty_label: "{strings.feature_payments_schedule_payment_history_empty}"
+    on_item_click:
+      action: onNavigateToPayment
+      target: payment-status
+      action_contract:
+        effect: navigate
+        handler: "navController.navigate(PaymentStatusRoute(paymentId))"
+        description: "Opens payment-status for the tapped scheduled payment; its timeline ends at Submitted."
+        action_contract_author: "claude-via-idea-plan-source"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+state_components:
+  loading:
+    components: [top_bar, loading_indicator]
+  content:
+    components: [top_bar, form_page]
+    demo_data:
+      rail: Domestic
+      creditorLabel: "Priya Shah"
+      amountInput: "80.00"
+      amountLabel: "£80.00"
+      executionDate: "2026-11-03"
+      executionDateLabel: "Tuesday, 3 November 2026"
+      today: "2026-10-21"
+  date_picker:
+    components: [top_bar, form_page, date_picker_dialog]
+  review:
+    components: [top_bar, review_page]
+  submitting:
+    components: [top_bar, submitting_state]
+  error:
+    components: [top_bar, error_state]
+  history_content:
+    components: [history_top_bar, history_page]
+  history_empty:
+    components: [history_top_bar, history_page]
+
+visual_assets: []   # Material icons + avatar initials only — no generative imagery in source
+
+strings_ref: feature/payments-schedule-payment/src/commonMain/composeResources/values/strings.xml
+i18n:
+  en:
+    feature_payments_schedule_payment_screen_title: "Schedule A Payment"
+    feature_payments_schedule_payment_rail_domestic: "Domestic"
+    feature_payments_schedule_payment_rail_international: "International"
+    feature_payments_schedule_payment_form_trust_note: "Protected by UK Open Banking"
+    feature_payments_schedule_payment_non_gbp_notice: "This payment is instructed in %1$s. Your bank will convert from this account and may charge for it."
+    feature_payments_schedule_payment_debtor_heading: "Pay from"
+    feature_payments_schedule_payment_creditor_heading: "Pay to"
+    feature_payments_schedule_payment_payee_pay_new: "Pay new"
+    feature_payments_schedule_payment_manual_name: "Name on the account"
+    feature_payments_schedule_payment_manual_sort_code: "Sort code"
+    feature_payments_schedule_payment_manual_sort_code_error: "Enter a 6-digit sort code"
+    feature_payments_schedule_payment_manual_account_number: "Account number"
+    feature_payments_schedule_payment_manual_account_number_error: "Enter an 8-digit account number"
+    feature_payments_schedule_payment_manual_confirm: "Use these details"
+    feature_payments_schedule_payment_manual_iban: "IBAN"
+    feature_payments_schedule_payment_manual_iban_error: "Enter a valid IBAN"
+    feature_payments_schedule_payment_amount_label: "Amount to send"
+    feature_payments_schedule_payment_amount_placeholder: "0.00"
+    feature_payments_schedule_payment_amount_error_not_a_number: "Enter an amount like 250 or 250.00"
+    feature_payments_schedule_payment_amount_error_too_many_decimals: "Amounts go to two decimal places, like 250.99"
+    feature_payments_schedule_payment_amount_error_not_positive: "Enter an amount greater than zero"
+    feature_payments_schedule_payment_amount_error_exceeds_balance: "That is more than the balance available on this account"
+    feature_payments_schedule_payment_charge_bearer_creditor: "Paid by recipient"
+    feature_payments_schedule_payment_charge_bearer_debtor: "Paid by you"
+    feature_payments_schedule_payment_charge_bearer_shared: "Shared"
+    feature_payments_schedule_payment_charges_caveat: "Your bank confirms its own charge when the payment is created"
+    feature_payments_schedule_payment_reference_label: "Reference (optional)"
+    feature_payments_schedule_payment_reference_helper: "Max 35 characters"
+    feature_payments_schedule_payment_review_button: "Review payment"
+    feature_payments_schedule_payment_history_title: "Recent scheduled payments"
+    feature_payments_schedule_payment_history_screen_title: "Scheduled payments"
+    feature_payments_schedule_payment_history_empty: "You have not scheduled any payments yet."
+    feature_payments_schedule_payment_review_heading: "Check this before you continue"
+    feature_payments_schedule_payment_review_from_bank_choice: "You’ll choose at your bank"
+    feature_payments_schedule_payment_review_charge_bearer: "Charges"
+    feature_payments_schedule_payment_review_from: "From"
+    feature_payments_schedule_payment_review_to: "To"
+    feature_payments_schedule_payment_review_reference: "Reference"
+    feature_payments_schedule_payment_review_reference_empty: "None"
+    feature_payments_schedule_payment_review_details_heading: "Payment details"
+    feature_payments_schedule_payment_review_auth_notice: "You’ll approve this with your bank before any money moves."
+    feature_payments_schedule_payment_review_charge_caveat: "Your bank will confirm its own charge when it creates the payment."
+    feature_payments_schedule_payment_review_sent_as: "Sent as"
+    feature_payments_schedule_payment_review_scheduled_for: "Scheduled for"
+    feature_payments_schedule_payment_review_not_yet_made_title: "This payment has not been made yet"
+    feature_payments_schedule_payment_review_not_yet_made_body: "Your bank will make it on %1$s. You cannot cancel it from this app once approved."
+    feature_payments_schedule_payment_review_confirm: "Confirm and continue"
+    feature_payments_schedule_payment_review_edit: "Edit"
+    feature_payments_schedule_payment_submitting_staging: "Setting up your payment"
+    feature_payments_schedule_payment_submitting_awaiting: "Waiting for you to authorise at your bank"
+    feature_payments_schedule_payment_submitting_amount: "%1$s to %2$s"
+    feature_payments_schedule_payment_submitting_lock: "Do not close the app until this finishes."
+    feature_payments_schedule_payment_abandon_authorisation: "Cancel"
+    feature_payments_schedule_payment_error_title: "Payment could not be completed"
+    feature_payments_schedule_payment_error_signature_missing: "This app could not sign the payment instruction. Nothing has been sent. Please report the reference below."
+    feature_payments_schedule_payment_error_consent_not_authorised: "The payment was not authorised at your bank. Authorise it to continue."
+    feature_payments_schedule_payment_error_consent_mismatch: "The payment changed after you approved it, so your bank refused it. Start again to send it."
+    feature_payments_schedule_payment_error_outside_limits: "This amount is outside your bank’s payment limits. Try a smaller amount."
+    feature_payments_schedule_payment_error_payer_not_supported: "This account can’t be used to send payments. Choose a different account to pay from."
+    feature_payments_schedule_payment_change_payer: "Choose another account"
+    feature_payments_schedule_payment_error_invalid_field: "Your bank would not accept one of these details. Check them and try again."
+    feature_payments_schedule_payment_error_consent_revoked: "Access to this account was withdrawn, so the payment was refused."
+    feature_payments_schedule_payment_error_token_expired: "Your authorisation expired before the payment was sent. Authorise it again to continue."
+    feature_payments_schedule_payment_error_rate_limited: "Your bank is busy right now. Wait a moment and try again."
+    feature_payments_schedule_payment_error_date_refused: "Your bank would not accept that payment date. Choose another date and try again."
+    feature_payments_schedule_payment_error_request_malformed: "This payment could not be set up because of a problem in the app. Nothing has been scheduled."
+    feature_payments_schedule_payment_error_scheme_not_supported: "This account cannot be used for this kind of payment. Try a different account."
+    feature_payments_schedule_payment_error_network: "The payment could not be sent. Check your connection and try again."
+    feature_payments_schedule_payment_error_reference: "Reference %1$s"
+    feature_payments_schedule_payment_retry: "Try again"
+    feature_payments_schedule_payment_reauthorise: "Authorise again"
+    feature_payments_schedule_payment_view_consents: "View consents"
+    feature_payments_schedule_payment_edit_amount: "Change amount"
+    feature_payments_schedule_payment_change_date: "Change date"
+    feature_payments_schedule_payment_date_heading: "Date"
+    feature_payments_schedule_payment_date_placeholder: "Choose a date"
+    feature_payments_schedule_payment_date_helper_domestic: "Between tomorrow and 365 days ahead"
+    feature_payments_schedule_payment_date_helper_international: "Weekdays only, up to 365 days ahead"
+    feature_payments_schedule_payment_date_content_description: "Payment date. %1$s"
+    feature_payments_schedule_payment_date_picker_title: "Select execution date"
+    feature_payments_schedule_payment_date_picker_confirm: "Confirm"
+    feature_payments_schedule_payment_date_picker_cancel: "Cancel"
+    # plus feature_payments_schedule_payment_currency_{gbp..thb} display names
+
+known_gaps:
+  - id: view-consents-noop
+    severity: error
+    description: "schedulePaymentGraph(onNavigateToConsents = {}) — 'View consents' does nothing (FR-047)."
+  - id: load-error-retry-dispatches-staging
+    severity: error
+    description: "Accounts-load Error shows Retry wired to RetryStaging; RetryLoad is never dispatched, so retry after a load failure is dead (no payee/date) or stages without review (filled form)."
+  - id: duplicated-form-code
+    severity: warn
+    description: "Near-copy of send-money (VM 899 vs 802 lines; Content, Review, Error, TestTags, strings, AmountRules, OfferedValues duplicated). Only the date section, AbandonAuthorisation and three extra error kinds differ; payments-standing-order repeats the copy."
+  - id: hardcoded-date-format
+    severity: warn
+    description: "formatExecutionDate uses hardcoded English weekday/month name lists instead of locale-aware formatting or string resources."
+  - id: silent-confirm-on-stale-date
+    severity: info
+    description: "If midnight passes between Review and Confirm and the chosen date becomes today, buildDraft() returns null and Confirm silently does nothing; the date is only cleared on the next OpenDatePicker."
+  - id: date-refused-recovery-is-backstep
+    severity: info
+    description: "Change date dispatches BackStep (to the form) rather than opening the date picker directly."
+  - id: orphan-strings
+    severity: info
+    description: "charges_bearer_recipient, review_bank_charge and protected_by strings are declared but never referenced; TestTag REVIEW_CHARGE_BEARER is declared but unused (the row is tagged REVIEW_CHARGE_ROW)."

@@ -1,0 +1,345 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: consent-list
+screen_id: consent-list
+name: "Connected Banks"
+status: enriched
+_source: source_analysis
+_source_paths:
+  - feature/consent-list/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentlist/ConsentListScreen.kt
+  - feature/consent-list/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentlist/ConsentListContent.kt
+  - feature/consent-list/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentlist/ui/ConsentListViewModel.kt
+  - feature/consent-list/src/commonMain/kotlin/org/mifosx/openbanking/feature/consentlist/ui/ConsentListState.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/store/ConsentStores.kt
+  - cmp-navigation/src/commonMain/kotlin/cmp/navigation/authenticatednavhost/AuthenticatedNavHostScreen.kt
+requirement_refs: [FR-023, FR-024]
+archetype: index_list
+states: [loading, content, empty, error, error_auth]
+initial_state: loading
+feature_profile:
+  combo_id: read_detail
+  facets: [content, network]
+  archetype: screen-content
+  store_archetype: MEMORY_ONLY      # ConsentStores.consentDetailStore = StoreFactory.createMemoryStore
+  recipe_ref: CORE_STORE.md
+  heal: auto
+  profile_hash: scaffold-default    # enrich STEP 5.PROFILE re-derives
+
+route: ConsentListRoute            # @Serializable data object — no nav args
+entry_points:
+  - source: settings
+    trigger: "Settings → Consents row (onNavigateToConsents = { navController.navigate(ConsentListRoute) })"
+    params: {}
+nav_params: {}
+
+business_logic:
+  kind: composite
+  description: >
+    Shows the device's single current HSBC AIS connection. The consent id is read from ConsentSession
+    (secure Settings); when none is stored the screen goes straight to Empty without a network call.
+    Otherwise ConsentDetailRepository.consentStream(consentId) (Store5 memory store, shared with
+    consent-detail) mints a temporary client_credentials token (scope=accounts) and reads
+    GET /v4.0/aisp/account-access-consents/{ConsentId}. The ConsentSummary is mapped into one
+    ConsentCardUi; isNearExpiry = daysUntilExpiry <= 14 (RECONFIRM_WINDOW_DAYS, deliberately wider
+    than consent-detail's 7) drives both the top reconfirm banner and the per-card urgency chip.
+    401 classifies to ErrorAuth (re-sign-in), Server to ServerError, anything else to NetworkError.
+  library_refs: [store5, cmp-network-monitor]
+
+screens:
+  - id: consent-list-screen
+    title: "{strings.feature_consent_list_screen_title}"
+    type: list
+    archetype: index_list
+    states: [loading, content, empty, error, error_auth]
+    description: >
+      KptScaffold with back arrow titled "Connected Banks". Body switches on ConsentListUiState:
+      skeleton, then a LazyColumn of (optional reconfirm banner, "ACTIVE" section label, one consent
+      card), or an empty "No active connections" with Connect HSBC, an error with Retry, or a
+      session-expired state with Sign in again. Although modelled as a list, content always holds
+      exactly one card (consent history was dropped, see known_gaps).
+
+state_model:
+  ConsentListViewModel:
+    base: "BaseViewModel<ConsentListState, Nothing, ConsentListAction>"
+    state:
+      name: ConsentListState
+      fields:
+        uiState: { type: ConsentListUiState, default: "ConsentListUiState.Loading" }
+    screen_state:
+      name: ConsentListUiState
+      members:
+        - { name: Loading }
+        - name: Content
+          fields:
+            active: { type: "List<ConsentCardUi>", note: "single-element list (current consent only)" }
+            showReconfirmBanner: { type: Boolean, note: "== card.isNearExpiry" }
+        - { name: Empty }
+        - { name: Error, fields: { kind: ConsentListErrorKind } }
+        - { name: ErrorAuth }
+    models:
+      ConsentCardUi:
+        consentId: String
+        status: ConsentStatus          # Authorised | Expired | Revoked | Cancelled | Rejected | AwaitingAuthorisation | Consumed
+        permissionCount: "Int?"
+        daysUntilExpiry: Int           # (expiry - now).inWholeDays coerced >= 0; unparseable → 0
+        expiredOnDate: "String?"       # always null today (history dropped)
+        connectedDate: String          # "d Mon yyyy" UTC, raw string on parse failure
+        isNearExpiry: Boolean          # daysUntilExpiry <= 14
+    errors:
+      name: ConsentListErrorKind
+      types:
+        - { type: NetworkError, retry: true, message_key: feature_consent_list_error_network }
+        - { type: ServerError, retry: true, message_key: feature_consent_list_error_server }
+      classification: >
+        classifyConsentListError(throwable): RemoteException.networkError Unauthorized → null (⇒ ErrorAuth);
+        NetworkError.Server → ServerError; everything else → NetworkError. ScreenState.NoNetwork → NetworkError;
+        ScreenState.Unauthenticated → ErrorAuth.
+    events:
+      name: Nothing
+      members: []
+    actions:
+      name: ConsentListAction
+      members:
+        - { name: RetryLoad, trigger: "Tap Retry on the error state → stream?.refresh()" }
+    di:
+      - ConsentDetailRepository
+      - ConsentSession
+
+components:
+  - id: top_bar
+    type: top-bar
+    impl: KptScaffold
+    title: "{strings.feature_consent_list_screen_title}"
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      target: back
+      action_contract:
+        effect: navigate
+        handler: "ConsentListScreen(onBack) → navController.popBackStack()"
+        description: "Pops ConsentListRoute off the authenticated back-stack, returning to Settings; no state or network effect."
+        action_contract_author: "claude-via-idea-plan-source"
+        action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: consent_list_skeleton
+    type: skeleton
+    impl: ConsentListSkeleton
+    test_tag: "consentList:loading"
+    content_description: "{strings.feature_consent_list_loading_a11y}"
+
+  - id: content_list
+    type: lazy-column
+    test_tag: "consentList:contentList"
+    content_description: "{strings.feature_consent_list_list_a11y}"
+    children:
+      - id: reconfirm_banner
+        type: banner
+        visible: "{{showReconfirmBanner}}"
+        test_tag: "consentList:reconfirmBanner"
+        icon: warning_amber
+        style: { background: errorContainer, text_color: onErrorContainer, corner_radius: 12dp, padding: 16dp }
+        title: "{strings.feature_consent_list_reconfirm_banner_title}"
+        message: "{strings.feature_consent_list_reconfirm_banner_body}"
+      - id: active_section_label
+        type: text
+        visible: "{{active.isNotEmpty()}}"
+        test_tag: "consentList:activeSectionLabel"
+        style: { text_style: labelLarge, color: onSurfaceVariant, transform: uppercase }
+        value: "{strings.feature_consent_list_section_active}"
+      - id: consent_card
+        type: card
+        repeat: "active"
+        test_tag: "consentList:card:{consentId}"
+        content_description: "{strings.feature_consent_list_card_a11y}"
+        style: { background: surfaceContainerLow, elevation: 1dp, corner_radius: 12dp, padding: 16dp }
+        content:
+          - id: status_chip
+            type: chip
+            test_tag: "consentList:statusChip:{consentId}"
+            label: "{{status | consentStatusLabel}}"  # i18n: skip — resolves to feature_consent_list_status_* keys
+            content_description: "{strings.feature_consent_list_status_a11y}"
+            icon: { Authorised: check_circle, other: schedule }
+            style:
+              Authorised: { background: primaryContainer, text_color: onPrimaryContainer }
+              other: { background: surfaceContainerHighest, text_color: onSurfaceVariant }
+          - { id: chevron, type: icon, icon: keyboard_arrow_right, tint: onSurfaceVariant }
+          - id: urgency_chip
+            type: chip
+            visible: "{{isNearExpiry}}"
+            test_tag: "consentList:urgencyChip:{consentId}"
+            icon: warning_amber
+            label: "{strings.feature_consent_list_reconfirm_chip}"
+            style: { background: errorContainer, text_color: onErrorContainer }
+          - id: permission_count_text
+            type: text
+            visible: "{{permissionCount != null}}"
+            style: { text_style: bodyMedium, color: onSurface }
+            value: "{strings.feature_consent_list_permissions}"
+          - id: expiry_text
+            type: text
+            style: { text_style: labelMedium, color: { near_expiry: error, default: onSurfaceVariant } }
+            value: { expired: "{strings.feature_consent_list_expired_on}", active: "{strings.feature_consent_list_expires_in}" }
+          - id: connected_text
+            type: text
+            style: { text_style: labelSmall, color: onSurfaceVariant }
+            value: "{strings.feature_consent_list_connected_on}"
+        on_click:
+          action: onNavigateToDetail
+          target: consent-detail
+          params: { consentId: "{{card.consentId}}" }
+          action_contract:
+            effect: navigate
+            handler: "ConsentCard.clickable { onClick(card.consentId) } → navController.navigate(ConsentDetailRoute(consentId))"
+            description: "Navigates to consent-detail with the tapped card's ConsentId as the ConsentDetailRoute arg; no network call from this screen."
+            action_contract_author: "claude-via-idea-plan-source"
+            action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: empty_state
+    type: empty-state
+    impl: ConsentListEmpty
+    test_tag: "consentList:emptyState"
+    content_description: "{strings.feature_consent_list_empty_a11y}"
+    icon: link_off
+    title: { value: "{strings.feature_consent_list_empty_title}", test_tag: "consentList:emptyTitle" }
+    body: { value: "{strings.feature_consent_list_empty_body}", test_tag: "consentList:emptyBody" }
+    cta:
+      id: connect_button
+      type: button
+      variant: filled-pill
+      impl: MifosFilledPillButton
+      test_tag: "consentList:connectButton"
+      label: "{strings.feature_consent_list_connect}"
+      on_click:
+        action: onConnectBank
+        target: login
+        action_contract:
+          effect: navigate
+          handler: "onConnectBank → navController.navigate(LoginRenewRoute)"
+          description: "Opens the login feature's LoginRenewRoute (consent permission screen without the intro) so the user can create a new AIS consent with HSBC."
+          action_contract_author: "claude-via-idea-plan-source"
+          action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: error_state
+    type: error-state
+    impl: ConsentListError
+    test_tag: "consentList:errorState"
+    content_description: "{strings.feature_consent_list_error_a11y}"
+    icon: error_outline
+    title: { value: "{strings.feature_consent_list_error_title}", test_tag: "consentList:errorTitle" }
+    body:
+      test_tag: "consentList:errorBody"
+      value:
+        NetworkError: "{strings.feature_consent_list_error_network}"
+        ServerError: "{strings.feature_consent_list_error_server}"
+    cta:
+      id: retry_button
+      type: button
+      variant: filled-pill
+      test_tag: "consentList:retryButton"
+      label: "{strings.feature_consent_list_retry}"
+      on_click:
+        action: RetryLoad
+        action_contract:
+          effect: call_api
+          handler: "ConsentListViewModel.handleAction(RetryLoad) → stream?.refresh()"
+          writes_to: "ConsentListState.uiState"
+          description: "Refreshes the Store5 consent stream, re-fetching GET /v4.0/aisp/account-access-consents/{ConsentId} with a fresh client_credentials token; state returns through Loading to Content or Error."
+          action_contract_author: "claude-via-idea-plan-source"
+          action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+  - id: auth_error_state
+    type: error-state
+    impl: ConsentListAuthError
+    test_tag: "consentList:authErrorState"
+    content_description: "{strings.feature_consent_list_auth_error_a11y}"
+    icon: lock_open
+    icon_well: { size: 80dp, background: tertiaryContainer }
+    title: { value: "{strings.feature_consent_list_auth_error_title}", test_tag: "consentList:authErrorTitle" }
+    body: { value: "{strings.feature_consent_list_auth_error_body}", test_tag: "consentList:authErrorBody" }
+    cta:
+      id: reauth_button
+      type: button
+      variant: filled-pill
+      test_tag: "consentList:reauthButton"
+      label: "{strings.feature_consent_list_reauth}"
+      on_click:
+        action: onReauthenticate
+        target: login
+        action_contract:
+          effect: navigate
+          handler: "onReauthenticate → navController.navigate(LoginRenewRoute)"
+          description: "Sends the user to LoginRenewRoute to re-authorise the AIS consent after a 401 on the consent read."
+          action_contract_author: "claude-via-idea-plan-source"
+          action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+state_components:
+  loading:
+    components: [top_bar, consent_list_skeleton]
+    description: "Consent stream in flight (Store5 ScreenState.Loading)."
+  content:
+    components: [top_bar, content_list]
+    description: "One consent card; reconfirm banner + urgency chip when expiry is within 14 days."
+    demo_data:
+      active:
+        - { consentId: "aac-6f1e2b9c", status: Authorised, permissionCount: 12, daysUntilExpiry: 9, connectedDate: "14 Jul 2026", isNearExpiry: true }
+      showReconfirmBanner: true
+  empty:
+    components: [top_bar, empty_state]
+    description: "No ConsentSession.consentId() on this device (no network call), or the stream reported Empty."
+  error:
+    components: [top_bar, error_state]
+    description: "NetworkError (incl. NoNetwork) or ServerError body; Retry refreshes the stream."
+  error_auth:
+    components: [top_bar, auth_error_state]
+    description: "401 / Unauthenticated on the consent read; Sign in again → LoginRenewRoute."
+
+visual_assets: []   # Material vector icons only (LinkOff, ErrorOutline, LockOpen, WarningAmber) — no generative imagery in source
+
+strings_ref: feature/consent-list/src/commonMain/composeResources/values/strings.xml
+i18n:
+  en:
+    feature_consent_list_screen_title: "Connected Banks"
+    feature_consent_list_loading_a11y: "Loading connected banks"
+    feature_consent_list_section_active: "Active"
+    feature_consent_list_section_history: "History"   # unused since history was dropped
+    feature_consent_list_list_a11y: "Connected banks list"
+    feature_consent_list_reconfirm_banner_title: "Reconfirmation required"
+    feature_consent_list_reconfirm_banner_body: "Your consent expires soon. Reconfirm to keep access to your account data."
+    feature_consent_list_reconfirm_chip: "Reconfirm soon"
+    feature_consent_list_card_a11y: "Tap to view consent details"
+    feature_consent_list_status_a11y: "Consent status: %1$s"
+    feature_consent_list_permissions: "%1$d data types shared"
+    feature_consent_list_expires_in: "Expires in %1$d days"
+    feature_consent_list_expired_on: "Expired on %1$s"
+    feature_consent_list_connected_on: "Connected %1$s"
+    feature_consent_list_status_authorised: "Authorised"
+    feature_consent_list_status_expired: "Expired"
+    feature_consent_list_status_revoked: "Revoked"
+    feature_consent_list_status_cancelled: "Cancelled"
+    feature_consent_list_status_rejected: "Rejected"
+    feature_consent_list_status_awaiting: "Awaiting authorisation"
+    feature_consent_list_status_consumed: "Consumed"
+    feature_consent_list_empty_title: "No active connections"
+    feature_consent_list_empty_body: "You have not connected any bank account yet. Tap below to connect HSBC."
+    feature_consent_list_empty_a11y: "No active bank connections"
+    feature_consent_list_connect: "Connect HSBC"
+    feature_consent_list_error_title: "Could not load connections"
+    feature_consent_list_error_a11y: "Error loading connected banks"
+    feature_consent_list_error_network: "Something went wrong while fetching your connected banks. Please check your connection and try again."
+    feature_consent_list_error_server: "Something went wrong on the HSBC side. Please try again."
+    feature_consent_list_retry: "Retry"
+    feature_consent_list_auth_error_title: "Session expired"
+    feature_consent_list_auth_error_body: "Your session has expired. Sign in again to reload your connected banks."
+    feature_consent_list_auth_error_a11y: "Session expired, sign in to reload"
+    feature_consent_list_reauth: "Sign in again"
+
+known_gaps:
+  - id: single-consent-only
+    severity: info
+    description: "Consent history was removed (TestTags 'uitest-tag-retire'); Content.active always holds exactly the current consent and expiredOnDate is always null. The 'History' string and isHistory card styling are dead code."
+  - id: list-reachable-only-from-settings
+    severity: warn
+    description: "Only Settings navigates here. 'View consents' in send-money, payments-schedule-payment and payments-standing-order is wired onNavigateToConsents = {} (no-op) instead of ConsentListRoute (FR-047)."
+  - id: unused-a11y-strings
+    severity: info
+    description: "feature_consent_list_back_a11y / connect_a11y / retry_a11y / reauth_a11y are declared but never referenced; buttons rely on label text only."

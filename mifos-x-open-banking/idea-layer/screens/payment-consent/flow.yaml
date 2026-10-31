@@ -1,0 +1,111 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: payment-consent
+_source: source_analysis
+
+entry_points:
+  - type: replace
+    source: external-redirect
+    nav_role: external-entry
+    navigator: root
+    route: "PaymentConsentRoute(redirectUrl)"
+    description: "ConsentRedirectBus redirect classified as AuthorisationLeg.Payment by authorisationLegOf (VRP checked first) → navigate with rootNavOptions (popUpTo graph, launchSingleTop); duplicate redirect URLs suppressed by lastRoutedRedirect."
+    launched_by: [send-money, payments-schedule-payment, payments-standing-order]
+
+navigates_to:
+  - payment-status   # PaymentSubmitted(paymentId) → PaymentStatusRoute (root)
+  - send-money                  # RestartAuthorisation(*SinglePayment) → SendMoneyRoute, draft kept (DEF-010)
+  - payments-schedule-payment   # RestartAuthorisation(*ScheduledPayment) → SchedulePaymentRoute, draft kept (DEF-010)
+  - payments-standing-order     # RestartAuthorisation(*StandingOrder) → StandingOrderDestination, draft kept (DEF-010)
+  - home             # Abandoned → navigateToAuthenticatedGraph (start = Home); RestartAuthorisation(null) fallback
+
+transitions:
+  - { from: payment-consent, to: payment-status, trigger: "event PaymentSubmitted", type: replace, route: "PaymentStatusRoute(paymentId)" }
+  - { from: payment-consent, to: send-money, trigger: "event RestartAuthorisation(consentType ∈ Domestic|InternationalSinglePayment) (restart_button)", type: replace, route: SendMoneyRoute, note: "staged draft kept; form re-hydrates at Review (DEF-010)" }
+  - { from: payment-consent, to: payments-schedule-payment, trigger: "event RestartAuthorisation(consentType ∈ Domestic|InternationalScheduledPayment) (restart_button)", type: replace, route: SchedulePaymentRoute, note: "staged draft kept (DEF-010)" }
+  - { from: payment-consent, to: payments-standing-order, trigger: "event RestartAuthorisation(consentType ∈ Domestic|InternationalStandingOrder) (restart_button)", type: replace, route: StandingOrderDestination, note: "staged draft kept (DEF-010)" }
+  - { from: payment-consent, to: home, trigger: "event RestartAuthorisation(consentType = null) (restart_button)", type: replace, note: "fallback only — rail unknown" }
+  - { from: payment-consent, to: home, trigger: "event Abandoned (abandon_button / already_submitted_done)", type: replace }
+
+flow_logic:
+  on_load:
+    - step: validate
+      call: "repository.validateCallback(redirectUrl)"
+      branches:
+        Valid: "authorizationCode = code; consentType = repository.pendingConsentType(); state.consentId = consentId → exchange"
+        NoPending: "fail(NoPendingAuthorisation)"
+        SecurityError: "fail(StateMismatch)"
+        AccessDenied: "fail(ConsentRejected)"
+        MissingCode: "fail(CodeExpired)"
+        Error: "fail(NetworkError)"
+  exchange:
+    - set_state: Exchanging
+    - call: "repository.exchangeCode(authorizationCode)"
+      api: post_token_authorization_code
+      on_success: check_consent_status
+      on_error: "fail(classifyPaymentConsentError(e), errorDetailOf(e))"
+  check_consent_status:
+    - set_state: "Checking(canCheckAgain = false)"
+    - call: "repository.consentStatus(consentId)  # client-credentials token, GET by recorded ConsentType"
+      api: get_consent
+      branches:
+        "AUTH | AUTHORISED | AUTHORIZED": authorise_and_submit
+        COND: "repository.discardAuthorisation(); uiState = AlreadySubmitted"
+        RJCT: "fail(ConsentRejected)"
+        other: "unauthorisedStatusChecks++; >= 3 → fail(AuthorisationTimedOut) else Checking(canCheckAgain = true)"
+      on_error: "fail(classifyPaymentConsentError(e), errorDetailOf(e))"
+  authorise_and_submit:
+    - call: "repository.recordApproved()  # stamps approvedAt for the status timeline"
+    - set_state: Approved
+    - dispatch_on: "repository.pendingConsentType()"
+      DomesticStandingOrder|InternationalStandingOrder: "standingOrderInitiationRepository.stagedDraft() → Submitting → submitStandingOrder(draft, consentId) (api post_standing_order) ; null → fail(NoStagedPayment)"
+      DomesticScheduledPayment|InternationalScheduledPayment: "scheduledPaymentInitiationRepository.stagedDraft() → Submitting → submitPayment(draft, consentId) (api post_scheduled_payment) ; null → fail(NoStagedPayment)"
+      DomesticSinglePayment|InternationalSinglePayment: "stagedDraft() → ConfirmingFunds → confirmFunds(consentId) (api get_funds_confirmation); false → fail(InsufficientFunds); true → Submitting → submitPayment(draft, consentId) (api post_payment)"
+      "null": "fail(NoStagedPayment)"
+    - on_submit_success: "repository.discardAuthorisation(); sendEvent(PaymentSubmitted(paymentId))"
+    - on_submit_error: "fail(classifySubmissionError(e), errorDetailOf(e))"
+  on_check_again:
+    - goto: check_consent_status
+  on_retry_authorisation:
+    - "repository.discardAuthorisation()  # clears PendingAuth only — the rail's staged draft is KEPT"
+    - "sendEvent(RestartAuthorisation(state.consentType)) → root navigateToAuthenticatedGraph, then navigate to the originating form: *SinglePayment → SendMoneyRoute · *ScheduledPayment → SchedulePaymentRoute · *StandingOrder → StandingOrderDestination · null → stay on Home (DEF-010)"
+  on_abandon_payment:
+    - "repository.discardAuthorisation()"
+    - "sendEvent(Abandoned) → root navigateToAuthenticatedGraph"
+  fail:
+    - "recordFailure = failureRecorderFor(kind, detail)  # reads pendingConsentType + staged draft BEFORE discard"
+    - "repository.discardAuthorisation()"
+    - "recordFailure?.invoke → paymentHistoryRepository.saveFailed(draft, kind.name, kind.description(detail))  # exactly one row, or none if nothing staged"
+    - "uiState = Error(kind, detail)"
+
+error_handling:
+  StateMismatch: { ui: errorState, retry_button: true, reassure: true }
+  NoPendingAuthorisation: { ui: errorState, retry_button: false, single_exit: Done }
+  CodeExpired: { ui: expiredState, retry_button: true }
+  AuthorisationTimedOut: { ui: expiredState, retry_button: true }
+  ConsentRejected: { ui: declinedState, retry_button: true }
+  NetworkError: { ui: connectionFailedState, retry_button: true }
+  NoStagedPayment: { ui: errorState, retry_button: true }
+  InsufficientFunds: { ui: errorState, retry_button: true }
+  SubmissionFailed: { ui: errorState, retry_button: false, reassure: false, single_exit: Done }
+  RequestRejected: { ui: errorState, retry_button: false, single_exit: Done }
+  ResponseUnreadable: { ui: errorState, retry_button: false, single_exit: Done }
+  SubmissionUnconfirmed: { ui: errorState, retry_button: false, reassure: false, single_exit: Done }
+  classification_pre_submit: { 401: CodeExpired, 403: ConsentRejected, 404: CodeExpired, 429: AuthorisationTimedOut, 5xx: AuthorisationTimedOut, 400: RequestRejected, serialization: ResponseUnreadable, other: NetworkError }
+  classification_submit: { 401: CodeExpired, 403: ConsentRejected, 400: RequestRejected, serialization: SubmissionUnconfirmed, other: SubmissionFailed }
+
+journey_ids: [payment-failure-recovery, send-money, schedule-payment, standing-order]
+
+dependencies:
+  repositories:
+    - name: PaymentAuthRepository
+      methods: ["validateCallback(url)", "suspend exchangeCode(code)", "suspend consentStatus(consentId): NetworkResult<String>", "pendingConsentType()", "recordApproved()", "discardAuthorisation()"]
+    - name: SinglePaymentInitiationRepository
+      methods: ["stagedDraft(): PaymentDraft?", "suspend confirmFunds(consentId): NetworkResult<Boolean>", "suspend submitPayment(draft, consentId): NetworkResult<PaymentReceipt>"]
+    - name: ScheduledPaymentInitiationRepository
+      methods: ["stagedDraft(): ScheduledPaymentDraft?", "suspend submitPayment(draft, consentId)"]
+    - name: StandingOrderInitiationRepository
+      methods: ["stagedDraft(): StandingOrderDraft?", "suspend submitStandingOrder(draft, consentId)"]
+    - name: PaymentHistoryRepository
+      methods: ["suspend saveFailed(draft, kind, description)"]
+  secure_settings: [PendingAuth, hsbc_tokens]

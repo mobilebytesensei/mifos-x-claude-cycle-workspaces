@@ -1,0 +1,120 @@
+# Journey — a field officer signs in and reaches their client list.
+#
+# Journeys are END-TO-END and persona-anchored; they are what `/idea-testers-generate` turns into a
+# device-runnable Maestro flow. Each step names the screen, the action, and the SUCCESS SIGNAL that
+# proves it happened — a step with no observable signal is untestable.
+
+schema_version: "1.0"
+journey_id: field-officer-signs-in
+name: "Field officer signs in"
+persona: field-officer
+priority: P0
+
+description: >
+  The first thing every user of this app does, every day, often outdoors on a phone with one hand
+  free. It is the only journey that gates every other one — if it fails, nothing else in the product
+  is reachable.
+
+preconditions:
+  - "app freshly installed OR previously signed out"
+  - "device has network"
+  - "the shipped instance is reachable (apis.mifos.community, tenant mifos-bank-1)"
+
+# ──────────────── HAPPY PATH ────────────────
+screen_sequence:
+  - step: 1
+    screen: signin
+    state: empty
+    action: "observe"
+    success_signal: "the instance chip states the host and tenant this sign-in will use"
+    why: >
+      Verified FIRST on purpose. On 2026-10-01 every call 404'd against a wrong base path and the
+      screen reported a credential error; the fault was invisible because nothing on screen said
+      where the app was connecting.
+
+  - step: 2
+    screen: signin
+    state: empty
+    action: "enter username"
+    input: "fieldofficer"
+    success_signal: "the field shows the value EXACTLY as typed, with no leading capital"
+    why: >
+      Fineract usernames are case-sensitive and the shared text field defaulted to
+      KeyboardCapitalization.Words, so an IME turned `fieldofficer` into `Fieldofficer` and the
+      server rejected it. Automation misses this — `adb shell input text` bypasses the IME — so the
+      assertion is on the rendered value, and a human-driven run is what actually exercises it.
+
+  - step: 3
+    screen: signin
+    state: empty
+    action: "enter password"
+    input: "<demo credential — see demo-data/auth.yaml>"
+    success_signal: "the field renders masked (bullets), never the characters"
+
+  - step: 4
+    screen: signin
+    state: submitting
+    action: "tap Login"
+    success_signal: "a modal overlay covers the form and the submit control is disabled"
+    why: "the overlay — not a disappearing button — is what makes a double submit impossible while fields stay visible"
+
+  - step: 5
+    screen: home
+    state: content
+    action: "await routing"
+    success_signal: "the authenticated shell is shown — bottom navigation with Home / Clients / Profile"
+
+  - step: 6
+    screen: clients
+    state: content
+    action: "open the Clients tab"
+    success_signal: "real client rows load from the live instance"
+    why: "proves the session's credential actually authenticates SUBSEQUENT calls, not just the login call"
+
+# ──────────────── BRANCHES ────────────────
+# A journey that only walks the happy path cannot fail honestly.
+branches:
+  - id: wrong-instance
+    at: 1
+    when: "the chip shows an instance the officer does not work on"
+    action: "tap the chip → serverConfig → correct it → back"
+    success_signal: "the chip reflects the new host and tenant"
+
+  - id: short-credential
+    at: 4
+    when: "username < 4 chars or password < 6"
+    expect_state: validation_error
+    success_signal: "an error icon and message on the OFFENDING field only; the other field stays clean; ZERO network calls"
+
+  - id: rejected
+    at: 4
+    when: "credentials are wrong"
+    expect_state: transport_error
+    success_signal: "a snackbar; both field values are preserved for retyping"
+
+  - id: offline
+    at: 4
+    when: "no connectivity"
+    expect_state: offline
+    success_signal: "an offline-specific message, distinct from a rejected credential"
+
+  - id: repeated-failure
+    at: 4
+    when: "consecutive failures reach the policy threshold"
+    expect_state: locked_out
+    success_signal: "submit disabled, the banner states what happened and when it clears, the instance chip stays reachable"
+
+  - id: returning-officer
+    at: 1
+    when: "a stored session exists and biometrics are enrolled"
+    expect_state: biometric_ready
+    success_signal: "a biometric unlock action is offered ABOVE the form; the form remains usable"
+    fallback: "cancel or unavailable returns to the credential path — never a dead end"
+
+# ──────────────── COVERAGE ────────────────
+covers_states: [empty, biometric_ready, submitting, validation_error, transport_error, offline, locked_out, success]
+covers_flows: [authentication]
+
+external_gates:
+  - id: biometric-hardware
+    reason: "a device without enrolled biometrics cannot exercise `biometric_ready`; recorded pending-device-verify rather than faked green"

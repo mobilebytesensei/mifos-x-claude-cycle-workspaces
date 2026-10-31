@@ -1,0 +1,145 @@
+# serverConfig — UI contract. IMPORTED from source 2026-10-02, not authored.
+# Fields, validation and actions READ from UpdateServerConfigScreen.kt + UpdateServerConfigEvent.kt
+# + UpdateServerConfigViewModel.kt at 6b66e8a43, reconciled against the shipped port.
+
+schema_version: "3.1"
+screen_id: serverConfig
+name: Server configuration
+status: imported
+
+feature_profile:
+  combo_id: form_submit
+  facets: [form, settings, submit]
+  archetype: screen-content
+  store_archetype: OFFLINE_LOCAL_ONLY   # writes to preferences; no network, no Store
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: imported-from-source
+
+# ──────────────── STATES ────────────────
+# The original had no state enum — it held a mutableStateOf(ServerConfig) plus five independent
+# error flows. These states are the behaviour those flows produced, named.
+states: [editing, field_invalid, saved]
+initial_state: editing     # ES3: a form screen with no api-backed read starts at content
+
+state_detail:
+  - id: editing
+    description: "fields populated from the stored config; no errors"
+    components: [protocol_field, endpoint_field, api_path_field, port_field, tenant_field, use_defaults, use_localhost, save]
+
+  - id: field_invalid
+    description: "one or more fields fail their rule — error renders ON the field"
+    components: [protocol_field, endpoint_field, api_path_field, port_field, tenant_field]
+    notes: >
+      In the original this was five independent flows with no combined view, so SUBMIT had no way
+      to ask "is anything invalid?" and wrote whatever was in the fields. The port derives both the
+      per-field attribution and the combined answer from one computation.
+
+  - id: saved
+    description: "config persisted; confirmation shown, then back"
+    components: [snackbar]
+    notes: "NOT IN ORIGINAL — it popped back silently, so a save and a dismiss looked identical"
+
+# ──────────────── COMPONENTS ────────────────
+# Five fields, measured from the original's event vocabulary (UpdateServerConfigEvent) — one event
+# per field, which is where this list comes from rather than from the Composable tree alone.
+components:
+  - id: protocol_field
+    type: outlined_text_field
+    label_ref: feature_settings_server_protocol
+    placeholder_ref: feature_settings_protocol_placeholder
+    keyboard_type: uri
+    event: UpdateProtocol
+    validation:
+      rule: "ServerConfigRules.protocol"
+      error_ref: feature_settings_server_error_protocol
+
+  - id: endpoint_field
+    type: outlined_text_field
+    label_ref: feature_settings_server_endpoint
+    placeholder_ref: feature_settings_hostname_placeholder
+    keyboard_type: uri
+    event: UpdateEndPoint
+    validation:
+      rule: "ServerConfigRules.endpoint"
+      error_ref: feature_settings_server_error_hostname
+
+  - id: api_path_field
+    type: outlined_text_field
+    label_ref: feature_settings_server_api_path
+    placeholder_ref: feature_settings_api_path_placeholder
+    keyboard_type: uri
+    event: UpdateApiPath
+    validation:
+      rule: "ServerConfigRules.apiPath"
+      requires_leading_slash: true
+      requires_trailing_slash: true
+      error_refs: [feature_settings_server_error_api_path_leading, feature_settings_server_error_api_path_trailing]
+
+  - id: port_field
+    type: outlined_text_field
+    label_ref: feature_settings_server_port
+    keyboard_type: number
+    event: UpdatePort
+    validation:
+      rule: "ServerConfigRules.port"
+      range: "1..65535"
+      error_ref: feature_settings_server_error_port_range
+
+  - id: tenant_field
+    type: outlined_text_field
+    label_ref: feature_settings_server_tenant
+    event: UpdateTenant
+    validation:
+      rule: "ServerConfigRules.tenant"
+      pattern: "^[a-zA-Z0-9_-]+$"
+      error_ref: feature_settings_server_error_tenant
+    notes: >
+      Pattern WIDENED from the original's ^[a-zA-Z0-9]+$, which rejected the app's own shipped
+      default tenant `mifos-bank-1` — the app could not save the configuration it ships with.
+
+  - id: use_defaults
+    type: outlined_button
+    label_ref: feature_settings_server_use_defaults
+    on_click:
+      action: local_state
+      target: "ServerConfig.DEFAULT"
+    event: UseDefaultConfig
+
+  - id: use_localhost
+    type: outlined_button
+    label_ref: feature_settings_server_use_localhost
+    on_click:
+      action: local_state
+      target: "ServerConfig.LOCALHOST"
+    status: added_in_port
+    notes: "the substrate already modelled LOCALHOST; no screen exposed it"
+
+  - id: save
+    type: button
+    label_ref: feature_settings_server_save
+    on_click:
+      action: submit
+      target: updateServerConfig
+    event: UpdateServerConfig
+    notes: >
+      Refuses while any field is invalid and re-publishes the failures, so a user who never touched
+      a field still sees why. The original dispatched regardless.
+
+  - id: snackbar
+    type: snackbar_host
+    renders_states: [saved, field_invalid]
+
+# ──────────────── KNOWN GAP ────────────────
+# Recorded on the screen itself because it makes the screen's visible promise untrue.
+known_gaps:
+  - id: config-does-not-reach-the-client
+    severity: high
+    description: >
+      Editing these fields does NOT change where the app actually talks. The HTTP access point is a
+      BUILD-TIME constant (app-profile → AppAccessPoints), so protocol/host/port/path/tenant are
+      read from the generated declaration, not from what is saved here. core-base/network has the
+      mechanism for both halves (RuntimeHeaderStore for the tenant header, DynamicBaseUrlPlugin for
+      the URL) but `ktorfitFor` does not thread a provider through.
+    consequence: "a user can 'successfully' save a server this app will never contact"
+    tracked_in: feature/settings/MIGRATION.md

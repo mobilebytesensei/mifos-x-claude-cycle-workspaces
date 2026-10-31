@@ -1,0 +1,54 @@
+# serverConfig — data flow. IMPORTED from source 2026-10-02.
+
+schema_version: "3.1"
+feature: serverConfig
+
+# ──────────────── READS ────────────────
+entries:
+  - id: stored_config
+    source: "ProjectPreferencesRepository.serverConfig"
+    shape: ServerConfig
+    cardinality: one
+    fallback: "ServerConfig.DEFAULT when nothing is stored"
+    note: "seeds the form; a StateFlow in the port, a plain value read in the original"
+
+# ──────────────── WRITES ────────────────
+writes:
+  - id: persist_config
+    target: "ProjectPreferencesRepository.updateServerConfig"
+    store: plainSettings
+    key: "fineract.server_config"
+    policy: local_only
+    note: >
+      plainSettings, not secureSettings: the server choice is not a secret. The user RECORD goes to
+      secureSettings because it carries the encoded authentication key — the two are deliberately
+      split by sensitivity, not by convenience.
+
+# ──────────────── VALIDATION DEPENDENCY ────────────────
+validation:
+  shipped: "kpt.core.domain.validation.ServerConfigRules — pure, non-suspend, returns typed ValidationFailure"
+  original: "ServerConfigValidatorUseCase — suspend, returned a pre-localized StringResource"
+  why_it_changed: >
+    The original's validator returned the MESSAGE, which forced Compose string resources into
+    core/domain. Returning a typed reason moves the copy decision to the screen, which is the only
+    layer that should know about localization (spec §2).
+  rules:
+    protocol: "must be http:// or https://"
+    endpoint: "non-empty hostname"
+    apiPath: "leading AND trailing slash"
+    port: "1..65535"
+    tenant: "^[a-zA-Z0-9_-]+$ — widened from the original, which rejected the app's own default"
+
+# ──────────────── DOWNSTREAM (what SHOULD consume this, and does not) ────────────────
+downstream_contract:
+  - consumer: "ProjectPreferencesRepository.instanceUrl"
+    status: wired
+    note: "derives a display URL — this is what the Profile screen shows as 'Server:'"
+  - consumer: "the Fineract HTTP client"
+    status: NOT_WIRED
+    severity: high
+    note: >
+      The access point is generated at build time from app-profile, so no request reads this value.
+      A user can save a server the app will never contact. See api.yaml#configures for what wiring
+      it requires — it needs a core-base/network change, so it is not fixable from this project
+      alone.

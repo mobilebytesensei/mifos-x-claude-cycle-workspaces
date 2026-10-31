@@ -12,10 +12,22 @@
 |-----------|-------|
 | Architecture | Client-Server (KMP mobile → REST API) |
 | Backend Type | REST (Apache Fineract) |
-| Base URL | https://demo.mifos.io/fineract-provider/api/v1 |
+| Base URL | https://apis.mifos.community/1.0/field/v1/ |
 | Auth Method | Basic Auth (base64 username:password) |
 | Database | Server: MySQL/PostgreSQL (Fineract), Client: SQLite (offline) |
-| API Docs | https://demo.mifos.io/fineract-provider/api/docs |
+| API Docs | https://apis.mifos.community/1.0/field/swagger-ui/ |
+
+> **Base URL corrected 2026-10-02.** This table read
+> `https://demo.mifos.io/fineract-provider/api/v1` — the plain-Fineract path, which is the EXACT
+> value that 404'd on every call during the 2026-10-01 incident and took a packet-level probe to
+> diagnose, because the UI reported "Login failed. Check your credentials and try again." The live
+> instance is an API-gateway deployment: `apis.mifos.community` + base path `1.0/field/v1/`, tenant
+> `mifos-bank-1`. Verified on a physical device the same day — clean install, sign-in, 100 real
+> clients. The authoritative copy is `app-profile/app.yaml#network.access_points[id=mifos]`, which
+> `syncForkConfig` turns into `AppAccessPoints`; `ServerConfigAccessPointParityTest` (core/network)
+> fails the build if the two ever diverge again. Keeping the stale value here was not harmless: it
+> is a documented input, and the Stitch renderer put `demo.mifos.io` on the sign-in mockups 10
+> times, where it reads as a verified fact about where the app connects.
 
 ### Key Entities / Data Model
 
@@ -68,6 +80,27 @@
 | FR-018 | User can activate clients/centers/groups | P1 | activate | client-management | Status change with activation date | v1 | ✅ |
 | FR-019 | User can manage data tables | P1 | data-table | data-table-form-flow | Custom fields CRUD per entity | v1 | ✅ |
 | FR-020 | User can track path/GPS | P2 | path-tracking | field-operations | Record GPS coordinates during field visits | v1 | ✅ |
+| FR-DASH-01 | Home shows today's collections (clients due, amount due, collected, overdue) with a link to the collection sheet | P0 | home | home | Figures from generateCollectionSheet for the office + business date; card absent without READ_COLLECTIONSHEET | v2 | ⏳ |
+| FR-DASH-02 | Home shows a work queue: checker tasks, own loans awaiting approval / disbursal, clients pending activation, reschedule requests, unsynced drafts | P0 | home | home | Each row = count + tap-through to the filtered list; a row is absent without its permission; drafts row hidden at zero | v2 | ⏳ |
+| FR-DASH-03 | Home lists centre and group meetings due today | P1 | home | home | Derived from each entity's meeting calendar vs the Fineract business date (not the meetingDate filter); "Nothing scheduled today" when empty | v2 | ⏳ |
+| FR-DASH-04 | Home shows a portfolio summary (active clients/loans, outstanding, overdue, in arrears, PAR, savings, groups, centres) | P1 | home | home | Computed from core APIs, never stretchy reports; per-currency, never a cross-currency sum | v2 | ⏳ |
+| FR-DASH-05 | Home offers permission-gated quick actions (new client/group/centre, collection sheet, run reports, search) | P1 | home | home | An action is absent without its CREATE_*/READ_* code; client-owned account creates (loan/savings/share/collateral) are not on Home, they start from the client profile | v2 | ⏳ |
+| FR-DASH-06 | Home shows recently opened records | P2 | home | home | Last 5 clients/groups/centres/loans from local history, each reopening its detail | v2 | ⏳ |
+| FR-DASH-07 | Portfolio scope follows the user's staff link | P0 | home | home | Staff-linked → "My portfolio"; unlinked → office-wide; loan queues show only the officer's own loans | v2 | ⏳ |
+| FR-OFF-01 | Settings has an Offline sync row, separate from Sync & Drafts | P1 | offlineSync | offlineSync | Opens the Offline sync dashboard; Sync & Drafts unchanged | v2 | ⏳ |
+| FR-OFF-02 | The officer selects existing centres, groups or clients to keep on the device | P1 | offlineSync | offlineSync | Picker with Centres / Groups / Clients tabs, search, multi-select, already-downloaded marked; Download for offline enqueues one job | v2 | ⏳ |
+| FR-OFF-03 | A download takes the full downstream tree | P0 | offlineSync | offlineSync | Centre → groups → clients; group → clients; client → record, image, addresses, identifiers, collateral, pinpoints, notes, charges, documents with file contents, datatables, every loan and savings account (closed included) with transactions, schedules, charges, reschedules, notes, documents, datatables and templates; global templates once per run; every read through the screen's own store so it opens offline; shared records fetched once | v2 | ⏳ |
+| FR-OFF-04 | Sync runs in the background and survives leaving the screen and process death | P0 | offlineSync | offlineSync | sync/ unique work, one job at a time, network-constrained, Android progress notification | v2 | ⏳ |
+| FR-OFF-05 | The dashboard updates live from durable job state | P1 | offlineSync | offlineSync | Header (connection, last/next sync, records to sync, records on device); Active job "done of total · current record" with Cancel; result "Done · N failed" with each failure's server message and Retry failed | v2 | ⏳ |
+| FR-OFF-06 | The dashboard shows everything stored on the device at three levels — Centre, Group, Client | P1 | offlineSync | offlineSync | Centres / Groups / Clients tabs with local counts; every locally held record at its level, chosen directly or via its parent ("via Centro Arin"); each with its sync status (Waiting, Syncing, Synced <time>, Out of date, N failed); centres expand to groups, groups to clients | v2 | ⏳ |
+| FR-OFF-07 | The officer chooses Manual or Automatic sync of the chosen records | P1 | offlineSync | offlineSync | Manual (default; Sync now / Refresh per record) or Automatic (1/6/12/24 h, Wi-Fi only, only while charging) as ONE named periodic job, rescheduled on change, cancelled on Manual and sign-out; only chosen records sync | v2 | ⏳ |
+| FR-OFF-08 | Downloaded records can be refreshed, opened and removed | P2 | offlineSync | offlineSync | Each record shows refreshed-at; Refresh re-reads its tree; Remove deletes what no other downloaded record still needs; the centre/group list long-press download uses the same job | v2 | ⏳ |
+| FR-PRO-01 | The Home avatar opens Profile, a detail screen with a back arrow and no bottom navigation | P1 | profile | account | Tap avatar → Profile; back returns to Home | v2 | ⏳ |
+| FR-PRO-02 | Profile shows who is signed in | P1 | profile | account | Full name (users/{id}), username, Loan officer / Staff chip when staff-linked, office, roles; initials match the Home avatar | v2 | ⏳ |
+| FR-PRO-03 | Profile explains what Home shows | P2 | profile | account | "My portfolio" with a staff link, else the office — the same rule as Home's scope chip | v2 | ⏳ |
+| FR-PRO-04 | Profile shows the live server session | P2 | profile | account | Instance name with Live, URL, tenant; Server settings opens Server config | v2 | ⏳ |
+| FR-PRO-05 | The officer can change their password | P1 | profile | account | Two matching fields; server refusal shown verbatim and the old password stays; on success the app signs in again with the new password so the session continues | v2 | ⏳ |
+| FR-PRO-06 | The officer can sign out from Profile | P1 | profile | account | The Settings sign-out dialog, "Sign out and clear data" ticked by default; Settings keeps its row | v2 | ⏳ |
 
 ---
 
@@ -98,6 +131,15 @@
 | SFR-021 | /staff | GET | List staff | admin | Basic | v1 | ✅ |
 | SFR-022 | /charges | GET | List charges | loan, savings | Basic | v1 | ✅ |
 | SFR-023 | /surveys | GET | List surveys | admin | Basic | v1 | ✅ |
+| SFR-024 | /businessdate/BUSINESS_DATE | GET | The Fineract business date every "today" means | home | Basic | v2 | ⏳ |
+| SFR-025 | /users/{id} | GET | Own user: office, roles, staff link (portfolio scope) | home | Basic | v2 | ⏳ |
+| SFR-026 | /collectionsheet?command=generateCollectionSheet | POST | Today's due clients for the collections card (a read) | home | Basic | v2 | ⏳ |
+| SFR-027 | /rescheduleloans?command=pending | GET | Pending reschedule requests count | home | Basic | v2 | ⏳ |
+| SFR-028 | /centers/{id}, /groups/{id}?associations=collectionMeetingCalendar | GET | Meeting calendar for meetings-today | home | Basic | v2 | ⏳ |
+| SFR-029 | /batches?enclosingTransaction=false | POST | Downstream reads in one round trip per ≤100 (fallback: single calls) | offlineSync | Basic | v2 | ⏳ |
+| SFR-030 | /{entityType}/{entityId}/documents/{documentId}/attachment | GET | Document file contents for offline | offlineSync | Basic | v2 | ⏳ |
+| SFR-031 | /users/{userId}/pwd (fallback PUT /users/{userId}) | POST | Self password change — routes + validates on the gateway (400 policy/mismatch, not 403; measured 2026-10-27) | profile | Basic | v2 | ⏳ |
+| SFR-032 | /staff/{staffId} | GET | Loan officer flag for the profile staff chip | profile | Basic | v2 | ⏳ |
 
 ---
 
@@ -137,6 +179,9 @@
 | NFR-003 | Supports 10k clients per device | Scalability | 10k SQLite records | Load test | P1 | — |
 | NFR-004 | WCAG AA accessibility | Accessibility | AA compliance | Audit | P2 | — |
 | NFR-005 | Test coverage ≥ 80% | Quality | 80% line coverage | CI check | P1 | — |
+| NFR-OFF-01 | A synced record opens on every one of its screens with no network, and a sync survives process death | Reliability | 0 network calls to open a synced record's screens (incl. closed accounts + documents); a killed job resumes, never restarts from zero or is lost | Device run in airplane mode + kill-mid-sync | P0 | — |
+| NFR-PRO-01 | Profile never blanks: the identity saved at sign-in renders at once and offline | Reliability | 0 empty profile screens with a valid session, incl. airplane mode and a failed users/{id} read | Device run offline + 500 on users/{id} | P1 | — |
+| NFR-PERM-01 | Every gated card and action follows the user's Fineract permissions: has(X) = X, or ALL_FUNCTIONS, or ALL_FUNCTIONS_READ for READ_*, or CHECKER_SUPER_USER for *_CHECKER, or REPORTING_SUPER_USER for report reads; absent (never disabled) without it, and no request is made | Security / UX | 0 user-visible 403s from gated affordances | Unit tests per special code + device run with a restricted role | P0 | — |
 
 ---
 
@@ -144,11 +189,11 @@
 
 | Type | Total | Implemented | Coverage |
 |------|:-----:|:-----------:|:--------:|
-| FR | 20 | 20 | 100% |
-| SFR | 23 | 23 | 100% |
+| FR | 35 | 20 | 57% |
+| SFR | 30 | 23 | 77% |
 | DR | 8 | 7 | 88% |
 | IR | 5 | 5 | 100% |
-| NFR | 5 | 0 | 0% |
+| NFR | 7 | 0 | 0% |
 
 ---
 

@@ -23,21 +23,48 @@ schema_version: "1.0"
 # ─────────────────────────────────────────────────────────────────────────────
 screen_id: affordability-calculator     # primary entry / graph start destination
 feature: feat-calculators
-archetype: calculator_form     # bootstrapped by /idea-render-mockup Phase 1
 feature_profile:
   combo_id: calculator_multi
   facets: [compute]
   archetype: pure-ui
+  # Feature-level archetype = MUTABLE because this feature has a real PERSISTENT SUBMIT path:
+  # the wizard screen's `completeAndSave` writes `banking_loans` (op: upsert) and its
+  # goNext/goBack persist snapshots to `framework_submit_drafts`. Per the store_archetype_map
+  # policy ("read+write / submit → MUTABLE"), a feature that persists is not MEMORY_ONLY —
+  # that is the FPC-2 invariant, and it is why the map default for calculator_multi
+  # (MEMORY_ONLY) does not hold for THIS feature.
+  #
+  # CODEGEN CAVEAT (read before regenerating this feature's store): `store_archetype` is the
+  # kmp-store-gen Substep 1.3 routing key, and MUTABLE routes to
+  # `StoreFactory.createMutableStore(...)` with a required non-stub bookkeeper. This feature's
+  # OWN store is NOT mutable — `provideAmortizationCalcStore` is a MEMORY_ONLY compute store
+  # (see `stores:` below), and the persistence above is DELEGATED to feat-loans'
+  # LoanRepository + the framework draft outbox, neither of which this feature owns. So a
+  # regeneration must NOT emit a MutableStore for core/store/demo/calc — the archetype here
+  # describes the feature's data BEHAVIOR (it persists), not the flavor of the store it owns.
+  store_archetype: MUTABLE
+  stores:
+    - name: AmortizationCalcStore      # this feature's own store — pure compute
+      store_archetype: MEMORY_ONLY
+    - name: LoanRepository             # delegated write target, owned by feat-loans
+      store_archetype: OFFLINE_LOCAL_ONLY
+    - name: SubmitOutbox               # delegated draft persistence (framework_submit_drafts)
+      store_archetype: OFFLINE_LOCAL_ONLY
   recipe_ref: CORE_DOMAIN.md
   heal: auto
 platforms: [android, ios, desktop, web]
-# Feature-level state envelope. Every screen renders content unconditionally
-# (input card + derived result); there is no loading/empty/error — the only
-# async touch is the wizard's local draft outbox + amortization's optional local
-# loan pre-fill, neither of which introduces a failable UI state.
-states: [content]
-# Every calculator renders its input card + derived result on first frame with no
-# async load, so the graph's start screen (affordability) opens directly in content.
+# Feature-level state envelope across the four sibling screens.
+#   affordability / comparison — render content unconditionally (pure derived math).
+#   wizard                     — local draft outbox; no failable read state.
+#   amortization               — reads a MEMORY_ONLY Store5 store keyed on the inputs
+#                                (AmortizationCalcParams), so schedule + summary arrive
+#                                as ONE ScreenState. They were two independently-derived
+#                                flows off the form state, which allowed a schedule from
+#                                one parameter set to render beside a summary from another.
+states: [loading, content, empty]
+# `empty` is an INCOMPLETE FORM on the amortization screen (any input non-positive) —
+# deliberately not `error`: a half-typed form is not a failure. The other three screens
+# still open directly in content.
 initial_state: content
 
 # ─────────────────────────────────────────────────

@@ -1,0 +1,275 @@
+schema_version: '3.1'
+id: home
+name: Home
+description: >
+  The field officer's daily work surface, and the Home tab. It answers "what needs me today": the day's collections, the
+  work queue (checker tasks, loans awaiting approval or disbursal, clients pending activation, reschedule requests,
+  unsynced drafts), centre and group meetings due today, a portfolio summary, and quick actions to create records. Every
+  card and action is driven by the signed-in user's Fineract permissions — absent, never disabled, when the user lacks
+  the right.
+feature: home
+flow: home
+version: '1.0'
+tags:
+  - mvp
+  - home
+  - dashboard
+  - permissions
+  - P0
+status: approved
+approve_hash: "78d9dd287ad0cf70ffc4bebcfd14c76ef55a2b3845d246d6cc8781d1e1ad36c1"
+approved_at: '2026-10-27T01:40:00Z'
+approved_by: /idea-approve
+cluster: home
+is_primary_flow: true
+acceptance_refs:
+  - FR-DASH-01
+  - FR-DASH-02
+  - FR-DASH-03
+  - FR-DASH-04
+  - FR-DASH-05
+  - FR-DASH-06
+  - FR-DASH-07
+  - NFR-PERM-01
+scaffolded_at: '2026-10-26T16:30:00Z'
+scaffolded_by: /idea-plan-add
+enriched_at: '2026-10-26T17:30:00Z'
+enriched_by: /idea-feature-enrich
+module_path: feature/home
+decisions:
+  - id: portfolio-scope
+    decision: >-
+      My portfolio when the signed-in user has a staff link (GET /users/{id} → staff); office-wide (the user's office)
+      otherwise.
+    why: >-
+      Fineract scopes a field officer's book by the STAFF record linked to the user, not by the user; an unlinked user
+      still needs a working dashboard.
+  - id: own-loan-queues
+    decision: >-
+      Awaiting-approval and awaiting-disbursal queues show only the officer's own loans: loanOfficerId == staff id, or
+      submittedByUsername == username when unlinked.
+    why: office-wide the approval queue was 1,118 loans on the gateway — a number no officer can act on.
+  - id: dashboard-is-home
+    decision: The dashboard IS the Home tab; search (feature `search`) stays on the top-bar Search icon.
+    why: the original app's Home was search; a field officer's first screen should be the day's work.
+  - id: clean-name
+    decision: Feature id `home` (not homeDashboard); the former search row is renamed `search`.
+    why: operator 2026-10-26 — the Home tab and its feature carry one name
+  - id: no-account-creates-on-home
+    decision: >-
+      Quick actions offer only standalone creates (client, group, centre) and tools (collection sheet, run reports,
+      search). Loan, savings, share and collateral are not on Home.
+    why: >-
+      operator 2026-10-26 — those accounts are owned by a client and cannot be created on their own; they start from the
+      client profile, where the owning client is known. This also removes the client picker Home would otherwise need.
+permission_model:
+  source: POST /authentication → permissions[] (already persisted as User.permissions at sign-in)
+  rule: |
+    has(code) = code ∈ permissions
+             || "ALL_FUNCTIONS" ∈ permissions
+             || (code starts with "READ_" && "ALL_FUNCTIONS_READ" ∈ permissions)
+             || (code ends with "_CHECKER" && "CHECKER_SUPER_USER" ∈ permissions)
+             || (code is a report read "READ_<report name>" && "REPORTING_SUPER_USER" ∈ permissions)
+  absent_not_disabled: a card or action the user cannot use is not rendered (RULE-IMPL-DEAD-CLICKABLE-001)
+  reuse: >
+    One shared predicate (core layer), consumed by this dashboard AND by every existing screen that offers a gated
+    action (repayment, approve, disburse, activate) — so a 403 is prevented at the affordance, not discovered after the
+    tap.
+  staff_link_source: GET /users/{userId} → staff (null on the gateway demo user 32)
+audit:
+  sandbox: https://sandbox.mifos.community/fineract-provider — Fineract 1.17.0-SNAPSHOT, 603 paths / 155 tags
+  permission_catalog: >-
+    GET /permissions — 710 codes in 28 groupings; specials ALL_FUNCTIONS, ALL_FUNCTIONS_READ, CHECKER_SUPER_USER,
+    REPORTING_SUPER_USER, BYPASS_TWOFACTOR
+  findings:
+    - >-
+      Stretchy reports are server-dependent: Portfolio at Risk, Aging, Active Loans – Summary, Loans Awaiting Disbursal
+      Summary and FieldAgentStats fail with BadSqlGrammarException on the PostgreSQL sandbox. Dashboard figures are
+      therefore computed from core APIs, never reports.
+    - >-
+      GET /centers?meetingDate= does not filter (returned every centre); meetings-today is derived from each
+      centre/group collection meeting calendar.
+    - >-
+      POST /collectionsheet?command=generateCollectionSheet {officeId, transactionDate} returns the day's due clients
+      with loans and savings.
+    - >-
+      Gateway demo role 12 'OFICIAL DE CAMPO' (202 codes) lacks collection sheet, savings/share/collateral create,
+      report and checker grants, and user 32 has no staff link — a gateway setup gap, not a design input.
+entry_point: true
+bottom_nav: true
+navigates_to:
+  - individualCollectionSheet
+  - checkerInbox
+  - loanAccountList
+  - clientList
+  - loanReschedules
+  - syncAndDrafts
+  - centerDetail
+  - groupDetail
+  - createNewClient
+  - createGroup
+  - createCenter
+  - runReports
+  - search
+  - clientDetail
+  - loanSummary
+route:
+  name: HomeRoute
+  params: {}
+  note: Home tab start destination — same route as today; only its body changes (search body → dashboard).
+screens:
+  - id: home
+    name: HomeScreen
+    viewmodel: HomeViewModel
+relationships:
+  - feature: search
+    relation: replaces_tab_body
+    note: >-
+      idea-plan.yaml#search (formerly `home`) keeps its screen; it moves from the Home tab body to the top-bar Search
+      destination, where it is already reachable.
+  - feature: syncAndDrafts
+    relation: reads_local
+    note: the 'my unsynced drafts' row counts FormDraftRepository.observeAll() — local, always shown
+metadata:
+  category: composite
+  implementation_ready: true
+  impl_ready_at: '2026-10-26T17:30:00Z'
+  impl_ready_schema: v2
+contracts:
+  - capability: network
+    platform_spec: >-
+      Fineract REST over the existing authenticated Ktor client (Basic auth + tenant header from the live instance);
+      every card is a Store5 NETWORK_WITH_CACHE stream
+    permission: none
+    error_cases:
+      - NoNetwork
+      - ServerError
+      - Forbidden
+      - Unauthorized
+libraries:
+  - capability: network
+    library: ktor
+    version: catalog
+    targets:
+      - android
+      - ios
+      - desktop
+      - web
+  - capability: network
+    library: store5
+    version: catalog
+    targets:
+      - android
+      - ios
+      - desktop
+      - web
+vm_actions:
+  - name: Refresh
+    signature: fun onRefresh()
+    state_mutations:
+      - every visible card ScreenState → loading (keeps last content)
+    side_effects:
+      - each permitted card stream.retry(forceFresh = true)
+    error_handling:
+      NoNetwork: card keeps cached figures with their age; offline strip shown
+  - name: RetryCard
+    signature: 'fun onRetryCard(card: DashboardCard)'
+    state_mutations:
+      - that card ScreenState → loading
+    side_effects:
+      - that card's stream.retry() only
+    error_handling:
+      ServerError: card returns to its own error with retry
+  - name: RetryAll
+    signature: fun onRetryAll()
+    state_mutations:
+      - screen error → loading
+    side_effects:
+      - every permitted card stream.retry(forceFresh = true)
+    error_handling:
+      NoNetwork: back to the combined error state
+  - name: OpenCollectionSheet
+    signature: fun onOpenCollectionSheet()
+    state_mutations: []
+    side_effects:
+      - emit NavigateToCollectionSheet(officeId, businessDate)
+    error_handling: {}
+  - name: OpenCheckerInbox
+    signature: fun onOpenCheckerInbox()
+    state_mutations: []
+    side_effects:
+      - emit NavigateToCheckerInbox
+    error_handling: {}
+  - name: OpenLoansAwaitingApproval
+    signature: 'fun onOpenLoans(status: LoanQueue)'
+    state_mutations: []
+    side_effects:
+      - emit NavigateToLoanList(status = 100 | 200, scope = own)
+    error_handling: {}
+  - name: OpenPendingClients
+    signature: fun onOpenPendingClients()
+    state_mutations: []
+    side_effects:
+      - emit NavigateToClientList(status = pending)
+    error_handling: {}
+  - name: OpenPendingReschedules
+    signature: fun onOpenReschedules()
+    state_mutations: []
+    side_effects:
+      - emit NavigateToReschedules
+    error_handling: {}
+  - name: OpenSyncAndDrafts
+    signature: fun onOpenDrafts()
+    state_mutations: []
+    side_effects:
+      - emit NavigateToSyncAndDrafts
+    error_handling: {}
+  - name: OpenMeetingEntity
+    signature: 'fun onOpenMeeting(meeting: MeetingToday)'
+    state_mutations: []
+    side_effects:
+      - emit NavigateToCenter(id) | NavigateToGroup(id) by entityType
+    error_handling: {}
+  - name: OpenQuickAction
+    signature: 'fun onQuickAction(action: QuickAction)'
+    state_mutations: []
+    side_effects:
+      - emit NavigateToCreateClient | CreateGroup | CreateCenter | CollectionSheet | RunReports | Search
+    error_handling: {}
+  - name: OpenRecentRecord
+    signature: 'fun onOpenRecent(record: RecentRecord)'
+    state_mutations: []
+    side_effects:
+      - emit NavigateToClient | Group | Center | Loan by type
+    error_handling: {}
+error_cases:
+  - NoNetwork
+  - ServerError
+  - Forbidden
+  - Unauthorized
+error_cases_note: >
+  Forbidden should never surface from a gated card (it is not subscribed without its permission); seeing one means the
+  permission list is stale — treat as a card error and re-read the session on the next sign-in. Unauthorized follows the
+  app's existing session-expiry path.
+test_fixtures:
+  source: screens/home/tests.yaml
+  scenario_count: 21
+  priority_distribution:
+    high: 15
+    medium: 5
+    low: 1
+last_generate:
+  command: /idea-feature-enrich home (STEP 5.6)
+  timestamp: '2026-10-26T17:50:00Z'
+  framework_version: home/2026-10-26
+  content_hash: c8624cabbf313a7b5e419c30f889e30c83699c14cedee965825750869dc18858
+status_history:
+  - from: enriched
+    to: designed
+    at: '2026-10-26T16:43:46.212Z'
+    by: /idea-feature-stitch
+  - from: designed
+    to: approved
+    at: '2026-10-27T01:40:00Z'
+    by: /idea-approve
+    note: operator-approved inside /implement home (STEP 0.2.STATUS picker); predicate + disclosures in APPROVE_LOG.yaml

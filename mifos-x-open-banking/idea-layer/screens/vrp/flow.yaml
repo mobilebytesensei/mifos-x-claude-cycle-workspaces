@@ -1,0 +1,177 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: vrp
+_source: source_analysis
+
+entry_points:
+  - { type: push, source: home, route: VrpConsentListRoute, navigator: authenticated-host, description: "Home quick action → navController.navigateToVrpConsentList()" }
+  - { type: push, source: payments-hub, route: VrpConsentListRoute, navigator: authenticated-host, description: "Hub card (hub graph unreachable)" }
+  - { type: replace, source: external-redirect, route: "VrpCallbackRoute(redirectUrl)", navigator: root, nav_role: external-entry, description: "ConsentRedirectBus → authorisationLegOf → AuthorisationLeg.Vrp (vrpAuth.isVrpRedirect checked before payment) → navigate with rootNavOptions; deduped by lastRoutedRedirect" }
+
+navigates_to:
+  - home       # list back only. Callback outcomes stay in the VRP flow (DEF-010).
+
+transitions:
+  - { from: vrp-consent-list-screen, to: vrp-consent-detail-screen, trigger: consent_card, type: push, route: "VrpConsentDetailRoute(consentId)" }
+  - { from: vrp-consent-list-screen, to: vrp-setup-screen, trigger: create_button, type: push, route: VrpSetupRoute }
+  - { from: vrp-consent-list-screen, to: home, trigger: list_top_bar.back, type: pop }
+  - { from: vrp-consent-detail-screen, to: vrp-payment-screen, trigger: pay_button, type: push, route: "VrpPaymentRoute(consentId)" }
+  - { from: vrp-consent-detail-screen, to: vrp-consent-list-screen, trigger: "detail_top_bar.back | event Revoked", type: pop }
+  - { from: vrp-setup-screen, to: os-browser, trigger: "event LaunchAuthorisation", type: push, external: true, external_kind: os-dialer-or-browser, note: "BrowserLauncher opens the signed authorize URL; setup stays on the review page" }
+  - { from: vrp-setup-screen, to: vrp-consent-list-screen, trigger: setup_top_bar.back, type: pop }
+  - { from: vrp-callback-screen, to: vrp-consent-detail-screen, trigger: "dismiss_button → event Completed(consentId)  # Success | Unusable | ConfirmationFailed", type: replace, route: "VrpConsentDetailRoute(consentId)", navigator: root, back_stack: "Home › VrpConsentList › VrpConsentDetail", note: "DEF-010" }
+  - { from: vrp-callback-screen, to: vrp-setup-screen, trigger: "start_again_button → event RestartSetup  # Unusable | Declined | Failed(≠ConfirmationFailed)", type: replace, route: VrpSetupRoute, navigator: root, back_stack: "Home › VrpConsentList › VrpSetup", note: "DEF-010" }
+  - { from: vrp-callback-screen, to: vrp-consent-list-screen, trigger: "dismiss_button → event Abandoned  # Declined | Failed without stored credential", type: replace, route: VrpConsentListRoute, navigator: root, back_stack: "Home › VrpConsentList", note: "DEF-010" }
+  - { from: vrp-payment-screen, to: vrp-consent-detail-screen, trigger: "payment_top_bar.back | event Finished", type: pop }
+
+flow_logic:
+  consent_list:
+    on_load:
+      - observe: "repository.observeActive()  # Room vrp_consent, not revoked, newest first"
+        on_emit: "empty → Empty; else Content(consents.map { toRowUi() })  # headline = largest periodic ceiling, else per-payment"
+        on_error: "Error(StorageUnavailable)"
+    on_retry_load: ["uiState = Loading", "observeConsents()"]
+    on_open_consent: { navigate_internal: vrp-consent-detail-screen, params: { consentId: "{consentId}" } }
+    on_navigate_to_setup: { navigate_internal: vrp-setup-screen }
+
+  consent_detail:
+    on_load:
+      - observe: "combine(consents.observeById(id), payments.observeForConsent(id), payments.observeUsage(id))"
+        on_emit:
+          - "consent == null → NotFound"
+          - "revokedAt != null || status ∈ {Revoked, Rejected, Cancelled, Expired, Consumed} → Ended(payee, rows)  # revokedAt is only ever written after a bank-confirmed DELETE"
+          - "status == Authorised && payer is not a 14-char UK.OBIE.SortCodeAccountNumber → Unusable"
+          - "else → Content(…, revoke = held phase)"
+          - "refreshUnsettledPayments: each payment not ACCC and not yet read this visit → payments.refreshStatus(payment) (api get_vrp_payment)"
+      - call: "consents.refreshStatus(consentId)  # fire-and-forget; stores the row, forgets it on NotFound"
+        api: get_vrp_consent
+    on_revoke_requested:
+      - guard: "Content && revoke ∈ {Idle, Failed}"
+      - "Content.revoke = Confirming"
+    on_revoke_dismissed: "Content.revoke = Idle"
+    on_revoke_confirmed:
+      - guard: "Content.revoke == Confirming"
+      - "Content.revoke = Revoking"
+      - call: "consents.revoke(consentId)  # DELETE first; local forget is CONDITIONAL on the bank's answer (NFR-006, VRP-GAP-7)"
+        api: [post_token_client_credentials, delete_vrp_consent]
+        confirm_gate: "2xx or 404 (already gone at the bank) = Confirmed; anything else = Unconfirmed"
+        on_confirmed:
+          - "repository marks vrp_consent.revokedAt = now, removes the VrpAuthSession refresh token, invalidates the access token"
+          - "sendEvent(Revoked) → onBack()"
+        on_unconfirmed:
+          - "Content.revoke = Failed(reason ∈ BankRejected | TokenUnavailable | Network)  # revoke_failed state"
+          - note: "NO local mutation — row, revokedAt = null, refresh token and sweeping stay active (flow revoke-fails-at-bank)."
+    on_retry_revoke:
+      - guard: "Content.revoke is Failed"
+      - "Content.revoke = Revoking"
+      - goto: on_revoke_confirmed.call   # same DELETE + confirm gate, entered after the Confirming guard (already Revoking)
+    on_pay: { navigate_internal: vrp-payment-screen, params: { consentId: "{consentId}" } }
+
+  setup:
+    on_load:
+      - stream: "accountsOverviewRepository.overviewState().combineContent(capabilityRegistry.unsupportedStream())"
+        filter: "account.canFundAVrp() (HsbcProductCapability VrpPayer) && VrpPayer not refused"
+        api: [get_accounts, get_balances]
+        render: "Loading → Loading; Empty or empty filtered list → NoEligiblePayers; Unauthenticated/Error → Error(AccountsUnavailable); NoNetwork → Error(NetworkUnavailable); Content → Content(phase, form, staging)"
+      - stream: "selectedPayerId → beneficiariesRepository.beneficiariesStream(id).state (blank → empty)"
+        api: get_beneficiaries
+    on_continue: "form = revalidateAll(); if isComplete → phase = Review"
+    on_back_to_form: "staging = NotStarted; phase = Form"
+    on_stage_consent:
+      - guard: "staging != Staging && form.isComplete"
+      - "staging = Staging"
+      - call: "consents.stageConsent(form.toDraft())  # idempotencyKey = Uuid.random()"
+        api: [post_token_client_credentials, post_vrp_consent]
+      - on_success_call: "auth.beginAuthorisation(consentId)  # PS256 request object, persists VrpAuthSession pending state"
+      - result: "Success(url) → staging = NotStarted; sendEvent(LaunchAuthorisation(url)) → BrowserLauncher ; Error → staging = Failed(Network → NetworkUnavailable else BankRefused)"
+    on_retry_load: "accountsOverviewRepository.refresh()"
+
+  callback:
+    on_load:
+      - call: "auth.validateCallback(redirectUrl)"
+        branches:
+          Valid: "Working(Exchanging) → exchange_and_persist(code, consentId)"
+          AccessDenied: "auth.discardAuthorisation(); Declined  # customer said no at the bank — neutral copy, never the security message (DEF-006)"
+          "NoPending | SecurityError | MissingCode | Error": "Failed(CallbackInvalid)"
+    exchange_and_persist:
+      - call: "auth.exchangeAndPersistCredential(code, consentId)  # authorization_code → refresh token stored per consent BEFORE anything else"
+        api: post_token_authorization_code
+        on_success: "storedConsentId = consentId; Working(Confirming) → consents.refreshStatus(consentId) (api get_vrp_consent)"
+        on_error: "Network → NetworkUnavailable; 400/401 → CodeExpiredOrUsed; else AuthorityNotSaved; supportReference from OBIE envelope"
+    on_consent_read:
+      success: "canBePaidUnder (payer null or 14-char sort-code account) → Success(consentId, payeeName) else Unusable(consentId)"
+      error: "Failed(ConfirmationFailed)  # consent usable; only Done offered"
+    on_dismiss:
+      - "consentId = Success/Unusable id, or storedConsentId for ConfirmationFailed → Completed(consentId)"
+      - "root: navigateToAuthenticatedGraph(); navigateToVrpConsentList(); navigateToVrpConsentDetail(consentId)  # opens the new consent (DEF-010)"
+      - "otherwise (Declined, Failed without stored credential) → Abandoned → root: navigateToAuthenticatedGraph(); navigateToVrpConsentList()"
+    on_start_again:
+      - "auth.discardAuthorisation()"
+      - "RestartSetup → root: navigateToAuthenticatedGraph(); navigateToVrpConsentList(); navigateToVrpSetup()  # 'Start again' really restarts setup (DEF-010)"
+
+  payment:
+    on_load:
+      - observe: "combine(consents.observeById(id), payments.observeUsage(id))"
+        render: "not yet emitted → Loading; consent null → Error(ConsentUnavailable); !isPayable (revoked, not Authorised, bad payer) → Unusable; else Content(phase, form, outcome)"
+    on_amount_changed: "amount = v → problem = checkAmount(v, perPayment, bindingUsage.remaining)"
+    on_continue: "if canContinue → phase = Review"
+    on_back_to_amount: "ignored while ConfirmingFunds or Sending; outcome = NotStarted; phase = Amount"
+    on_confirm:
+      - guard: "consent != null && amount parses && outcome !is ConfirmingFunds && outcome !is Sending"
+      - "outcome = ConfirmingFunds"
+      - call: "payments.checkFunds(consentId, Money(amount, consent currency))  # funds confirmation FIRST (DEF-005, plan AC)"
+        api: [post_token_refresh, post_vrp_funds_confirmation]
+        on_success: "FundsAvailable == true → continue; false → outcome = Failed(InsufficientFunds) and STOP — no domestic-vrps call"
+        on_error: "outcome = Failed(toFailureKind(), supportReference) and STOP — no domestic-vrps call"
+      - "outcome = Sending"
+      - call: "payments.pay(consent, Money(amount, consent currency), 'VRPINSTR'+key.take(20), 'VRPE2E'+key.take(20), idempotencyKey)"
+        api: [post_token_refresh, post_vrp_payment]
+        on_success: "outcome = Sent(payment)  # upserted into Room vrp_payment"
+        on_error: "outcome = Failed(toFailureKind(), supportReference)"
+    on_retry_submission: { goto: on_confirm, note: "re-runs the funds check, then submits under the same idempotencyKey — the bank cannot pay twice" }
+    on_refresh_outcome:
+      - call: "payments.refreshStatus(sent.payment)"
+        api: get_vrp_payment
+    on_done: "sendEvent(Finished(localId)) → onBack()"
+
+error_handling:
+  list:
+    StorageUnavailable: { ui: error, retry: true }
+  detail:
+    revoke_failure: { ui: revoke_failed_banner, state: revoke_failed, recovery: RetryRevoke, retry: true, behaviour: "Unconfirmed DELETE (4xx except 404 / 5xx / token mint failure / network / timeout) keeps the consent active locally and shows the revoke-failed banner; 404 mapped to Confirmed (already gone); local Revoked only on confirmation (NFR-006, VRP-GAP-7)" }
+  setup:
+    AccountsUnavailable: { ui: error, retry: "RetryLoad → refresh accounts" }
+    NetworkUnavailable: { ui: error, retry: "RetryLoad → refresh accounts" }
+    staging_NetworkUnavailable: { ui: review_error_network, retry: "tap Continue to your bank again" }
+    staging_BankRefused: { ui: review_error_server, retry: "tap Continue to your bank again" }
+  callback:
+    Declined: { start_again: true, tone: neutral, shows_support_reference: false, note: "UiState, not an error kind — DEF-006" }
+    CallbackInvalid: { start_again: true }
+    CodeExpiredOrUsed: { start_again: true }
+    AuthorityNotSaved: { start_again: true, shows_support_reference: true }
+    ConfirmationFailed: { start_again: false, outcome: Completed }
+    NetworkUnavailable: { start_again: true }
+  payment:
+    InsufficientFunds: { retry: false, from: "funds-confirmation FundsAvailable false", payment_submitted: false }
+    OverLimit: { retry: false }
+    ConsentUnusable: { retry: false, from: 403 }
+    NeedsReauthorisation: { retry: false, from: 401 }
+    Rejected: { retry: false }
+    Unconfirmed: { retry: false, from: serialization }
+    NetworkUnavailable: { retry: true, same_idempotency_key: true }
+
+journey_ids: [vrp]
+
+dependencies:
+  repositories:
+    - { name: VrpConsentRepository, methods: ["observeActive(): Flow<List<VrpConsent>>", "observeById(id): Flow<VrpConsent?>", "suspend stageConsent(draft)", "suspend refreshStatus(id)", "suspend revoke(id): RevokeResult (Confirmed | Unconfirmed(reason)) — forgets locally only on Confirmed"] }
+    - { name: VrpPaymentRepository, methods: ["observeForConsent(id)", "observeUsage(id): Flow<List<PeriodUsage>>", "suspend checkFunds(id, amount)  # called by VrpPayment on_confirm before pay (DEF-005)", "suspend pay(consent, amount, instructionId, e2eId, idempotencyKey)", "suspend refreshStatus(payment)"] }
+    - { name: VrpAuthRepository, methods: ["suspend beginAuthorisation(consentId): String", "isVrpRedirect(url)", "validateCallback(url)", "suspend exchangeAndPersistCredential(code, consentId)", "pendingConsentId()", "discardAuthorisation()"] }
+    - { name: VrpTokenProvider, methods: ["accessToken(consentId)", "refreshAccessToken(consentId)", "invalidateAccessToken(consentId)"] }
+    - { name: AccountsOverviewRepository, methods: ["overviewState(scope)", "refresh()"] }
+    - { name: BeneficiariesRepository, methods: ["beneficiariesStream(accountId, scope)"] }
+    - { name: AccountCapabilityRegistry, methods: ["unsupportedStream()"] }
+  local_db:
+    - table: vrp_consent
+    - table: vrp_payment
+  secure_settings: [vrp_auth_session]

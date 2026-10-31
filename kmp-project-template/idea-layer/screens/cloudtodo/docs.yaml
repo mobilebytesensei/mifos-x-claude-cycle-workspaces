@@ -1,0 +1,128 @@
+schema_version: '1.0'
+contract_version: "2.0.0"
+screen_id: cloud-todo-detail
+feature_id: feat-cloudtodo
+archetype: screen-content
+flow: flow-cloudtodo-write
+title: Cloud Todo (write-path demo)
+purpose: >-
+  Give the Store5 WRITE path an on-device surface. `CloudTodoRepository` is the template's only
+  `createMutableStore` + `MutationGateway` consumer, and it shipped with no UI at all — so the write
+  architecture (MutationGateway / MutationPolicy / MutationResult / ConflictInbox / DeleteSync) was
+  covered by unit tests but nothing exercised it in a running app. This screen reads one todo through
+  the offline-first stream and drives BOTH mutation policies against it, rendering every
+  `MutationResult` arm so an offline write and a blocked write are observable, not just asserted.
+status: approved                          # re-approved after the correction below
+source_of_truth: source                   # data layer imported FROM shipped source, not FROM idea-layer
+ui_implemented: false                     # no Compose/ViewModel/navigation for cloudtodo yet — this docset is the spec
+quality_score: 80
+last_modified: '2026-09-03'
+
+# ── Correction (2026-09-03) — spec contained a false claim; approval withdrawn ──
+# The first approved revision asserted that MutationResult.Conflicted routed to a conflict-resolution
+# screen that "does not exist", and scaffolded a second `conflict-inbox` screen for it. That was
+# WRONG. The conflict surface is fully shipped: ConflictInboxViewModel (feature/settings),
+# SyncAndDraftsScreen rendering ConflictEntry rows with ACCEPT_SERVER / RETRY_LOCAL,
+# viewModelOf(::ConflictInboxViewModel) in SettingsModule, SyncAndDraftsRoute +
+# navigateToSyncAndDrafts(), reachable via BackboneRegistry, with 6 feature_settings_conflicts_*
+# strings. Building a second one would be a G-IMPL-DUP violation.
+# Editing this docset invalidated the first approve_hash, which is exactly the drift mechanism doing
+# its job — an approval must not survive a spec that says something untrue.
+#
+# Re-approved 2026-09-03 over the CORRECTED content. Digest from the sanctioned hasher
+# `core/scripts/content-stale.sh --current-hash` (RULE-CI-001 CI-INTEGRITY carve-out; a raw shasum is
+# refused). Valid as a stripped-content digest — no approve_hash/approved_at field existed on disk at
+# computation time. Superseded hash (false-claim revision): sha256:ab06388a…fb67d1.
+approve_hash: "sha256:767ea8bae44a982679917ac6d894399c82aae977c9cb8dba790ab35d56e72135"
+approved_at: "2026-09-03T00:00:00Z"
+approved_by: "/idea approve"
+
+# ── Provenance & scope ──
+provenance:
+  data_layer: shipped              # store, repository, gateway, conflict inbox, delete sync, DI, tests all exist
+  ui_layer: modeled-from-contract  # screens/viewmodels/routes are PROPOSED, grounded in the repository contract
+  note: >-
+    The write path landed in PR #294 (store-as-single-write-SoT). This docset models the UI surface
+    that contract implies. A subsequent /implement realizes the screens against the existing
+    repository — no data-layer change is required.
+
+# ── Store archetype (from the template Store archetype table) ──
+showcase:
+  store: CloudTodoStore
+  store_archetype: MUTABLE
+  store_factory: StoreFactory.createMutableStore
+  patterns_demonstrated:
+    - "MUTABLE Store5 archetype — read Store + MutableStore over the SAME Room table (cloud_todos)"
+    - "MutationGateway as the single write door — a repository never calls a DAO write directly"
+    - "MutationPolicy.Optimistic (Room-first, queue + retry on reconnect) vs MutationPolicy.OnlineRequired (network-first, Blocked offline)"
+    - "Exhaustive MutationResult handling — Applied / Blocked / Conflicted / Failed, none silently swallowed"
+    - "ConflictInbox — server-wins applied while the user's payload is preserved for resolution"
+  note: >-
+    This is the ONLY place createMutableStore is wired end-to-end. Conflict resolution is applied
+    inside the store's own Updater (`conflictStrategy.resolve(server, client)`), because Store5's
+    Updater is typed `Updater<Key, Output, *>` and the factory cannot reach the server value.
+
+components:               # PROPOSED — the composables a faithful implementation would use
+  - top_app_bar
+  - screen_content
+  - todo_summary_card
+  - button
+  - outlined_button
+  - outcome_card
+  - status_chip
+  # No conflict_row_card / lazy_column — the conflict list is the shipped SyncAndDraftsScreen.
+
+screens_summary:
+  - { id: cloud-todo-detail, composable: CloudTodoScreen, viewmodel: CloudTodoViewModel, states: "loading, content, empty, error, no_network", provenance: proposed }
+# NO conflict-inbox screen here — resolution is the SHIPPED SyncAndDraftsScreen (feature/settings).
+# The Conflicted outcome navigates to SyncAndDraftsRoute; this feature adds no second surface.
+
+user_stories:
+  - "As a user, I want an edit I make offline to be saved immediately and sync when I reconnect, so I never lose work."
+  - "As a user, I want an operation that MUST reach the server to tell me it was blocked rather than pretending it saved."
+  - "As a user, when the server changed the same record I edited, I want to see both versions and choose which wins."
+  - "As a developer, I want one screen that demonstrates every MutationResult arm so the write contract is legible on device."
+
+metrics:
+  - "optimistic_writes_queued_offline / synced_on_reconnect"
+  - "online_required_blocked_rate (by BlockReason)"
+  - "conflicts_recorded / resolved_accept_server / resolved_retry_local"
+
+data_model:
+  dto:
+    name: CloudTodo
+    source: "core/model/demo/cloudtodo/CloudTodo.kt"
+    fields:
+      - { name: id, type: Int, note: "JSONPlaceholder todo id; /todos/1 is the stable demo row" }
+      - { name: title, type: String }
+      - { name: completed, type: Boolean }
+  entity:
+    name: CloudTodoEntity
+    table: cloud_todos
+    source: "core/database/demo/cloudtodo/CloudTodoEntity.kt (schema v10→v11)"
+  write_contract:
+    gateway: "core-base/store/mutation/MutationGateway.kt"
+    operations:
+      - { name: upsert,  note: "plain keyed value write; cannot roll back or record a conflict synchronously" }
+      - { name: delete,  note: "supplies the network DELETE Store5's write-only Updater lacks; tombstones offline" }
+      - { name: command, note: "RPC/form mutations — the ONLY path that can roll back AND record conflicts" }
+    policies:
+      - { name: Optimistic,     behavior: "Room-first; queue the network sync; retry on reconnect; roll back on permanent reject" }
+      - { name: OnlineRequired, behavior: "await the server; ingest the real record; offline → Blocked, nothing written" }
+    results:
+      - { name: "Applied(synced=true)",  ui: "Applied · synced" }
+      - { name: "Applied(synced=false)", ui: "Applied · queued — will sync on reconnect" }
+      - { name: "Blocked(reason)",       ui: "Blocked — OFFLINE | UNAUTHENTICATED | PRECONDITION_FAILED; nothing was written" }
+      - { name: "Conflicted(id)",        ui: "Conflict recorded — server-wins applied, your version preserved; resolve in Settings" }
+      - { name: "Failed(rolledBack)",    ui: "Failed — states whether the optimistic local write was undone" }
+
+# ── The gaps this docset exists to close ──
+surprises:
+  - "CloudTodoRepository has ZERO UI consumers. grep across feature/** and cmp-navigation/** finds no reference, so the READ + WRITE-POLICY half of PR #294 has no on-device surface. This is the gap the feature closes."
+  - "The conflict-resolution half IS already shipped — ConflictInboxViewModel + SyncAndDraftsScreen + SettingsModule DI + SyncAndDraftsRoute, reachable from BackboneRegistry. An earlier revision of this docset wrongly claimed otherwise and scaffolded a duplicate; corrected 2026-09-03. Verify before asserting a surface is missing: the write path was only PARTLY unsurfaced."
+  - "The MutableStore cannot be registered with StoreCacheManager (Store5 5.1 keeps MutableStore outside the Store hierarchy, and register() takes Store<*,*>). Its DATA is still purged at logout because the read store shares the cloud_todos table; only the in-memory cache survives."
+
+notes:
+  - "Backend is JSONPlaceholder — writes are echoed, not persisted upstream. That is sufficient to demonstrate the policies and is why the demo is safe to ship."
+  - "To see the interesting arms, turn the network off: Optimistic queues, OnlineRequired returns Blocked(OFFLINE)."
+  - "Conflict resolution is NOT part of this feature — the Conflicted outcome navigates to the shipped SyncAndDraftsRoute (feature/settings), which already reads ConflictInbox.observePending() and resolves via ACCEPT_SERVER | RETRY_LOCAL."

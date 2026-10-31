@@ -1,0 +1,87 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: statements
+_source: source_analysis
+
+entry_points:
+  - type: push
+    source: account-detail
+    route: "StatementsRoute(accountId)"
+    description: "AccountDetail Explore chip 'Statements' → navigateFromChip(AccountDetailChip.Statements, accountId)."
+inbound_routes:
+  - { from: account-detail, type: push, params: { accountId: String } }
+  - { from: statement-detail, type: pop }
+outbound_routes:
+  - { to: statement-detail, type: push, params: { accountId: String, statementId: String }, trigger: "row tap" }
+  - { to: account-detail, type: pop, trigger: "top-bar back arrow" }
+  - { to: os-file-save-dialog, type: modal, external: true, trigger: "download icon (FileKit.openFileSaver on android/ios/desktop; no-op on web)" }
+
+navigates_to:
+  - statement-detail
+  - account-detail
+
+transitions:
+  - { from: loading, to: content, on: "stream emits Content(non-empty list)" }
+  - { from: loading, to: empty, on: "stream emits Content(empty) via emptyIfContent, or ScreenState.Empty" }
+  - { from: loading, to: error, on: "ScreenState.Error | NoNetwork | Unauthenticated" }
+  - { from: error, to: loading, on: "RetryLoad → stream.refresh()" }
+  - { from: content, to: downloading, on: "DownloadStatement(statementId)" }
+  - { from: downloading, to: content, on: "file fetch completes (success or failure) → downloadState[id]=Idle" }
+
+flow_logic:
+  on_load:
+    - action: observe_stream
+      trigger: "StatementsViewModel init — repository.statementsStream(accountId, viewModelScope).state"
+      steps:
+        - api: get_account_statements
+          params: { accountId: "{state.accountId}" }
+        - map: "ScreenState<List<StatementPeriod>> → StatementsUiState (emptyIfContent { isEmpty() })"
+        - map_rows: "StatementPeriod → StatementRowUiModel (periodLabel 'Month YYYY', closingBalance formatMoney, UTC day labels)"
+  on_row_click:
+    - navigate: statement-detail
+      params: { accountId: "{state.accountId}", statementId: "{row.statementId}" }
+  on_download:
+    - action: DownloadStatement
+      steps:
+        - transform_state: { "downloadState[statementId]": InProgress }
+        - api: get_statement_file
+          params: { accountId: "{state.accountId}", statementId: "{statementId}" }
+          on_success:
+            - platform_call: "StatementFileHandler.deliver(fileName='statement-{id}.pdf', mimeType='application/pdf', bytes)"
+          on_error:
+            - if: "error is NetworkError.Server && statusCode == 501"
+              then: { emit_event: ShowDownloadUnavailable }
+            - else: { emit_event: ShowDownloadError }
+        - transform_state: { "downloadState[statementId]": Idle }
+  on_retry:
+    - action: RetryLoad
+      steps: [{ call: "stream.refresh()" }]
+  on_back:
+    - navigate: account-detail
+      type: pop
+
+error_handling:
+  classifier: classifyStatementsError
+  mapping:
+    - { error: "401 / ScreenState.Unauthenticated", kind: TokenExpired, message_key: feature_statements_error_token_expired }
+    - { error: "403", kind: ConsentScope, message_key: feature_statements_error_consent_scope }
+    - { error: "429", kind: RateLimited, message_key: feature_statements_error_rate_limited }
+    - { error: "NetworkError.Network / NoNetwork", kind: NetworkError, message_key: feature_statements_error_network }
+    - { error: "anything else", kind: ServerError, message_key: feature_statements_error_server }
+  download_errors:
+    - { error: "Server 501", event: ShowDownloadUnavailable }
+    - { error: "any other", event: ShowDownloadError }
+
+journey_ids: [statements-download]
+
+dependencies:
+  repositories:
+    - name: StatementsRepository
+      methods: ["statementsStream(accountId, scope): ScreenDataStream<List<StatementPeriod>>"]
+    - name: StatementFileRepository
+      methods: ["suspend downloadStatementFile(accountId, statementId): NetworkResult<ByteArray, NetworkError>"]
+  platform:
+    - name: StatementFileHandler
+      bindings:
+        nonJs: "FileKitStatementFileHandler — FileKit.openFileSaver(suggestedName, extension)?.write(bytes)"
+        js: "NoOpStatementFileHandler — intentional-noop"

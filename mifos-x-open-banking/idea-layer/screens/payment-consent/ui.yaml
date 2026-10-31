@@ -1,0 +1,349 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: payment-consent
+status: enriched
+_source: source_analysis
+_source_modules: [":feature:payment-consent"]
+_source_paths:
+  - feature/payment-consent/src/commonMain/kotlin/org/mifosx/openbanking/feature/paymentconsent/
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/callback/PaymentAuthRepository.kt
+  - cmp-navigation/src/commonMain/kotlin/cmp/navigation/rootnav/RootNavScreen.kt
+requirement_refs: [FR-034, FR-035]
+
+screen_id: payment-consent-screen
+name: PaymentConsent
+archetype: loading
+states: [validating, exchanging, checking, approved, already_submitted, confirming_funds, submitting, error]
+initial_state: validating
+feature_profile:
+  combo_id: form_submit
+  facets: [redirect-callback, oauth-code-exchange, network-write, multi-rail]
+  archetype: screen-content
+  store_archetype: NETWORK_ONLY
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default
+components:
+  - { id: payment_consent_root, type: screen, screen_ref: payment-consent-screen, testTag: "paymentConsent:validatingState" }
+
+route: "PaymentConsentRoute(redirectUrl: String)"
+entry_points:
+  - source: external-redirect
+    trigger: >
+      HSBC PIS authorisation redirect (relay page → org.mifosx.openbanking://callback on mobile,
+      127.0.0.1:8765 on desktop) published on ConsentRedirectBus; RootNavScreen dedupes on
+      lastRoutedRedirect and authorisationLegOf(url) returns AuthorisationLeg.Payment
+      (vrpAuth.isVrpRedirect checked first, then paymentAuth.isPaymentRedirect).
+    via: "RootNavScreen: navController.navigate(PaymentConsentRoute(redirectUrl), rootNavOptions()) — root navigator, popUpTo graph"
+    nav_role: external-entry
+    launched_by: [send-money, payments-schedule-payment, payments-standing-order]
+    params: { redirectUrl: String }
+nav_params:
+  redirectUrl: { type: String, required: true, saved_state_key: "redirectUrl (PaymentConsentViewModel.REDIRECT_URL_ARG)" }
+
+business_logic:
+  kind: processor
+  description: >
+    Completes a PIS payment after the PSU returns from the bank. Validates the redirect against the
+    single-use PendingAuth (state/nonce), exchanges the authorization code for the payments PSU token,
+    reads the consent status on a client-credentials token (up to 3 unproductive reads), then dispatches
+    on the recorded ConsentType: immediate rails confirm funds then submit; scheduled and standing-order
+    rails submit the staged draft without funds confirmation. Consumed consent (COND) concludes as
+    AlreadySubmitted; every failure discards the session and records exactly one failed history row
+    when a draft exists. Copy is rail-aware (immediate / scheduled / standing order).
+  library_refs: [core-data, core-network]
+
+screens:
+  - id: payment-consent-screen
+    name: PaymentConsent
+    route: "PaymentConsentRoute(redirectUrl)"
+    archetype: loading
+    title: "{strings.feature_payment_consent_screen_title | _scheduled | _standing_order}"
+    description: >
+      KptScaffold with no navigation icon (showNavigationIcon = false) and a rail-aware title. The body
+      is a when over uiState: Validating / Exchanging / ConfirmingFunds share one centred spinner +
+      stage line visual (ReturningState); Checking adds a hint and a bounded "Check again" button;
+      Approved shows a success icon well; Submitting shows a spinner, rail copy and "Don't close this
+      screen"; AlreadySubmitted is a success outcome with Done; Error renders OutcomeState with an icon
+      well (error palette only when blameworthy), title, bank message or app copy, code · support
+      reference, optional "No money has been moved" reassurance and either Authorise again + Cancel or a
+      single Done.
+    states: [validating, exchanging, checking, approved, already_submitted, confirming_funds, submitting, error]
+    initial_state: validating
+    state_descriptions:
+      validating: "Validating — testTag paymentConsent:validatingState; spinner (paymentConsent:progressIndicator) + 'Checking your authorisation…'."
+      exchanging: "Exchanging — paymentConsent:exchangingState; 'Confirming with your bank…'."
+      checking: "Checking(canCheckAgain) — paymentConsent:checkingState; 'Waiting for your bank to confirm…'. When canCheckAgain=true shows hint (paymentConsent:checkingHint) + Check again button."
+      approved: "Approved — paymentConsent:authorisedState; 'Approved at your bank' + rail-aware 'Finishing your …' body."
+      confirming_funds: "ConfirmingFunds — paymentConsent:confirmingFundsState; immediate rails only; 'Checking the money is available…'."
+      submitting: "Submitting — paymentConsent:submittingState; rail-aware 'Sending your payment… / Scheduling… / Setting up your standing order…' + warning paymentConsent:submittingWarning."
+      already_submitted: "AlreadySubmitted — paymentConsent:alreadySubmittedState; consent status COND; success visual, rail-aware title/body, Done."
+      error: "Error(kind, detail) — stateTag per kind: declinedState (ConsentRejected), expiredState (CodeExpired, AuthorisationTimedOut), connectionFailedState (NetworkError), errorState (all others)."
+
+    state_model:
+      PaymentConsentViewModel:
+        base: "BaseViewModel<PaymentConsentState, PaymentConsentEvent, PaymentConsentAction>"
+        state:
+          name: PaymentConsentState
+          fields:
+            uiState: { type: PaymentConsentUiState, default: "PaymentConsentUiState.Validating" }
+            consentId: { type: String, default: '""' }
+            consentType: { type: "ConsentType?", default: "null", values: [DomesticSinglePayment, InternationalSinglePayment, DomesticScheduledPayment, InternationalScheduledPayment, DomesticStandingOrder, InternationalStandingOrder] }
+          private_fields:
+            redirectUrl: "savedStateHandle[redirectUrl].orEmpty()"
+            authorizationCode: '""'
+            unauthorisedStatusChecks: "0 (MAX_STATUS_CHECKS = 3)"
+        ui_state:
+          name: PaymentConsentUiState
+          members:
+            - { name: Validating }
+            - { name: Exchanging }
+            - { name: Checking, fields: { canCheckAgain: { type: Boolean, default: "false" } } }
+            - { name: Approved }
+            - { name: AlreadySubmitted }
+            - { name: ConfirmingFunds }
+            - { name: Submitting }
+            - { name: Error, fields: { kind: PaymentConsentErrorKind, detail: "PaymentConsentErrorDetail? (message, code, supportReference)" } }
+        errors:
+          name: PaymentConsentErrorKind
+          types:
+            - { type: StateMismatch, from: "PaymentAuthValidation.SecurityError", visual: errorState, blameworthy: true, reassures: true, retryable: true }
+            - { type: NoPendingAuthorisation, from: "PaymentAuthValidation.NoPending", visual: errorState, blameworthy: false, reassures: true, retryable: false }
+            - { type: CodeExpired, from: "MissingCode; 401; 404", visual: expiredState, blameworthy: false, reassures: true, retryable: true }
+            - { type: ConsentRejected, from: "AccessDenied; 403; consent status RJCT", visual: declinedState, blameworthy: true, reassures: true, retryable: true }
+            - { type: AuthorisationTimedOut, from: "429; 5xx; 3 unauthorised status reads", visual: expiredState, blameworthy: false, reassures: true, retryable: true }
+            - { type: NetworkError, from: "PaymentAuthValidation.Error; transport failure", visual: connectionFailedState, blameworthy: false, reassures: true, retryable: true }
+            - { type: NoStagedPayment, from: "no staged draft / null pendingConsentType", visual: errorState, blameworthy: true, reassures: true, retryable: true }
+            - { type: InsufficientFunds, from: "funds-confirmation false", visual: errorState, blameworthy: true, reassures: true, retryable: true }
+            - { type: SubmissionFailed, from: "submission non-4xx failure", visual: errorState, blameworthy: true, reassures: false, retryable: false }
+            - { type: RequestRejected, from: "400 BadRequest", visual: errorState, blameworthy: true, reassures: true, retryable: false }
+            - { type: ResponseUnreadable, from: "Serialization (pre-submit)", visual: errorState, blameworthy: false, reassures: true, retryable: false }
+            - { type: SubmissionUnconfirmed, from: "Serialization on submission response", visual: errorState, blameworthy: true, reassures: false, retryable: false }
+        events:
+          name: PaymentConsentEvent
+          members:
+            - { name: PaymentSubmitted, params: { paymentId: String }, handled_by: "onPaymentSubmitted → root navigate(PaymentStatusRoute(paymentId))" }
+            - { name: RestartAuthorisation, params: { consentType: "ConsentType?" }, handled_by: "onRestartAuthorisation(consentType) → root navigateToAuthenticatedGraph then navigate to the ORIGINATING form by rail: *SinglePayment → SendMoneyRoute · *ScheduledPayment → SchedulePaymentRoute · *StandingOrder → StandingOrderDestination; null consentType → Home (DEF-010)" }
+            - { name: Abandoned, handled_by: "onAbandoned → root navigateToAuthenticatedGraph" }
+        actions:
+          name: PaymentConsentAction
+          members:
+            - { name: CheckAgain, trigger: "Tap Check again (Checking with canCheckAgain)" }
+            - { name: RetryAuthorisation, trigger: "Tap Authorise again on a retryable error" }
+            - { name: AbandonPayment, trigger: "Tap Cancel / Done on an error or Done on AlreadySubmitted" }
+        di: [SavedStateHandle, PaymentAuthRepository, SinglePaymentInitiationRepository, ScheduledPaymentInitiationRepository, StandingOrderInitiationRepository, PaymentHistoryRepository]
+
+    components:
+      - id: top_bar
+        type: top-bar
+        title: "{strings.feature_payment_consent_screen_title}"
+        navigation_icon: none
+        note: "No back affordance — the only exits are the outcome buttons."
+
+      - id: returning_state
+        type: progress-panel
+        visible: "{{uiState in [Validating, Exchanging, ConfirmingFunds]}}"
+        testTag: "paymentConsent:validatingState | paymentConsent:exchangingState | paymentConsent:confirmingFundsState"
+        content:
+          - { id: brand_logo, type: image, role: logo, asset_ref: payment_consent_logo, testTag: "paymentConsent:brandLogo" }
+          - { id: progress_indicator, type: progress-indicator, testTag: "paymentConsent:progressIndicator" }
+          - { id: progress_detail, type: text, testTag: "paymentConsent:progressDetail", value: "{strings.feature_payment_consent_validating | feature_payment_consent_exchanging | feature_payment_consent_confirming_funds}" }
+
+      - id: checking_state
+        type: progress-panel
+        visible: "{{uiState is Checking}}"
+        testTag: "paymentConsent:checkingState"
+        content:
+          - { id: checking_brand_logo, type: image, role: logo, asset_ref: payment_consent_logo, testTag: "paymentConsent:brandLogo" }
+          - { id: checking_detail, type: text, testTag: "paymentConsent:progressDetail", value: "{strings.feature_payment_consent_checking}" }
+          - { id: checking_hint, type: text, testTag: "paymentConsent:checkingHint", visible: "{{canCheckAgain}}", value: "{strings.feature_payment_consent_checking_hint}" }
+          - id: check_again_button
+            type: button
+            testTag: "paymentConsent:checkAgainButton"
+            visible: "{{canCheckAgain}}"
+            label: "{strings.feature_payment_consent_check_again}"
+            on_click:
+              action: CheckAgain
+              action_contract:
+                effect: call_api
+                external_library_refs: ["PaymentAuthRepository.consentStatus (core/data)", "Pisp GET v4.0/pisp/*-consents/{ConsentId} (Ktor)"]
+                description: "Sets uiState=Checking() and re-reads the consent status on a client-credentials token. AUTH* proceeds to submission, COND → AlreadySubmitted, RJCT → ConsentRejected; otherwise increments the counter and times out after 3 reads."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: approved_state
+        type: success-state
+        testTag: "paymentConsent:authorisedState"
+        visible: "{{uiState == Approved}}"
+        title: "{strings.feature_payment_consent_approved_title}"
+        title_testTag: "paymentConsent:outcomeTitle"
+        body: "{strings.feature_payment_consent_approved_detail | _scheduled | _standing_order}"
+        body_testTag: "paymentConsent:outcomeBody"
+
+      - id: submitting_state
+        type: progress-panel
+        testTag: "paymentConsent:submittingState"
+        visible: "{{uiState == Submitting}}"
+        content:
+          - { id: submitting_brand_logo, type: image, role: logo, asset_ref: payment_consent_logo, testTag: "paymentConsent:brandLogo" }
+          - { id: submitting_text, type: text, value: "{strings.feature_payment_consent_submitting | _scheduled | _standing_order}" }
+          - { id: submitting_warning, type: text, testTag: "paymentConsent:submittingWarning", value: "{strings.feature_payment_consent_submitting_warning}" }
+
+      - id: already_submitted_state
+        type: success-state
+        testTag: "paymentConsent:alreadySubmittedState"
+        visible: "{{uiState == AlreadySubmitted}}"
+        title: "{strings.feature_payment_consent_already_sent_title | _scheduled | _standing_order}"
+        body: "{strings.feature_payment_consent_already_sent_body | _scheduled | _standing_order}"
+        actions:
+          - id: already_submitted_done
+            type: button
+            variant: filled-pill
+            label: "{strings.feature_payment_consent_done}"
+            on_click:
+              action: AbandonPayment
+              target: home
+              action_contract:
+                effect: navigate
+                description: "Dispatches AbandonPayment: discards the payment authorisation session and emits Abandoned, which the root navigator turns into navigateToAuthenticatedGraph — the customer lands on Home."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+      - id: outcome_state
+        type: error-state
+        visible: "{{uiState is Error}}"
+        testTag: "paymentConsent:{declinedState|expiredState|connectionFailedState|errorState}"
+        content:
+          - { id: icon_well, type: icon, container: "errorContainer if blameworthy else surfaceVariant", icon: "ErrorOutline | Info | HourglassEmpty | Cancel | CloudOff" }
+          - { id: outcome_title, type: text, testTag: "paymentConsent:outcomeTitle", value: "{strings.<kind title>}" }
+          - { id: outcome_body, type: text, testTag: "paymentConsent:outcomeBody", value: "{{detail.message ?: strings.<kind body>}}" }  # i18n: skip — bank message preferred over app copy
+          - { id: outcome_detail, type: text, testTag: "paymentConsent:outcomeDetail", visible: "{{detail.code != null || detail.supportReference != null}}", value: "{{code · supportReference}}" }  # i18n: skip — bank code binding
+          - { id: no_money_moved, type: text, testTag: "paymentConsent:noMoneyMoved", visible: "{{visual.reassures}}", value: "{strings.feature_payment_consent_no_money_moved | _scheduled | _standing_order}" }
+        actions:
+          - id: restart_button
+            type: button
+            variant: filled-pill
+            testTag: "paymentConsent:restartButton"
+            visible: "{{visual.retryable}}"
+            label: "{strings.feature_payment_consent_restart}"
+            on_click:
+              action: RetryAuthorisation
+              target: originating-form   # send-money | payments-schedule-payment | payments-standing-order, by state.consentType (DEF-010)
+              action_contract:
+                effect: navigate
+                writes_to: "PendingAuth (secure Settings) — cleared via PaymentAuthRepository.discardAuthorisation(); the staged draft in the rail's *InitiationRepository is KEPT"
+                description: "Dispatches RetryAuthorisation: discards ONLY the single-use PendingAuth (the staged draft is kept) and emits RestartAuthorisation(state.consentType). The root navigator resets to the authenticated graph and opens the ORIGINATING form for that rail — SendMoneyRoute (single), SchedulePaymentRoute (scheduled) or StandingOrderDestination (standing order) — where the form re-hydrates from stagedDraft() at Review so the customer can authorise again without re-entering details. Falls back to Home only when consentType is null (DEF-010, FR-035)."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+          - id: abandon_button
+            type: button
+            variant: "tonal-pill when retryable, filled-pill 'Done' otherwise"
+            testTag: "paymentConsent:abandonButton"
+            label: "{{visual.retryable ? strings.feature_payment_consent_abandon(_scheduled|_standing_order) : strings.feature_payment_consent_done}}"  # i18n: skip — chooses between string keys
+            on_click:
+              action: AbandonPayment
+              target: home
+              action_contract:
+                effect: navigate
+                description: "Dispatches AbandonPayment: discards the authorisation session and emits Abandoned; the root navigator calls navigateToAuthenticatedGraph so the customer returns to Home. The failure row was already recorded."
+                action_contract_author: "claude-via-idea-plan-source"
+                action_contract_authored_at: "2026-10-21T00:00:00Z"
+
+# RULE-SCREEN-VISUAL-ASSETS-001: loading-archetype floor (logo) inherited + screen-specific outcome icons.
+# The brand mark is composed from real brand assets by /idea-branding — never a generative producer.
+visual_assets:
+  - id: payment_consent_logo
+    kind: logo
+    role: logo
+    intent: "Mifos X Open Banking app mark centred above the progress spinner while the customer returns from HSBC, so the hand-back from the bank visibly lands in the same trusted app; calm, precise, primary tone on surface, no wordmark text beyond the real brand lockup."
+    produced_by: /idea-branding
+    states: [validating, exchanging, checking, confirming_funds, submitting]
+    consistency: none
+  - id: payment_consent_success_icon
+    kind: icon
+    role: success-icon
+    intent: "Icons.Filled.CheckCircle in a primary icon well confirming the bank approved (or already received) the payment."
+    produced_by: design-system
+    states: [approved, already_submitted]
+    consistency: none
+    source: "Icons.Filled.CheckCircle"
+  - id: payment_consent_outcome_icon
+    kind: icon
+    role: status-icon
+    intent: "Kind-specific icon in the outcome well — ErrorOutline (blameworthy), Info (nothing pending), HourglassEmpty (expired / timed out), Cancel (declined), CloudOff (no connection)."
+    produced_by: design-system
+    states: [error]
+    consistency: none
+    source: "Icons.Filled.{ErrorOutline|Info|HourglassEmpty|Cancel|CloudOff}"
+
+i18n:
+  en:
+    feature_payment_consent_screen_title: "Authorising payment"
+    feature_payment_consent_screen_title_scheduled: "Authorising scheduled payment"
+    feature_payment_consent_screen_title_standing_order: "Authorising standing order"
+    feature_payment_consent_validating: "Checking your authorisation…"
+    feature_payment_consent_exchanging: "Confirming with your bank…"
+    feature_payment_consent_checking: "Waiting for your bank to confirm…"
+    feature_payment_consent_checking_hint: "Your bank has not confirmed this yet. It sometimes takes a moment."
+    feature_payment_consent_check_again: "Check again"
+    feature_payment_consent_confirming_funds: "Checking the money is available…"
+    feature_payment_consent_submitting: "Sending your payment…"
+    feature_payment_consent_submitting_scheduled: "Scheduling your payment…"
+    feature_payment_consent_submitting_standing_order: "Setting up your standing order…"
+    feature_payment_consent_submitting_warning: "Don’t close this screen"
+    feature_payment_consent_approved_title: "Approved at your bank"
+    feature_payment_consent_approved_detail: "Finishing your payment…"
+    feature_payment_consent_approved_detail_scheduled: "Finishing your scheduled payment…"
+    feature_payment_consent_approved_detail_standing_order: "Finishing your standing order…"
+    feature_payment_consent_error_title: "Authorisation could not be completed"
+    feature_payment_consent_declined_title: "Payment declined"
+    feature_payment_consent_declined_title_scheduled: "Scheduled payment declined"
+    feature_payment_consent_declined_title_standing_order: "Standing order declined"
+    feature_payment_consent_expired_title: "Authorisation expired"
+    feature_payment_consent_no_connection_title: "Could not reach your bank"
+    feature_payment_consent_nothing_pending_title: "Nothing to authorise"
+    feature_payment_consent_unconfirmed_title: "Payment could not be confirmed"
+    feature_payment_consent_unconfirmed_title_scheduled: "Scheduled payment could not be confirmed"
+    feature_payment_consent_unconfirmed_title_standing_order: "Standing order could not be confirmed"
+    feature_payment_consent_already_sent_title: "Payment already sent"
+    feature_payment_consent_already_sent_title_scheduled: "Payment already scheduled"
+    feature_payment_consent_already_sent_title_standing_order: "Standing order already set up"
+    feature_payment_consent_already_sent_body: "Your bank has already received this payment. Check your recent payments before sending it again."
+    feature_payment_consent_already_sent_body_scheduled: "Your bank has already scheduled this payment. Check your scheduled payments before setting it up again."
+    feature_payment_consent_already_sent_body_standing_order: "Your bank has already set up this standing order. Check your standing orders before setting it up again."
+    feature_payment_consent_no_money_moved: "No money has been moved."
+    feature_payment_consent_no_money_moved_scheduled: "No payment has been scheduled."
+    feature_payment_consent_no_money_moved_standing_order: "No standing order has been set up."
+    feature_payment_consent_error_state_mismatch: "This authorisation could not be verified, so it was not accepted. Start the payment again."
+    feature_payment_consent_error_no_pending: "There was no payment waiting to be authorised."
+    feature_payment_consent_error_code_expired: "The authorisation expired before it could be completed."
+    feature_payment_consent_error_rejected: "The payment was not approved at your bank."
+    feature_payment_consent_error_timed_out: "Your bank did not confirm the authorisation in time."
+    feature_payment_consent_error_network: "Could not reach your bank to finish authorising."
+    feature_payment_consent_error_no_staged_payment: "The payment details could not be found. Start the payment again."
+    feature_payment_consent_error_insufficient_funds: "Your bank says there is not enough money in the account to cover this payment."
+    feature_payment_consent_error_submission_failed: "Your bank could not process the payment. Check your recent transactions before trying again."
+    feature_payment_consent_restart: "Authorise again"
+    feature_payment_consent_abandon: "Cancel this payment"
+    feature_payment_consent_abandon_scheduled: "Cancel this scheduled payment"
+    feature_payment_consent_abandon_standing_order: "Cancel this standing order"
+    feature_payment_consent_done: "Done"
+    feature_payment_consent_rejected_title: "Your bank did not accept this payment"
+    feature_payment_consent_error_request_rejected: "Your bank refused the request. Nothing was sent, so you can start again with the details corrected."
+    feature_payment_consent_unreadable_title: "We could not read your bank's reply"
+    feature_payment_consent_error_response_unreadable: "Your bank answered, but this app could not understand the response. Nothing was submitted."
+    feature_payment_consent_error_submission_unconfirmed: "Your bank accepted the payment, but this app could not read the confirmation. Check your recent payments before sending it again."
+    _note: "Scheduled / standing-order variants of rejected, request_rejected, submission_failed, submission_unconfirmed and no_staged_payment exist in composeResources/values/strings.xml (ConsentCopy per rail)."
+
+known_gaps:
+  - id: PCN-GAP-1
+    severity: should
+    description: "'Authorise again' (RetryAuthorisation) discards the session and emits RestartAuthorisation, but RootNavScreen maps it to navigateToAuthenticatedGraph (Home) — identical to Abandoned. The customer is not returned to the originating payment form despite the button label and the code comment ('returns to the form')."
+    status: designed   # DEF-010 — spec now routes to the originating form with the draft kept; source fix pending /kmp-implement
+    resolution: "RestartAuthorisation carries consentType; RootNavScreen opens SendMoneyRoute / SchedulePaymentRoute / StandingOrderDestination. Cross-feature dependency: each originating form must re-hydrate from its *InitiationRepository.stagedDraft() at Review on entry (send-money, payments-schedule-payment, payments-standing-order — owned by those features' enrich)."
+  - id: PCN-GAP-2
+    severity: could
+    description: "AlreadySubmitted 'Done' dispatches AbandonPayment and lands on Home; there is no shortcut to the payment-status receipt or history for the already-submitted payment."
+  - id: PCN-GAP-3
+    severity: could
+    description: "Screen has no back/navigation icon and no BackHandler; the system back gesture is not intercepted, so back during Exchanging/Submitting leaves the root route while the submission is in flight and its outcome is never shown."

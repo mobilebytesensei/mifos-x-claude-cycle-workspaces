@@ -1,0 +1,265 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: statements
+screen_id: statements
+name: "Statements"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/statements/src/commonMain/kotlin/org/mifosx/openbanking/feature/statements/StatementsScreen.kt
+  - feature/statements/src/commonMain/kotlin/org/mifosx/openbanking/feature/statements/StatementsContent.kt
+  - feature/statements/src/commonMain/kotlin/org/mifosx/openbanking/feature/statements/StatementsDestination.kt
+  - feature/statements/src/commonMain/kotlin/org/mifosx/openbanking/feature/statements/StatementFileHandler.kt
+  - feature/statements/src/commonMain/kotlin/org/mifosx/openbanking/feature/statements/ui/StatementsState.kt
+  - feature/statements/src/commonMain/kotlin/org/mifosx/openbanking/feature/statements/ui/StatementsViewModel.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/StatementsRepository.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/StatementFileRepository.kt
+  - cmp-navigation/src/{jsCommonMain,nonJsCommonMain}/kotlin/cmp/navigation/statements/StatementFileHandlerProvider.*.kt
+requirement_refs: [FR-016, FR-017, FR-040]
+archetype: index_list
+states: [loading, content, empty, error, downloading]
+initial_state: loading
+feature_profile:
+  combo_id: read_detail
+  facets: [content, offline]
+  archetype: screen-content
+  store_archetype: NETWORK_WITH_CACHE   # Store5 ScreenDataStream keyed by accountId, cacheKey "statements:{accountId}"
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default        # source-derived best effort; /idea-feature-enrich STEP 5.PROFILE re-derives
+
+route: "StatementsRoute(accountId)"
+entry_points:
+  - source: account-detail
+    trigger: "Explore chip AccountDetailChip.Statements → navigate(StatementsRoute(accountId))"
+    params: { accountId: String }
+nav_params:
+  accountId: { type: String, required: true, source: "SavedStateHandle[accountId]" }
+
+business_logic:
+  kind: transformer
+  description: >-
+    Observes StatementsRepository.statementsStream(accountId) (Store5, cached per account; mapper sorts
+    periods newest-first by startDateTime). Each StatementPeriod maps to a row with a "Month YYYY" period
+    label, closing balance via formatMoney(amount, currency) and "d Mon YYYY" start/end labels (UTC).
+    Per-row download fetches GET statements/{id}/file bytes and hands them to the platform
+    StatementFileHandler (FileKit save dialog on android/ios/desktop; intentional no-op on js/wasm).
+
+screens:
+  - id: statements-screen
+    title: "{strings.feature_statements_screen_title}"
+    type: list
+    archetype: index_list
+    states: [loading, content, empty, error, downloading]
+    description: >-
+      KptScaffold (back arrow + SnackbarHost). LazyColumn of statement rows: leading period headline +
+      "Closing balance:" monospaced amount; trailing date range + a round download IconButton that swaps
+      to a same-footprint spinner while that statement downloads. Tapping the row opens statement-detail.
+
+state_model:
+  StatementsViewModel:
+    base: "BaseViewModel<StatementsState, StatementsEvent, StatementsAction>"
+    state:
+      name: StatementsState
+      fields:
+        accountId: { type: String, default: '""', source: "SavedStateHandle[accountId]" }
+        uiState: { type: StatementsUiState, default: StatementsUiState.Loading }
+        downloadState: { type: "Map<String, DownloadState>", default: "emptyMap()", note: "per-statementId Idle|InProgress" }
+    ui_state:
+      name: StatementsUiState
+      members:
+        - { name: Loading }
+        - { name: Content, params: { statements: "List<StatementRowUiModel>" } }
+        - { name: Empty }
+        - { name: Error, params: { kind: StatementsErrorKind } }
+    ui_models:
+      StatementRowUiModel:
+        statementId: String
+        statementReference: String
+        periodLabel: String              # "October 2026" (falls back to raw ISO)
+        closingBalanceFormatted: String
+        startDateFormatted: String       # "1 Oct 2026"
+        endDateFormatted: String
+      DownloadState: [Idle, InProgress]
+    errors:
+      name: StatementsErrorKind
+      types:
+        - { type: TokenExpired, source: "401 / ScreenState.Unauthenticated", retry: true, message_key: feature_statements_error_token_expired }
+        - { type: ConsentScope, source: "403", retry: true, message_key: feature_statements_error_consent_scope }
+        - { type: RateLimited, source: "429", retry: true, message_key: feature_statements_error_rate_limited }
+        - { type: ServerError, source: "other", retry: true, message_key: feature_statements_error_server }
+        - { type: NetworkError, source: "NetworkError.Network / ScreenState.NoNetwork", retry: true, message_key: feature_statements_error_network }
+    events:
+      name: StatementsEvent
+      members:
+        - { name: ShowDownloadUnavailable, trigger: "file download failed with NetworkError.Server statusCode 501", ui: "snackbar feature_statements_download_unavailable" }
+        - { name: ShowDownloadError, trigger: "any other file download failure", ui: "snackbar feature_statements_download_error" }
+    actions:
+      name: StatementsAction
+      members:
+        - { name: RetryLoad, trigger: "Tap Retry on MifosErrorComponent → stream.refresh()" }
+        - { name: DownloadStatement, params: { statementId: String }, trigger: "Tap the row's download icon button" }
+    di:
+      - SavedStateHandle
+      - StatementsRepository
+      - StatementFileRepository
+      - StatementFileHandler      # platform-bound in cmp-navigation (platformStatementFileHandler expect/actual)
+
+components:
+  - id: top_bar
+    type: top-bar
+    host: KptScaffold
+    title: "{strings.feature_statements_screen_title}"
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      target: account-detail
+      action_contract:
+        effect: navigate
+        description: "KptScaffold onNavigationIconClick invokes onBack, wired by the authenticated nav host to navController.popBackStack(), returning to account-detail."
+
+  - id: loading_indicator
+    type: progress-indicator
+    impl: MifosProgressIndicator
+
+  - id: statements_list
+    type: list
+    impl: LazyColumn
+    test_tag: "statements:contentList"
+    a11y: "{strings.feature_statements_list_accessibility}"
+    item:
+      id: statement_row
+      type: row
+      test_tag: "statements_row_{statementId}"
+      min_height: "DesignToken.sizes.rowTall"
+      a11y: "{strings.feature_statements_row_accessibility}"
+      leading:
+        - { id: period_label, type: text, value: "{{row.periodLabel}}" }  # i18n: skip — formatted date
+        - { id: closing_balance, type: text, label: "{strings.feature_statements_closing_balance_label}", value: "{{row.closingBalanceFormatted}}", style: { font: monospace } }
+      trailing:
+        - { id: date_range, type: text, value: "{strings.feature_statements_date_range}", style: { text_style: bodySmall, color: onSurfaceVariant } }
+        - id: download_button
+          type: icon-button
+          visible: "{{downloadState[row.statementId] != InProgress}}"
+          test_tag: "statements_download_{statementId}"
+          icon: { asset: download_icon }
+          tint: "{{isHovered ? primary : onSurfaceVariant}}"
+          a11y: "{strings.feature_statements_download_accessibility}"
+          on_click:
+            action: DownloadStatement
+            handler: "StatementsViewModel.download(statementId)"
+            action_contract:
+              effect: persist_file
+              library_refs: [filekit-core, ktor]
+              writes_to: "platform file (statement-{statementId}.pdf via StatementFileHandler.deliver); StatementsState.downloadState"
+              description: "Marks downloadState[statementId]=InProgress, GETs /statements/{id}/file (Accept PDF then CSV) and passes the bytes to StatementFileHandler.deliver as statement-{id}.pdf (FileKit save dialog; no-op on web); 501 → ShowDownloadUnavailable, other failure → ShowDownloadError; resets to Idle."
+        - id: download_spinner
+          type: progress-indicator
+          visible: "{{downloadState[row.statementId] == InProgress}}"
+          test_tag: "statements_download_spinner_{statementId}"
+          a11y: "{strings.feature_statements_download_in_progress_accessibility}"
+      on_click:
+        action: onRowClick
+        target: statement-detail
+        params: { statementId: "{row.statementId}", accountId: "{state.accountId}" }
+        action_contract:
+          effect: navigate
+          description: "Row clickable invokes onNavigateToStatementDetail(statementId, accountId); nav host pushes StatementDetailRoute(accountId, statementId)."
+
+  - id: empty_state
+    type: empty-state
+    impl: "EmptyDataComponent(isEmptyData = true)"
+    message: "{strings.feature_statements_empty_title}"
+
+  - id: error_state
+    type: error-state
+    impl: "MifosErrorComponent(isRetryEnabled = true)"
+    message: "{{kind.bodyResource()}}"   # i18n: skip — resolves to one of the five error message_keys
+    on_retry:
+      action: RetryLoad
+      handler: "stream.refresh()"
+      action_contract:
+        effect: call_api
+        library_refs: [ktor]
+        writes_to: "StatementsState.uiState"
+        description: "Calls refresh() on the Store5 statements ScreenDataStream, re-fetching GET /v4.0/aisp/accounts/{AccountId}/statements; the stream re-emits Loading → Content/Empty/Error into uiState."
+
+  - id: snackbar_host
+    type: snackbar
+    messages: ["{strings.feature_statements_download_unavailable}", "{strings.feature_statements_download_error}"]
+
+state_renders:
+  loading: { components: [top_bar, loading_indicator], description: "Initial / refresh — MifosProgressIndicator." }
+  content: { components: [top_bar, statements_list, snackbar_host], description: "Rows newest-first; every row shows the download icon." }
+  empty: { components: [top_bar, empty_state], description: "Stream emitted an empty list (emptyIfContent) or ScreenState.Empty." }
+  error: { components: [top_bar, error_state], description: "Error(kind) — message per StatementsErrorKind; Retry always enabled." }
+  downloading: { components: [top_bar, statements_list, snackbar_host], description: "Overlay on content — the row whose downloadState is InProgress shows download_spinner instead of download_button; other rows remain interactive." }
+
+visual_assets:
+  - id: download_icon
+    kind: icon
+    role: row-action-icon
+    intent: "Material Icons.Filled.FileDownload for the per-statement download affordance, tinted primary on hover."
+    produced_by: design-system
+    states: [content, downloading]
+    consistency: none
+    source: "Icons.Filled.FileDownload"
+  - id: empty_statements_illustration
+    kind: icon
+    role: empty-state-icon
+    intent: "Shared core/ui EmptyDataComponent glyph shown above 'No statements yet'."
+    produced_by: design-system
+    states: [empty]
+    consistency: none
+    source: "core/ui EmptyDataComponent default icon"
+  - id: error_icon
+    kind: icon
+    role: error-state-icon
+    intent: "Shared MifosErrorComponent glyph shown with the statements load failure message."
+    produced_by: design-system
+    states: [error]
+    consistency: none
+    source: "core/ui MifosErrorComponent default icon"
+
+known_gaps:
+  - id: KG-STATEMENTS-1
+    severity: medium
+    description: "Web (js/wasmJs) StatementFileHandler is NoOpStatementFileHandler (intentional-noop) — a successful download silently does nothing and no ShowDownloadUnavailable event fires. Web targets also cannot reach the bank (mTLS)."
+  - id: KG-STATEMENTS-2
+    severity: low
+    description: "No success feedback: a completed download emits no event/snackbar (statement-detail emits DownloadSucceeded). A cancelled FileKit save dialog (null destination) is also indistinguishable from success."
+  - id: KG-STATEMENTS-3
+    severity: low
+    description: "File is always named statement-{id}.pdf with mime application/pdf even though the API Accept header also allows text/csv — a CSV response would be saved with a .pdf extension."
+  - id: KG-STATEMENTS-4
+    severity: medium
+    description: "All StatementsErrorKind values are isRetriable=true, contradicting FR-040 (403 ConsentRevoked not retriable); TokenExpired/ConsentScope offer Retry only, no route to Consents/LoginRenew."
+  - id: KG-STATEMENTS-5
+    severity: low
+    description: "Empty state renders only feature_statements_empty_title; feature_statements_empty_body, the error_title, loading/empty/error a11y and retry strings are defined but unused (shared Mifos components take a single message)."
+
+i18n:
+  en:
+    feature_statements_screen_title: "Statements"
+    feature_statements_navigate_back: "Navigate back to accounts list"
+    feature_statements_loading_accessibility: "Loading statement list"
+    feature_statements_list_accessibility: "Statements for your account"
+    feature_statements_row_accessibility: "Statement %1$s, %2$s"
+    feature_statements_closing_balance_label: "Closing balance:"
+    feature_statements_date_range: "%1$s – %2$s"
+    feature_statements_download_accessibility: "Download %s statement"
+    feature_statements_download_in_progress_accessibility: "Downloading statement"
+    feature_statements_empty_title: "No statements yet"
+    feature_statements_empty_body: "Your statement history will appear here once statements are available for this account."
+    feature_statements_empty_accessibility: "No statements yet"
+    feature_statements_error_title: "Could not load statements"
+    feature_statements_error_accessibility: "Could not load statements"
+    feature_statements_error_token_expired: "Session expired. Please re-authenticate."
+    feature_statements_error_consent_scope: "Account access consent does not cover statements. Re-authorise in Consents."
+    feature_statements_error_rate_limited: "Too many requests. Please wait a moment and try again."
+    feature_statements_error_server: "HSBC server error. Please try again."
+    feature_statements_error_network: "No network connection. Check your connection and retry."
+    feature_statements_retry: "Retry"
+    feature_statements_retry_accessibility: "Retry loading statements"
+    feature_statements_download_unavailable: "This statement isn’t available to download."
+    feature_statements_download_error: "Couldn’t download the statement. Try again."

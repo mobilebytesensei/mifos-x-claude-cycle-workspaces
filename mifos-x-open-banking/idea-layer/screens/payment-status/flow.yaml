@@ -1,0 +1,80 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: payment-status
+_source: source_analysis
+
+route_registration:
+  intended: authenticated-host          # SINGLE registration (FR-036 AC "Single route registration"; PST-GAP-1)
+  current_source: [root, authenticated-host]
+  remove: "RootNavScreen composable<PaymentStatusRoute> + its onBack=navigateToAuthenticatedGraph"
+  consent_entry: "PaymentSubmitted → navigateToAuthenticatedGraph(rootNavOptions()) then host navigate(PaymentStatusRoute(paymentId)) { popUpTo(HomeRoute) } — back pops to Home"
+  status: spec-resolved-pending-implement
+
+entry_points:
+  - { type: push, source: payment-consent, route: "PaymentStatusRoute(paymentId)", navigator: authenticated-host, description: "PaymentSubmitted → enter authenticated graph, push PaymentStatusRoute with popUpTo(Home) (intended single registration; source still uses root — see route_registration)" }
+  - { type: push, source: send-money, route: "PaymentStatusRoute(paymentId)", navigator: authenticated-host }
+  - { type: push, source: payments-schedule-payment, route: "PaymentStatusRoute(paymentId)", navigator: authenticated-host }
+  - { type: push, source: payments-standing-order, route: "PaymentStatusRoute(paymentId)", navigator: authenticated-host }
+
+navigates_to:
+  - home                       # consent entry: popBackStack lands on Home (pushed with popUpTo(Home))
+  - send-money                 # history entry: popBackStack to caller
+  - payments-schedule-payment
+  - payments-standing-order
+
+transitions:
+  - { from: payment-status, to: home, trigger: app_bar.back, type: pop, when: "reached after payment-consent submission (pushed with popUpTo(Home))" }
+  - { from: payment-status, to: "<caller>", trigger: app_bar.back, type: pop, when: "reached from a history row" }
+
+flow_logic:
+  on_load:
+    - init: "paymentId = savedStateHandle[paymentId].orEmpty(); uiState = Loading"
+    - call: "repository.paymentStatus(paymentId)"
+      api: get_payment_receipt
+      on_success:
+        - "stages = paymentHistoryRepository.stageTimestampsOf(paymentId)"
+        - "type = paymentHistoryRepository.consentTypeOf(paymentId)"
+        - "stored = paymentHistoryRepository.partiesOf(paymentId)"
+        - "uiState = receipt.toContent(stages, type, stored)  # blank bank parties fall back to stored parties; lastCheckedAt = now (local HH:mm)"
+      on_error: "uiState = Error(classifyPaymentStatusError(error))"
+  on_refresh_status:
+    - if: "uiState is Content"
+      then: "uiState = content.copy(refreshing = true, refreshFailure = null)"
+    - call: "repository.paymentStatus(paymentId)"
+      api: get_payment_receipt
+      on_success: "uiState = fresh Content (refreshing false, new lastCheckedAt)"
+      on_error: "uiState = (current Content)?.copy(refreshing = false, refreshFailure = kind) ?: Error(kind)"
+    - note: "Never polled — refresh is manual only; Refresh button hidden once settled."
+  disposition:
+    - "disposition = consentType?.let { status.dispositionFor(it) } ?: status.disposition  # INCO is terminal-success on standing orders / scheduled"
+  on_rejected:
+    - if: "uiState is Content && status == Rejected"
+      then:
+        - "state = rejected  # TERMINAL (FR-036): disposition TerminalFailure, settled = true"
+        - "status chip + top bar = 'Rejected' in failure colours"
+        - "show rejection_note with bank status code RJCT + support reference = paymentId"
+        - "timeline Completed step → Failed(statusChangedAt), label step_rejected"
+        - "hide refresh_button (no check-status action); RefreshStatus is never dispatched from this state"
+    - note: "A refresh that returns Rejected moves content/refreshing → rejected; there is no transition out of rejected except back."
+  on_back:
+    - "invoke onBack → popBackStack() on the single authenticated-host registration (Home after consent entry; caller after history entry)"
+
+error_handling:
+  PaymentNotFound: { from: "404 NotFound (or no local history row / unknown ConsentType)", first_load: error_page, refresh: refresh_failure_note, retry: true }
+  TokenExpired: { from: "401 Unauthorized", first_load: error_page, refresh: refresh_failure_note, retry: true }
+  ConsentRevoked: { from: "403 Forbidden", first_load: error_page, refresh: refresh_failure_note, retry: true }
+  NetworkError: { from: "any other NetworkError", first_load: error_page, refresh: refresh_failure_note, retry: true }
+
+journey_ids: [send-money, schedule-payment, standing-order]
+
+dependencies:
+  repositories:
+    - name: PaymentStatusRepository
+      methods: ["suspend paymentStatus(paymentId: String): NetworkResult<PaymentReceipt, NetworkError>"]
+    - name: PaymentHistoryRepository
+      methods:
+        - "stageTimestampsOf(paymentId): PaymentStageTimestamps?"
+        - "consentTypeOf(paymentId): ConsentType?"
+        - "partiesOf(paymentId): PaymentParties?"
+  local_db:
+    - table: payment_history

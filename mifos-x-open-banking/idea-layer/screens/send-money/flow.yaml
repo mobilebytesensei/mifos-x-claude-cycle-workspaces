@@ -1,0 +1,162 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: send-money
+_source: source_analysis
+flow_ref: send-money
+
+navigates_to:
+  - payment-status     # recent/history row → PaymentStatusRoute(paymentId)
+  - consent-list       # INTENDED target of 'View consents' — currently onNavigateToConsents = {} (no-op)
+  - payment-consent    # indirect: browser → HSBC → relay → org.mifosx.openbanking://callback → RootNav Payment leg → PaymentConsentRoute
+
+inbound_routes:
+  - from: home
+    type: push
+    via: "onNavigateToSendMoney → navController.navigate(SendMoneyRoute)"
+  - from: payments-hub
+    type: push
+    via: "onNavigateToSendMoney (hub graph unreachable)"
+
+external_handoffs:
+  - id: bank_authorisation
+    external: true
+    external_kind: os-dialer-or-browser
+    trigger: "SendMoneyEvent.LaunchAuthorisation(url)"
+    via: "onLaunchAuthorisation = { url -> runCatching { browserLauncher.launch(url) } }"
+    returns_to: payment-consent
+
+transitions:
+  - id: load
+    from: loading
+    trigger: "screen opened"
+    to: [content, error]
+    decided_by: "accountsOverview ScreenState (Content → form; Error/NoNetwork/Unauthenticated → error; Loading/Empty → loading)"
+  - { id: review, from: content, trigger: "ReviewPayment (enabled when canReview)", to: review }
+  - { id: edit, from: review, trigger: "BackStep (Edit payment)", to: content }
+  - id: stage
+    from: review
+    trigger: "ConfirmAndStageConsent"
+    to: submitting
+    side_effects: ["phase=Submitting(StagingConsent)", "stagePayment(draft)"]
+  - id: staged
+    from: submitting
+    trigger: "stagePayment Success"
+    to: submitting
+    side_effects: ["phase=Submitting(AwaitingAuthorisation, consentId)", "emit LaunchAuthorisation(url)"]
+  - { id: stage_failed, from: submitting, trigger: "stagePayment Error", to: error }
+  - { id: retry, from: error, trigger: "RetryStaging / ConfirmAndStageConsent", to: submitting }
+  - { id: edit_amount, from: error, trigger: "BackStep", to: content }
+  - { id: change_payer, from: error, trigger: "ChangePayer", to: content }
+  - { id: open_history, from: content, trigger: "See all (hasMorePayments)", to: history_content, type: push }
+  - { id: open_payment, from: content, trigger: "tap recent payment row", to: payment-status, type: push }
+  - { id: history_open_payment, from: history_content, trigger: "tap history row", to: payment-status, type: push }
+
+flow_logic:
+  on_load:
+    - action: subscribe
+      streams:
+        - api: [get_accounts, get_account_balances]
+          via: "accountsOverviewRepository.overviewState(viewModelScope).combineContent(capabilityRegistry.unsupportedStream())"
+          transform: "keep accounts where HsbcProductCapability.supports(PaymentDebtor, productType) AND not refused (AccountEndpoint.PaymentDebtor) this session"
+          into: accountsScreen
+        - api: get_beneficiaries
+          via: "selectedAccountId.flatMapLatest { blank → Content(emptyList()) ; else beneficiariesRepository.beneficiariesStream(id).state }"
+          into: beneficiariesScreen
+        - local: payment_history
+          via: "PaymentHistoryFeed.rows({DomesticSinglePayment, InternationalSinglePayment}, limit 6)"
+          into: history
+    - combine: [accountsScreen, beneficiariesScreen, form, phase, history]
+      render: "phase Submitting → Submitting; phase Error → Error; else accounts Content → Content(form) | Error/NoNetwork/Unauthenticated → Error | Loading/Empty → Loading"
+  on_select_rail:
+    - transform_state: { rail: "{rail}", creditor: null, manualEntryVisible: false, manualSortCode: "", manualAccountNumber: "", manualIban: "", fieldErrors: "reset", instructedCurrency: "Domestic ? GBP : keep" }
+    - revalidate: amount
+  on_select_debtor:
+    - transform_state: { selectedAccountId: "{accountId}", debtorAccountId: "{accountId}", payerPickerExpanded: false, letBankChoosePayer: false, creditor: null }
+    - revalidate: amount
+  on_let_bank_choose_payer:
+    - transform_state: { selectedAccountId: "", debtorAccountId: null, letBankChoosePayer: true, creditor: null }
+    - revalidate: amount
+  on_select_creditor:
+    - lookup: "beneficiaries().first { it.identification == id } ?: return"
+    - transform_state: { creditor: "CreditorSelection(name, scheme, identification, beneficiaryId, isOwnAccount)", reference: "payee.reference", manualEntryVisible: false }
+  on_confirm_manual_creditor:
+    - condition: "rail == International"
+      true: "IBAN normalise + plausibility → creditor(scheme=Iban) | fieldErrors.ibanInvalid"
+      false: "sortCode digits == 6 && account digits == 8 → creditor(scheme=SortCode, identification=sortCode+account) | fieldErrors"
+  on_enter_amount:
+    - transform_state: { amountInput: "{amount}" }
+    - revalidate: amount
+  on_review:
+    - transform_state: { step: Review }
+  on_confirm_and_stage:
+    - build_draft: "PaymentDraft(debtorAccount?, creditor, amountMinorUnits, currency=instructedCurrency, reference (Domestic & non-blank only), instructionIdentification='MFX'+uuidHex, endToEndIdentification='E2E'+uuidHex, consentIdempotencyKey=uuid4, paymentIdempotencyKey=uuid4, currencyOfTransfer=International?instructedCurrency:null, chargeBearer=International?bearer:null)"
+      on_null: "return (no creditor or unparseable amount)"
+    - transform_state: { phase: "Submitting(StagingConsent)", draft: "{draft}" }
+    - call_api: [get_client_credentials_token_payments, "create_domestic_payment_consent | create_international_payment_consent"]
+      via: "SinglePaymentInitiationRepository.stagePayment(draft)"
+      repo_steps:
+        - "paymentAuthSession.clear()"
+        - "oauth.clientCredentialsToken(PAYMENTS)"
+        - "POST consent (x-jws-signature, x-idempotency-key = consentIdempotencyKey); missing ConsentId → BadRequest('no ConsentId')"
+        - "generateConsentAuthorizationUrl(PS256 request object, response_type 'code id_token', scope payments, state, nonce)"
+        - "paymentAuthSession.savePending(consentId, state, nonce, type) + saveDraft(draft)"
+      on_success:
+        - transform_state: { consentId: "{staged.consentId}", phase: "Submitting(AwaitingAuthorisation)" }
+        - emit_event: "LaunchAuthorisation(staged.authorizationUrl)"
+        - external_handoff: bank_authorisation
+      on_error:
+        - transform_state: { phase: "Error(classifySendMoneyError(t), supportReferenceOf(t))" }
+  on_retry_staging:
+    - same_as: on_confirm_and_stage
+  on_change_payer:
+    - transform_state: { step: Form, debtorAccountId: null, letBankChoosePayer: false, phase: Form, draft: null, consentId: null }
+  on_back_step:
+    - transform_state: { step: Form, phase: Form, draft: null, consentId: null }
+  on_view_consents:
+    - navigate: consent-list
+      wired: false
+      note: "onNavigateToConsents = {} in AuthenticatedNavHostScreen — no-op"
+  on_open_payment:
+    - navigate: payment-status
+      params: { paymentId: "{paymentId}" }
+  on_show_all_payments:
+    - navigate: SendMoneyHistoryRoute
+  on_back:
+    - navigate: back
+
+error_handling:
+  classify_order: ["error Path contains 'DebtorAccount' → PayerNotSupported", "OBIE ErrorCode suffix", "HTTP transport"]
+  SignatureMissing: { obie: U019, actions: [] , note: "support reference shown" }
+  ConsentNotAuthorised: { obie: U009, actions: [reauthorise] }
+  ConsentMismatch: { obie: U008, actions: [] }
+  OutsideControlParameters: { obie: U014, actions: [edit_amount] }
+  InvalidField: { obie: "U002 | U021", actions: [] }
+  PayerNotSupported: { obie_path: DebtorAccount, actions: [change_payer] }
+  ConsentRevoked: { http: 403, actions: [view_consents (no-op)] }
+  TokenExpired: { http: 401, actions: [retry, reauthorise] }
+  RateLimited: { http: 429, actions: [retry] }
+  NetworkError: { default: true, actions: [retry] }
+  InsufficientFunds: { produced: never, actions: [edit_amount] }
+  accounts_load_failure: { ui: error_state, note: "Retry dispatches RetryStaging, not RetryLoad (known gap)" }
+  payees_load_failure: { ui: "payeesFailed=true on Content; avatar row empty", recovery: "re-select payer" }
+
+journey_ids: [send-money]
+
+dependencies:
+  repositories:
+    - name: AccountsOverviewRepository
+      methods: ["overviewState(scope): Flow<ScreenState<List<AccountWithBalance>>>", "refresh()"]
+    - name: BeneficiariesRepository
+      methods: ["beneficiariesStream(accountId, scope): ScreenDataStream<List<BeneficiaryItem>>"]
+    - name: SinglePaymentInitiationRepository
+      methods: ["suspend stagePayment(draft: PaymentDraft): NetworkResult<StagedConsent, NetworkError>"]
+    - name: AccountCapabilityRegistry
+      methods: ["unsupportedStream(): Flow<Map<String, Set<AccountEndpoint>>>"]
+    - name: PaymentHistoryRepository
+    - name: PaymentStatusRepository
+  services:
+    - BrowserLauncher
+    - PaymentAuthSession
+  local_db:
+    - table: accounts
+    - table: payment_history

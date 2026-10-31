@@ -1,0 +1,361 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: home
+screen_id: home
+name: "Home"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/home/src/commonMain/kotlin/org/mifosx/openbanking/feature/home/HomeScreen.kt
+  - feature/home/src/commonMain/kotlin/org/mifosx/openbanking/feature/home/HomeContent.kt
+  - feature/home/src/commonMain/kotlin/org/mifosx/openbanking/feature/home/ui/HomeViewModel.kt
+  - feature/home/src/commonMain/kotlin/org/mifosx/openbanking/feature/home/HomeDestination.kt
+  - feature/home/src/commonMain/kotlin/org/mifosx/openbanking/feature/home/components/
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/impl/AccountsOverviewRepositoryImpl.kt
+  - cmp-navigation/src/commonMain/kotlin/cmp/navigation/authenticatednavhost/AuthenticatedNavHostScreen.kt
+archetype: dashboard
+requirement_refs: [FR-001, FR-002, FR-039]
+
+states: [loading, content, content_stale, empty, offline, error]
+initial_state: loading
+
+feature_profile:
+  combo_id: read_dashboard
+  facets: [content, network, cache]
+  archetype: screen-content
+  store_archetype: NETWORK_WITH_CACHE
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default   # enrich STEP 5.PROFILE re-derives
+
+route: HomeRoute            # nested in HomeDestination graph; start destination of the authenticated NavHost
+graph: HomeDestination
+entry_points:
+  - source: consent-callback
+    trigger: ais_consent_authorised       # AuthGraph → AuthenticatedGraphRoute → NavHost startDestination = HomeDestination
+    params: {}
+  - source: shell-bottom-nav
+    trigger: HomeTab                      # consumerNavBarTabs = [HomeTab] (the only tab)
+    params: {}
+nav_params: {}
+
+business_logic:
+  kind: aggregator
+  description: >-
+    Collects AccountsOverviewRepository.overviewState(viewModelScope) — a Store5-backed
+    ScreenState<List<AccountWithBalance>> stream (GET accounts, then GET balances per account in
+    parallel; a refused/failed balance read degrades to balance = null, never drops the account).
+    mapContent partitions the list into cards (HsbcProductType.resolve(...) == CreditCard) and
+    everything else, and stamps a time-of-day Greeting (Morning < 12h, Afternoon < 18h, else Evening)
+    from an injectable Clock/TimeZone. Empty account set surfaces as ScreenState.Empty. RetryLoad
+    calls repository.refresh(), which re-fetches accounts and forces a network re-read of every balance.
+
+screens:
+  - id: home-screen
+    title: ""            # i18n: skip — no top app bar; gradient header carries the greeting
+    type: dashboard
+    description: >-
+      Edge-to-edge scrolling dashboard inside KptScaffold. A gradient (primary → primaryContainer)
+      header panel shows "Hello," + time-of-day greeting and a circular avatar button (opens Settings).
+      A quick-actions card overlaps the header (offset -xl) with four circular actions: Send money,
+      Schedule, Standing Order, VRP. Below: a horizontally-scrolling "Cards" row of gradient card faces
+      (only when the consent includes credit cards) and an "Accounts" section of MifosAccountRow items.
+      Each card face / account row opens that account's detail. Rendered through ScreenContent, so
+      loading / empty / no-network / error each replace the whole body.
+
+state_model:
+  HomeViewModel:
+    base: "BaseViewModel<HomeState, Nothing, HomeAction>"
+    state:
+      name: HomeState
+      fields:
+        uiState: { type: "ScreenState<HomeData>", default: "ScreenState.Loading" }
+    content_model:
+      name: HomeData
+      fields:
+        accounts: { type: "List<AccountWithBalance>", default: "emptyList()" }   # non-card accounts, bank order
+        cards: { type: "List<AccountWithBalance>", default: "emptyList()" }      # credit-card accounts
+        greeting: { type: Greeting, default: "Greeting.Morning" }               # Morning | Afternoon | Evening
+    screen_state:
+      name: "ScreenState<HomeData>"
+      members: [Loading, Content, Empty, NoNetwork, Unauthenticated, Error]
+      content_freshness: [FRESH, UPDATING, STALE_FAILED, STALE_OFFLINE]   # DataFreshnessIndicator above content
+    errors:
+      name: "ScreenState.Error(error: Throwable, isNetworkError)"
+      types:
+        - { type: Error, retry: true, message_key: feature_home_error_title }
+        - { type: NoNetwork, retry: true, message_key: template_default_no_network }   # core-base DefaultNoNetworkContent
+        - { type: Unauthenticated, retry: true, message_key: feature_home_error_title }   # ScreenContent maps to error()
+    events:
+      name: "Nothing"
+      members: []      # navigation is callback-driven from HomeScreen, not ViewModel events
+    actions:
+      name: HomeAction
+      members:
+        - { name: RetryLoad, trigger: "Tap Retry on the error / no-network state" }
+    callbacks:         # lifted navigation lambdas (homeGraph params)
+      - { name: onNavigateToSendMoney, trigger: "Tap Send money quick action" }
+      - { name: onNavigateToSchedulePayment, trigger: "Tap Schedule quick action" }
+      - { name: onNavigateToStandingOrder, trigger: "Tap Standing Order quick action" }
+      - { name: onNavigateToVrp, trigger: "Tap VRP quick action" }
+      - { name: onNavigateToAccountDetail, params: { accountId: String }, trigger: "Tap a card face or account row" }
+      - { name: onNavigateToSettings, trigger: "Tap header avatar" }
+    di:
+      - AccountsOverviewRepository   # Store5 accountsStore + balancesStore + NetworkMonitor + FetchedAtRepository
+      - Clock                        # default Clock.System
+      - TimeZone                     # default TimeZone.currentSystemDefault()
+
+components:
+  - id: home_header
+    type: gradient-header
+    testTag: home_header
+    style: { gradient: [primary, primaryContainer], height: DesignToken.sizes.headerPanel, shape: "extraLarge (bottom corners only)" }
+    content:
+      - { id: hello_text, type: text, value: "{strings.feature_home_hello}", style: { text_style: bodyLarge, color: onPrimary } }
+      - id: greeting_text
+        type: text
+        testTag: home_greeting
+        style: { text_style: headlineLarge, color: onPrimary }
+        value:
+          Morning: "{strings.feature_home_greeting_morning}"
+          Afternoon: "{strings.feature_home_greeting_afternoon}"
+          Evening: "{strings.feature_home_greeting_evening}"
+      - id: avatar_button
+        type: icon_button
+        testTag: home_avatar
+        icon: person
+        content_description: "{strings.feature_home_settings_desc}"
+        style: { size: DesignToken.sizes.avatarMedium, shape: circle, background: primaryContainer, border: onPrimary }
+        on_click:
+          action: onNavigateToSettings
+          target: settings
+          action_contract:
+            effect: navigate
+            handler: "HomeScreen.onNavigateToSettings → navController.navigate(SettingsRoute)"
+            library_refs: []
+            description: "Opens the Settings screen from the header avatar; lifted navigation callback, no ViewModel action and no network call."
+
+  - id: home_quick_actions
+    type: card
+    testTag: home_quick_actions
+    style: { background: surfaceContainerLowest, elevation: level2, shape: large, offset_y: "-xl" }
+    children:
+      - id: quick_action_send_money
+        type: button
+        variant: quick-action
+        testTag: home_quick_action_send_money
+        icon: send
+        label: "{strings.feature_home_action_send_money}"
+        on_click:
+          action: onNavigateToSendMoney
+          target: send-money
+          action_contract:
+            effect: navigate
+            handler: "HomeQuickActions → onSendMoney → navController.navigate(SendMoneyRoute)"
+            library_refs: []
+            description: "Starts the domestic/international single immediate payment flow (send-money); no data passed."
+      - id: quick_action_schedule
+        type: button
+        variant: quick-action
+        testTag: home_quick_action_schedule
+        icon: calendar_month
+        label: "{strings.feature_home_action_schedule}"
+        on_click:
+          action: onNavigateToSchedulePayment
+          target: payments-schedule-payment
+          action_contract:
+            effect: navigate
+            handler: "HomeQuickActions → onSchedule → navController.navigate(SchedulePaymentRoute)"
+            library_refs: []
+            description: "Starts the future-dated scheduled payment flow (payments-schedule-payment); no data passed."
+      - id: quick_action_standing_order
+        type: button
+        variant: quick-action
+        testTag: home_quick_action_standing_order
+        icon: sync
+        label: "{strings.feature_home_action_standing_order}"
+        on_click:
+          action: onNavigateToStandingOrder
+          target: payments-standing-order
+          action_contract:
+            effect: navigate
+            handler: "HomeQuickActions → onStandingOrder → navController.navigate(StandingOrderRoute)"
+            library_refs: []
+            description: "Starts the standing-order setup flow (payments-standing-order); no data passed."
+      - id: quick_action_vrp
+        type: button
+        variant: quick-action
+        testTag: home_quick_action_vrp
+        icon: speed
+        label: "{strings.feature_home_action_vrp}"
+        on_click:
+          action: onNavigateToVrp
+          target: vrp
+          action_contract:
+            effect: navigate
+            handler: "HomeQuickActions → onVrp → navController.navigateToVrpConsentList()"
+            library_refs: []
+            description: "Opens the VRP consent list (variable recurring payments / sweeping); no data passed."
+
+  - id: home_cards_section
+    type: section
+    testTag: home_cards_section
+    visible: "{{cards.isNotEmpty()}}"
+    content:
+      - { id: cards_heading, type: section-heading, value: "{strings.feature_home_cards}", style: { text_style: titleLarge } }
+      - id: card_face
+        type: tappable_card
+        repeat: "{{cards}}"
+        testTag: "home_card_face_{accountId}"
+        style: { gradient: [primary, primaryContainer], height: DesignToken.sizes.cardFace, width_fraction: 0.85, shape: large }
+        content:
+          - { id: card_type_label, type: text, value: "{{accountTypeLabel(accountTypeCode, description)}}" }  # i18n: skip — shared core/ui label resolver
+          - { id: card_available_balance, type: text, value: "{{formatMoney(balance.availableAmount, balance.currency)}}", empty_when: "balance == null" }  # i18n: skip — formatted amount
+          - { id: card_holder_name, type: text, value: "{{account.accountHolderName}}", visible: "{{accountHolderName.isNotBlank()}}" }  # i18n: skip — bank payload
+          - { id: card_identification, type: text, value: "{{account.identification}}", style: { font_family: monospace } }  # i18n: skip — masked PAN
+        on_click:
+          action: onNavigateToAccountDetail
+          target: account-detail
+          params: { accountId: "{{account.accountId}}" }
+          action_contract:
+            effect: navigate
+            handler: "HomeCardsSection.onCardClick → navController.navigate(AccountDetailRoute(accountId))"
+            library_refs: []
+            description: "Opens AccountDetail for the tapped credit card, passing its OBIE AccountId as the route argument."
+
+  - id: home_accounts_section
+    type: section
+    testTag: home_accounts_section
+    visible: "{{accounts.isNotEmpty()}}"
+    content:
+      - { id: accounts_heading, type: section-heading, value: "{strings.feature_home_accounts}", style: { text_style: titleLarge } }
+      - id: account_row
+        type: list_item
+        component_ref: MifosAccountRow     # core/ui shared row (type label, identifier, balance)
+        repeat: "{{accounts}}"
+        testTag: "home_account_row_{accountId}"
+        on_click:
+          action: onNavigateToAccountDetail
+          target: account-detail
+          params: { accountId: "{{account.accountId}}" }
+          action_contract:
+            effect: navigate
+            handler: "HomeAccountsSection.onAccountClick → navController.navigate(AccountDetailRoute(accountId))"
+            library_refs: []
+            description: "Opens AccountDetail for the tapped account, passing its OBIE AccountId as the route argument."
+
+  - id: loading_indicator
+    type: progress
+    component_ref: MifosProgressIndicator
+
+  - id: empty_state
+    type: empty-state
+    component_ref: EmptyDataComponent
+    message: "{strings.feature_home_empty_title}"
+
+  - id: no_network_state
+    type: no-network
+    component_ref: DefaultNoNetworkContent   # template default (ScreenContent noNetwork slot not overridden)
+    on_click:
+      action: RetryLoad
+      action_contract:
+        effect: call_api
+        handler: "HomeViewModel.handleAction(RetryLoad) → accountsRepository.refresh()"
+        library_refs: []
+        description: "Re-fetches accounts and force-refreshes every balance once connectivity returns (template no-network retry)."
+
+  - id: error_state
+    type: error-state
+    component_ref: MifosErrorComponent
+    title: "{strings.feature_home_error_title}"
+    on_click:
+      action: RetryLoad
+      action_contract:
+        effect: call_api
+        handler: "HomeViewModel.handleAction(RetryLoad) → accountsRepository.refresh()"
+        library_refs: []
+        description: "Re-fetches GET /accounts then re-reads GET /accounts/{id}/balances for every account (refreshBalances = true)."
+
+  - id: offline_snackbar
+    type: snackbar
+    owner: AuthenticatedNavHostScreen     # shell-level, not home-owned
+    message: "not_connected"              # i18n: skip — cmp-navigation string resource
+    duration: Indefinite
+    visible: "{{isOffline}}"
+
+state_details:
+  loading:
+    components: [loading_indicator]
+    description: "ScreenState.Loading — centered MifosProgressIndicator while the accounts store resolves."
+  content:
+    components: [home_header, home_quick_actions, home_cards_section, home_accounts_section]
+    description: "ScreenState.Content(HomeData) — greeting header, quick actions, cards row (if any), accounts list."
+    demo_data:
+      greeting: Morning
+      cards:
+        - { account: { accountId: acc-card, accountTypeCode: CARD, currency: GBP, identification: "xxxx-xxxx-xxxx-3456", scheme: Pan, accountHolderName: "Mr Bantu" }, balance: { currency: GBP, currentAmount: "342.18", availableAmount: "342.18" } }
+      accounts:
+        - { account: { accountId: acc-current, accountTypeCode: CACC, currency: GBP, identification: "80200110203349", scheme: SortCode, description: "Description of the account", accountHolderName: "Mr Nico" }, balance: { currency: GBP, currentAmount: "2900.00", availableAmount: "2847.63" } }
+        - { account: { accountId: acc-gm, accountTypeCode: CACC, currency: GBP, identification: "80119770009652", scheme: SortCode, description: "GLOBAL MONEY ACCOUNT", accountHolderName: "Global Money GMA" }, balance: { currency: GBP, currentAmount: "120.00", availableAmount: "120.00" } }
+  content_stale:
+    components: [home_header, home_quick_actions, home_cards_section, home_accounts_section]
+    description: "Content with freshness STALE_OFFLINE / STALE_FAILED — cached Room data plus DataFreshnessIndicator above the body."
+  empty:
+    components: [empty_state]
+    description: "ScreenState.Empty — consent returned zero accounts; 'No accounts connected'. No CTA."
+  offline:
+    components: [no_network_state, offline_snackbar]
+    description: "ScreenState.NoNetwork with no cache — template no-network content with retry; shell shows indefinite 'not connected' snackbar."
+  error:
+    components: [error_state]
+    description: "ScreenState.Error / Unauthenticated — 'Could not load your accounts' + Retry."
+
+visual_assets: []   # dashboard archetype; header is a token gradient + vector icons, no generated imagery
+
+strings:
+  - feature_home_error_title
+  - feature_home_empty_title
+  - feature_home_hello
+  - feature_home_greeting_morning
+  - feature_home_greeting_afternoon
+  - feature_home_greeting_evening
+  - feature_home_settings_desc
+  - feature_home_action_send_money
+  - feature_home_action_schedule
+  - feature_home_action_standing_order
+  - feature_home_action_vrp
+  - feature_home_cards
+  - feature_home_accounts
+
+i18n:
+  en:
+    feature_home_error_title: "Could not load your accounts"
+    feature_home_empty_title: "No accounts connected"
+    feature_home_hello: "Hello,"
+    feature_home_greeting_morning: "Good Morning"
+    feature_home_greeting_afternoon: "Good Afternoon"
+    feature_home_greeting_evening: "Good Evening"
+    feature_home_settings_desc: "Settings"
+    feature_home_action_send_money: "Send money"
+    feature_home_action_schedule: "Schedule"
+    feature_home_action_standing_order: "Standing Order"
+    feature_home_action_vrp: "VRP"
+    feature_home_cards: "Cards"
+    feature_home_accounts: "Accounts"
+
+known_gaps:
+  - id: HOME-G1
+    severity: medium
+    description: "No route to the Accounts list or Payments hub — accountsGraph and paymentsHubGraph are registered in the NavHost but home (and the single-tab bottom nav) never navigates to them (FR-003 / FR-026 unreachable)."
+  - id: HOME-G2
+    severity: low
+    description: "Empty state has no CTA — 'No accounts connected' offers no path to re-consent (consent-list / LoginRenewRoute) even though the fix is a new AIS consent."
+  - id: HOME-G3
+    severity: low
+    description: "No pull-to-refresh; manual refresh only exists via the error/no-network Retry. RetryLoad is the single HomeAction."
+  - id: HOME-G4
+    severity: low
+    description: "Unauthenticated ScreenState renders the generic error ('Could not load your accounts') instead of routing to re-auth."
+  - id: HOME-G5
+    severity: low
+    description: "Header avatar is a generic Person icon — the party (account holder) name is not fetched for the greeting although idea-plan api_surface lists home as a /party and /transactions consumer; source only calls /accounts and /balances."

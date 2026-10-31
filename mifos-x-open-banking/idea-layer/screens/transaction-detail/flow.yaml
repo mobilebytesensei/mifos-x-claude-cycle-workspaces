@@ -1,0 +1,66 @@
+sibling: flow
+schema_version: "4.0"
+feature_id: transaction-detail
+_source: source_analysis
+
+navigates_to:
+  - transactions        # onBack / empty-state Go back (popBackStack — returns to whichever caller pushed it)
+  - statement-detail    # onBack when entered from a statement drill-down
+  - login               # FR-049: TokenExpired → RenewSession → LoginRenewRoute
+  - consent-list        # FR-049: ConsentWithdrawn → OpenConsents → ConsentListRoute
+
+inbound_routes:
+  - { from: transactions, type: push, params: { transactionId: String, accountId: String } }
+  - { from: statement-detail, type: push, params: { transactionId: String, accountId: String } }
+
+transitions:
+  - { from: transaction-detail, to: transactions, type: pop, trigger: "top_bar back / empty_back_button" }
+  - { from: transaction-detail, to: statement-detail, type: pop, trigger: "top_bar back when entered from statement-detail" }
+  - { from: transaction-detail, to: login, type: push, route: LoginRenewRoute, trigger: "renew_session_button (error kind TokenExpired)" }
+  - { from: transaction-detail, to: consent-list, type: push, route: ConsentListRoute, trigger: "manage_consents_button (error kind ConsentWithdrawn)" }
+
+on_load:
+  - step: read_nav_args
+    from: SavedStateHandle
+    keys: [transactionId, accountId]
+  - step: open_stream
+    call: "TransactionDetailRepository.transactionDetailStream(accountId, viewModelScope)"
+    api: get_account_transactions
+  - step: resolve_across_pages   # DEF-004 / plan AC "Resolves a transaction from any page, not page 1 only"
+    loop: "scan page for transactionId; if absent AND Links.Next present → fetch Links.Next page (get_account_transactions, cursor) and repeat"
+    terminates_when: "match found (→ Content) OR Links.Next absent (→ Empty) OR any page fails (→ Error)"
+    note: "UI stays Loading during the walk; already-fetched pages are kept in the memory store so a later open does not re-walk"
+  - step: map_screen_state
+    mapping:
+      "ScreenState.Loading": Loading
+      "ScreenState.Content(data)": "match from resolve_across_pages → Content(toUiModel()); no match after all pages → Empty"
+      "ScreenState.Empty": Empty
+      "ScreenState.Error(e)": "Error(classifyTransactionDetailError(e))"
+      "ScreenState.NoNetwork": "Error(Network)"
+      "ScreenState.Unauthenticated": "Error(TokenExpired)"
+
+flow_logic:
+  - { component: top_bar, action: back, effect: "navigate:transactions", note: "popBackStack; returns to statement-detail when that was the caller" }
+  - { component: empty_back_button, action: click, effect: "navigate:transactions", note: "onBack from not-found state" }
+  - { component: reference_row, action: tap, effect: "action:CopyReference", then: "event:CopyToClipboard → clipboard.setText + snackbar 'Reference copied'" }
+  - { component: error_state, action: click, effect: "action:RetryLoad", then: "stream.refresh() re-runs the get_account_transactions page-walk", visible_when: "kind.recoverable" }
+  - { component: renew_session_button, action: click, effect: "navigate:login", then: "action:RenewSession → event:NavigateToLoginRenew → LoginRenewRoute", visible_when: "kind == TokenExpired" }
+  - { component: manage_consents_button, action: click, effect: "navigate:consent-list", then: "action:OpenConsents → event:NavigateToConsents → ConsentListRoute", visible_when: "kind == ConsentWithdrawn" }
+
+error_handling:
+  classifier: classifyTransactionDetailError
+  mapping:   # FR-040 classification; FR-049 routing (no Retry for non-retriable kinds)
+    - { network_error: "NetworkError.Client.Unauthorized (401)", kind: TokenExpired, retry: false, route: LoginRenewRoute }
+    - { network_error: "NetworkError.Client.Forbidden (403)", kind: ConsentWithdrawn, retry: false, route: ConsentListRoute }
+    - { network_error: "NetworkError.Client.RateLimited (429)", kind: RateLimited, retry: true }
+    - { network_error: "NetworkError.Network", kind: Network, retry: true }
+    - { network_error: "anything else (5xx, parse)", kind: Unexpected, retry: true }
+
+dependencies:
+  repositories:
+    - name: TransactionDetailRepository
+      methods: ["transactionDetailStream(accountId: String, scope: CoroutineScope): ScreenDataStream<List<TransactionDetail>>"]
+      store: "BankingStores.transactionDetailsStore(aisp) — StoreFactory.createMemoryStore, key AccountId, cacheKey transactionDetail:list:{accountId}"
+  services: [NetworkMonitor, FetchedAtRepository]
+
+journey_ids: []

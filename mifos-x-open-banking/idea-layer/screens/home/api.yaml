@@ -1,0 +1,84 @@
+sibling: api
+schema_version: "4.0"
+feature_id: home
+_source: source_analysis
+
+base_url: "https://{HSBC_BANK_HOST}/obie/open-banking/"
+auth:
+  type: psu_bearer
+  description: "PSU access token from secure Settings (hsbc_tokens), auto-attached by the Ktor Auth plugin; refresh_token grant on 401; mTLS transport cert on every call."
+  refresh: { method: POST, endpoint: /v1.1/oauth2/token, grant_type: refresh_token }
+
+api:
+  - id: list_accounts
+    function: "Aisp.getAccounts()"
+    method: get
+    endpoint: /v4.0/aisp/accounts
+    description: "All accounts in the PSU's AIS consent. Fetched through BankingStores.accountsStore (key 'self') and cached in Room table accounts."
+    params: {}
+    response:
+      dto: AccountsResponse
+      maps_to: "List<BankAccount>"
+      fields:
+        accountId: String
+        accountTypeCode: String       # AccountSubType (CurrentAccount / CreditCard / ...) or CACC-style code
+        currency: String
+        identification: String        # Account[0].Identification (sort code + number, masked PAN, IBAN)
+        scheme: AccountScheme         # SortCode | Pan | Iban | Other
+        description: String
+        accountHolderName: String     # Account[0].Name
+    errors:
+      401: TokenExpired (refresh-on-401 first)
+      403: ConsentRevoked
+      429: RateLimited
+      500: Server error
+    cache:
+      strategy: store5-cache-first
+      offline: show_cached
+      cache_key: "accounts:overview"
+
+  - id: get_account_balances
+    function: "Aisp.getBalances(accountId)"
+    method: get
+    endpoint: "/v4.0/aisp/accounts/{AccountId}/balances"
+    description: "Per-account balance; called once per account in parallel via balancesStore.getOnce(accountId, refresh). Any failure (incl. U000 refusal) yields balance = null, the account is still listed."
+    params:
+      AccountId: { type: String, required: true, source: list_accounts.accountId }
+    response:
+      dto: BalancesResponse
+      maps_to: AccountBalance
+      fields:
+        accountId: String
+        currency: String
+        currentAmount: String      # InterimBooked / ClosingBooked
+        availableAmount: String    # InterimAvailable / Expected — shown on card faces
+    errors:
+      any: "swallowed → balance null"
+    cache:
+      strategy: store5
+      refresh: "forced on RetryLoad (refreshBalances = true)"
+
+error_mapping:
+  layer: "NetworkResult<T, NetworkError> → Store5 → ScreenDataStream ScreenState"
+  rules:
+    - { network_error: "NetworkError.Network / offline", screen_state: NoNetwork }
+    - { network_error: "NetworkError.Client.Unauthorized (after refresh fails)", screen_state: Unauthenticated }
+    - { network_error: "other", screen_state: "Error(throwable)" }
+
+dtos:
+  BankAccount:
+    accountId: String
+    accountTypeCode: String
+    currency: String
+    identification: String
+    scheme: AccountScheme
+    description: String
+    accountHolderName: String
+  AccountBalance:
+    accountId: String
+    currency: String
+    currentAmount: String
+    availableAmount: String
+  AccountWithBalance:
+    account: BankAccount
+    balance: "AccountBalance?"

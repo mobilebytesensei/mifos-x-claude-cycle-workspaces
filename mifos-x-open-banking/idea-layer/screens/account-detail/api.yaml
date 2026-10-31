@@ -1,0 +1,95 @@
+sibling: api
+schema_version: "4.0"
+feature_id: account-detail
+_source: source_analysis
+
+base_url: "https://{HSBC_BANK_HOST}/obie/open-banking/"
+auth:
+  type: psu_bearer
+  description: "PSU access token from secure Settings (hsbc_tokens), auto-attached by the Ktor Auth plugin; refresh_token grant on 401; mTLS on every call."
+  refresh: { method: POST, endpoint: /v1.1/oauth2/token, grant_type: refresh_token }
+
+api:
+  - id: get_account_detail
+    function: "Aisp.getAccountDetails(accountId)"
+    method: get
+    endpoint: "/v4.0/aisp/accounts/{AccountId}"
+    description: "Account metadata for the header card via BankingStores.accountDetailStore (Store5, cache key accountDetail:detail:{id})."
+    params:
+      AccountId: { type: String, required: true, source: nav_params.accountId }
+    response:
+      dto: AccountDetailsResponse
+      maps_to: AccountDetail
+      fields:
+        accountId: String
+        accountTypeCode: String
+        currency: String
+        identification: String
+        scheme: AccountScheme
+        servicerIdentification: String      # Servicer.Identification (BIC)
+        statusUpdateDateTime: String
+        description: String
+        accountHolderName: String
+        productType: HsbcProductType        # derived; drives chip capability gating
+    errors:
+      401: TokenExpired
+      403: ConsentWithdrawn
+      404: AccountNotFound
+      500: Unexpected
+    cache:
+      strategy: store5
+      cache_key: "accountDetail:detail:{AccountId}"
+
+  - id: get_balance_lines
+    function: "Aisp.getBalances(accountId)"
+    method: get
+    endpoint: "/v4.0/aisp/accounts/{AccountId}/balances"
+    description: "Every typed balance row for the account (BankingStores.balanceLinesStore), in bank order."
+    params:
+      AccountId: { type: String, required: true, source: nav_params.accountId }
+    response:
+      dto: BalancesResponse
+      maps_to: "List<AccountBalanceLine>"
+      fields:
+        type: String       # OBIE Balance.Type (InterimAvailable, InterimBooked, ClosingBooked, Expected, ...)
+        amount: String
+        currency: String
+        dateTime: String
+    errors:
+      401: TokenExpired
+      403: ConsentWithdrawn
+      404: AccountNotFound
+      500: Unexpected
+    cache:
+      strategy: store5
+      cache_key: "accountDetail:balances:{AccountId}"
+
+related_endpoints_not_called:
+  - endpoint: "/v4.0/aisp/accounts/{AccountId}/product"
+    note: "Listed for account-detail in idea-plan api_surface (capability registry) but this screen never calls it; capability gating uses productType from the account detail + U000 refusals recorded by sibling screens."
+
+error_mapping:
+  classifier: classifyAccountDetailError
+  rules:
+    - { network_error: "NetworkError.Client.Unauthorized", kind: TokenExpired, recoverable: true }
+    - { network_error: "NetworkError.Client.Forbidden", kind: ConsentWithdrawn, recoverable: false }
+    - { network_error: "NetworkError.Client.NotFound", kind: AccountNotFound, recoverable: false }
+    - { network_error: "NetworkError.Network", kind: Network, recoverable: true }
+    - { network_error: "other", kind: Unexpected, recoverable: true }
+
+dtos:
+  AccountDetail:
+    accountId: String
+    accountTypeCode: String
+    currency: String
+    identification: String
+    scheme: AccountScheme
+    servicerIdentification: String
+    statusUpdateDateTime: String
+    description: String
+    accountHolderName: String
+  AccountBalanceLine:
+    type: String
+    amount: String
+    currency: String
+    dateTime: String

@@ -1,0 +1,276 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: accounts
+screen_id: accounts
+name: "Accounts"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/accounts/src/commonMain/kotlin/org/mifosx/openbanking/feature/accounts/AccountsScreen.kt
+  - feature/accounts/src/commonMain/kotlin/org/mifosx/openbanking/feature/accounts/AccountsContent.kt
+  - feature/accounts/src/commonMain/kotlin/org/mifosx/openbanking/feature/accounts/ui/AccountsViewModel.kt
+  - feature/accounts/src/commonMain/kotlin/org/mifosx/openbanking/feature/accounts/AccountsDestination.kt
+  - feature/accounts/src/commonMain/kotlin/org/mifosx/openbanking/feature/accounts/components/AccountTypeFilterRow.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/impl/AccountsOverviewRepositoryImpl.kt
+archetype: index_list
+requirement_refs: [FR-003]
+
+states: [loading, content, content_filtered_empty, empty, offline, error]
+initial_state: loading
+
+feature_profile:
+  combo_id: read_dashboard
+  facets: [content, network, cache, filter]
+  archetype: screen-content
+  store_archetype: NETWORK_WITH_CACHE
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default   # enrich STEP 5.PROFILE re-derives
+
+route: AccountsRoute          # nested in AccountsDestination graph
+graph: AccountsDestination
+entry_points: []              # UNREACHABLE — accountsGraph is registered in AuthenticatedNavHostScreen but no tab, button or callback navigates to AccountsDestination (see known_gaps ACC-G1)
+nav_params: {}
+
+business_logic:
+  kind: list_filter
+  description: >-
+    Shares AccountsOverviewRepository with home: overviewState(viewModelScope) (Store5 accounts +
+    per-account balances, balance null on failure, empty set → ScreenState.Empty) is combined
+    (combineContent) with a private MutableStateFlow<AccountFilter> (default ALL). buildData keeps rows
+    whose accountTypeCode canonicalises (case-insensitive) into the filter's subtype set:
+    CURRENT ← currentaccount|current|cacc, SAVINGS ← savings|svgs, CREDIT ← creditcard|credit|card|ccrd;
+    ALL matches everything. FilterAccounts updates the flow; RetryLoad calls repository.refresh().
+
+screens:
+  - id: accounts-screen
+    title: "{strings.feature_accounts_screen_title}"
+    type: index_list
+    description: >-
+      KptScaffold with title "Accounts" and NO navigation icon (designed as a top-level tab). A
+      horizontally-scrolling row of four FilterChips (All / Current / Savings / Credit) sits above a
+      LazyColumn of MifosAccountRow cards (type label, identifier, balance). Tapping a row opens the
+      account's detail. Loading / empty / no-network / error replace the body via ScreenContent;
+      the error component shows the OBIE support reference when present.
+
+state_model:
+  AccountsViewModel:
+    base: "BaseViewModel<AccountsState, Nothing, AccountsAction>"
+    state:
+      name: AccountsState
+      fields:
+        uiState: { type: "ScreenState<AccountsData>", default: "ScreenState.Loading" }
+    private_state:
+      filter: { type: "MutableStateFlow<AccountFilter>", default: "AccountFilter.ALL" }
+    content_model:
+      name: AccountsData
+      fields:
+        rows: { type: "List<AccountWithBalance>", default: "emptyList()" }
+        activeFilter: { type: AccountFilter, default: "AccountFilter.ALL" }
+    enums:
+      AccountFilter: [ALL, CURRENT, SAVINGS, CREDIT]
+      AccountUiType: [CURRENT, SAVINGS, CREDIT, GLOBAL_MONEY, GLOBAL_WALLET, OTHER]   # declared but unused (see ACC-G3)
+    screen_state:
+      name: "ScreenState<AccountsData>"
+      members: [Loading, Content, Empty, NoNetwork, Unauthenticated, Error]
+    errors:
+      name: "ScreenState.Error(error: Throwable)"
+      types:
+        - { type: Error, retry: true, message_key: feature_accounts_error_title, support_reference: "throwable.obieSupportReference()" }
+        - { type: NoNetwork, retry: true, message_key: template_default_no_network }
+        - { type: Unauthenticated, retry: true, message_key: feature_accounts_error_title }
+    events:
+      name: "Nothing"
+      members: []
+    actions:
+      name: AccountsAction
+      members:
+        - { name: FilterAccounts, params: { filter: AccountFilter }, trigger: "Tap a filter chip" }
+        - { name: RetryLoad, trigger: "Tap Retry on error / no-network" }
+    callbacks:
+      - { name: onNavigateToAccountDetail, params: { accountId: String }, trigger: "Tap an account row" }
+    di:
+      - AccountsOverviewRepository
+
+components:
+  - id: top_bar
+    type: top-bar
+    title: "{strings.feature_accounts_screen_title}"
+    navigation_icon: none          # showNavigationIcon = false
+
+  - id: filter_row
+    type: chip_group
+    testTag: accounts_filter_row
+    scrollable: true
+    children:
+      - id: filter_chip_all
+        type: chip
+        variant: filter
+        testTag: accounts_filter_all
+        label: "{strings.feature_accounts_filter_all}"
+        selected: "{{activeFilter == ALL}}"
+        on_click:
+          action: FilterAccounts
+          params: { filter: ALL }
+          action_contract:
+            effect: transform_state
+            handler: "AccountsViewModel.handleAction(FilterAccounts(ALL)) → filter.value = ALL"
+            library_refs: []
+            description: "Sets the in-memory filter to ALL; combineContent re-emits every account with no network call."
+      - id: filter_chip_current
+        type: chip
+        variant: filter
+        testTag: accounts_filter_current
+        label: "{strings.feature_accounts_filter_current}"
+        selected: "{{activeFilter == CURRENT}}"
+        on_click:
+          action: FilterAccounts
+          params: { filter: CURRENT }
+          action_contract:
+            effect: transform_state
+            handler: "AccountsViewModel.handleAction(FilterAccounts(CURRENT)) → filter.value = CURRENT"
+            library_refs: []
+            description: "Keeps only accounts whose type code canonicalises to CurrentAccount (CurrentAccount / current / CACC); local filter, no network call."
+      - id: filter_chip_savings
+        type: chip
+        variant: filter
+        testTag: accounts_filter_savings
+        label: "{strings.feature_accounts_filter_savings}"
+        selected: "{{activeFilter == SAVINGS}}"
+        on_click:
+          action: FilterAccounts
+          params: { filter: SAVINGS }
+          action_contract:
+            effect: transform_state
+            handler: "AccountsViewModel.handleAction(FilterAccounts(SAVINGS)) → filter.value = SAVINGS"
+            library_refs: []
+            description: "Keeps only accounts whose type code canonicalises to Savings (Savings / SVGS); local filter, no network call."
+      - id: filter_chip_credit
+        type: chip
+        variant: filter
+        testTag: accounts_filter_credit
+        label: "{strings.feature_accounts_filter_credit}"
+        selected: "{{activeFilter == CREDIT}}"
+        on_click:
+          action: FilterAccounts
+          params: { filter: CREDIT }
+          action_contract:
+            effect: transform_state
+            handler: "AccountsViewModel.handleAction(FilterAccounts(CREDIT)) → filter.value = CREDIT"
+            library_refs: []
+            description: "Keeps only accounts whose type code canonicalises to CreditCard (CreditCard / credit / card / CCRD); local filter, no network call."
+
+  - id: account_list
+    type: list
+    testTag: accounts_content
+    children:
+      - id: account_card
+        type: list_item
+        component_ref: MifosAccountRow
+        repeat: "{{rows}}"
+        testTag: "accounts_card_{accountId}"
+        on_click:
+          action: onNavigateToAccountDetail
+          target: account-detail
+          params: { accountId: "{{account.accountId}}" }
+          action_contract:
+            effect: navigate
+            handler: "AccountsScreen.onNavigateToAccountDetail → navController.navigate(AccountDetailRoute(accountId))"
+            library_refs: []
+            description: "Opens AccountDetail for the tapped account, passing its OBIE AccountId as the route argument."
+
+  - id: loading_indicator
+    type: progress
+    component_ref: MifosProgressIndicator
+
+  - id: empty_state
+    type: empty-state
+    component_ref: EmptyDataComponent
+    message: "{strings.feature_accounts_empty_title}"
+
+  - id: no_network_state
+    type: no-network
+    component_ref: DefaultNoNetworkContent
+    on_click:
+      action: RetryLoad
+      action_contract:
+        effect: call_api
+        handler: "AccountsViewModel.handleAction(RetryLoad) → accountsRepository.refresh()"
+        library_refs: []
+        description: "Re-fetches accounts and force-refreshes every balance via the shared accounts overview repository."
+
+  - id: error_state
+    type: error-state
+    component_ref: MifosErrorComponent
+    title: "{strings.feature_accounts_error_title}"
+    support_reference: "{{throwable.obieSupportReference()}}"  # i18n: skip — bank-issued reference
+    on_click:
+      action: RetryLoad
+      action_contract:
+        effect: call_api
+        handler: "AccountsViewModel.handleAction(RetryLoad) → accountsRepository.refresh()"
+        library_refs: []
+        description: "Re-fetches GET /accounts and every GET /accounts/{id}/balances; shows the OBIE support reference while failed."
+
+state_details:
+  loading:
+    components: [top_bar, loading_indicator]
+    description: "ScreenState.Loading — spinner."
+  content:
+    components: [top_bar, filter_row, account_list]
+    description: "Filter row + list of accounts matching the active filter (ALL by default)."
+    demo_data:
+      activeFilter: ALL
+      rows:
+        - { account: { accountId: acc-current, accountTypeCode: CACC, currency: GBP, identification: "80200110203349", scheme: SortCode, accountHolderName: "Mr Nico" }, balance: { currency: GBP, currentAmount: "2900.00", availableAmount: "2847.63" } }
+        - { account: { accountId: acc-card, accountTypeCode: CARD, currency: GBP, identification: "xxxx-xxxx-xxxx-3456", scheme: Pan, accountHolderName: "Mr Bantu" }, balance: { currency: GBP, currentAmount: "342.18", availableAmount: "342.18" } }
+  content_filtered_empty:
+    components: [top_bar, filter_row, account_list]
+    description: "Content whose filter matches nothing — renders an empty LazyColumn under the chips (no empty message; see ACC-G2)."
+  empty:
+    components: [top_bar, empty_state]
+    description: "ScreenState.Empty — the consent returned zero accounts; 'No accounts found'."
+  offline:
+    components: [top_bar, no_network_state]
+    description: "ScreenState.NoNetwork with no Room cache — template no-network content + retry."
+  error:
+    components: [top_bar, error_state]
+    description: "ScreenState.Error / Unauthenticated — 'Could not load accounts' + OBIE support reference + Retry."
+
+visual_assets: []   # index_list archetype default is []; rows are text-first MifosAccountRow
+
+strings:
+  - feature_accounts_screen_title
+  - feature_accounts_filter_all
+  - feature_accounts_filter_current
+  - feature_accounts_filter_savings
+  - feature_accounts_filter_credit
+  - feature_accounts_empty_title
+  - feature_accounts_error_title
+
+i18n:
+  en:
+    feature_accounts_screen_title: "Accounts"
+    feature_accounts_filter_all: "All"
+    feature_accounts_filter_current: "Current"
+    feature_accounts_filter_savings: "Savings"
+    feature_accounts_filter_credit: "Credit"
+    feature_accounts_empty_title: "No accounts found"
+    feature_accounts_error_title: "Could not load accounts"
+
+known_gaps:
+  - id: ACC-G1
+    severity: high
+    description: "Screen is unreachable — accountsGraph(...) is registered in AuthenticatedNavHostScreen but navigateToAccounts() has no caller and consumerNavBarTabs holds only HomeTab. FR-003 ships with no entry point."
+  - id: ACC-G2
+    severity: medium
+    description: "A filter that matches no accounts renders an empty list with no message (buildData never maps to Empty), so the user sees a blank area under the chips."
+  - id: ACC-G3
+    severity: low
+    description: "Dead code: AccountUiType enum is declared in AccountsViewModel.kt but referenced nowhere; strings feature_accounts_type_*, _balance_owed, _empty_body, _error_body, _error_retry are defined but unused."
+  - id: ACC-G4
+    severity: low
+    description: "GlobalMoney / GlobalWallet accounts only appear under ALL — no chip for them although AccountUiType models both."
+  - id: ACC-G5
+    severity: low
+    description: "No navigation icon (designed as a tab); if it is later reached by push navigation the user has no on-screen back affordance."

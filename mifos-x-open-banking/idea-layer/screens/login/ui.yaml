@@ -1,0 +1,585 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: login
+screen_id: login
+name: "Connect HSBC (Intro + Login)"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/login/src/commonMain/kotlin/org/mifosx/openbanking/feature/login/LoginNavigation.kt
+  - feature/login/src/commonMain/kotlin/org/mifosx/openbanking/feature/login/LoginScreen.kt
+  - feature/login/src/commonMain/kotlin/org/mifosx/openbanking/feature/login/ui/LoginViewModel.kt
+  - feature/login/src/commonMain/kotlin/org/mifosx/openbanking/feature/login/onboarding/IntroScreen.kt
+  - feature/login/src/commonMain/kotlin/org/mifosx/openbanking/feature/login/onboarding/OnboardingHeroIllustration.kt
+  - feature/login/src/commonMain/kotlin/org/mifosx/openbanking/feature/login/onboarding/AssistChip.kt
+  - feature/login/src/commonMain/kotlin/org/mifosx/openbanking/feature/login/components/PermissionList.kt
+  - feature/login/src/commonMain/kotlin/org/mifosx/openbanking/feature/login/browser/BrowserLauncher.kt
+  - feature/login/src/commonMain/kotlin/org/mifosx/openbanking/feature/login/LoginTestTags.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/login/LoginRepository.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/login/impl/LoginRepositoryImpl.kt
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/callback/PendingAuthStore.kt
+  - core/network/src/commonMain/kotlin/org/mifosx/openbanking/core/network/api/OAuth.kt
+  - core/network/src/commonMain/kotlin/org/mifosx/openbanking/core/network/BuildClientAssertion.kt
+  - core/network/src/commonMain/kotlin/org/mifosx/openbanking/core/network/authorize/ConsentAuthorization.kt
+requirement_refs: [FR-019, FR-020]
+archetype: form
+states: [checking_session, idle, loading, content, authorising, error, empty]   # checking_session = Splash (RootNav); idle = Intro screen; the rest are the Login / LoginRenew screen
+initial_state: checking_session
+feature_profile:
+  combo_id: content_input_submit
+  facets: [content, input]
+  archetype: screen-content
+  store_archetype: NETWORK_ONLY      # no Store5: one-shot token + consent POST; PendingAuth written to secure Settings
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default     # source-derived best effort; /idea-feature-enrich STEP 5.PROFILE re-derives
+
+route: "SplashRoute (RootNav startDestination) · AuthGraphRoute (navigation graph; startDestination IntroRoute → LoginRoute) · LoginRenewRoute (standalone, authenticated host)"
+entry_points:
+  - source: app-launch
+    trigger: "RootNavScreen NavHost startDestination = SplashRoute; RootNavViewModel initialState = RootNavState.Splash"
+    params: {}
+  - source: splash
+    trigger: "RootNavViewModel: ConsentSession.isActive() == false → RootNavState.Auth → navigateToAuthGraph → IntroRoute"
+    params: {}
+  - source: consent-callback
+    trigger: "AccessDenied / Error / SecurityError step buttons → onNavigateToLogin → navigateToAuthGraph (restarts at IntroRoute)"
+    params: {}
+  - source: consent-detail
+    trigger: "Revoke success → LoggedOut → onLoggedOut → navigateToAuthGraph"
+    params: {}
+  - source: consent-list
+    trigger: "onConnectBank / onReauthenticate → navigate(LoginRenewRoute) — skips Intro, Login screen with onBack"
+    params: {}
+  - source: consent-detail
+    trigger: "onReconfirm → navigate(LoginRenewRoute)"
+    params: {}
+nav_params: {}
+
+business_logic:
+  kind: processor
+  description: >-
+    Intro is static onboarding. Login lists OBPermission.ALL (20 OBIE AIS permissions) and a 90-day expiry
+    label, then on "Continue to HSBC": clears PendingAuth, POSTs /v1.1/oauth2/token client_credentials
+    (scope accounts, private_key_jwt PS256 client assertion), POSTs /v4.0/aisp/account-access-consents
+    (ALL permissions, expiry now+90d, transaction window now-90d..now), builds a PS256-signed FAPI request
+    object + authorize URL (response_type 'code id_token', fresh state + nonce), persists
+    {state, nonce, consentId} to secure Settings BEFORE launching the system browser, and enters
+    Authorising. A BrowserLaunchException clears PendingAuth and shows Error; js/wasm (isSupported=false)
+    shows an unsupported-platform Error.
+
+screens:
+  - id: splash-screen
+    route: SplashRoute
+    title: null
+    type: splash
+    archetype: splash
+    states: [checking_session]
+    host: "cmp-navigation/rootnav (SplashRoute + SplashScreen), not feature/login — owned by login because it is the gate into the AuthGraph"
+    description: >-
+      Branded first frame shown while RootNavViewModel resolves the launch route: full-bleed brand
+      backdrop, centred app brand mark (fade + scale in over 600ms, static under reduced motion) and an
+      indeterminate progress indicator with a 'Checking your connection…' status line. It is never
+      interactive and auto-dismisses: ConsentSession.isActive() == false → replace with AuthGraphRoute
+      (Intro); true → replace with AuthenticatedGraphRoute (Home). On Android the system splash
+      (windowSplashScreenBackground / windowSplashScreenAnimatedIcon) must use the SAME brand mark and
+      backdrop so the hand-off is seamless.
+  - id: intro-screen
+    route: IntroRoute
+    title: null
+    type: onboarding
+    archetype: onboarding
+    states: [idle]
+    description: >-
+      Scrollable column (status-bar padded, no top bar): 220dp code-drawn hero illustration, headline,
+      regulatory body copy, FlowRow of two assist chips (FAPI 1.0 Advanced, FCA Regulated) that open external
+      reference URLs, and a full-width pill "Continue" button that pushes LoginRoute.
+  - id: login-screen
+    route: LoginRoute
+    title: null
+    type: form
+    archetype: form
+    states: [loading, content, authorising, error, empty]
+    description: >-
+      First-run Login inside the AuthGraph, reached from Intro. No top bar (status-bar padded). Content:
+      HSBC explainer card (partner logo + 'HSBC', UK Open Banking badge, explainer headline/body, FAPI
+      security notice), "Data being requested" header + permission list with check icons, 90-day validity
+      note + computed expiry label, "Continue to HSBC" pill button (open-in-new icon) and a Cancel text
+      button. Separate full-screen Loading, Authorising (with Cancel), Error and Empty layouts. Cancel /
+      Go back / system back pop to Intro — never exit the app (DEF-007).
+  - id: login-renew-screen
+    route: LoginRenewRoute
+    title: null
+    type: form
+    archetype: form
+    reuses: login-screen          # same LoginScreen composable + LoginViewModel; every login-screen component renders here
+    states: [loading, content, authorising, error, empty]
+    description: >-
+      Consent renewal / re-authorisation: the Login screen reached from consent-list (Connect bank /
+      Re-authenticate), consent-detail (Re-confirm) or a 401 TokenExpired AIS error (FR-049), with NO
+      Intro and an onBack. Identical components to login-screen; Cancel / Go back / system back pop to
+      the calling screen. On a successful redirect the SignIn leg continues to consent-callback.
+
+state_model:
+  RootNavViewModel:
+    base: "BaseViewModel<RootNavState, Unit, RootNavAction>"
+    module: cmp-navigation/rootnav
+    state:
+      name: RootNavState
+      members:
+        - { name: Splash, renders: checking_session, note: "initialState; SplashRoute is the NavHost startDestination" }
+        - { name: Auth, renders: idle, note: "ConsentSession.isActive() == false → navigateToAuthGraph(rootNavOptions) → IntroRoute" }
+        - { name: UserUnlocked, params: { activeUserId: String }, note: "ConsentSession.isActive() == true → navigateToAuthenticatedGraph (Home)" }
+      default: RootNavState.Splash
+    actions:
+      name: RootNavAction
+      members:
+        - { name: "Internal.UserStateUpdateReceive", trigger: "userDataRepository.userData emission (first value on collection)" }
+    di:
+      - UserDataRepository
+      - ConsentSession
+  LoginViewModel:
+    base: "BaseViewModel<LoginUiState, LoginEvent, LoginAction>"
+    state:
+      name: LoginUiState
+      note: "The sealed UI state IS the VM state (no wrapper data class)."
+      members:
+        - { name: Loading, renders: loading }
+        - { name: Content, params: { permissions: "List<OBPermission>", expiryDate: LocalDate }, renders: content }
+        - { name: Authorising, renders: authorising }
+        - { name: Error, params: { message: StringResource }, renders: error }
+        - { name: Empty, renders: empty }
+      default: LoginUiState.Loading
+      fields:
+        permissions: { type: "List<OBPermission>", default: "OBPermission.ALL (20 entries) when Content" }
+        expiryDate: { type: LocalDate, default: 'stringResource(feature_login_expiry_label, d, Mon, yyyy) (today + 90 days, system TZ) — formatted in the UI, never a VM-built English string (DEF-013)' }
+        message: { type: StringResource, default: "one of feature_login_error_* (see errors) — the VM carries a StringResource, the Screen resolves it (DEF-013)" }
+    errors:
+      name: "LoginUiState.Error(message: StringResource)"
+      types:
+        - { type: Unauthorized, source: "401 from token/consent", message: "{strings.feature_login_error_unauthorized}", retry: true }
+        - { type: BadRequest, source: "400", message: "{strings.feature_login_error_bad_request}", retry: true }
+        - { type: Server, source: "5xx", message: "{strings.feature_login_error_server}", retry: true }
+        - { type: Network, source: "offline/unreachable", message: "{strings.feature_login_error_network}", retry: true }
+        - { type: Other, source: "anything else", message: "{strings.feature_login_error_other}", retry: true }
+        - { type: UnsupportedPlatform, source: "BrowserLauncher.isSupported == false (web)", message: "{strings.feature_login_error_unsupported_platform}", retry: true }
+        - { type: BrowserLaunchFailed, source: "BrowserLaunchException", message: "{strings.feature_login_error_browser_launch_failed}", retry: true }
+        - { type: AuthorisationTimedOut, source: "Authorising for longer than PendingAuth TTL (1200s) with no redirect", message: "{strings.feature_login_error_authorisation_timeout}", retry: true }
+    events:
+      name: LoginEvent
+      members:
+        - { name: NavigateBack, kind: BackgroundEvent, handled_by: "onBack() — REQUIRED on both routes: AuthGraph LoginRoute pops to IntroRoute, LoginRenewRoute pops to its caller. NEVER LocalIntentManager.exitApplication() (DEF-007)." }
+    actions:
+      name: LoginAction
+      members:
+        - { name: LoadPermissionsConfig, trigger: "init {} and Retry" }
+        - { name: StartOAuth, trigger: "Tap Continue to HSBC (ignored unless state is Content)" }
+        - { name: Cancel, trigger: "Tap Cancel (content), Go back (empty) or system back" }
+        - { name: CancelAuthorisation, trigger: "Tap Cancel on the Authorising view (DEF-007)" }
+        - { name: "Internal.AuthorisationTimedOut", trigger: "Authorising timer reaches the PendingAuth TTL (1200s) without a SignIn redirect (DEF-007)" }
+        - { name: Retry, trigger: "Tap Try again on error" }
+    di:
+      - LoginRepository
+      - BrowserLauncher         # per-platform actual (android/desktop/js/ios)
+      - PendingAuthStore        # SettingsPendingAuthStore over secure Settings; TTL 1200s
+
+components:
+  # ── Splash screen (RootNav, non-interactive) ─────────────────────────
+  - id: splash_backdrop
+    screen: splash-screen
+    type: image
+    role: background
+    fit: cover
+    test_tag: splash_backdrop
+    asset: splash_background
+  - id: splash_brand_mark
+    screen: splash-screen
+    type: image
+    role: logo
+    fit: contain
+    size: 96dp
+    test_tag: splash_logo
+    asset: splash_logo
+    animation: splash_intro
+    content_description: "{strings.feature_login_splash_logo_description}"
+  - id: splash_progress
+    screen: splash-screen
+    type: circular-progress
+    role: progress
+    size: 32dp
+    test_tag: splash_progress
+  - id: splash_status
+    screen: splash-screen
+    type: text
+    role: status
+    style: { text_style: bodyMedium, color: onSurfaceVariant }
+    value: "{strings.feature_login_splash_status}"
+
+  # ── Intro screen ─────────────────────────────────────────────────────
+  - id: intro_hero
+    screen: intro-screen
+    type: illustration
+    test_tag: intro_hero_illustration
+    height: 220dp
+    asset: onboarding_hero
+  - { id: intro_headline, screen: intro-screen, type: text, style: { text_style: headlineMedium, color: onSurface }, value: "{strings.feature_login_intro_headline}" }
+  - { id: intro_body, screen: intro-screen, type: text, style: { text_style: bodyMedium, color: onSurfaceVariant }, value: "{strings.feature_login_intro_body}" }
+  - id: fapi_chip
+    screen: intro-screen
+    type: chip
+    variant: assist
+    icon: { asset: fapi_chip_icon }
+    label: "{strings.feature_login_fapi_chip}"
+    on_click:
+      action: openFapiStandard
+      target: "https://openid.net/wg/fapi/"
+      action_contract:
+        effect: navigate
+        external_library_refs: ["core-base LocalIntentManager.launchUri"]
+        description: "Opens the OpenID FAPI working-group page (https://openid.net/wg/fapi/) in the system browser via LocalIntentManager.launchUri; leaves the app, no state change."
+  - id: fca_chip
+    screen: intro-screen
+    type: chip
+    variant: assist
+    icon: { asset: fca_chip_icon }
+    label: "{strings.feature_login_fca_chip}"
+    on_click:
+      action: openFcaOpenBanking
+      target: "https://www.fca.org.uk/firms/open-banking-fca"
+      action_contract:
+        effect: navigate
+        external_library_refs: ["core-base LocalIntentManager.launchUri"]
+        description: "Opens the FCA open-banking page (https://www.fca.org.uk/firms/open-banking-fca) in the system browser via LocalIntentManager.launchUri; leaves the app, no state change."
+  - id: intro_continue_button
+    screen: intro-screen
+    type: button
+    variant: filled_pill
+    impl: MifosFilledPillButton
+    test_tag: intro_continue
+    label: "{strings.feature_login_intro_continue}"
+    on_click:
+      action: onContinue
+      target: login
+      action_contract:
+        effect: navigate
+        description: "IntroScreen onContinue calls navController.navigate(LoginRoute) inside the AuthGraph, pushing the Login permission screen; no network call."
+
+  # ── Login screen ─────────────────────────────────────────────────────
+  - id: loading_progress
+    screen: login-screen
+    type: linear-progress
+    test_tag: login_loading_progress
+    caption: "{strings.feature_login_connecting}"
+
+  - id: explainer_card
+    screen: login-screen
+    type: card
+    test_tag: hsbc_explainer_card
+    style: { background: surfaceContainerLow, corner_radius: "spacing.sm" }
+    content:
+      - id: bank_header_row
+        type: row
+        children:
+          - { id: hsbc_logo_image, type: image, asset: hsbc_logo, height: 20dp, content_description: "{strings.feature_login_hsbc_brand}" }  # DEF-013: source still passes the literal "HSBC" (KG-LOGIN-3)
+          - { id: hsbc_brand_text, type: text, value: "{strings.feature_login_hsbc_brand}", style: { text_style: titleMedium } }  # DEF-013: source still renders the literal (KG-LOGIN-3)
+      - id: ob_badge_row
+        type: row
+        children:
+          - { id: ob_badge_icon, type: icon, asset: ob_badge_icon, size: 16dp, tint: primary }
+          - { id: ob_badge_text, type: text, value: "{strings.feature_login_ob_badge}", style: { text_style: labelSmall, color: primary } }
+      - { id: explainer_headline, type: text, value: "{strings.feature_login_explainer_headline}", style: { text_style: titleMedium } }
+      - { id: explainer_body, type: text, value: "{strings.feature_login_explainer_body}", style: { text_style: bodySmall, color: onSurfaceVariant } }
+      - { id: divider, type: divider }
+      - id: security_notice_row
+        type: row
+        children:
+          - { id: lock_icon, type: icon, asset: lock_icon, size: 14dp }
+          - { id: security_notice, type: text, value: "{strings.feature_login_security_notice}", style: { text_style: labelSmall } }
+
+  - { id: permissions_header, screen: login-screen, type: text, value: "{strings.feature_login_permissions_header}", style: { text_style: titleSmall, color: onSurfaceVariant } }
+  - id: permission_list
+    screen: login-screen
+    type: list
+    impl: PermissionList
+    item:
+      id: permission_row
+      type: row
+      test_tag: "login_perm_{permission.id.name}"
+      leading_icon: { asset: permission_check_icon }
+      title: "{{permission.label}}"         # i18n: skip — hardcoded English in core/model OBPermission (KG-LOGIN-2)
+      subtitle: "{{permission.description}}" # i18n: skip — hardcoded English in core/model OBPermission
+  - { id: consent_validity, screen: login-screen, type: text, value: "{strings.feature_login_consent_validity}", style: { text_style: bodySmall } }
+  - { id: expiry_label, screen: login-screen, type: text, value: "{strings.feature_login_expiry_label}", args: ["{{state.expiryDate}}"], style: { text_style: labelMedium, color: primary } }  # DEF-013: source still builds "Expires d Mon yyyy" in the VM (KG-LOGIN-2)
+
+  - id: continue_hsbc_button
+    screen: login-screen
+    type: button
+    variant: filled_pill
+    impl: MifosFilledPillButton
+    icon: open_in_new
+    test_tag: login_continue_hsbc
+    label: "{strings.feature_login_continue_hsbc}"
+    on_click:
+      action: StartOAuth
+      handler: "LoginViewModel.handleStartOAuth()"
+      target: os-browser-hsbc-authorize
+      action_contract:
+        effect: call_api
+        library_refs: [ktor, multiplatform-settings]
+        external_library_refs: ["feature/login BrowserLauncher.launch", "core/network generateConsentAuthorizationUrl (PS256)"]
+        writes_to: "PendingAuthStore (secure Settings: pending_auth_state/nonce/consent_id/created_at); LoginUiState"
+        description: "Gets a client_credentials token, POSTs an AIS account-access-consent, builds the PS256-signed authorize URL, saves state+nonce+consentId to PendingAuthStore, then launches the system browser and enters Authorising; failures map to Error(message)."
+
+  - id: cancel_button
+    screen: login-screen
+    type: button
+    variant: text
+    test_tag: login_cancel
+    label: "{strings.feature_login_cancel}"
+    on_click:
+      action: Cancel
+      handler: "LoginViewModel.handleCancel() → sendEvent(NavigateBack)"
+      target: back
+      action_contract:
+        effect: navigate
+        description: "Emits LoginEvent.NavigateBack → onBack(): the AuthGraph LoginRoute pops back to IntroRoute (DEF-007 — never exits the app); LoginRenewRoute pops back to consent-list / consent-detail."
+
+  - id: authorising_view
+    screen: login-screen
+    type: status-view
+    test_tag: login_authorising
+    content:
+      - { id: authorising_spinner, type: circular-progress, size: 48dp, test_tag: authorising_spinner }
+      - { id: opening_hsbc, type: text, value: "{strings.feature_login_opening_hsbc}", style: { text_style: bodyLarge } }
+      - { id: authorising_hint, type: text, value: "{strings.feature_login_authorising_hint}", style: { text_style: bodySmall } }
+      - id: authorising_cancel_button
+        type: button
+        variant: text
+        test_tag: login_authorising_cancel
+        label: "{strings.feature_login_authorising_cancel}"
+        on_click:
+          action: CancelAuthorisation
+          handler: "LoginViewModel.handleCancelAuthorisation()"
+          action_contract:
+            effect: transform_state
+            writes_to: "PendingAuthStore (clear); LoginUiState → Content"
+            description: "Abandons the in-flight HSBC authorisation (DEF-007): clears PendingAuthStore so a late redirect is rejected as unknown state, cancels the Authorising timeout and returns to Content so the user can try again or Cancel."
+
+  - id: error_view
+    screen: login-screen
+    type: error-state
+    test_tag: login_error
+    icon: { asset: error_lock_icon, size: 64dp, tint: error }
+    title: "{strings.feature_login_error_title}"
+    body: "{{state.message}}"   # StringResource → one of {strings.feature_login_error_*} (DEF-013); source still carries VM-built English (KG-LOGIN-2)
+    cta:
+      id: retry_button
+      type: button
+      variant: filled_pill
+      test_tag: login_error_retry
+      label: "{strings.feature_login_retry}"
+      on_click:
+        action: Retry
+        handler: "LoginViewModel.handleRetry() → LoadPermissionsConfig"
+        action_contract:
+          effect: transform_state
+          description: "Re-dispatches LoadPermissionsConfig, which reloads OBPermission.ALL locally and returns to Content (or Empty); it does not re-attempt the OAuth call — the user must tap Continue to HSBC again."
+
+  - id: empty_view
+    screen: login-screen
+    type: empty-state
+    test_tag: login_empty
+    icon: { asset: empty_search_icon, size: 64dp }
+    title: "{strings.feature_login_empty_title}"
+    body: "{strings.feature_login_empty_body}"
+    cta:
+      id: go_back_button
+      type: button
+      variant: filled_pill
+      test_tag: login_empty_go_back
+      label: "{strings.feature_login_go_back}"
+      on_click:
+        action: Cancel
+        handler: "LoginViewModel.handleCancel()"
+        action_contract:
+          effect: navigate
+          description: "Same as Cancel: emits NavigateBack → onBack() — pops to Intro on the AuthGraph LoginRoute, to the caller on LoginRenewRoute; never exits the app (DEF-007)."
+
+state_renders:
+  checking_session: { screen: splash-screen, components: [splash_backdrop, splash_brand_mark, splash_progress, splash_status], description: "RootNavState.Splash — brand first frame while ConsentSession.isActive() resolves; auto-replaces with Intro (inactive) or Home (active). No user action." }
+  idle: { screen: intro-screen, components: [intro_hero, intro_headline, intro_body, fapi_chip, fca_chip, intro_continue_button], description: "Intro onboarding — static, no VM." }
+  loading: { screen: login-screen, components: [loading_progress], description: "LoginUiState.Loading — while loading config and while the token+consent calls run (set before createConsentAndBuildAuthorizationUrl)." }
+  content: { screen: login-screen, components: [explainer_card, permissions_header, permission_list, consent_validity, expiry_label, continue_hsbc_button, cancel_button], description: "Permission review before consent." }
+  authorising: { screen: login-screen, components: [authorising_view], description: "Browser launched; PSU is at HSBC. Leaves on the SignIn redirect (→ consent-callback), on Cancel (→ Content, PendingAuth cleared) or on the 1200s PendingAuth-TTL timeout (→ Error(authorisation_timeout)) — never spins forever (DEF-007)." }
+  error: { screen: login-screen, components: [error_view], description: "Error(message) — network/HTTP mapping, unsupported platform, or browser-launch failure." }
+  empty: { screen: login-screen, components: [empty_view], description: "LoginRepository.getPermissions() returned an empty list (unreachable in practice: OBPermission.ALL is a constant)." }
+
+visual_assets:
+  # ── Splash (archetype `splash` floor: logo + background + animation) ──
+  - id: splash_logo
+    kind: logo
+    role: logo
+    intent: "Mifos X Open Banking app brand mark, centred at 96dp on the splash backdrop — the same mark as the launcher icon and Android windowSplashScreenAnimatedIcon so the system-splash → SplashRoute hand-off is seamless."
+    produced_by: /idea-branding
+    states: [checking_session]
+    consistency: none
+    producer_note: "BRAND MARK — owned by /idea-branding (plan blockers BLK-002: template launcher icon / no brand mark still shipped). NEVER route to /idea-feature-stitch-art or any generative producer (a sampled wordmark ships a fake brand mark). Until /idea-branding lands this stays an open gap, not a placeholder."
+  - id: splash_background
+    kind: background
+    role: background
+    intent: "Full-bleed calm brand backdrop behind the mark — a soft vertical gradient from the primary brand colour to a slightly deeper shade, no text, no logo, no imagery, conveying trust and security for a regulated banking app; must match the Android windowSplashScreenBackground colour at its centre."
+    produced_by: /idea-feature-stitch-art
+    states: [checking_session]
+    consistency: none
+  - id: splash_intro
+    kind: animation
+    role: logo
+    intent: "Short intro motion on the /idea-branding mark: fade + scale 0.9→1.0 over 600ms, then hold while the session check runs; reduced_motion → static mark. Animates the supplied brand mark only — never redraws or alters it."
+    produced_by: /idea-anim
+    states: [checking_session]
+    consistency: none
+  # ── Intro / Login ─────────────────────────────────────────────────────
+  - id: onboarding_hero
+    kind: illustration
+    role: illustration
+    intent: "Intro hero conveying secure bank-data sharing under UK Open Banking — rendered today by the code-drawn OnboardingHeroIllustration Compose canvas using primary/secondary theme tokens, square aspect, 220dp tall."
+    produced_by: design-system
+    states: [idle]
+    consistency: none
+    source: "feature/login/.../onboarding/OnboardingHeroIllustration.kt (Compose drawing, theme-token coloured)"
+  - id: hsbc_logo
+    kind: logo
+    role: partner-mark
+    intent: "HSBC partner logo (20dp tall) in the explainer card identifying the ASPSP the user is about to authorise."
+    produced_by: design-system
+    states: [content]
+    consistency: none
+    source: "feature/login/src/commonMain/composeResources/drawable/hsbc_logo.png"
+    license_note: "Third-party trademark of HSBC Group — used under the partner/ASPSP brand guidelines only; NEVER regenerate, redraw or alter via any generative producer."
+  - id: ob_badge_icon
+    kind: icon
+    role: badge-icon
+    intent: "Login 'UK Open Banking' badge — Material Icons.Outlined.VerifiedUser tinted primary beside the badge label (badge drawn in code, no image asset)."
+    produced_by: design-system
+    states: [content]
+    consistency: none
+    source: "Icons.Outlined.VerifiedUser"
+  - id: fapi_chip_icon
+    kind: icon
+    role: chip-icon
+    intent: "Icons.Filled.VerifiedUser leading the 'Secured by FAPI 1.0 Advanced' assist chip."
+    produced_by: design-system
+    states: [idle]
+    consistency: none
+    source: "Icons.Filled.VerifiedUser"
+  - id: fca_chip_icon
+    kind: icon
+    role: chip-icon
+    intent: "Icons.Filled.AccountBalance leading the 'FCA Regulated' assist chip."
+    produced_by: design-system
+    states: [idle]
+    consistency: none
+    source: "Icons.Filled.AccountBalance"
+  - id: lock_icon
+    kind: icon
+    role: inline-icon
+    intent: "Icons.Outlined.Lock beside the FAPI security notice in the explainer card."
+    produced_by: design-system
+    states: [content]
+    consistency: none
+    source: "Icons.Outlined.Lock"
+  - id: permission_check_icon
+    kind: icon
+    role: list-leading-check
+    intent: "Icons.Outlined.CheckCircle beside each requested OBIE permission."
+    produced_by: design-system
+    states: [content]
+    consistency: none
+    source: "Icons.Outlined.CheckCircle"
+  - id: error_lock_icon
+    kind: icon
+    role: error-state-icon
+    intent: "Icons.Outlined.Lock at 64dp tinted error above 'Could not connect to HSBC'."
+    produced_by: design-system
+    states: [error]
+    consistency: none
+    source: "Icons.Outlined.Lock"
+  - id: empty_search_icon
+    kind: icon
+    role: empty-state-icon
+    intent: "Icons.Outlined.ManageSearch at 64dp above 'Connection required'."
+    produced_by: design-system
+    states: [empty]
+    consistency: none
+    source: "Icons.Outlined.ManageSearch"
+
+known_gaps:
+  - id: KG-LOGIN-1
+    severity: medium
+    plan_ref: DEF-007
+    status: spec-healed-source-pending   # spec now: NavigateBack → onBack() pops to Intro; /implement must pass onBack on the AuthGraph LoginRoute
+    description: "SOURCE: Cancel / Go back on the first-run AuthGraph LoginRoute calls LocalIntentManager.exitApplication() (no onBack is passed) instead of returning to Intro; there is also no top-bar back affordance on Intro/Login/LoginRenew."
+  - id: KG-LOGIN-2
+    severity: medium
+    plan_ref: DEF-013
+    status: spec-healed-source-pending   # spec now declares feature_login_error_* / feature_login_expiry_label keys; OBPermission labels still open
+    description: "SOURCE: hardcoded user-facing English outside strings.xml (RULE-IMPL-NO-HARDCODED-STRING-001): all LoginUiState.Error messages and the 'Expires …' label are built in LoginViewModel; 'HSBC' brand text + logo contentDescription are literals in LoginScreen; OBPermission labels/descriptions (21 PermissionId entries) are hardcoded English in core/model — they need per-permission string keys (feature_login_perm_{id}_label / _description) resolved in PermissionList, which this enrichment has NOT yet enumerated."
+  - id: KG-LOGIN-3
+    severity: low
+    description: "feature_login_hsbc_brand string is defined but LoginScreen renders the literal \"HSBC\" instead."
+  - id: KG-LOGIN-4
+    severity: medium
+    plan_ref: DEF-007
+    status: spec-healed-source-pending   # spec now: authorising_cancel_button + Internal.AuthorisationTimedOut (1200s)
+    description: "SOURCE: Authorising has no cancel/timeout — if the PSU abandons the HSBC page the screen spins forever (PendingAuth expires after 1200s but nothing returns the UI to Content)."
+  - id: KG-LOGIN-8
+    severity: medium
+    plan_ref: BLK-002
+    status: open
+    description: "SOURCE: SplashScreen (cmp-navigation/splash) is a blank white Surface and the Android system splash uses the template ic_launcher_foreground/background — no brand mark, backdrop or intro motion. Blocked on /idea-branding for splash_logo; splash_background / splash_intro follow once the mark exists."
+  - id: KG-LOGIN-5
+    severity: low
+    description: "Retry from Error only reloads the static permission config (back to Content); it does not retry the failed OAuth call."
+  - id: KG-LOGIN-6
+    severity: low
+    description: "AIS consent always requests OBPermission.ALL (20 permissions) — no user scope choice (idea-plan known limitation); Empty state is effectively unreachable because ALL is a non-empty constant."
+  - id: KG-LOGIN-7
+    severity: low
+    description: "Onboarding hero is a code-drawn Compose illustration, not a generated asset — no {id}.gen.yaml provenance; archetype onboarding expects a /idea-feature-stitch-art illustration if a raster/vector asset is wanted."
+
+i18n:
+  en:
+    feature_login_splash_logo_description: "Mifos X Open Banking"
+    feature_login_splash_status: "Checking your connection…"
+    feature_login_authorising_cancel: "Cancel"
+    feature_login_expiry_label: "Expires %1$s"
+    feature_login_error_unauthorized: "Authorisation failed. The app may need to re-register with HSBC."
+    feature_login_error_bad_request: "HSBC rejected the consent request. Please try again."
+    feature_login_error_server: "HSBC is temporarily unavailable. Try again in a moment."
+    feature_login_error_network: "Unable to reach HSBC. Check your connection and try again."
+    feature_login_error_other: "Could not connect to HSBC. Please try again."
+    feature_login_error_unsupported_platform: "Connecting to HSBC isn't supported on this platform. Please use the Android, iOS or desktop app."
+    feature_login_error_browser_launch_failed: "Couldn't open your browser to continue with HSBC. Please check that a default browser is set, then try again."
+    feature_login_error_authorisation_timeout: "The HSBC sign-in took too long and was cancelled. Please try again."
+    feature_login_intro_headline: "Share your HSBC data securely with Open Banking"
+    feature_login_intro_body: "UK Open Banking is regulated under the Payment Services Regulations 2017, with providers authorised by the Financial Conduct Authority. It lets you share your account information with authorised apps — without sharing your password."
+    feature_login_fapi_chip: "Secured by FAPI 1.0 Advanced"
+    feature_login_fca_chip: "FCA Regulated"
+    feature_login_intro_continue: "Continue"
+    feature_login_connecting: "Connecting to HSBC…"
+    feature_login_hsbc_brand: "HSBC"
+    feature_login_ob_badge: "UK Open Banking"
+    feature_login_explainer_headline: "You will be taken to HSBC to sign in"
+    feature_login_explainer_body: "HSBC will ask you to confirm which accounts to share. Once you approve, you will be returned here automatically. Your HSBC credentials are never shared with Mifos."
+    feature_login_security_notice: "Secured with FAPI 1.0 Advanced"
+    feature_login_permissions_header: "Data being requested"
+    feature_login_consent_validity: "This consent is valid for 90 days. You can revoke it at any time."
+    feature_login_continue_hsbc: "Continue to HSBC"
+    feature_login_cancel: "Cancel"
+    feature_login_opening_hsbc: "Opening HSBC…"
+    feature_login_authorising_hint: "Complete sign-in in the HSBC app, then return here."
+    feature_login_error_title: "Could not connect to HSBC"
+    feature_login_retry: "Try again"
+    feature_login_empty_title: "Connection required"
+    feature_login_empty_body: "No active HSBC connection was found. Connect your HSBC account to view your financial data."
+    feature_login_go_back: "Go back"

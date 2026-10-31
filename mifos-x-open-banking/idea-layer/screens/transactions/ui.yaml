@@ -1,0 +1,480 @@
+sibling: ui
+schema_version: "4.0"
+feature_id: transactions
+screen_id: transactions
+name: "Transactions"
+status: enriched
+_source: source_analysis
+_source_refs:
+  - feature/transactions/src/commonMain/kotlin/org/mifosx/openbanking/feature/transactions/TransactionsScreen.kt
+  - feature/transactions/src/commonMain/kotlin/org/mifosx/openbanking/feature/transactions/TransactionsEmpty.kt
+  - feature/transactions/src/commonMain/kotlin/org/mifosx/openbanking/feature/transactions/ui/TransactionsViewModel.kt
+  - feature/transactions/src/commonMain/kotlin/org/mifosx/openbanking/feature/transactions/TransactionsDestination.kt
+  - feature/transactions/src/commonMain/kotlin/org/mifosx/openbanking/feature/transactions/components/
+  - core/data/src/commonMain/kotlin/org/mifosx/openbanking/core/data/banking/impl/TransactionsRepositoryImpl.kt
+archetype: index_list
+requirement_refs: [FR-007, FR-008, FR-009, FR-040]
+
+states: [loading, content, paginating, empty, date_range_picker, error]
+initial_state: loading
+
+feature_profile:
+  combo_id: read_paged_write
+  facets: [content, network, paging, filter, search]
+  archetype: paging-list
+  store_archetype: MEMORY_ONLY      # pages held in ViewModel memory; Store5 transactionsStream is NOT used here
+  recipe_ref: FEATURE_LAYER_BUILD_GUIDE
+  heal: auto
+  profile_hash: scaffold-default   # enrich STEP 5.PROFILE re-derives
+
+route: "TransactionsRoute(accountId)"
+entry_points:
+  - source: account-detail
+    trigger: chip_transactions
+    params: { accountId: String }
+nav_params:
+  accountId: { type: String, required: true, source: "SavedStateHandle[ACCOUNT_ID_ARG]", default_if_missing: '""' }
+
+business_logic:
+  kind: paged_list
+  description: >-
+    On init calls repository.firstPage(accountId) (GET accounts/{id}/transactions directly, not via
+    Store5) and keeps the items in an in-memory `accumulated` list plus the OBIE Links.Next cursor.
+    LoadMore follows the absolute Links.Next URL via repository.nextPage(nextLink), guarded against
+    concurrent calls by isPaginating; results append to `accumulated`. Every filter change runs
+    recompute(): direction (ALL / MONEY_IN = isCredit / MONEY_OUT = !isCredit), case-insensitive
+    description search, and an inclusive ISO yyyy-MM-dd date range — all CLIENT-SIDE over the pages
+    loaded so far. Filtered result empty → Empty; otherwise rows group by booking date (newest first,
+    label "MON 3 JUN 2026") with period totals: moneyIn "+£…" and moneyOut "-£…" summed in minor units,
+    currency from the first row (default GBP). First-page failure → Error(kind); load-more failure keeps
+    rows and only resets isPaginating.
+
+screens:
+  - id: transactions-screen
+    title: "{strings.feature_transactions_screen_title}"
+    type: index_list
+    description: >-
+      KptScaffold with back arrow, title "Transactions". Body: a period summary strip (Money in /
+      Money out totals, surfaceContainerLow) above a filter chip row (All, Money in ↓, Money out ↑,
+      Date range 📅), a search field ("Merchant, reference…" with clear button), then a LazyColumn of
+      date-header groups of TransactionRow (direction arrow icon, description, category chip, pending
+      badge, signed amount coloured by direction). At the list foot: a "Load more" text button when a
+      next page exists, or a linear progress bar while paginating. Empty keeps the chips + search and
+      shows a receipt icon, "No transactions found" and a "Clear filters" button. Date range opens a
+      Material3 DateRangePicker dialog (Apply / Cancel).
+
+state_model:
+  TransactionsViewModel:
+    base: "BaseViewModel<TransactionsState, Nothing, TransactionsAction>"
+    state:
+      name: TransactionsState
+      fields:
+        accountId: { type: String, default: '""' }
+        uiState: { type: TransactionsUiState, default: "TransactionsUiState.Loading" }
+        activeFilter: { type: TransactionFilter, default: "TransactionFilter.ALL" }
+        query: { type: String, default: '""' }
+        dateFrom: { type: "LocalDate?", default: "null" }
+        dateTo: { type: "LocalDate?", default: "null" }
+        showDateRangePicker: { type: Boolean, default: "false" }
+        hasNextPage: { type: Boolean, default: "false" }
+        isPaginating: { type: Boolean, default: "false" }
+    private_state:
+      accumulated: { type: "List<TransactionListItem>", default: "emptyList()" }
+      nextLink: { type: "String?", default: "null" }
+    screen_state:
+      name: TransactionsUiState
+      members:
+        - { name: Loading }
+        - { name: Content, fields: { data: TransactionsData } }
+        - { name: Empty }
+        - { name: Error, fields: { kind: TransactionsErrorKind } }
+    content_model:
+      name: TransactionsData
+      fields:
+        groups: { type: "List<TransactionGroup>", default: "emptyList()" }   # TransactionGroup(dateLabel, rows)
+        moneyInLabel: { type: String, default: '"+£0.00"' }
+        moneyOutLabel: { type: String, default: '"-£0.00"' }
+    row_model:
+      name: TransactionRowUi
+      fields:
+        key: { type: String, default: '"txn-{index}" when transactionId blank' }
+        transactionId: { type: String, default: '""' }
+        description: { type: String, default: '""' }
+        amountLabel: { type: String, default: '""' }
+        isCredit: { type: Boolean, default: "false" }
+        category: { type: TransactionCategory, default: "OTHER" }   # GROCERIES|DINING|SUBSCRIPTIONS|SHOPPING|TRANSPORT|TRANSFER|OTHER
+        isPending: { type: Boolean, default: "false" }
+    enums:
+      TransactionFilter: [ALL, MONEY_IN, MONEY_OUT]
+    errors:
+      name: TransactionsErrorKind
+      types:
+        - { type: SESSION_EXPIRED, retry: true, message_key: feature_transactions_error_body_session_expired, source: "401 Unauthorized" }
+        - { type: CONSENT_WITHDRAWN, retry: false, message_key: feature_transactions_error_body_consent_withdrawn, source: "403 Forbidden" }
+        - { type: RATE_LIMITED, retry: true, message_key: feature_transactions_error_body_rate_limited, source: "429 RateLimited" }
+        - { type: NETWORK, retry: true, message_key: feature_transactions_error_body_network, source: "anything else (incl. offline, 5xx)" }
+    events:
+      name: "Nothing"
+      members: []
+    actions:
+      name: TransactionsAction
+      members:
+        - { name: LoadTransactions, trigger: "Programmatic (same as RetryLoad)" }
+        - { name: RetryLoad, trigger: "Tap Retry on a recoverable error" }
+        - { name: LoadMore, trigger: "Tap Load more" }
+        - { name: FilterTransactions, params: { filter: TransactionFilter }, trigger: "Tap All / Money in / Money out chip" }
+        - { name: SearchTransactions, params: { query: String }, trigger: "Type in / clear the search field" }
+        - { name: OpenDateRangePicker, trigger: "Tap Date range chip" }
+        - { name: SetDateRange, params: { from: LocalDate, to: LocalDate }, trigger: "Apply in the date range dialog with both dates set" }
+        - { name: DismissDateRangePicker, trigger: "Cancel / outside tap / Apply with an incomplete range" }
+        - { name: ClearFilters, trigger: "Tap Clear filters on the empty state" }
+    callbacks:
+      - { name: onNavigateToTransactionDetail, params: { transactionId: String, accountId: String }, trigger: "Tap a transaction row" }
+      - { name: onBack, trigger: "Tap top-bar back arrow" }
+    di:
+      - TransactionsRepository
+      - SavedStateHandle
+
+components:
+  - id: top_bar
+    type: top-bar
+    title: "{strings.feature_transactions_screen_title}"
+    navigation_icon: arrow_back
+    on_navigation_click:
+      action: onBack
+      action_contract:
+        effect: navigate_back
+        handler: "TransactionsScreen.onBack → navController.popBackStack()"
+        library_refs: []
+        description: "Pops the transactions screen and returns to AccountDetail; in-memory pages and filters are discarded with the ViewModel."
+
+  - id: period_summary
+    type: stat-row
+    testTag: transactions_period_summary
+    visible: "{{uiState is Content}}"
+    style: { background: surfaceContainerLow }
+    children:
+      - { id: money_in_stat, type: stat, testTag: transactions_money_in, label: "{strings.feature_transactions_money_in}", value: "{{data.moneyInLabel}}" }  # i18n: skip — formatted total
+      - { id: money_out_stat, type: stat, testTag: transactions_money_out, label: "{strings.feature_transactions_money_out}", value: "{{data.moneyOutLabel}}" }  # i18n: skip — formatted total
+
+  - id: filter_row
+    type: chip_group
+    testTag: transactions_filter_row
+    children:
+      - id: filter_chip_all
+        type: chip
+        variant: filter
+        testTag: transactions_filter_all
+        label: "{strings.feature_transactions_filter_all}"
+        selected: "{{activeFilter == ALL}}"
+        on_click:
+          action: FilterTransactions
+          params: { filter: ALL }
+          action_contract:
+            effect: transform_state
+            handler: "TransactionsViewModel.handleAction(FilterTransactions(ALL)) → activeFilter = ALL; recompute()"
+            library_refs: []
+            description: "Shows both credits and debits from the pages already loaded; client-side recompute, no network call."
+      - id: filter_chip_money_in
+        type: chip
+        variant: filter
+        testTag: transactions_filter_money_in
+        icon: arrow_downward
+        label: "{strings.feature_transactions_filter_money_in}"
+        selected: "{{activeFilter == MONEY_IN}}"
+        on_click:
+          action: FilterTransactions
+          params: { filter: MONEY_IN }
+          action_contract:
+            effect: transform_state
+            handler: "handleAction(FilterTransactions(MONEY_IN)) → activeFilter = MONEY_IN; recompute()"
+            library_refs: []
+            description: "Keeps only credit rows (isCredit) from loaded pages and recomputes groups and totals; no network call."
+      - id: filter_chip_money_out
+        type: chip
+        variant: filter
+        testTag: transactions_filter_money_out
+        icon: arrow_upward
+        label: "{strings.feature_transactions_filter_money_out}"
+        selected: "{{activeFilter == MONEY_OUT}}"
+        on_click:
+          action: FilterTransactions
+          params: { filter: MONEY_OUT }
+          action_contract:
+            effect: transform_state
+            handler: "handleAction(FilterTransactions(MONEY_OUT)) → activeFilter = MONEY_OUT; recompute()"
+            library_refs: []
+            description: "Keeps only debit rows (!isCredit) from loaded pages and recomputes groups and totals; no network call."
+      - id: filter_chip_date_range
+        type: chip
+        variant: filter
+        testTag: transactions_filter_date_range
+        icon: calendar_month
+        label: "{strings.feature_transactions_filter_date_range}"
+        selected: "{{dateFrom != null}}"
+        on_click:
+          action: OpenDateRangePicker
+          action_contract:
+            effect: open_modal
+            handler: "handleAction(OpenDateRangePicker) → showDateRangePicker = true"
+            library_refs: []
+            description: "Opens the Material3 DateRangePicker dialog to choose an inclusive booking-date range; local UI state only."
+
+  - id: search_field
+    type: text_field
+    testTag: transactions_search_field
+    leading_icon: search
+    placeholder: "{strings.feature_transactions_search_hint}"
+    value: "{{query}}"  # i18n: skip — user input binding
+    on_change:
+      action: SearchTransactions
+      action_contract:
+        effect: transform_state
+        handler: "handleAction(SearchTransactions(query)) → query = it; recompute()"
+        library_refs: []
+        description: "Filters loaded rows whose description contains the trimmed query (case-insensitive) on every keystroke; no network call."
+    trailing:
+      id: search_clear
+      type: icon_button
+      testTag: transactions_search_clear
+      icon: close
+      visible: "{{query.isNotEmpty()}}"
+      content_description: "{strings.feature_transactions_search_clear}"
+      on_click:
+        action: SearchTransactions
+        params: { query: "" }
+        action_contract:
+          effect: transform_state
+          handler: "onQueryChange(\"\") → handleAction(SearchTransactions(\"\"))"
+          library_refs: []
+          description: "Clears the search query and recomputes the list with the remaining filters; no network call."
+
+  - id: transactions_list
+    type: list
+    testTag: transactions_list
+    grouping: "date header per booking day, newest first (labelMedium, onSurfaceVariant)"
+    children:
+      - id: transaction_row
+        type: list_item
+        repeat: "{{groups[].rows}}"
+        testTag: "transactions_row_{key}"
+        content:
+          - { id: direction_icon, type: icon, value: "{{isCredit ? arrow_downward : arrow_upward}}", content_description: "{strings.feature_transactions_credit_icon_description}" }
+          - { id: row_description, type: text, value: "{{row.description}}" }  # i18n: skip — bank payload
+          - { id: category_chip, type: chip, value: "{{categoryLabel(row.category)}}", style: { background: surfaceVariant } }  # i18n: skip — resolves to feature_transactions_category_*
+          - { id: pending_badge, type: badge, testTag: "transactions_pending_{key}", value: "{strings.feature_transactions_pending}", visible: "{{row.isPending}}" }
+          - { id: row_amount, type: text, value: "{{row.amountLabel}}", style: { color: "credit accent vs onSurface" } }  # i18n: skip — formatted signed amount
+        on_click:
+          action: onNavigateToTransactionDetail
+          target: transaction-detail
+          params: { transactionId: "{{row.transactionId}}", accountId: "{{accountId}}" }
+          action_contract:
+            effect: navigate
+            handler: "TransactionsScreen.onRowClick → navController.navigate(TransactionDetailRoute(transactionId, accountId))"
+            library_refs: []
+            description: "Opens the full detail of the tapped transaction, passing its transactionId and the current accountId."
+      - id: load_more_button
+        type: button
+        variant: text
+        testTag: transactions_load_more
+        label: "{strings.feature_transactions_load_more}"
+        visible: "{{hasNextPage && !isPaginating}}"
+        on_click:
+          action: LoadMore
+          action_contract:
+            effect: call_api
+            handler: "handleAction(LoadMore) → repository.nextPage(nextLink) → accumulated += items; recompute()"
+            library_refs: []
+            description: "Follows the OBIE Links.Next absolute URL to fetch the next transactions page and appends it; ignored when no cursor or already paginating."
+      - id: pagination_loader
+        type: progress
+        variant: linear
+        testTag: transactions_pagination_loader
+        visible: "{{isPaginating}}"
+
+  - id: empty_state
+    type: empty-state
+    testTag: transactions_empty
+    icon: receipt_long
+    title: "{strings.feature_transactions_empty_title}"
+    body: "{strings.feature_transactions_empty_body}"
+    cta:
+      id: clear_filters_button
+      type: button
+      variant: outlined
+      testTag: transactions_clear_filters
+      label: "{strings.feature_transactions_clear_filters}"
+      on_click:
+        action: ClearFilters
+        action_contract:
+          effect: transform_state
+          handler: "handleAction(ClearFilters) → activeFilter = ALL, query = \"\", dateFrom = dateTo = null; recompute()"
+          library_refs: []
+          description: "Resets direction, search and date range filters and recomputes from all loaded rows, restoring every row (FR-008)."
+
+  - id: date_range_dialog
+    type: dialog
+    component_ref: "DatePickerDialog + DateRangePicker (Material3)"
+    visible: "{{showDateRangePicker}}"
+    actions:
+      - id: date_apply
+        type: button
+        variant: text
+        label: "{strings.feature_transactions_date_apply}"
+        on_click:
+          action: SetDateRange
+          action_contract:
+            effect: transform_state
+            handler: "onConfirm(from, to) → handleAction(SetDateRange(from, to)); incomplete range → DismissDateRangePicker"
+            library_refs: []
+            description: "Applies the selected start/end dates (system time zone) as an inclusive client-side booking-date filter and closes the dialog."
+      - id: date_cancel
+        type: button
+        variant: text
+        label: "{strings.feature_transactions_date_cancel}"
+        on_click:
+          action: DismissDateRangePicker
+          action_contract:
+            effect: dismiss_modal
+            handler: "handleAction(DismissDateRangePicker) → showDateRangePicker = false"
+            library_refs: []
+            description: "Closes the date range dialog without changing the active date filter."
+
+  - id: loading_indicator
+    type: progress
+    component_ref: MifosProgressIndicator
+
+  - id: error_state
+    type: error-state
+    component_ref: MifosErrorComponent
+    message: "{{kind.bodyRes()}}"  # i18n: skip — resolves to feature_transactions_error_body_* per kind
+    retry_visible: "{{kind.recoverable}}"
+    on_click:
+      action: RetryLoad
+      action_contract:
+        effect: call_api
+        handler: "handleAction(RetryLoad) → load() → repository.firstPage(accountId)"
+        library_refs: []
+        description: "Re-requests the first transactions page from GET accounts/{id}/transactions, replacing accumulated rows; hidden for CONSENT_WITHDRAWN."
+
+state_details:
+  loading:
+    components: [top_bar, loading_indicator]
+    description: "TransactionsUiState.Loading — full-screen spinner during the first page."
+  content:
+    components: [top_bar, period_summary, filter_row, search_field, transactions_list]
+    description: "Grouped rows + totals; Load more at the foot when hasNextPage."
+    demo_data:
+      accountId: acc-current
+      hasNextPage: true
+      data:
+        moneyInLabel: "+£1,250.00"
+        moneyOutLabel: "-£86.40"
+        groups:
+          - dateLabel: "MON 19 OCT 2026"
+            rows:
+              - { key: "TXN-1001", transactionId: "TXN-1001", description: "TESCO STORES 2041", amountLabel: "-£42.15", isCredit: false, category: GROCERIES, isPending: true }
+              - { key: "TXN-1002", transactionId: "TXN-1002", description: "SALARY ACME LTD", amountLabel: "+£1,250.00", isCredit: true, category: TRANSFER, isPending: false }
+          - dateLabel: "SAT 17 OCT 2026"
+            rows:
+              - { key: "TXN-0998", transactionId: "TXN-0998", description: "TFL TRAVEL CH", amountLabel: "-£44.25", isCredit: false, category: TRANSPORT, isPending: false }
+  paginating:
+    components: [top_bar, period_summary, filter_row, search_field, transactions_list]
+    description: "Content with isPaginating = true — linear progress replaces Load more at the list foot."
+  empty:
+    components: [top_bar, filter_row, search_field, empty_state]
+    description: "TransactionsUiState.Empty — no rows (none returned, or filters match nothing); chips + search stay, Clear filters CTA."
+  date_range_picker:
+    components: [top_bar, period_summary, filter_row, search_field, transactions_list, date_range_dialog]
+    description: "showDateRangePicker = true — DateRangePicker dialog over the current state."
+  error:
+    components: [top_bar, error_state]
+    description: "TransactionsUiState.Error(kind) — first-page failure; Retry unless CONSENT_WITHDRAWN."
+
+visual_assets: []   # index_list archetype default []; rows use vector arrow icons, empty state a vector receipt icon
+
+strings:
+  - feature_transactions_screen_title
+  - feature_transactions_money_in
+  - feature_transactions_money_out
+  - feature_transactions_filter_all
+  - feature_transactions_filter_money_in
+  - feature_transactions_filter_money_out
+  - feature_transactions_filter_date_range
+  - feature_transactions_search_hint
+  - feature_transactions_search_clear
+  - feature_transactions_pending
+  - feature_transactions_load_more
+  - feature_transactions_date_apply
+  - feature_transactions_date_cancel
+  - feature_transactions_category_groceries
+  - feature_transactions_category_dining
+  - feature_transactions_category_subscriptions
+  - feature_transactions_category_shopping
+  - feature_transactions_category_transport
+  - feature_transactions_category_transfer
+  - feature_transactions_category_other
+  - feature_transactions_credit_icon_description
+  - feature_transactions_debit_icon_description
+  - feature_transactions_empty_title
+  - feature_transactions_empty_body
+  - feature_transactions_clear_filters
+  - feature_transactions_error_body_session_expired
+  - feature_transactions_error_body_consent_withdrawn
+  - feature_transactions_error_body_rate_limited
+  - feature_transactions_error_body_network
+
+i18n:
+  en:
+    feature_transactions_screen_title: "Transactions"
+    feature_transactions_money_in: "Money in"
+    feature_transactions_money_out: "Money out"
+    feature_transactions_filter_all: "All"
+    feature_transactions_filter_money_in: "Money in"
+    feature_transactions_filter_money_out: "Money out"
+    feature_transactions_filter_date_range: "Date range"
+    feature_transactions_search_hint: "Merchant, reference…"
+    feature_transactions_search_clear: "Clear search"
+    feature_transactions_pending: "Pending"
+    feature_transactions_load_more: "Load more"
+    feature_transactions_date_apply: "Apply"
+    feature_transactions_date_cancel: "Cancel"
+    feature_transactions_category_groceries: "Groceries"
+    feature_transactions_category_dining: "Dining"
+    feature_transactions_category_subscriptions: "Subscriptions"
+    feature_transactions_category_shopping: "Shopping"
+    feature_transactions_category_transport: "Transport"
+    feature_transactions_category_transfer: "Transfer"
+    feature_transactions_category_other: "Other"
+    feature_transactions_credit_icon_description: "Money in"
+    feature_transactions_debit_icon_description: "Money out"
+    feature_transactions_empty_title: "No transactions found"
+    feature_transactions_empty_body: "Try adjusting your filters or date range."
+    feature_transactions_clear_filters: "Clear filters"
+    feature_transactions_error_body_session_expired: "Your session has expired. Please retry to sign in again."
+    feature_transactions_error_body_consent_withdrawn: "Your Open Banking consent was withdrawn. Re-authorise access to view transactions."
+    feature_transactions_error_body_rate_limited: "Too many requests. Please wait a moment and retry."
+    feature_transactions_error_body_network: "Something went wrong. Please check your connection and retry."
+
+known_gaps:
+  - id: TX-G1
+    severity: medium
+    description: "Filters (direction, search, date range) run client-side over only the pages already loaded — a date range older than the loaded pages shows Empty instead of fetching; no fromBookingDateTime/toBookingDateTime query is sent to the bank."
+  - id: TX-G2
+    severity: medium
+    description: "No offline cache: the screen calls repository.firstPage/nextPage directly; TransactionsRepository.transactionsStream (Store5 + Room table transactions) is unused here, so offline shows NETWORK error rather than cached rows (NFR-004)."
+  - id: TX-G3
+    severity: low
+    description: "Load-more failures are silent — isPaginating resets and the button reappears with no message (by design per FR-009, but no user feedback)."
+  - id: TX-G4
+    severity: low
+    description: "Pages 2+ are mapped with accountId = \"\" (nextPage → toPage(accountId = \"\")); harmless today because navigation uses state.accountId, but TransactionListItem.accountId is wrong for appended rows."
+  - id: TX-G5
+    severity: low
+    description: "A row with a blank transactionId still navigates with transactionId = \"\" to TransactionDetailRoute."
+  - id: TX-G6
+    severity: low
+    description: "Empty state always offers 'Clear filters' even when no filter is active (bank returned zero transactions)."
+  - id: TX-G7
+    severity: low
+    description: "Unused strings: error_title, error_retry, error_consent_hint, error_status_* (status-code headline never rendered). SESSION_EXPIRED retry does not route to re-auth. A dead placeholder data object TransactionsRoute also exists in cmp-navigation BankingDestinations (name collision with the real TransactionsRoute(accountId))."

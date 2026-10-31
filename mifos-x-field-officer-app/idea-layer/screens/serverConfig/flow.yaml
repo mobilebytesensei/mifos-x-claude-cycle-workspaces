@@ -1,0 +1,89 @@
+# serverConfig — flow contract. IMPORTED from source 2026-10-02.
+
+schema_version: "3.1"
+feature: serverConfig
+
+# ──────────────── INBOUND ────────────────
+# Two live entry points, and they are on DIFFERENT graphs. That is the structural fact worth
+# recording: this screen must be reachable while signed OUT, so it cannot live on the authenticated
+# graph where the rest of settings sits.
+inbound_routes:
+  - from: signin
+    when: "server_config_cta tapped"
+    graph: root
+    note: "the pre-authentication path"
+  - from: rootNav
+    when: "RootNavScreen updateServerConfig binding"
+    graph: root
+  - from: settings
+    when: "settings list item"
+    graph: authenticated
+    status: not_yet_ported
+    note: "arrives with the rest of settings in S7"
+
+entry_points:
+  - route: ServerConfigRoute
+    params: {}
+
+# ──────────────── TRANSITIONS ────────────────
+transitions:
+  - id: edit_field
+    from: editing
+    trigger: "any Update{Protocol,EndPoint,ApiPath,Port,Tenant} event"
+    to: editing
+    side_effects: ["re-validate that field"]
+    note: "validation is per keystroke in BOTH original and port"
+
+  - id: field_fails
+    from: editing
+    trigger: "a rule returns Invalid"
+    to: field_invalid
+
+  - id: restore_defaults
+    from: [editing, field_invalid]
+    trigger: "use_defaults tapped"
+    to: editing
+    side_effects: ["state := ServerConfig.DEFAULT", "re-validate all five"]
+    note: "clears every field error, because DEFAULT is valid by construction"
+
+  - id: restore_localhost
+    from: [editing, field_invalid]
+    trigger: "use_localhost tapped"
+    to: editing
+    side_effects: ["state := ServerConfig.LOCALHOST"]
+    status: added_in_port
+
+  - id: submit_invalid
+    from: field_invalid
+    trigger: "save tapped"
+    to: field_invalid
+    side_effects: ["re-publish failures so an untouched field still shows why"]
+    note: >
+      The ORIGINAL had no such guard — UpdateServerConfig dispatched regardless and wrote whatever
+      was in the fields. This transition is the port's addition.
+
+  - id: submit_valid
+    from: editing
+    trigger: "save tapped with all five valid"
+    to: saved
+    side_effects: ["persist to preferences"]
+
+  - id: confirm_and_leave
+    from: saved
+    trigger: "snackbar shown"
+    to_screen: back
+    note: "the original popped back with no confirmation; a save and a dismissal were indistinguishable"
+
+# ──────────────── EXIT ────────────────
+exits:
+  - to: signin
+    when: "back pressed, or save completed from the pre-auth entry"
+  - to: settings
+    when: "back pressed from the authenticated entry"
+    status: not_yet_ported
+
+# ──────────────── FLOW-LEVEL CAVEAT ────────────────
+caveat: >
+  Saving succeeds and changes nothing on the wire. The HTTP access point is a build-time constant,
+  so this flow currently terminates in a persisted preference no request reads. See
+  api.yaml#configures — it is recorded at flow level too because the flow LOOKS complete and is not.
